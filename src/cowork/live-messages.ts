@@ -9,7 +9,6 @@ export class CoworkLiveMailbox {
 
   add(message: CoworkMessage): boolean {
     if (this.messages.some(item => item.id === message.id)) return true;
-    if (this.messages.length >= 50) return false;
     this.messages.push(message);
     return true;
   }

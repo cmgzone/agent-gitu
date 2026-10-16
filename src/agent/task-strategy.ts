@@ -30,15 +30,11 @@ const KIND_PATTERNS: { kind: TaskKind; patterns: RegExp[] }[] = [
   },
   {
     kind: 'refactor',
-    patterns: [
-      /\b(refactor|rename|restructure|reorgani[sz]e|moderni[sz]e|clean up|cleanup|simplify|extract|deduplicate|split into|consolidate)\b/i,
-    ],
+    patterns: [/\b(refactor|rename|restructure|reorgani[sz]e|moderni[sz]e|clean up|cleanup|simplify|extract|deduplicate|split into|consolidate)\b/i],
   },
   {
     kind: 'explore',
-    patterns: [
-      /\b(understand|explain|how does|what does|why (is|does|are)|investigate|explore|summarize|review|walk me through|learn (about )?this)\b/i,
-    ],
+    patterns: [/\b(understand|explain|how does|what does|why (is|does|are)|investigate|explore|summarize|review|walk me through|learn (about )?this)\b/i],
   },
 ];
 
@@ -89,6 +85,15 @@ export function determineInvestigationDepth(goal: string, targetHints?: TargetHi
 
 /** Classify a task goal into a task kind (heuristic, no LLM round-trip). */
 export function classifyTaskKind(goal: string): TaskKind {
+  // Correcting visible copy is not a behavioral bug merely because the user
+  // says "fix". It still needs the normal acceptance check, not a fabricated
+  // failing reproduction and root-cause hypothesis for a spelling change.
+  if (
+    /\b(?:typos?|spelling|grammar|punctuation)\b/i.test(goal) &&
+    /\b(?:readme|docs?|documentation|wording|spelling|grammar|punctuation|text|copy|labels?|greeting)\b/i.test(goal) &&
+    !/\b(?:crash|exception|broken|failing|regression|runtime|undefined|ReferenceError|TypeError|causing|prevents)\b/i.test(goal)
+  )
+    return 'refactor';
   for (const { kind, patterns } of KIND_PATTERNS) {
     for (const re of patterns) {
       if (re.test(goal)) return kind;
@@ -124,4 +129,3 @@ export function buildTaskStrategySection(goal: string, lspAvailable: boolean, st
   if (!lspAvailable || !goal.trim()) return undefined;
   return strategySkillFor(classifyTaskKind(goal), store).instructions;
 }
-

@@ -169,6 +169,16 @@ describe('LoopDetector', () => {
     expect(detector.evaluate(actions, 'read_file', 'read-region', undefined, 'v1').allowed).toBe(true);
   });
 
+  it('does not reuse old excerpts incorrectly marked as complete source', () => {
+    const actions = [
+      action({ id: 'old-1', tool: 'read_file', paramsHash: 'read-region', status: 'success', contextFingerprint: 'v1', observation: 'first lines\n... [truncated 900 chars] ...\nlast lines', readObservationComplete: true }),
+      action({ id: 'old-2', tool: 'read_file', paramsHash: 'read-region', status: 'success', contextFingerprint: 'v1', observation: `${CACHED_INVESTIGATION_PREFIX}\nfirst lines\n... [truncated 900 chars] ...\nlast lines`, readObservationComplete: true }),
+    ];
+    detector.noteCompaction('old-2');
+    expect(detector.reusableSuccessfulRead(actions, 'read_file', 'read-region', 'v1')).toBeUndefined();
+    expect(detector.evaluate(actions, 'read_file', 'read-region', undefined, 'v1').allowed).toBe(true);
+  });
+
   it('does not block successful search calls without a known source version', () => {
     const actions = [
       action({ tool: 'search_files', paramsHash: 'search', status: 'success', observation: 'one match' }),
@@ -233,6 +243,42 @@ describe('LoopDetector', () => {
 });
 
 describe('read-thrift wiring (executor + LoopDetector)', () => {
+  it('replays complete source after restart and compaction, then permits editing and changed-source reads', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitu-durable-read-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'durable-read-test' }));
+      const content = Array.from({ length: 120 }, (_, i) => i === 59 ? 'MIDDLE CONTRACT REQUIRED FOR THE EDIT' : `Source line ${i + 1} with enough context for an implementation`).join('\n');
+      fs.writeFileSync(path.join(dir, 'note.txt'), content);
+      const guard = ProjectGuard.detect(dir);
+      const ledger = TaskLedger.create({ repoRoot: path.resolve(dir), goal: 'Edit the observed contract', project: guard.lock, mode: 'fast' });
+      const executor = new Executor(guard, ledger, new PolicyEngine(true), new LoopDetector());
+      const req = { tool: 'read_file', params: { path: 'note.txt' }, reason: 'Inspect source', expected: 'Exact contract' };
+      const first = await executor.execute(req);
+      executor.noteCompaction(first.record.id);
+      const second = await executor.execute(req);
+      expect(second.record.readObservationComplete).toBe(true);
+      expect(second.record.observation).toContain('60: MIDDLE CONTRACT REQUIRED FOR THE EDIT');
+      const loaded = TaskLedger.load(dir, ledger.data.taskId)!;
+      const resumed = new Executor(guard, loaded, new PolicyEngine(true), new LoopDetector());
+      resumed.noteCompaction(second.record.id);
+      const third = await resumed.execute(req);
+      expect(third.result.output).toContain(CACHED_INVESTIGATION_PREFIX);
+      expect(third.result.output).toContain('60: MIDDLE CONTRACT REQUIRED FOR THE EDIT');
+      expect(third.result.output).toContain('120: Source line 120');
+      resumed.noteCompaction(third.record.id);
+      const repeat = await resumed.execute(req);
+      expect(repeat.blockedByLoop).toBeTruthy();
+      expect(repeat.result.output).toContain('60: MIDDLE CONTRACT REQUIRED FOR THE EDIT');
+      expect(repeat.result.output).toContain('Editing tools remain available');
+      const edited = await resumed.execute({ tool: 'apply_edit', params: { path: 'note.txt', oldString: 'MIDDLE CONTRACT REQUIRED FOR THE EDIT', newString: 'CORRECTED CONTRACT' }, reason: 'Implement the observed correction', expected: 'Contract corrected' });
+      expect(edited.result.ok).toBe(true);
+      const fresh = await resumed.execute(req);
+      expect(fresh.result.ok).toBe(true);
+      expect(fresh.result.output).toContain('60: CORRECTED CONTRACT');
+      expect(fresh.result.output).not.toContain(CACHED_INVESTIGATION_PREFIX);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('third identical unchanged read is a cached replay and a repeat of it is blocked', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitu-read-thrift-'));
     try {
@@ -285,7 +331,7 @@ describe('read-thrift wiring (executor + LoopDetector)', () => {
       expect(confirmed.result.output).not.toContain(CACHED_INVESTIGATION_PREFIX);
       expect(confirmed.record.readRefresh).toBe(true);
       expect((await executor.execute(refresh)).blockedByLoop).toBeTruthy();
-      expect((await executor.execute({ ...refresh, params: { path: './note.txt', refresh: true, offset: 1, limit: 2000, maxChars: 30_000, nonce: 'new spelling' } })).blockedByLoop).toBeTruthy();
+      expect((await executor.execute({ ...refresh, params: { path: './note.txt', refresh: true, offset: 1, nonce: 'new spelling' } })).blockedByLoop).toBeTruthy();
 
       const verification = await executor.execute({ tool: 'run_command', params: { command: 'node -e "process.exit(0)"' }, reason: 'verify', expected: 'passes' });
       expect(verification.result.ok).toBe(true);
@@ -297,7 +343,7 @@ describe('read-thrift wiring (executor + LoopDetector)', () => {
     }
   });
 
-  it('bounds refreshes even when the saved read observation was truncated', async () => {
+  it('retains the full long observation without allowing repeated refreshes', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitu-read-refresh-long-'));
     try {
       fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'read-refresh-long-test' }));
@@ -309,7 +355,8 @@ describe('read-thrift wiring (executor + LoopDetector)', () => {
 
       const first = await executor.execute(refresh);
       const second = await executor.execute(refresh);
-      expect(first.record.readObservationComplete).toBe(false);
+      expect(first.record.readObservationComplete).toBe(true);
+      expect(first.record.observation).toContain('150: long content');
       expect(first.record.contextFingerprint).toBeTruthy();
       expect(first.result.ok).toBe(true);
       expect(second.blockedByLoop).toBeTruthy();

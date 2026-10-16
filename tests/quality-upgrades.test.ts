@@ -257,7 +257,7 @@ describe('buildQualityReviewMessages', () => {
       specialistOrVerificationUncertain: false,
     };
     expect(shouldRunFinalQualityReview({ ...base, diff: { changedFiles: ['src/Page.tsx'], diffBody: '+export const Page = () => null;\n', diffBodyTruncated: false } }).run).toBe(true);
-    expect(shouldRunFinalQualityReview({ ...base, bugFix: true }).run).toBe(true);
+    expect(shouldRunFinalQualityReview({ ...base, bugFix: true, diff: { changedFiles: ['src/fix.ts'], diffBody: '+return fixed;\n', diffBodyTruncated: false } }).run).toBe(true);
     expect(
       shouldRunFinalQualityReview({
         ...base,

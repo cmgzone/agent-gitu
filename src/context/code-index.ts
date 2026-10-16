@@ -1,4 +1,5 @@
 import { readdirSync, readFileSync, lstatSync, statSync, watch, type FSWatcher } from 'node:fs';
+import { readdir, lstat } from 'node:fs/promises';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Worker } from 'node:worker_threads';
@@ -8,10 +9,9 @@ import type { FileRole } from '../types.js';
 import { ensureGituHome } from '../workspace/home.js';
 import { classifyRole, isContextConfigDotfile, tokenize } from './context-engine.js';
 import { EMBED_BATCH, EMBED_MAX_CHARS, cosineSimilarity, decodeVector, type Embedder } from './embeddings.js';
+import { isGeneratedIndexDirectory } from './generated-directory.js';
+export { isGeneratedIndexDirectory } from './generated-directory.js';
 
-const MAX_INDEXED_FILE_BYTES = 200 * 1024;
-const MAX_WALK_DEPTH = 8;
-const MAX_INDEXED_FILES = 2000;
 /** Bump when tokenize() changes shape so existing indexes rebuild once. */
 const TOKENIZER_VERSION = 3;
 const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.py', '.rs', '.go'];
@@ -19,10 +19,6 @@ const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs',
 // Serialize writers to the shared cache without waiting on SQLite locks on
 // the desktop thread. Each refresh itself runs entirely in a worker.
 let refreshQueue: Promise<unknown> = Promise.resolve();
-
-export function isGeneratedIndexDirectory(name: string): boolean {
-  return /^(?:dist(?:[-_].*|\d+)?|build(?:[-_].*|\d+)?|release(?:[-_].*)?|win-unpacked|app\.asar(?:\.unpacked)?)$/i.test(name);
-}
 
 /** Extract only static, relative module specifiers. Package imports and
  * dynamic expressions are deliberately not treated as repository edges. */
@@ -89,6 +85,12 @@ export class CodeIndex {
   private sweepTimer?: NodeJS.Timeout;
   private debounceTimer?: NodeJS.Timeout;
   private watching = false;
+  private watchVersion = 0;
+  private refreshedWatchVersion = -1;
+  private lastRefreshStats?: RefreshStats;
+  private watchedFiles = new Map<string, IndexedFile>();
+  private unidentifiedChange = false;
+  private pendingMetadataCheck?: Promise<void>;
   /** True until the stored tokenizer version matches (forces one full rebuild). */
   private rebuildTerms = false;
   private pendingRefresh?: Promise<RefreshStats>;
@@ -181,8 +183,7 @@ export class CodeIndex {
 
   /**
    * Walk the repo, tokenize new/changed files, and prune deleted ones.
-   * Mirrors the ContextEngine walker's rules (ignores, safe dotfiles, size cap,
-   * depth cap, artifact/unknown roles skipped).
+   * Mirrors the ContextEngine walker's exclusions and safe dotfile rules.
    */
   refresh(root: string, ignores: Iterable<string>): RefreshStats {
     this.prepareRefresh();
@@ -191,7 +192,6 @@ export class CodeIndex {
     const walked: { rel: string; role: FileRole; size: number; mtimeMs: number }[] = [];
 
     const walk = (dir: string, depth: number): void => {
-      if (depth > MAX_WALK_DEPTH || walked.length >= MAX_INDEXED_FILES) return;
       let entries: string[];
       try {
         entries = readdirSync(dir);
@@ -199,7 +199,6 @@ export class CodeIndex {
         return;
       }
       for (const name of entries) {
-        if (walked.length >= MAX_INDEXED_FILES) return;
         // Keep private VCS/agent state out even for callers that do not pass
         // ProjectGuard's default ignores. Other dotfiles are considered below:
         // config dotfiles such as .eslintrc are useful context, while unknown
@@ -220,10 +219,7 @@ export class CodeIndex {
           // are the one useful exception.
           if (name.startsWith('.') && name !== '.github') continue;
           walk(full, depth + 1);
-        } else if (st.size < MAX_INDEXED_FILE_BYTES) {
-          // Enforce the cap per file: a single huge directory must not be able
-          // to blow past MAX_INDEXED_FILES by its entire contents.
-          if (walked.length >= MAX_INDEXED_FILES) return;
+        } else if (st.isFile()) {
           const rel = path.relative(root, full).replace(/\\/g, '/');
           const role = classifyRole(rel);
           if (role === 'artifact' || role === 'unknown') continue;
@@ -321,6 +317,7 @@ export class CodeIndex {
     }
     if (this.dbPath === ':memory:') return Promise.reject(new Error('Background indexing requires a file-backed database'));
     const ignorePaths = [...ignores];
+    const watchVersion = this.watchVersion;
     const work = refreshQueue.then(
       () =>
         new Promise<RefreshStats>((resolve, reject) => {
@@ -352,12 +349,7 @@ export class CodeIndex {
             },
           );
           this.refreshWorker = worker;
-          const timeout = setTimeout(() => {
-            reject(new Error('Project indexing timed out'));
-            void worker.terminate();
-          }, 120_000);
           const cleanup = (): void => {
-            clearTimeout(timeout);
             if (this.refreshWorker === worker) this.refreshWorker = undefined;
           };
           worker.once('message', (message: { stats?: RefreshStats; error?: string }) => {
@@ -376,10 +368,75 @@ export class CodeIndex {
         }),
     );
     refreshQueue = work.catch(() => undefined);
-    this.pendingRefresh = work.finally(() => {
+    this.pendingRefresh = work.then(stats => {
+      this.lastRefreshStats = stats;
+      this.refreshedWatchVersion = watchVersion;
+      if (!this.closed) this.watchedFiles = new Map(this.fileList().map(file => [file.path, file]));
+      return stats;
+    }).finally(() => {
       this.pendingRefresh = undefined;
     });
     return this.pendingRefresh;
+  }
+
+  /** A live watcher makes an unchanged snapshot reusable across follow-ups. */
+  isFresh(): boolean {
+    return Boolean(this.watcher && this.lastRefreshStats && this.refreshedWatchVersion === this.watchVersion);
+  }
+
+  async ensureFreshAsync(root: string, ignores: Iterable<string>): Promise<RefreshStats> {
+    const ignorePaths = [...ignores];
+    const sameIgnores = ignorePaths.length === this.ignores.size && ignorePaths.every(name => this.ignores.has(name));
+    if (!this.watcher || path.resolve(root) !== this.root || !sameIgnores) return this.refreshAsync(root, ignorePaths, true);
+    // Let queued filesystem notifications invalidate the snapshot before reuse.
+    await new Promise<void>(resolve => setImmediate(resolve));
+    await this.checkUnidentifiedChanges();
+    while (!this.isFresh()) {
+      if (this.pendingRefresh) await this.pendingRefresh;
+      else await this.refreshAsync(root, ignorePaths);
+      if (!this.watcher) return this.refreshAsync(root, ignorePaths, true);
+      await this.checkUnidentifiedChanges();
+    }
+    return this.lastRefreshStats!;
+  }
+
+  /** Windows may report private task writes without a filename. Validate
+   * source metadata before treating those notifications as index changes. */
+  private checkUnidentifiedChanges(): Promise<void> {
+    if (this.pendingMetadataCheck) return this.pendingMetadataCheck;
+    if (!this.unidentifiedChange || !this.lastRefreshStats) return Promise.resolve();
+    this.pendingMetadataCheck = (async () => {
+      while (this.unidentifiedChange && !this.closed) {
+        this.unidentifiedChange = false;
+        const current = new Map<string, { size: number; mtimeMs: number }>();
+        const walk = async (dir: string): Promise<void> => {
+          let entries;
+          try { entries = await readdir(dir, { withFileTypes: true }); } catch { return; }
+          for (const entry of entries) {
+            const name = entry.name;
+            if (this.ignores.has(name) || name === '.git' || name === '.hermes' || isGeneratedIndexDirectory(name) ||
+              (name.startsWith('.') && name !== '.github' && !isContextConfigDotfile(name)) || entry.isSymbolicLink()) continue;
+            const full = path.join(dir, name);
+            if (entry.isDirectory()) await walk(full);
+            else if (entry.isFile()) {
+              const relative = path.relative(this.root, full).replace(/\\/g, '/');
+              const role = classifyRole(relative);
+              if (role === 'artifact' || role === 'unknown') continue;
+              try {
+                const info = await lstat(full);
+                if (info.isFile() && !info.isSymbolicLink()) current.set(relative, { size: info.size, mtimeMs: info.mtimeMs });
+              } catch { /* a disappearing source is detected by the map comparison */ }
+            }
+          }
+        };
+        await walk(this.root);
+        if (current.size !== this.watchedFiles.size || [...current].some(([name, info]) => {
+          const previous = this.watchedFiles.get(name);
+          return !previous || previous.size !== info.size || previous.mtimeMs !== info.mtimeMs;
+        })) this.watchVersion++;
+      }
+    })().finally(() => { this.pendingMetadataCheck = undefined; });
+    return this.pendingMetadataCheck;
   }
 
   /** All indexed files for this repo (path, role, size, mtime). */
@@ -452,7 +509,7 @@ export class CodeIndex {
    * lexical relevance.
    */
   dependencyScores(seedPaths: Iterable<string>, maxDepth = 2): Map<string, number> {
-    const depthLimit = Math.max(1, Math.min(3, maxDepth));
+    const depthLimit = Math.max(1, maxDepth);
     const roots = [...new Set(seedPaths)].filter(Boolean);
     if (roots.length === 0) return new Map();
     const out = new Map<string, number>();
@@ -489,7 +546,7 @@ export class CodeIndex {
    * Embeds at most `budget` files per call (the rest catch up on later runs)
    * so a first run never stalls on a huge repo. Returns how many were embedded.
    */
-  async updateVectors(embedder: Embedder, budget = 24): Promise<number> {
+  async updateVectors(embedder: Embedder, budget = Infinity): Promise<number> {
     const files = this.db.prepare('SELECT path, mtime_ms FROM files WHERE repo = ?').all(this.repo) as { path: string; mtime_ms: number }[];
     if (files.length === 0) return 0;
     const existing = new Map<string, { mtimeMs: number; model: string }>();
@@ -567,9 +624,37 @@ export class CodeIndex {
     const debounceMs = opts.debounceMs ?? 500;
     const sweepMs = opts.sweepMs ?? 30_000;
 
-    void this.refreshAsync(this.root, this.ignores).catch(() => undefined);
     try {
-      this.watcher = watch(this.root, { recursive: true }, () => this.scheduleRefresh(debounceMs));
+      this.watcher = watch(this.root, { recursive: true }, (_event, filename) => {
+        // Task ledgers and generated output change constantly during a run;
+        // they are excluded from indexing and must not trigger source scans.
+        if (filename && filename.toString().split(/[\\/]/).some(name =>
+          this.ignores.has(name) || name === '.git' || name === '.hermes' || isGeneratedIndexDirectory(name) ||
+          (name.startsWith('.') && name !== '.github' && !isContextConfigDotfile(name)))) return;
+        if (!filename) {
+          this.unidentifiedChange = true;
+          this.scheduleRefresh(debounceMs);
+          return;
+        }
+        if (filename) {
+          const relative = filename.toString().replace(/\\/g, '/');
+          try {
+            const info = lstatSync(path.join(this.root, relative));
+            if (info.isSymbolicLink()) return;
+            if (info.isFile()) {
+              const role = classifyRole(relative);
+              if (role === 'artifact' || role === 'unknown') return;
+              const previous = this.watchedFiles.get(relative);
+              if (previous?.size === info.size && previous.mtimeMs === info.mtimeMs) return;
+            }
+          } catch {
+            // A deletion still invalidates the snapshot when it was indexed.
+            if (!this.watchedFiles.has(relative)) return;
+          }
+        }
+        this.watchVersion++;
+        this.scheduleRefresh(debounceMs);
+      });
       this.watcher.on('error', () => {
         try {
           this.watcher?.close();
@@ -581,8 +666,12 @@ export class CodeIndex {
     } catch {
       this.watcher = undefined; // recursive watch unsupported -> sweep only
     }
+    void this.refreshAsync(this.root, this.ignores).catch(() => undefined);
     this.sweepTimer = setInterval(() => {
-      void this.refreshAsync(this.root, this.ignores).catch(() => undefined);
+      if (this.watcher) {
+        this.unidentifiedChange = true;
+        void this.ensureFreshAsync(this.root, this.ignores).catch(() => undefined);
+      } else void this.refreshAsync(this.root, this.ignores).catch(() => undefined);
     }, sweepMs);
   }
 
@@ -590,7 +679,7 @@ export class CodeIndex {
     if (this.debounceTimer) return;
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = undefined;
-      void this.refreshAsync(this.root, this.ignores, true).catch(() => undefined);
+      if (!this.isFresh() || this.unidentifiedChange) void this.ensureFreshAsync(this.root, this.ignores).catch(() => undefined);
     }, debounceMs);
   }
 

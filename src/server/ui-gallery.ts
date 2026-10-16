@@ -47,7 +47,7 @@ export const COWORK_GALLERY_CSS = String.raw`
   .cw-media-stack-copy > span { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--muted); }
   .cw-media-stack-copy svg { width:13px; height:13px; transform:rotate(180deg); }
   @keyframes cw-stack-arrive { from { opacity:0; transform:translateY(12px) rotate(0deg) scale(.9); } to { opacity:1; transform:translateY(0) rotate(var(--stack-angle,-8deg)) scale(1); } }
-  .cw .cw-chat-head .cw-gallery-toggle { position:absolute; right:12px; top:12px; width:38px; height:38px; padding:0; display:grid; place-items:center; border:1px solid #ffffff45; border-radius:50%; background:color-mix(in srgb,var(--card) 48%,transparent); color:var(--text); }
+  .cw .cw-chat-head .cw-gallery-toggle { position:absolute; right:12px; top:70px; width:38px; height:38px; padding:0; display:grid; place-items:center; border:1px solid #ffffff45; border-radius:50%; background:color-mix(in srgb,var(--card) 48%,transparent); color:var(--text); }
   @media(max-width:720px) { .cw .cw-chat-head .cw-gallery-toggle { right:12px; top:70px; width:40px; height:40px; } }
   .cw-rich-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr)); gap:16px; margin:12px 0 2px; white-space:normal; }
   .cw-chat-media-grid { width:min(92%,680px); grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr)); margin:0 0 6px; }

@@ -408,10 +408,10 @@ const APPROVAL_TIMEOUT_MS = 10 * 60 * 1000;
  * able to spend without limit, and a delegation that is refused is a far better
  * failure than a bill nobody saw coming.
  */
-const DEFAULT_DELEGATION_BUDGET_USD = 5;
+const DEFAULT_DELEGATION_BUDGET_USD = undefined;
 /** Matches the runtime log's default retention, so the two stay comparable. */
 const NATIVE_FRAME_CAPACITY = 2_000;
-const MAX_SESSION_FILES_PER_MESSAGE = 8;
+const MAX_SESSION_FILES_PER_MESSAGE = Infinity;
 const MAX_ATTACHMENT_TEXT_EXCERPT = 12_000;
 const LONG_RESPONSE_DOCUMENT_CHARS = 6_000;
 
@@ -622,7 +622,7 @@ export class GituServer {
         const uploaded=this.uploads().get(raw['artifactId'],'coding');
         if(!uploaded||uploaded.state!=='ready')throw new Error('Attachment is unavailable.');
         const limit=this.selectedFileLimit();if(limit!==null&&uploaded.size>limit)throw new Error('Attachment exceeds your selected file-size limit.');
-        const sourcePath=this.uploads().filePath(uploaded),dataUrl=/^image\/(png|jpeg|gif|webp)$/.test(uploaded.mime)&&uploaded.size<=8*1024*1024?`data:${uploaded.mime};base64,${readFileSync(sourcePath).toString('base64')}`:'';
+        const sourcePath=this.uploads().filePath(uploaded),dataUrl=/^image\/(png|jpeg|gif|webp)$/.test(uploaded.mime)?`data:${uploaded.mime};base64,${readFileSync(sourcePath).toString('base64')}`:'';
         return{name:safeFileName(uploaded.name),mime:uploaded.mime,size:uploaded.size,sourcePath,dataUrl};
       }
       const name = safeFileName(String(raw['name'] ?? `file-${index + 1}`));
@@ -643,7 +643,7 @@ export class GituServer {
     const images: { name: string; dataUrl: string }[] = [];
     for (const entry of decoded) {
       const id = shortId('file');
-      const target = nodePath.join(dir, `${id}-${entry.name}`);
+      const target = nodePath.join(dir, id);
       if(entry.sourcePath)copyFileSync(entry.sourcePath,target);else writeFileSync(target,entry.bytes!);
       const file: StoredSessionFile = {
         runId: session.runId,
@@ -972,7 +972,7 @@ export class GituServer {
         this.sendJson(res, status, { error: msg });
       });
     });
-    const desktopSockets = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024, perMessageDeflate: false });
+    const desktopSockets = new WebSocketServer({ noServer: true, maxPayload: 0, perMessageDeflate: false });
     this.desktopSockets = desktopSockets;
     let lastDesktopRejection = 0;
     server.on('upgrade', (req, socket, head) => {
@@ -1005,7 +1005,6 @@ export class GituServer {
       if (!agent) { reject(404); return; }
       const computer = scoped(()=>this.coworkComputer(agent.id));
       if (agent.useHostComputer || computer.status().state !== 'running') { reject(409); return; }
-      if (desktopSockets.clients.size >= 16) { reject(429); return; }
       desktopSockets.handleUpgrade(req, socket, head, (client) => {
         this.appAuth.track(req, socket);
         this.desktopAgents.set(client, agent.id);
@@ -2904,7 +2903,7 @@ export class GituServer {
     const conv = store.getConversation(conversationId);
     if (!conv) return { ok: false, error: 'conversation not found' };
     if (threadId && !store.getThread(conversationId, threadId)) return { ok: false, error: 'thread not found in this conversation' };
-    const trimmed = text.trim().slice(0, 20_000);
+    const trimmed = text.trim();
     if (!trimmed) return { ok: false, error: 'text is required' };
     const prior = meta?.id ? store.getMessage(conversationId, meta.id) : undefined;
     if (prior) return { ok: true, message: prior };
@@ -2947,9 +2946,6 @@ export class GituServer {
     if (!agent) { store.setMessageStatus(conversation.id, trigger.id, 'failed'); return; }
     const key = conversation.id + '/' + trigger.id;
     if (this.coworkQuestions.has(key)) return;
-    if ([...this.coworkQuestions.keys()].filter(id => id.startsWith(conversation.id + '/')).length >= 4) {
-      store.setMessageStatus(conversation.id, trigger.id, 'failed'); this.publishCowork(conversation.id); return;
-    }
     const answer = async () => {
       try {
         const run = this.coworkRuns.get(conversation.id);
@@ -2997,11 +2993,6 @@ export class GituServer {
         this.publishCowork(conversationId);
         return { ok: false, error: 'The team is stopping. Retry when it is idle.' };
       }
-      if (run.queue.length >= 50) {
-        store.setMessageStatus(conversationId, trigger.id, 'failed');
-        this.publishCowork(conversationId);
-        return { ok: false, error: 'The conversation queue is full. Please wait for the team.' };
-      }
       const queued = run.queue.find((message) => message.id === trigger.id);
       // Editing or retrying a message that is still queued updates that slot.
       if (queued) Object.assign(queued, trigger);
@@ -3012,7 +3003,7 @@ export class GituServer {
     // A user reply in a conversation with a blocked mission is guidance for it.
     for (const mission of store.missions(conversationId)) {
       if (mission.status !== 'blocked') continue;
-      store.updateMission(mission.id, { status: 'running', guidance: [...mission.guidance, trigger.text].slice(-10), nextWakeAt: new Date(Date.now() + 5_000).toISOString() });
+      store.updateMission(mission.id, { status: 'running', guidance: [...mission.guidance, trigger.text], nextWakeAt: new Date(Date.now() + 5_000).toISOString() });
       store.appendMessage(conversationId, { role: 'system', via: 'web', text: `Mission unblocked — your reply was added as guidance.` });
     }
     const abort = new AbortController();
@@ -4061,7 +4052,7 @@ export class GituServer {
       }
       if (widgetRuntime[2] === 'runtime' && method === 'POST') {
         try {
-          const body = await this.readBody(req, 150_000);
+          const body = await this.readBody(req);
           const op = body['op'];
           if (op === 'state') { this.sendJson(res, 200, { state: widget.data['state'] ?? {}, revision: widget.stateRevision ?? 0 }); return true; }
           if (op === 'saveState') {
@@ -4076,9 +4067,8 @@ export class GituServer {
             const url = new URL(source.url);
             if (body['params'] && typeof body['params'] === 'object') {
               const params = Object.entries(body['params'] as Record<string, unknown>);
-              if (params.length > 32) throw new Error('Too many data source parameters');
               for (const [key,value] of params) {
-                if (!/^[\w.-]{1,80}$/.test(key) || !['string','number','boolean'].includes(typeof value) || String(value).length > 2000) throw new Error('Invalid data source parameter');
+                if (!/^[\w.-]+$/.test(key) || !['string','number','boolean'].includes(typeof value)) throw new Error('Invalid data source parameter');
                 url.searchParams.set(key,String(value));
               }
             }
@@ -4256,7 +4246,7 @@ export class GituServer {
         }
         const artifactIds: string[] = [];
         try {
-          const files = Array.isArray(body['files']) ? (body['files'] as Record<string, unknown>[]).slice(0, 4) : [];
+          const files = Array.isArray(body['files']) ? (body['files'] as Record<string, unknown>[]) : [];
           for (const file of files) {
             if(typeof file['artifactId']==='string'){
               const scope=(this.companyScope.getStore()?.id?this.companyScope.getStore()!.id+':' : '')+'cowork:'+convId;
@@ -4716,7 +4706,7 @@ export class GituServer {
     stream.pipe(res);
   }
 
-  private async readBody(req: http.IncomingMessage, maxBytes = 1_000_000): Promise<Record<string, unknown>> {
+  private async readBody(req: http.IncomingMessage, maxBytes = Infinity): Promise<Record<string, unknown>> {
     const contentType = (req.headers['content-type'] ?? '').split(';')[0]!.trim().toLowerCase();
     if (contentType && contentType !== 'application/json') {
       throw new Error('Content-Type must be application/json');
@@ -5202,7 +5192,7 @@ export class GituServer {
         if (method === 'PUT') {
           if (!AppAuth.local(req) && !this.appAuth.secure(req)) { this.sendJson(res, 403, { error: 'Save LiveKit credentials locally or over HTTPS.' }); return; }
           await this.voiceWorker.close();
-          await this.voiceCalls.configure(await this.readBody(req, 10_000));
+          await this.voiceCalls.configure(await this.readBody(req));
           void this.voiceWorker.ensure(liveKitConfiguration()!).catch(() => undefined);
           this.sendJson(res, 202, { ...this.voiceCalls.status(), worker: this.voiceWorker.status() }); return;
         }
@@ -5215,7 +5205,7 @@ export class GituServer {
       }
       if (path === '/api/voice/worker' && method === 'GET') { this.sendJson(res, 200, this.voiceWorker.status()); return; }
       if (path === '/api/voice/calls' && method === 'POST') {
-        const body = await this.readBody(req, 4096);
+        const body = await this.readBody(req);
         const target: VoiceTarget = { kind: body.kind === 'cowork' ? 'cowork' : 'main' };
         for (const key of ['runId', 'conversationId', 'threadId', 'agentId', 'provider', 'model', 'projectPath'] as const) if (typeof body[key] === 'string' && body[key]) target[key] = body[key];
         const context = this.voiceContext(target);
@@ -5229,7 +5219,7 @@ export class GituServer {
         if (!call) { this.sendJson(res, 404, { error: 'The call ended. Start another call to continue speaking.' }); return; }
         if (method === 'DELETE' && !match[2] || method === 'POST' && match[2] === 'end') { await this.voiceCalls.end(call.id); this.sendJson(res, 200, { ok: true }); return; }
         if (method === 'POST' && match[2]) {
-          const body = await this.readBody(req, 8192), text = String(body.text ?? '').trim().slice(0, 4000), id = String(body.id ?? '');
+          const body = await this.readBody(req), text = String(body.text ?? '').trim(), id = String(body.id ?? '');
           if (!/^[\w-]{1,80}$/.test(id)) { this.sendJson(res, 400, { error: 'A voice turn ID is required.' }); return; }
           let reply = call.responses.get(id);
           if (!reply) {
@@ -5271,7 +5261,7 @@ export class GituServer {
       if ((path === '/api/auth/register' || path === '/api/auth/setup') && method === 'POST') {
         if (this.appAuth.configured) { this.sendJson(res, 409, { error: 'A workspace account is already registered.' }); return; }
         try {
-          const body = await this.readBody(req, 4096);
+          const body = await this.readBody(req);
           if (!this.appAuth.canRegister(req, body['registrationToken'])) { this.sendJson(res, 403, { error: 'Register locally, or use the private setup code over HTTPS.' }); return; }
           await this.appAuth.setup(body['password'], { name: body['name'], email: body['email'] });
           this.sendJson(res, 201, { ok: true });
@@ -5281,7 +5271,7 @@ export class GituServer {
       if (path === '/api/auth/login' && method === 'POST') {
         if (!AppAuth.local(req) && !this.appAuth.secure(req)) { this.sendJson(res, 403, { error: 'Remote password login requires HTTPS.' }); return; }
         try {
-          const body = await this.readBody(req, 4096);
+          const body = await this.readBody(req);
           const result = await this.appAuth.login(req, body['password'], body['email']);
           if (result !== 'ok') {
             if (result === 'limited') res.setHeader('Retry-After', '900');
@@ -5398,7 +5388,7 @@ export class GituServer {
         }
         if (path === '/api/connected-apps/configure' && method === 'POST') {
           if (!AppAuth.local(req) && (!this.appAuth.secure(req) || !this.appAuth.authenticated(req))) { this.sendJson(res, 403, { error: 'Integration setup requires an authenticated HTTPS session.' }); return; }
-          const body = await this.readBody(req, 8192);
+          const body = await this.readBody(req);
           await this.connectedApps.configure(String(body['apiKey'] ?? ''));
           this.sendJson(res, 200, { ok: true }); return;
         }
@@ -5416,7 +5406,7 @@ export class GituServer {
         }
         if (path === '/api/connected-apps/mail' && method === 'POST') {
           if (!AppAuth.local(req) && (!this.appAuth.secure(req) || !this.appAuth.authenticated(req))) { this.sendJson(res, 403, { error: 'Mailbox setup requires an authenticated HTTPS session.' }); return; }
-          const body = await this.readBody(req, 16384);
+          const body = await this.readBody(req);
           const store = this.cowork(), agentId = String(body['agentId'] ?? '');
           if (!store.getAgent(agentId)) { this.sendJson(res, 400, { error: 'Choose a teammate for this mailbox.' }); return; }
           try {
@@ -5429,7 +5419,7 @@ export class GituServer {
           }
         }
         if (path === '/api/connected-apps/mail/remove' && method === 'POST') {
-          const body = await this.readBody(req, 4096);
+          const body = await this.readBody(req);
           const accountId = String(body['accountId'] ?? '');
           const store = this.cowork();
           store.revokeAppAccountPermissions(accountId);
@@ -5437,7 +5427,7 @@ export class GituServer {
           catch (error) { this.sendJson(res, 400, { error: error instanceof Error ? error.message : 'Could not remove this mailbox.' }); return; }
         }
         if (path === '/api/connected-apps/connect' && method === 'POST') {
-          const body = await this.readBody(req, 4096);
+          const body = await this.readBody(req);
           const store = this.cowork(), agentId = String(body['agentId'] ?? ''), service = String(body['service'] ?? '');
           if (!store.getAgent(agentId)) { this.sendJson(res, 400, { error: 'Choose a teammate for this connection.' }); return; }
           const request = body['requestId'] ? store.getRequest(String(body['requestId'])) : undefined;
@@ -5457,7 +5447,7 @@ export class GituServer {
           this.sendJson(res, 200, link); return;
         }
         if (path === '/api/connected-apps/assign' && method === 'POST') {
-          const body = await this.readBody(req, 4096);
+          const body = await this.readBody(req);
           const store = this.cowork(), agentId = String(body['agentId'] ?? ''), accountId = String(body['accountId'] ?? '');
           if (!store.getAgent(agentId)) { this.sendJson(res, 400, { error: 'Choose a teammate for this connection.' }); return; }
           const account = (await this.appHub.accounts()).find(account => account.id === accountId && account.status === 'ACTIVE' && !account.disabled);
@@ -5466,7 +5456,7 @@ export class GituServer {
           this.sendJson(res, 200, { ok: true }); return;
         }
         if (path === '/api/connected-apps/disconnect' && method === 'POST') {
-          const body = await this.readBody(req, 4096);
+          const body = await this.readBody(req);
           const store = this.cowork(), agentId = String(body['agentId'] ?? '');
           if (!store.getAgent(agentId)) { this.sendJson(res, 400, { error: 'Choose a teammate for this connection.' }); return; }
           // Removing one teammate's access must preserve another teammate's account.
@@ -6057,7 +6047,7 @@ export class GituServer {
     }
 
     if (method === 'POST' && path === '/api/browser/result') {
-      const body = await this.readBody(req, 20_000_000);
+      const body = await this.readBody(req);
       const id = String(body['id'] ?? '');
       const pending = this.browserPending.get(id);
       if (!pending) {
@@ -6440,10 +6430,9 @@ export class GituServer {
     if (method === 'GET' && path === '/api/files') {
       try {
         const guard = ProjectGuard.detect(this.config.cwd);
-        const { readdirSync, statSync } = await import('node:fs');
+        const { readdirSync, lstatSync } = await import('node:fs');
         const files: string[] = [];
         const walk = (dir: string, depth: number): void => {
-          if (depth > 5 || files.length >= 300) return;
           let entries: string[];
           try {
             entries = readdirSync(dir);
@@ -6451,16 +6440,16 @@ export class GituServer {
             return;
           }
           for (const name of entries.sort()) {
-            if (files.length >= 300) return;
             if (guard.lock.ignorePaths.includes(name) || name.startsWith('.')) continue;
             const full = nodePath.join(dir, name);
             let st;
             try {
-              st = statSync(full);
+              st = lstatSync(full);
             } catch {
               continue;
             }
             const rel = guard.toRelative(full);
+            if (st.isSymbolicLink()) continue;
             if (st.isDirectory()) {
               walk(full, depth + 1);
             } else {
@@ -6513,7 +6502,7 @@ export class GituServer {
     }
 
     if (method === 'POST' && path === '/api/runs') {
-      const body = await this.readBody(req, 30_000_000);
+      const body = await this.readBody(req);
       const rawFiles = Array.isArray(body['files']) ? body['files'] : [];
       const credentialInput = credentialChatInput(typeof body['goal'] === 'string' ? body['goal'].trim() : '');
       const typedGoal = credentialInput.safeText;
@@ -6546,6 +6535,9 @@ export class GituServer {
       const autonomy = resolveAutonomy({
         ...loadWorkspaceSettings().autonomy,
         ...(typeof requestedAutonomy['persistent'] === 'boolean' ? { persistent: requestedAutonomy['persistent'] } : {}),
+        ...(Number.isFinite(Number(requestedAutonomy['maxTurns'])) && Number(requestedAutonomy['maxTurns']) > 0
+          ? { maxTurns: Number(requestedAutonomy['maxTurns']) }
+          : {}),
         ...(Number.isFinite(Number(requestedAutonomy['maxCostUsd'])) && Number(requestedAutonomy['maxCostUsd']) > 0
           ? { maxCostUsd: Number(requestedAutonomy['maxCostUsd']) }
           : {}),
@@ -6555,7 +6547,6 @@ export class GituServer {
         ? (body['images'] as Record<string, unknown>[])
             .map((im) => ({ name: String(im['name'] ?? 'image'), dataUrl: String(im['dataUrl'] ?? '') }))
             .filter((im) => im.dataUrl.startsWith('data:image/'))
-            .slice(0, 4)
         : undefined;
       let llm = this.config.llm;
       let resolvedInfo: { providerId: string; model: string; toolMode?: 'auto' | 'native' | 'structured_text' | 'text' } | undefined;
@@ -6610,7 +6601,7 @@ export class GituServer {
         this.sendJson(res, 400, { error: (err as Error).message });
         return;
       }
-      const modelImages = [...stored.images, ...(images ?? [])].slice(0, 4);
+      const modelImages = [...stored.images, ...(images ?? [])];
       this.saveRegistry();
       this.pushEvent(session, `user-msg ${goal}`);
       for (const file of stored.files) this.pushEvent(session, `file ${JSON.stringify(this.fileView(file))}`);
@@ -6714,7 +6705,6 @@ export class GituServer {
           return;
         }
         if (!session.taggedFolders.some((item) => (process.platform === 'win32' ? item.toLowerCase() : item) === key)) {
-          if (session.taggedFolders.length >= 8) throw new Error('A chat can have up to 8 tagged folders. Remove one before adding another.');
           session.taggedFolders = [...session.taggedFolders, folder];
           this.persistSession(session);
           session.gitu?.noteTaggedFolderChange(`${folder} is now readable with read_file, list_files, and search_files using absolute paths. Keep all edits inside the active writable project.`);
@@ -6777,7 +6767,7 @@ export class GituServer {
 
     if (path === '/api/mobile/files' && (method === 'GET' || method === 'PUT')) {
       try {
-        const body = method === 'PUT' ? await this.readBody(req, 1_100_000) : {};
+        const body = method === 'PUT' ? await this.readBody(req) : {};
         const requestedRoot = String(body['root'] ?? url.searchParams.get('root') ?? '').trim() || this.projectRoot() || this.config.cwd;
         const root = realpathSync(nodePath.resolve(requestedRoot));
         const knownRoots = [this.config.cwd, this.projectRoot(), ...[...this.sessions.values()].flatMap(session => [session.projectPath, session.worktreePath])]
@@ -6814,7 +6804,7 @@ export class GituServer {
             if (entry.name.startsWith('.')) return false;
             try { guard.assertReadable(nodePath.join(target, entry.name)); return !entry.isSymbolicLink(); } catch { return false; }
           }).sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name));
-          this.sendJson(res, 200, { root, path: relative, writable, entries: entries.slice(0, 500).map(entry => ({ name: entry.name, path: nodePath.relative(root, nodePath.join(target, entry.name)), directory: entry.isDirectory() })) });
+          this.sendJson(res, 200, { root, path: relative, writable, entries: entries.map(entry => ({ name: entry.name, path: nodePath.relative(root, nodePath.join(target, entry.name)), directory: entry.isDirectory() })) });
         } else {
           if (statSync(target).size > 1_000_000) throw new Error('Preview supports text files smaller than 1 MB.');
           const bytes = readFileSync(target);
@@ -7065,7 +7055,7 @@ export class GituServer {
       this.cancelModelRecovery(session, false);
       session.status = 'running';
       try {
-      const body = await this.readBody(req, 30_000_000);
+      const body = await this.readBody(req);
       const rawFiles = Array.isArray(body['files']) ? body['files'] : [];
       const credentialInput = credentialChatInput(typeof body['text'] === 'string' ? body['text'].trim() : '');
       const typedText = credentialInput.safeText;
@@ -7079,7 +7069,6 @@ export class GituServer {
         ? (body['images'] as Record<string, unknown>[])
             .map((im) => ({ name: String(im['name'] ?? 'image'), dataUrl: String(im['dataUrl'] ?? '') }))
             .filter((im) => im.dataUrl.startsWith('data:image/'))
-            .slice(0, 4)
         : undefined;
       let stored: ReturnType<GituServer['storeUserFiles']> = { files: [], attachments: [], images: [] };
       try {
@@ -7093,7 +7082,7 @@ export class GituServer {
         this.sendJson(res, 400, { error: (err as Error).message });
         return;
       }
-      const modelImages = [...stored.images, ...(images ?? [])].slice(0, 4);
+      const modelImages = [...stored.images, ...(images ?? [])];
       // Older sessions created before provider/model persistence have no
       // model identity. Let the current picker supply it once so they can be
       // resumed after an app upgrade instead of falling back to an unrelated
@@ -7326,6 +7315,7 @@ export class GituServer {
         goal: session.goal,
         mode: session.mode ?? 'standard',
         review: reviewSwitch ?? false,
+        effort: body['effort'] === 'low' || body['effort'] === 'medium' || body['effort'] === 'high' || body['effort'] === 'max' ? body['effort'] : undefined,
         projectPath: execRoot,
         resume: { taskId: session.taskId, message: text },
         conversationHistory,
@@ -7518,10 +7508,11 @@ export class GituServer {
       this.persistSession(session);
       return;
     }
-    const index = this.sharedIndex(root, ignorePaths);
-    this.pushEvent(session, 'activity indexing-project');
-    await index.refreshAsync(root, ignorePaths ?? []);
+    const index = llm.nativeTask ? undefined : this.sharedIndex(root, ignorePaths);
+    if (index && !index.isFresh()) this.pushEvent(session, 'activity indexing-project');
+    if (index) await index.ensureFreshAsync(root, ignorePaths ?? []);
     if (!isCurrentExecution()) return;
+    this.pushEvent(session, 'activity preparing-model');
     const catalog = await fetchModelCatalog();
     if (!isCurrentExecution()) return;
     const selectedModel = opts.model ?? session.model ?? '';
@@ -7875,7 +7866,7 @@ export class GituServer {
         return;
       }
       const llmError = err instanceof LlmError ? err : undefined;
-      const canFallback = llmError && ['quota_exhausted', 'billing', 'auth', 'access', 'provider_unavailable', 'rate_limit_temporary'].includes(llmError.details.kind);
+      const canFallback = !llm.nativeTask && llmError && ['quota_exhausted', 'billing', 'auth', 'access', 'provider_unavailable', 'rate_limit_temporary'].includes(llmError.details.kind);
       const activeProvider = session.activeProvider ?? session.provider;
       const activeModel = session.activeModel ?? session.model;
       const seen = new Set(session.fallbackHistory ?? []);
@@ -7925,7 +7916,7 @@ export class GituServer {
           }
         }
       }
-      const delay = providerRecoveryDelay(err, recoveryAttempt + 1, this.config.providerRecoveryDelayMs);
+      const delay = llm.nativeTask ? undefined : providerRecoveryDelay(err, recoveryAttempt + 1, this.config.providerRecoveryDelayMs);
       session.status = delay !== undefined ? 'waiting_for_model' : 'failed';
       session.error = (err as Error).message;
       if (delay !== undefined) {

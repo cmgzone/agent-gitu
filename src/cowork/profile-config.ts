@@ -3,19 +3,19 @@ export interface AgentRole { id: string; name: string; responsibilities: string 
 export interface AgentPersonality { traits: string[]; communicationStyle: string; proactivity: 'reactive' | 'suggest' }
 export interface AgentProfileSettings { description?: string; roles?: AgentRole[]; primaryRoleId?: string; personality?: AgentPersonality }
 
-const text = (value: unknown, max: number): string => typeof value === 'string' ? value.trim().slice(0, max) : '';
+const text = (value: unknown, _max: number): string => typeof value === 'string' ? value.trim() : '';
 
 export function sanitizeAgentProfile(input: AgentProfileSettings, previous?: AgentProfileSettings): AgentProfileSettings {
-  const roles = input.roles === undefined ? previous?.roles ?? [] : (Array.isArray(input.roles) ? input.roles : []).slice(0, 8).flatMap((role, index) => {
+  const roles = input.roles === undefined ? previous?.roles ?? [] : (Array.isArray(input.roles) ? input.roles : []).flatMap((role, index) => {
     if (!role || typeof role !== 'object') return [];
     const name = text(role.name, 60);
     if (!name) return [];
-    const id = /^[\w-]{1,80}$/.test(String(role.id ?? '')) ? String(role.id) : `role-${index + 1}`;
+    const id = /^[\w-]+$/.test(String(role.id ?? '')) ? String(role.id) : `role-${index + 1}`;
     return [{ id, name, responsibilities: text(role.responsibilities, 1000) }];
   }).filter((role, index, all) => all.findIndex(other => other.id === role.id) === index);
   const selected = input.primaryRoleId === undefined ? previous?.primaryRoleId : text(input.primaryRoleId, 80);
   const personality = input.personality === undefined ? previous?.personality : {
-    traits: [...new Set((Array.isArray(input.personality?.traits) ? input.personality.traits : []).map(trait => text(trait, 40)).filter(Boolean))].slice(0, 10),
+    traits: [...new Set((Array.isArray(input.personality?.traits) ? input.personality.traits : []).map(trait => text(trait, 40)).filter(Boolean))],
     communicationStyle: text(input.personality?.communicationStyle, 500),
     proactivity: input.personality?.proactivity === 'suggest' ? 'suggest' as const : 'reactive' as const,
   };

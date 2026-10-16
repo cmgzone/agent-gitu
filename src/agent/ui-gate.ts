@@ -40,7 +40,31 @@ function lastMatchingAction(data: TaskLedgerData, pred: (a: ActionRecord) => boo
  * True when this task visibly touches user-facing UI — via recorded design
  * notes, frontend-tagged plan steps, or actually changed UI files.
  */
-export function isUiTask(data: TaskLedgerData): boolean {
+export interface UiChangeDiff {
+  changedFiles: string[];
+  diffBody?: string;
+  diffBodyTruncated?: boolean;
+}
+
+export function isUiTask(data: TaskLedgerData, diff?: UiChangeDiff): boolean {
+  if (diff?.diffBody && !diff.diffBodyTruncated) {
+    const uiFiles = diff.changedFiles.filter((file) => UI_FILE_RE.test(file));
+    if (uiFiles.length) {
+      const chunks = diff.diffBody.split(/(?=^diff --git )/m);
+      const visibleChange = uiFiles.some((file) => {
+        const chunk = chunks.find((part) => part.split('\n', 1)[0]?.includes(` b/${file}`) || part.split('\n', 1)[0]?.includes(` b/${file}"`));
+        if (!chunk) return true;
+        const changed = chunk.split('\n').filter((line) => /^[+-]/.test(line) && !/^(?:---|\+\+\+)/.test(line)).map((line) => line.slice(1).trim()).filter(Boolean);
+        if (!changed.length) return true;
+        if (changed.every((line) => /^\/\/|^\/\*.*\*\/$|^<!--.*-->$/.test(line))) return false;
+        if (/\.php$/i.test(file) && /(?:^|\/)(?:api|controllers?|services?|models?)\//i.test(file) && !/(?:^|\/)(?:views?|templates?)\//i.test(file)) {
+          return /<[a-z][\s>]|<[a-z][\w-]*\s|<\?=|\b(?:render|view|template)\s*\(|\becho\s+['"]/i.test(chunk);
+        }
+        return true;
+      });
+      return visibleChange;
+    }
+  }
   if (data.planDesign?.frontend?.trim()) return true;
   if (data.plan.some((s) => s.area === 'frontend')) return true;
   if ((data.filesChanged ?? []).some((f) => UI_FILE_RE.test(f))) return true;
@@ -67,9 +91,9 @@ export interface UiVisualGate {
  */
 export function uiVisualGate(
   data: TaskLedgerData,
-  opts: { browserAvailable: boolean; /** Whether the model can actually see screenshots. */ visionAvailable?: boolean; workspaceFingerprint?: string },
+  opts: { browserAvailable: boolean; /** Whether the model can actually see screenshots. */ visionAvailable?: boolean; workspaceFingerprint?: string; diff?: UiChangeDiff },
 ): UiVisualGate {
-  if (!isUiTask(data)) return { required: false, verified: true };
+  if (!isUiTask(data, opts.diff)) return { required: false, verified: true };
   if (!opts.browserAvailable) return { required: true, verified: false, reason: 'the final UI needs browser verification, but no browser is available; enable the browser or report this dependency' };
   const visionAvailable = opts.visionAvailable ?? true;
   const screenshot = lastMatchingAction(data, isScreenshotAction);
@@ -79,7 +103,7 @@ export function uiVisualGate(
   const editAt = lastMatchingAction(data, (a) => FILE_EDIT_TOOLS.has(a.tool) && !a.observationOnly && a.status === 'success')?.createdAt;
   const lookIsCurrent = (look: ActionRecord): boolean => {
     if (opts.workspaceFingerprint && opts.workspaceFingerprint !== 'unknown-fp' && !opts.workspaceFingerprint.startsWith('partial-') && look.verifiedWorkspaceFingerprint) {
-      return look.verifiedWorkspaceFingerprint === opts.workspaceFingerprint;
+      return look.verifiedWorkspaceFingerprint === opts.workspaceFingerprint || look.verificationScope?.validatedFor === opts.workspaceFingerprint;
     }
     // Older ledgers have no browser fingerprint. Preserve their conservative
     // timestamp check rather than trusting the name of a shell command.

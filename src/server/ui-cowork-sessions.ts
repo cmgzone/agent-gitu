@@ -18,7 +18,7 @@ export const COWORK_SESSIONS_JS = String.raw`
     var modal=document.createElement('div');modal.className='modal cw-modal';
     modal.setAttribute('role','dialog');modal.setAttribute('aria-modal','true');modal.setAttribute('aria-labelledby','cwSessionTitle');
     modal.innerHTML='<div class="box"><div class="bar"><span id="cwSessionTitle">New session</span><span style="flex:1"></span><button class="btn ghost" id="cwSessionCancel">Cancel</button></div>'+
-      '<div class="cw-body"><label for="cwSessionName">Session name (optional)</label><input id="cwSessionName" type="text" maxlength="120" placeholder="Research for the next launch">'+
+      '<div class="cw-body"><label for="cwSessionName">Session name (optional)</label><input id="cwSessionName" type="text" placeholder="Research for the next launch">'+
       '<label>Teammates</label><div class="cw-skills" aria-label="Session teammates">'+cw.agents.map(function(agent){var selected=chosen.indexOf(agent.id)>=0;return '<button type="button" data-session-member="'+esc(agent.id)+'" class="'+(selected?'on':'')+'" aria-pressed="'+selected+'">'+esc(agent.name)+'</button>';}).join('')+'</div>'+
       '<div class="cw-note">Start a fresh conversation with one teammate or a group. Threads organize topics inside a session.</div></div>'+
       '<div class="cw-foot"><span style="flex:1"></span><button class="btn dark" id="cwSessionSave">Create session</button></div></div>';

@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, lstatSync, statSync } from 'node:fs';
 import path from 'node:path';
 import type { CodeIndex } from './code-index.js';
 import { recentChangeScores, recentChangeScoresAsync } from './change-signals.js';
@@ -46,8 +46,8 @@ export const DEFAULT_CONTEXT_BUDGET: ContextBudget = { maxFiles: 12, maxBytes: 4
  *  grounding sample, not a repo dump — anything beyond ~48K chars (~12K
  *  tokens) costs more per turn than it informs, and the agent can always
  *  read_file/search_files for more. */
-export const MAX_CONTEXT_BUDGET_BYTES = 48_000;
-export const MAX_CONTEXT_BUDGET_FILES = 12;
+export const MAX_CONTEXT_BUDGET_BYTES = Infinity;
+export const MAX_CONTEXT_BUDGET_FILES = Infinity;
 
 /**
  * Convert a model's context window into a safe source-context budget. More
@@ -144,7 +144,6 @@ export class ContextEngine {
       }
     } else {
       const walk = (dir: string, depth: number): void => {
-        if (depth > 8 || files.length > 2000) return;
         let entries: string[];
         try {
           entries = readdirSync(dir);
@@ -158,17 +157,15 @@ export class ContextEngine {
           const full = path.join(dir, name);
           let st;
           try {
-            st = statSync(full);
+            st = lstatSync(full);
           } catch {
             continue;
           }
+          if (st.isSymbolicLink()) continue;
           if (st.isDirectory()) {
             if (name.startsWith('.') && name !== '.github') continue;
             walk(full, depth + 1);
-          } else if (st.size < 200 * 1024) {
-            // Per-file cap enforcement: one large directory must not blow
-            // past the 2000-file ceiling by its entire contents.
-            if (files.length >= 2000) return;
+          } else if (st.isFile()) {
             const rel = this.guard.toRelative(full);
             const role = classifyRole(rel);
             if (role === 'artifact' || role === 'unknown') continue;
@@ -255,7 +252,7 @@ export class ContextEngine {
     extraTexts: string[] = [],
     embedder?: Embedder,
   ): Promise<{ pack: ContextPack; semantic: boolean }> {
-    if (this.index) await this.index.refreshAsync(this.guard.lock.repoRoot, this.guard.lock.ignorePaths, true);
+    if (this.index) await this.index.ensureFreshAsync(this.guard.lock.repoRoot, this.guard.lock.ignorePaths);
     const changes = await recentChangeScoresAsync(this.guard.lock.repoRoot);
     const pack = this.buildPack(goal, budget, extraTexts, false, changes);
     if (!embedder || !this.index) return { pack, semantic: false };
@@ -428,7 +425,7 @@ export class ContextEngine {
 
   renderPackWithContent(pack: ContextPack): string {
     const maxTotal = Math.min(pack.budget.maxBytes || DEFAULT_CONTEXT_BUDGET.maxBytes, MAX_CONTEXT_BUDGET_BYTES);
-    const perFile = Math.max(4_000, Math.min(8_000, Math.floor(maxTotal / Math.max(1, pack.budget.maxFiles))));
+    const perFile = Math.floor(maxTotal / Math.max(1, pack.budget.maxFiles));
     const parts: string[] = [this.renderPack(pack)];
 
     const targets: FileRef[] = [...pack.primaryFiles, ...pack.testFiles];

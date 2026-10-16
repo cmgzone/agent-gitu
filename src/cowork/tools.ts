@@ -172,7 +172,7 @@ export interface CoworkToolDoc {
 export const COWORK_TOOLS: CoworkToolDoc[] = [
   {name:'company_workflow',gate:undefined,doc:'Company workflows: list/read id; authorized designers save input={id?,revision?,title,inputs:typed schema,parallelism,steps:[{id,name,type:mission|approval,agentId?,goal,criteria,dependsOn,bindings:{field:{source:input|step,stepId?,field?}},inputSchema,outputSchema,tools,skills,connectionIds,accountIds,maxSessions:1..10,maxAttempts:1..3,timeoutMinutes:1..1440}]}. validate/simulate id+version with input and samples by step ID; simulation never executes work. Director approves versions separately. Authorized leaders start id+version+input; run id reads live missions and handoffs. Never claim simulation as live completion or use workflows to enlarge grants.'},
   { name: 'company_handbook', gate: undefined, doc: 'Company handbook: action=list for approved versions and pending proposal IDs; read with id returns director-approved guidance only. Propose input={id?,revision?,title?,kind:guideline|suggestion,content}; only the director reviews versions. Guidance and suggestions never grant tools, accounts, budgets or policy authority.' },
-  { name: 'company_onboarding', gate: undefined, doc: 'Company onboarding: list/read with agentId; your own record is readable. Authorized reporting leaders may orient with revision and input={tools:[],connectionIds:[],accountIds:[],skills:[]}; schedule an onboarding meeting; check tools after a completed meeting with an employee contribution; assess input={goal,criteria,maxTurns:1..5}; review input={approved,notes,evidenceMessageIds} using saved assessment messages. Pass current revision at each change. Only the director activates after reviewed evidence; onboarding never expands resource grants.' },
+  { name: 'company_onboarding', gate: undefined, doc: 'Company onboarding: list/read with agentId; your own record is readable. Authorized reporting leaders may orient with revision and input={tools:[],connectionIds:[],accountIds:[],skills:[]}; schedule an onboarding meeting; check tools after a completed meeting with an employee contribution; assess input={goal,criteria,maxTurns?:positive session count}; review input={approved,notes,evidenceMessageIds} using saved assessment messages. Pass current revision at each change. Only the director activates after reviewed evidence; onboarding never expands resource grants.' },
   { name: 'company_organization', gate: undefined, doc: 'Read company roles, departments, reporting relationships and your authority. action=read; authorized leaders may save_department with department={name,purpose,id?}, or update_member with agentId, member={jobTitle,responsibilities,departmentId,managerId}, revision from read. Only the director changes roles, grants or activation. Never infer authority from a job title.' },
   { name: 'company_boardroom', gate: undefined, doc: 'Company meetings: action=list/read with meetingId. Authorized organizers create using input={title,type,participants:[{agentId}],agenda:[text],startAt?,durationMinutes?,maxTurns?,budgetUsd?}; chair starts/grants/moderates/finishes. Employees raise_hand with input={agendaId,reason,priority?,evidence?,objectionTo?}; contribute only with input={turnId,text,evidence?,objectionTo?} matching the current speaking lease. Chair may moderate input={requestId,response:defer|reject|written,reason}; employee written input={requestId,text}. Propose input={agendaId,title,rationale,requiresDirector?,actionId?}; chair decide input={decisionId,approved}, subject to director approval. Read actual IDs first. Meetings preserve work and cannot grant tools, budgets or external action approval.' },
   {
@@ -699,7 +699,7 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
           const goal = String(params['goal'] ?? '').trim();
           const existing = scope.store.missions().find((m) => m.agentId === target.id && m.goal === goal && ['running', 'blocked'].includes(m.status));
           if (existing) return { ok: true, output: JSON.stringify(existing) };
-          const cap = ctx.missionSessionLimit?.() ?? 12,
+          const cap = ctx.missionSessionLimit?.() ?? Number.MAX_SAFE_INTEGER,
             requested = Number(params['maxTurns'] ?? cap);
           if (!Number.isInteger(requested) || requested < 1) throw new Error('Choose a positive mission session count.');
           const mission = scope.store.createMission({
@@ -760,8 +760,8 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
         const query = String(params['query'] ?? '')
           .trim()
           .toLowerCase();
-        const requestedLimit = Number(params['limit'] ?? 20);
-        const limit = Number.isFinite(requestedLimit) ? Math.min(50, Math.max(1, Math.floor(requestedLimit))) : 20;
+        const requestedLimit = Number(params['limit'] ?? Infinity);
+        const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.floor(requestedLimit)) : Infinity;
         const matches = scope.store
           .messages(scope.conversationId, 0, scope.threadId ?? null)
           .filter((message) => !query || message.text.toLowerCase().includes(query))
@@ -771,8 +771,7 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
           output:
             matches
               .map((message) => `${message.ts} ${message.role === 'agent' ? message.agentName : message.role}: ${message.text}`)
-              .join('\n\n')
-              .slice(-16_000) || 'No matching conversation history.',
+              .join('\n\n') || 'No matching conversation history.',
         };
       }
       case 'search_history': {
@@ -781,8 +780,8 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
         if (!scope) return { ok: false, output: 'search_history requires a Cowork session.' };
         const query = String(params['query'] ?? '').trim();
         if (!query) return { ok: true, output: 'search_history: provide a query — terms are matched across every conversation, related phrasing included.' };
-        const requestedLimit = Number(params['limit'] ?? 12);
-        const limit = Number.isFinite(requestedLimit) ? Math.min(50, Math.max(1, Math.floor(requestedLimit))) : 12;
+        const requestedLimit = Number(params['limit'] ?? Infinity);
+        const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.floor(requestedLimit)) : Infinity;
         const hits = scope.recall ? await scope.recall.search(query, { limit }) : scope.store.searchMessages(query, { limit }).map((hit) => ({ ...hit, score: 0 }));
         if (hits.length === 0) return { ok: true, output: `No past messages match "${query.slice(0, 80)}".` };
         return {
@@ -864,7 +863,7 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
         const args = ctx.externalArguments?.(tool, params) ?? ((params['args'] ?? {}) as Record<string, unknown>);
         try {
           const output = await manager.call(qualified, args);
-          return { ok: true, output: String(output ?? '(empty result)').slice(0, 8_000) };
+          return { ok: true, output: String(output ?? '(empty result)') };
         } catch (err) {
           return { ok: false, output: `mcp_call failed: ${(err as Error).message}` };
         }
@@ -938,7 +937,7 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
         if (!scope?.conversationId || !scope.computerFor || scope.agent.useHostComputer)
           return { ok: false, output: 'A desktop handoff requires a private computer and conversation.' };
         const reason = String(params['reason'] ?? '').trim();
-        if (!reason || reason.length > 500) return { ok: false, output: 'Describe the human step in 1–500 characters without credentials.' };
+        if (!reason) return { ok: false, output: 'Describe the human step without credentials.' };
         const computer = scope.computerFor(scope.agent.id);
         if (computer.status().state === 'stopped') await computer.refreshStatus();
         if (computer.status().state === 'sleeping') return { ok: false, output: 'The desktop is sleeping. Wait for the user to wake it before requesting a handoff.' };
@@ -1008,7 +1007,7 @@ function coworkUserProfile(scope: CoworkToolScope | undefined, params: Record<st
       const merged = { ...current };
       for (const key of ['name', 'about', 'preferences'] as const) {
         const value = params[key];
-        if (typeof value === 'string' && value.trim()) merged[key] = value.trim().slice(0, 2_000);
+        if (typeof value === 'string' && value.trim()) merged[key] = value.trim();
       }
       const saved = store.saveUserProfile(merged);
       return { ok: true, output: `Saved. The team context now reads:\n${JSON.stringify(saved, null, 2)}` };
@@ -1027,7 +1026,6 @@ function coworkScheduleFollowup(scope: CoworkToolScope | undefined, params: Reco
     const note = String(params['note'] ?? '').trim();
     if (!note) return { ok: false, output: 'schedule_followup requires a "note" describing what to do when you wake up.' };
     if (!Number.isFinite(minutes) || minutes <= 0) return { ok: false, output: 'schedule_followup requires "inMinutes" — a positive number of minutes.' };
-    if (minutes > 10_080) return { ok: false, output: 'schedule_followup: maximum is 7 days (10080 minutes).' };
     const dueAt = new Date(Date.now() + minutes * 60_000).toISOString();
     store.addFollowUp({ conversationId: scope.conversationId ?? '', agentId: agent.id, note, dueAt });
     return { ok: true, output: `Follow-up scheduled. You will be woken in ${minutes} minute(s) with the note: "${note}". Tell the user about this commitment in your reply.` };
@@ -1338,7 +1336,6 @@ async function connectedAppTool(apps: ConnectedAppsProvider | undefined, params:
     if (!accounts.some((account) => account.id === accountId))
       return { ok: false, output: 'This account is not assigned to you or is inactive. Recommend the app, or choose an active accountId from your connected_apps list.' };
     const detail = JSON.stringify({ service, accountId, tool, args });
-    if (detail.length > 16000) return { ok: false, output: 'This action is too large for review. Split it into smaller actions.' };
     if (scope.agent.companyId || scope.store.appActionAllowed(scope.agent.id, { service, accountId, tool })) {
       return { ok: true, output: connectedAppOutput(await apps.execute(service, tool, args as Record<string, unknown>, accountId)) };
     }

@@ -13,7 +13,7 @@ export const COWORK_COMPUTER_IMAGE = 'agent-gitu-cowork:8';
 const IMAGE = COWORK_COMPUTER_IMAGE;
 const ASSETS = fileURLToPath(new URL('../../assets/cowork-computer/', import.meta.url));
 // A 20 MB binary attachment becomes about 27 MB when carried as base64 JSON.
-export const MAX_COMPUTER_MESSAGE_BYTES = 28_000_000;
+export const MAX_COMPUTER_MESSAGE_BYTES = Infinity;
 export type ComputerExec = ((args: string[], input?: string, signal?: AbortSignal, timeoutMs?: number) => Promise<string>) & {binary?:ComputerBinary};
 
 export interface CoworkSharedFile {

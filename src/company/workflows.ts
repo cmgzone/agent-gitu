@@ -5,21 +5,21 @@ import type { CompanyActor } from './management-models.js';
 import type { CompanyWorkflow, CompanyWorkflowRun, WorkflowVersion, WorkflowStep, WorkflowSchema, WorkflowIssue, WorkflowSimulation, WorkflowStepRun } from './workflow-models.js';
 const now = () => new Date().toISOString();
 const digest = (v: unknown) => createHash('sha256').update(canonicalAction(v)).digest('hex');
-function text(value: unknown, max = 2000): string {
-  if (typeof value !== 'string' || !value.trim() || value.length > max) throw new Error('Provide nonempty text of at most ' + max + ' characters.');
+function text(value: unknown, _max = Infinity): string {
+  if (typeof value !== 'string' || !value.trim()) throw new Error('Provide nonempty text.');
   return value.trim();
 }
 function strings(v: unknown): string[] {
-  if (!Array.isArray(v) || v.length > 40 || v.some((x) => typeof x !== 'string' || !x.trim() || x.length > 500)) throw new Error('Provide a bounded string list.');
+  if (!Array.isArray(v) || v.some((x) => typeof x !== 'string' || !x.trim())) throw new Error('Provide a nonempty string list.');
   return [...new Set(v.map((x) => x.trim()))];
 }
 function schema(s: WorkflowSchema, depth = 0): WorkflowSchema {
-  if (!s || depth > 5 || !['object', 'array', 'string', 'number', 'boolean'].includes(s.type))
-    throw new Error('Use an object, array, string, number or boolean data schema, at most five levels deep.');
+  if (!s || !['object', 'array', 'string', 'number', 'boolean'].includes(s.type))
+    throw new Error('Use an object, array, string, number or boolean data schema.');
   if (s.type === 'object') {
     const properties = s.properties ?? {};
-    if (Object.keys(properties).length > 30 || Object.keys(properties).some((k) => !/^[-\w]{1,80}$/.test(k) || ['__proto__', 'constructor', 'prototype'].includes(k)))
-      throw new Error('Use up to 30 safe schema fields.');
+    if (Object.keys(properties).some((k) => !/^[-\w]+$/.test(k) || ['__proto__', 'constructor', 'prototype'].includes(k)))
+      throw new Error('Use safe schema field names.');
     const required = strings(s.required ?? []);
     if (required.some((k) => !Object.hasOwn(properties, k))) throw new Error('Required fields must exist in the schema.');
     return { type: 'object', properties: Object.fromEntries(Object.entries(properties).map(([k, v]) => [k, schema(v, depth + 1)])), required };
@@ -42,7 +42,7 @@ export function workflowDataErrors(s: WorkflowSchema, v: unknown, path = 'value'
     ];
   }
   if (s.type === 'array') {
-    if (!Array.isArray(v) || v.length > 100) return [path + ' must be an array with at most 100 items'];
+    if (!Array.isArray(v)) return [path + ' must be an array'];
     return v.flatMap((item, i) => workflowDataErrors(s.items!, item, path + '[' + i + ']'));
   }
   return typeof v !== s.type || (s.type === 'number' && !Number.isFinite(v)) ? [path + ' must be ' + s.type] : [];
@@ -90,7 +90,7 @@ export class CompanyWorkflows {
   list(actor: CompanyActor): CompanyWorkflow[] {
     return this.store.db
       .prepare(
-        "SELECT json_object('id',id,'companyId',company_id,'revision',json_extract(data,'$.revision'),'title',json_extract(data,'$.title'),'versions',json_array(json_extract(data,'$.versions[#-1]')),'updatedAt',json_extract(data,'$.updatedAt')) AS metadata FROM records WHERE kind='workflow' AND company_id=? ORDER BY rowid DESC LIMIT 100",
+        "SELECT json_object('id',id,'companyId',company_id,'revision',json_extract(data,'$.revision'),'title',json_extract(data,'$.title'),'versions',json_array(json_extract(data,'$.versions[#-1]')),'updatedAt',json_extract(data,'$.updatedAt')) AS metadata FROM records WHERE kind='workflow' AND company_id=? ORDER BY rowid DESC",
       )
       .all(this.companyId)
       .map((row) => JSON.parse(String(row['metadata'])) as CompanyWorkflow)
@@ -119,7 +119,7 @@ export class CompanyWorkflows {
   }
   runs(actor: CompanyActor): CompanyWorkflowRun[] {
     return this.store.db
-      .prepare("SELECT data FROM records WHERE kind='workflow-run' AND company_id=? ORDER BY rowid DESC LIMIT 100")
+      .prepare("SELECT data FROM records WHERE kind='workflow-run' AND company_id=? ORDER BY rowid DESC")
       .all(this.companyId)
       .map((row) => JSON.parse(String(row['data'])) as CompanyWorkflowRun)
       .flatMap((r) => {
@@ -142,11 +142,11 @@ export class CompanyWorkflows {
     if (!input || typeof input !== 'object') throw new Error('Provide workflow settings and steps.');
     const before = input.id ? this.read(actor, input.id) : undefined;
     if (before && before.revision !== input.revision) throw new Error('Workflow changed. Refresh before saving a new version.');
-    if (!Array.isArray(input.steps) || !input.steps.length || input.steps.length > 40 || !Number.isInteger(input.parallelism) || input.parallelism < 1 || input.parallelism > 8)
-      throw new Error('Use 1–40 steps and 1–8 parallel tasks.');
+    if (!Array.isArray(input.steps) || !input.steps.length || !Number.isSafeInteger(input.parallelism) || input.parallelism < 1)
+      throw new Error('Provide steps and a positive number of parallel tasks.');
     const steps = input.steps.map((s) => {
-      if (!/^[-\w]{1,80}$/.test(s.id) || !['mission', 'approval'].includes(s.type)) throw new Error('Use stable step IDs and mission/approval types.');
-      if (s.criteria.length > 12 || s.inputSchema.type !== 'object') throw new Error('Use object step inputs and at most 12 completion criteria.');
+      if (!/^[-\w]+$/.test(s.id) || !['mission', 'approval'].includes(s.type)) throw new Error('Use stable step IDs and mission/approval types.');
+      if (s.inputSchema.type !== 'object') throw new Error('Use object step inputs.');
       if (
         s.condition &&
         ((s.condition.equals !== null && !['string', 'number', 'boolean'].includes(typeof s.condition.equals)) ||
@@ -154,28 +154,25 @@ export class CompanyWorkflows {
       )
         throw new Error('Conditions compare a field to a finite primitive value.');
       if (
-        !Number.isInteger(s.maxSessions) ||
+        !Number.isSafeInteger(s.maxSessions) ||
         s.maxSessions < 1 ||
-        s.maxSessions > 10 ||
-        !Number.isInteger(s.maxAttempts) ||
+        !Number.isSafeInteger(s.maxAttempts) ||
         s.maxAttempts < 1 ||
-        s.maxAttempts > 3 ||
         !Number.isFinite(s.timeoutMinutes) ||
-        s.timeoutMinutes < 1 ||
-        s.timeoutMinutes > 1440
+        s.timeoutMinutes < 1
       )
-        throw new Error('Use bounded sessions, 1–3 attempts and a timeout of 1–1440 minutes.');
+        throw new Error('Use positive session, attempt and timeout settings.');
       if (
         !s.bindings ||
         typeof s.bindings !== 'object' ||
         Array.isArray(s.bindings) ||
         Object.entries(s.bindings).some(
           ([k, b]) =>
-            !/^[-\w]{1,80}$/.test(k) ||
+            !/^[-\w]+$/.test(k) ||
             ['__proto__', 'constructor', 'prototype'].includes(k) ||
             !b ||
             !['input', 'step'].includes(b.source) ||
-            (b.field !== undefined && (!/^[-\w]{1,80}$/.test(b.field) || ['__proto__', 'constructor', 'prototype'].includes(b.field))),
+            (b.field !== undefined && (!/^[-\w]+$/.test(b.field) || ['__proto__', 'constructor', 'prototype'].includes(b.field))),
         )
       )
         throw new Error('Use safe input/step field bindings.');
@@ -200,7 +197,7 @@ export class CompanyWorkflows {
         timeoutMinutes: s.timeoutMinutes,
         position:
           s.position && Number.isFinite(s.position.x) && Number.isFinite(s.position.y)
-            ? { x: Math.max(0, Math.min(5000, s.position.x)), y: Math.max(0, Math.min(5000, s.position.y)) }
+            ? { x: s.position.x, y: s.position.y }
             : undefined,
       } as WorkflowStep;
     });
@@ -211,7 +208,6 @@ export class CompanyWorkflows {
     return this.organization.audited(actor, 'design-workflows', 'workflow.version-created', id, () => {
       const current = before ? this.store.read<CompanyWorkflow>('workflow', id) : undefined;
       if (current && current.revision !== input.revision) throw new Error('Workflow revision changed.');
-      if ((current?.versions.length ?? 0) >= 50 || (!current && this.store.list('workflow', this.companyId).length >= 100)) throw new Error('Workflow storage limit reached.');
       const w = current ?? { id, companyId: this.companyId, title, revision: 0, versions: [], updatedAt: now() };
       w.title = title;
       w.versions.push({ version: w.versions.length + 1, state: 'draft', steps, inputs, parallelism: input.parallelism, createdBy: actor, createdAt: now() });
@@ -363,9 +359,6 @@ export class CompanyWorkflows {
       createdAt: now(),
     };
     this.organization.audited(actor, undefined, 'workflow.simulated', id, () => {
-      const older = this.store.list<WorkflowSimulation>('workflow-simulation', this.companyId).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-      for (const old of older.slice(0, Math.max(0, older.length - 99)))
-        this.store.db.prepare('DELETE FROM records WHERE kind=? AND id=? AND company_id=?').run('workflow-simulation', old.id, this.companyId);
       this.store.saveResource('workflow-simulation', simulation.id, this.companyId, simulation);
     });
     return simulation;
@@ -374,7 +367,7 @@ export class CompanyWorkflows {
     const v = this.version(actor, id, version);
     this.organization.require(actor, 'assign-work');
     if (requestId) {
-      if (!/^[-\w]{1,100}$/.test(requestId)) throw new Error('Use a bounded workflow request ID.');
+      if (!/^[-\w]+$/.test(requestId)) throw new Error('Use a safe workflow request ID.');
       const prior = this.store.list<CompanyWorkflowRun>('workflow-run', this.companyId).find((r) => r.requestId === requestId);
       if (prior) {
         if (
@@ -390,7 +383,6 @@ export class CompanyWorkflows {
     if (v.state !== 'approved') throw new Error('Approve this workflow version before live execution.');
     const issues = this.validate(v, input).filter((i) => i.severity === 'error');
     if (issues.length) throw new Error(issues.map((i) => i.message).join('; '));
-    if (canonicalAction(input).length > 50000) throw new Error('Workflow input is too large. Use a scoped artifact reference.');
     if (actor.kind === 'agent')
       for (const s of v.steps.filter((s) => s.type === 'mission')) {
         const denied = this.organization.authorizeTool(actor.agentId, 'mission_manage', { action: 'create', agentId: s.agentId });
@@ -412,7 +404,6 @@ export class CompanyWorkflows {
       updatedAt: now(),
     };
     return this.organization.audited(actor, 'assign-work', 'workflow.run-started', r.id, () => {
-      if (this.pendingRuns().length >= 100) throw new Error('Finish or cancel pending workflow runs.');
       this.store.saveResource('workflow-run', r.id, this.companyId, r);
       return r;
     });
@@ -631,11 +622,6 @@ export class CompanyWorkflows {
             cowork.saveConversation({ kind: 'dm', memberIds: [definition.agentId!] });
         const goal =
           definition.goal + '\nWorkflow inputs: ' + JSON.stringify(supplied) + '\nReturn the final result matching this schema: ' + JSON.stringify(definition.outputSchema);
-        if (goal.length > 2000) {
-          step.state = 'blocked';
-          step.error = 'The task briefing exceeds the existing mission limit. Use a scoped artifact reference for large inputs.';
-          continue;
-        }
         this.organization.audited({ kind: 'director' }, undefined, 'workflow.step-dispatched', r.id, () => {
           const latest = this.store.read<CompanyWorkflowRun>('workflow-run', r.id)!;
           if (latest.revision !== initial.revision) throw new Error('Workflow admission changed.');

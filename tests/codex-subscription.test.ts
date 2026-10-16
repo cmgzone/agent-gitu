@@ -1,15 +1,18 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CodexSubscriptionClient, codexExecutable } from '../src/llm/codex-subscription.js';
-import { PROVIDERS, resolveImageSupport, resolveLlm } from '../src/llm/providers.js';
+import { CodexSubscriptionClient, codexExecutable, subscriptionModelContextWindow } from '../src/llm/codex-subscription.js';
+import { PROVIDERS, modelMetadataFor, resolveImageSupport, resolveLlm } from '../src/llm/providers.js';
+import { compactHistory, compactionPolicyForWindow } from '../src/agent/compaction.js';
+import type { LlmMessage } from '../src/llm/llm.js';
 
 describe('ChatGPT subscription provider', () => {
   const originalCodexPath = process.env['HERMES_CODEX_PATH'];
   const originalGituCodexPath = process.env['GITU_CODEX_PATH'];
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     if (originalCodexPath === undefined) delete process.env['HERMES_CODEX_PATH'];
     else process.env['HERMES_CODEX_PATH'] = originalCodexPath;
     if (originalGituCodexPath === undefined) delete process.env['GITU_CODEX_PATH'];
@@ -51,6 +54,28 @@ describe('ChatGPT subscription provider', () => {
     expect(resolved.baseUrl).toBe('codex://chatgpt');
     expect(resolved.model).toBe('gpt-5.6-terra');
     expect(resolved.client).toBeInstanceOf(CodexSubscriptionClient);
+    expect(resolved.toolMode).toBe('native');
+  });
+
+  it('uses the subscription runtime window for compaction even without a catalog entry', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'gitu-model-metadata-'));
+    vi.stubEnv('CODEX_HOME', dir);
+    try {
+      await writeFile(join(dir, 'models_cache.json'), JSON.stringify({ models: [{ slug: 'test-subscription-model', context_window: 272000 }] }));
+      expect(subscriptionModelContextWindow('test-subscription-model')).toBe(272000);
+      expect(modelMetadataFor(undefined, 'chatgpt', 'test-subscription-model')).toMatchObject({ contextTokens: 272000, source: 'codex-runtime' });
+      const history: LlmMessage[] = [{ role: 'system', content: 's'.repeat(46_000) }, ...Array.from({ length: 10 }, (_, index): LlmMessage => ({ role: 'user', content: `Read result ${index}: ` + 'source\n'.repeat(3_000) }))];
+      const meta = modelMetadataFor(undefined, 'chatgpt', 'test-subscription-model');
+      expect(compactHistory(history, undefined, compactionPolicyForWindow(meta?.contextTokens))).toBe(false);
+      expect(history).toHaveLength(11);
+      expect(compactHistory(history, undefined, compactionPolicyForWindow())).toBe(true);
+      expect(modelMetadataFor(undefined, 'openrouter', 'test-subscription-model')).toBeUndefined();
+      expect(subscriptionModelContextWindow('unknown')).toBeUndefined();
+      await writeFile(join(dir, 'models_cache.json'), '{malformed');
+      expect(subscriptionModelContextWindow('test-subscription-model')).toBeUndefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it('ignores an invalid runtime override instead of failing later with spawn EFTYPE', async () => {

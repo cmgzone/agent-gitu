@@ -27,6 +27,7 @@ import type { ToolResult } from '../types.js';
 import { summarizeCheckpoint, type CheckpointAction } from './checkpoint.js';
 import { agentProfileInstructions } from './profile-config.js';
 import { RICH_OUTPUT_GUIDANCE } from '../agent/output-style.js';
+import { runNativeCoworkTurn } from './codex-native.js';
 import { AGENT_CREATION_GUIDANCE, agentCreationKind } from './live-messages.js';
 
 /**
@@ -40,14 +41,14 @@ import { AGENT_CREATION_GUIDANCE, agentCreationKind } from './live-messages.js';
  * Mention chains stay bounded so chatty teammates cannot loop forever.
  */
 
-const MAX_AGENT_MESSAGES_PER_TRIGGER = 5;
+const MAX_AGENT_MESSAGES_PER_TRIGGER = Infinity;
 /**
  * Workers per parallel batch. Every worker holds its own provider stream and
  * tool session (often including its own virtual computer), so a large team
  * finishes in waves instead of opening all of those sessions at once.
  */
-const MAX_PARALLEL_WORKERS = 4;
-const MAX_TOOL_ROUNDS_PER_TURN = 24;
+const MAX_PARALLEL_WORKERS = Infinity;
+const MAX_TOOL_ROUNDS_PER_TURN = Infinity;
 /** Compaction checkpoint size for the normal cowork tool loop; there is no
  * total segment ceiling. The user can still cancel through the turn signal. */
 const TOOL_ROUNDS_PER_CHAT_SEGMENT = 24;
@@ -633,6 +634,20 @@ async function agentTurn(input: {
   const initialTodos = new Map((deps.store?.todos(conversation.id) ?? []).map(todo => [todo.id, JSON.stringify(todo)]));
 
   try {
+  if (client.nativeTask) {
+    ctx ??= deps.toolContext(agent);
+    const native = await runNativeCoworkTurn({ client, ctx, agent, conversationId: conversation.id, threadId, messages,
+      tools: coworkNativeTools(agent, Boolean(deps.browser)), perms: { allowShell: agent.allowShell, allowWrites: agent.allowWrites, allowConfig: agent.allowConfig, chief: agent.chiefOfStaff, browser: Boolean(deps.browser) }, scope, store: deps.store, signal: deps.signal,
+      takeSteering: () => (deps.takeSteering?.(agent.id, threadId) ?? []).map(message => message.text),
+      onProgress: (text, tool, ok, detail, nativeReasoning) => { reasoning = nativeReasoning ?? ''; progress(text, tool, ok, undefined, detail, tool ? 'working' : nativeReasoning ? 'thinking' : 'responding'); },
+      onTool: (tool, params, result) => { usedTools.push({ name: tool, ok: result.ok }); recordToolResult(scope, tool, result, lastPublicUpdate); },
+    });
+    reply = native.text;
+    const saved = append({ role: 'agent', agentId: agent.id, agentName: agent.name, text: reply, via: 'web', tools: usedTools.length ? usedTools : undefined, artifactIds: artifactIds.length ? artifactIds : undefined });
+    await deps.onMessage?.(saved);
+    if (seenInbox.size) deps.store?.markInboxDelivered([...seenInbox]);
+    return;
+  }
   for (let segmentRounds = 0; ; ) {
     deps.signal?.throwIfAborted();
     compactHistory(messages, undefined, { keepRecent: 8, snapshot: taskContext + latestWorkCheckpoint });
@@ -1253,7 +1268,16 @@ export async function runMissionSession(input: {
       deps.onProgress?.({ agentId: agent.id, agentName: agent.name, text: visible || lastPublicUpdate, reasoning, tool, toolOk, detail, webUrl, mcpServer, phase, appService });
     };
     try {
-    for (let round = 0; round <= MAX_TOOL_ROUNDS_PER_TURN; round++) {
+    if (client.nativeTask) {
+      ctx ??= deps.toolContext(agent);
+      const native = await runNativeCoworkTurn({ client, ctx, agent, conversationId: mission.conversationId, purpose: 'mission:' + mission.id, messages,
+        tools: coworkNativeTools(agent, Boolean(deps.browser)), perms: { allowShell: agent.allowShell, allowWrites: agent.allowWrites, allowConfig: agent.allowConfig, chief: agent.chiefOfStaff, browser: Boolean(deps.browser) }, scope, store: deps.store, signal: deps.signal,
+        onProgress: (text, tool, ok, detail, nativeReasoning) => { reasoning = nativeReasoning ?? ''; publicProgress(text, tool, ok, detail); },
+        onTool: (tool, params, result) => recordToolResult(scope, tool, result, lastPublicUpdate),
+      });
+      reply = native.text; waiting = native.waiting;
+    }
+    for (let round = 0; !client.nativeTask && round <= MAX_TOOL_ROUNDS_PER_TURN; round++) {
       deps.signal?.throwIfAborted();
       let streamed = '';
       let phase: CoworkProgress['phase'] = 'thinking';
@@ -1334,13 +1358,14 @@ export async function runMissionSession(input: {
     if (status === 'done' && !allCriteriaMet) status = 'working';
     if (exhausted) status = 'working';
     if (waiting) status = 'blocked';
+    if (client.nativeTask && status === 'working') status = 'blocked';
     const rawProgress = parsed && typeof parsed.progress === 'string' && parsed.progress.trim() ? parsed.progress : text;
     const session: MissionSessionResult = {
       status,
-      progress: `${rawProgress.trim() || '(no report)'}${parsed?.status === 'done' && !allCriteriaMet ? ' Acceptance criteria remain incomplete.' : ''}`.slice(0, 1_500),
+      progress: `${rawProgress.trim() || '(no report)'}${parsed?.status === 'done' && !allCriteriaMet ? ' Acceptance criteria remain incomplete.' : ''}`,
     };
-    if (status === 'done' && parsed && typeof parsed.result === 'string') session.result = parsed.result.slice(0, 4_000);
-    if (status === 'blocked' && parsed && typeof (parsed.blockers ?? parsed.blocker) === 'string') session.blockers = String(parsed.blockers ?? parsed.blocker).slice(0, 1_500);
+    if (status === 'done' && parsed && typeof parsed.result === 'string') session.result = parsed.result;
+    if (status === 'blocked' && parsed && typeof (parsed.blockers ?? parsed.blocker) === 'string') session.blockers = String(parsed.blockers ?? parsed.blocker);
     if (waiting) session.blockers = 'Waiting for the user to respond to the posted request card.';
     if (waitingForAppReview) session.progress = 'The requested app action is waiting for approval. It has not been submitted.';
     if (exhausted) session.progress = 'Tool budget reached; the last requested actions were not executed. Resume from saved tool checkpoints and the checklist.';
@@ -1363,8 +1388,8 @@ export async function runMissionSession(input: {
 // ─── sub-agent turns ─────────────────────────────────────────────────────────
 
 /** Tool rounds a sub-agent gets per run: bounded work, then it reports. */
-const SUBAGENT_MAX_TOOL_ROUNDS = 12;
-const SUBAGENT_MAX_CALLS_PER_ROUND = 4;
+const SUBAGENT_MAX_TOOL_ROUNDS = Infinity;
+const SUBAGENT_MAX_CALLS_PER_ROUND = Infinity;
 
 /** The sub-agent's briefing: one objective, report-only-to-parent, honest budget. */
 function subAgentSystemPrompt(instance: SubAgentInstance, parentName: string, docs: string, availableSharedUsd: number | undefined): string {
@@ -1472,7 +1497,18 @@ export function createSubAgentChildRunner(deps: CoworkRunnerDeps): SubAgentChild
     // signal the parent's gate must see).
     const trail: SubAgentTrailEntry[] = [];
     try {
-      for (let round = 0; round < SUBAGENT_MAX_TOOL_ROUNDS; round++) {
+      if (llm.nativeTask) {
+        ctx ??= deps.toolContext(parentAgent);
+        const native = await runNativeCoworkTurn({ client: llm, ctx, agent: childAgent, conversationId: instance.conversationId, threadId: instance.threadId, purpose: 'subagent:' + instance.id, messages,
+          tools: coworkNativeTools(childAgent, perms.browser).filter(tool => !SUBAGENT_BLOCKED_TOOLS.includes(tool.name)), perms, scope, store: deps.store, signal,
+          beforeTool: () => { signal.throwIfAborted(); if (account.exhausted()) { budgetStopped = true; throw new Error('The parent budget is exhausted.'); } },
+          onUsage: () => { turns++; if (!metered && !account.charge({ turns: 1 })) { budgetStopped = true; throw new Error('The sub-agent turn budget is exhausted.'); } },
+          onTool: (tool, params, result) => { trail.push({ tool, params, result }); recordToolResult(scope, tool, result, ''); },
+          onProgress: (text, tool, ok, detail) => deps.onProgress?.({ agentId: instance.id, agentName: instance.role, text, tool, toolOk: ok, detail }),
+        });
+        reply = native.text;
+      }
+      for (let round = 0; !llm.nativeTask && round < SUBAGENT_MAX_TOOL_ROUNDS; round++) {
         signal.throwIfAborted();
         if (account.exhausted()) { budgetStopped = true; break; }
         // Unpriced children still pay: one turn per model call.
@@ -1504,6 +1540,6 @@ export function createSubAgentChildRunner(deps: CoworkRunnerDeps): SubAgentChild
     const summary = stripToolMarkers(reply).trim() || '(the sub-agent produced no report)';
     deps.subAgents?.recordActivity(instance.id, 'working', 'Returning the report for verification…');
     const noted = budgetStopped ? `${summary}\n\n[stopped early: the budget ran out]` : summary;
-    return { summary: noted.slice(0, 4_000), usage: { turns }, evidence: buildSubAgentEvidenceReport(instance, summary, trail) };
+    return { summary: noted, usage: { turns }, evidence: buildSubAgentEvidenceReport(instance, summary, trail) };
   };
 }

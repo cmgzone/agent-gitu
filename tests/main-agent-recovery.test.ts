@@ -83,6 +83,22 @@ async function waitSession(base: string, id: string, predicate: (view: RunSessio
 }
 
 describe('main agent automatic recovery', () => {
+  it('keeps every attachment and reuses the watched index for an unchanged follow-up', async () => {
+    const { base, server } = await start(client(() => done));
+    const { runId } = await post(base, '/api/runs', { goal: 'Say hello', mode: 'chat', autoLearn: false });
+    await waitSession(base, runId, s => s.status === 'completed');
+    const state = server as unknown as { indexWatchers: Map<string, import('../src/context/code-index.js').CodeIndex> };
+    const index = [...state.indexWatchers.values()][0]!;
+    const eventState = server as unknown as { sessions: Map<string, { events: { text: string }[] }> };
+    const indexingBefore = eventState.sessions.get(runId)!.events.filter(event => event.text === 'activity indexing-project').length;
+    const files = Array.from({ length: 12 }, (_, i) => ({ name: `reference-${i}.txt`, dataUrl: 'data:text/plain;base64,' + Buffer.from(`Reference ${i}`).toString('base64') }));
+    await post(base, `/api/runs/${runId}/message`, { text: 'Continue', files, autoLearn: false });
+    const continued = await waitSession(base, runId, s => s.status === 'completed');
+    expect(continued.files).toHaveLength(12);
+    expect(index.isFresh()).toBe(true);
+    expect(eventState.sessions.get(runId)!.events.filter(event => event.text === 'activity indexing-project')).toHaveLength(indexingBefore);
+  }, 60000);
+
   it('resumes a transient outage without repeating completed edits', async () => {
     let calls = 0;
     const llm = client(() => {
@@ -162,11 +178,11 @@ describe('main agent automatic recovery', () => {
     const effort = effortPlanner.planEffort('Inspect README.md', { mode: 'agent' });
     vi.spyOn(effortPlanner, 'planEffort').mockReturnValue({ ...effort, maxTurns: 1 });
     const { base } = await start(client(() => action({ type: 'set_plan', steps: [{ description: 'Inspect README.md', verification: 'Read the requested text' }] })));
-    const { runId } = await post(base, '/api/runs', { goal: 'Inspect README.md', mode: 'agent', autoLearn: false, review: false });
+    const { runId } = await post(base, '/api/runs', { goal: 'Inspect README.md', mode: 'agent', autoLearn: false, review: false, autonomy: { persistent: false } });
     // The run is not cut off at the first unproductive turn: it gets its
     // extension windows (with a change-of-approach nudge each time) and only
     // then is reported as stuck — a bound, never a silent loop.
-    const paused = await waitSession(base, runId, s => s.status === 'failed');
+    const paused = await waitSession(base, runId, s => s.status === 'failed', 60000);
     expect(paused.error).toContain("Exhausted the task's effort budget");
     expect(paused.error).toContain('extension(s) granted');
     expect(paused.error).toContain('Retry with effort=high');

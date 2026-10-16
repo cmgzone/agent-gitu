@@ -169,7 +169,7 @@ describe('Hermes — bug-fix rigor gate', () => {
     expect(report.remainingRisks.some((risk) => risk.includes('rigor override'))).toBe(false);
   }, 30000);
 
-  it('accepts a bug fix that reproduces (FAIL), edits, and re-verifies (PASS), but rejects completion once for the missing root cause', async () => {
+  it('accepts a reproduced fix immediately and reports a missing recorded root cause', async () => {
     const dir = makeBugProject('happy');
     const events: string[] = [];
     const llm = new ScriptedMockLlm([
@@ -186,25 +186,21 @@ describe('Hermes — bug-fix rigor gate', () => {
         const evId = ids.at(-1)?.[1] ?? 'ev-x';
         return JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: evId } });
       },
-      // No hypothesis yet → the rigor gate must reject this completion.
       () => JSON.stringify({ action: { type: 'complete', summary: 'fixed', risks: [], followUps: [] } }),
-      () => JSON.stringify({ action: { type: 'set_hypothesis', text: 'index.js threw because it was a stub' } }),
-      // Reviewer call for the accepted completion.
       () => 'VERDICT: PASS',
-      () => JSON.stringify({ action: { type: 'complete', summary: 'fixed with root cause recorded', risks: [], followUps: [] } }),
     ]);
     const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', onEvent: (e) => events.push(e) });
 
     const { ledger, report } = await hermes.run('fix the broken greeting script');
 
-    expect(events.some((e) => e.includes('bug-fix completion rejected'))).toBe(true);
-    expect(ledger.data.currentHypothesis).toBeTruthy();
+    expect(events.some((e) => e.includes('bug-fix completion rejected'))).toBe(false);
+    expect(ledger.data.currentHypothesis).toBeFalsy();
     expect(report.status).toBe('complete');
-    // The fail→edit→pass pair was recorded, so no override risk was needed.
-    expect((report.remainingRisks ?? []).some((r) => r.includes('rigor override'))).toBe(false);
+    expect(report.remainingRisks.some((risk) => risk.includes('a recorded root cause'))).toBe(true);
+    expect(report.remainingRisks.some((risk) => risk.includes('fail-before'))).toBe(false);
   }, 40000);
 
-  it('rejects a fix without reproduction twice, then completes with the gap recorded as a risk', async () => {
+  it('completes without repetitive rejection when pre-fix reproduction is unavailable, reporting the gap', async () => {
     const dir = makeBugProject('override');
     const events: string[] = [];
     const llm = new ScriptedMockLlm([
@@ -219,18 +215,14 @@ describe('Hermes — bug-fix rigor gate', () => {
         return JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: evId } });
       },
       () => JSON.stringify({ action: { type: 'complete', summary: 'attempt 1', risks: [], followUps: [] } }),
-      () => JSON.stringify({ action: { type: 'complete', summary: 'attempt 2', risks: [], followUps: [] } }),
-      // Third attempt: the gate yields and records the gap as a risk.
       () => 'VERDICT: PASS',
-      () => JSON.stringify({ action: { type: 'complete', summary: 'attempt 3', risks: [], followUps: [] } }),
     ]);
     const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', onEvent: (e) => events.push(e) });
 
     const { report } = await hermes.run('fix the broken greeting script');
 
-    expect(events.filter((e) => e.includes('bug-fix completion rejected')).length).toBe(2);
-    expect(events.some((e) => e.includes('gap accepted after repeated rejection'))).toBe(true);
+    expect(events.filter((e) => e.includes('bug-fix completion rejected')).length).toBe(0);
     expect(report.status).toBe('complete');
-    expect((report.remainingRisks ?? []).some((r) => r.includes('rigor override'))).toBe(true);
+    expect(report.remainingRisks.some((risk) => risk.includes('fail-before / pass-after'))).toBe(true);
   }, 40000);
 });

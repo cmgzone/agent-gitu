@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { createReadStream, existsSync, readdirSync, statSync } from 'node:fs';
-import { readFile, stat } from 'node:fs/promises';
+import { createReadStream, existsSync, readdirSync, lstatSync, readlinkSync } from 'node:fs';
+import { readFile, lstat } from 'node:fs/promises';
 import path from 'node:path';
 
 export interface GitFile {
@@ -20,28 +20,88 @@ export interface GitInfo {
   error?: string;
 }
 
-const FINGERPRINT_MAX_FILES = 4000;
 const FINGERPRINT_MAX_FILE_BYTES = 256 * 1024;
-
-/** Content identity, with bounded memory even for images and other large files. */
-async function contentSignature(full: string): Promise<string> {
-  const hash = createHash('sha256');
-  if ((await stat(full)).size <= FINGERPRINT_MAX_FILE_BYTES) {
-    hash.update(await readFile(full));
-  } else {
-    for await (const chunk of createReadStream(full)) hash.update(chunk);
-  }
-  return hash.digest('hex').slice(0, 16);
+export interface FingerprintOptions {
+  signal?: AbortSignal;
+  onProgress?: (checked: number, total: number) => void;
+  /** Optional dependency scope; callers validate these project-relative paths. */
+  paths?: string[];
 }
 
-export async function getWorkspaceFingerprint(root: string): Promise<string> {
+function inFingerprintScope(relative: string, options: FingerprintOptions): boolean {
+  if (!options.paths?.length) return true;
+  // Configuration and dependency changes invalidate even focused checks.
+  if (!relative.includes('/') && /(?:^\.|^package(?:-lock)?\.json$|lock|config|^(?:Cargo|go|requirements|pyproject|Gemfile|Makefile|Dockerfile))/i.test(relative)) return true;
+  return options.paths.some((entry) => entry === '.' || relative === entry || relative.startsWith(entry + '/'));
+}
+const contentCache = new Map<string, { metadata: string; digest: string }>();
+
+/** Content identity, with bounded memory even for images and other large files. */
+async function contentSignature(full: string, options: FingerprintOptions): Promise<string> {
+  options.signal?.throwIfAborted();
+  // Nanosecond timestamps include change time: restoring mtime after a
+  // same-size edit must not reuse the old content hash.
+  const metadata = await lstat(full, { bigint: true });
+  const stamp = [metadata.dev, metadata.ino, metadata.size, metadata.mtimeNs, metadata.ctimeNs, metadata.mode].join(':');
+  const cached = contentCache.get(full);
+  if (cached?.metadata === stamp) return cached.digest;
+  const hash = createHash('sha256');
+  if (metadata.isSymbolicLink()) hash.update('symlink:' + readlinkSync(full));
+  else if (metadata.size <= BigInt(FINGERPRINT_MAX_FILE_BYTES)) {
+    hash.update(await readFile(full, { signal: options.signal }));
+  } else {
+    for await (const chunk of createReadStream(full, { signal: options.signal })) hash.update(chunk);
+  }
+  const after = await lstat(full, { bigint: true });
+  const afterStamp = [after.dev, after.ino, after.size, after.mtimeNs, after.ctimeNs, after.mode].join(':');
+  if (stamp !== afterStamp) throw new Error('File changed during workspace verification.');
+  const digest = hash.digest('hex').slice(0, 16);
+  contentCache.set(full, { metadata: stamp, digest });
+  return digest;
+}
+
+/** Bound simultaneous reads, never the number of files included in proof. */
+async function contentSignatures(root: string, paths: string[], options: FingerprintOptions): Promise<{ signatures: string[]; partial: boolean }> {
+  const signatures: string[] = [];
+  let next = 0,
+    partial = false;
+  let checked = 0, lastProgress = 0;
+  options.onProgress?.(0, paths.length);
+  await Promise.all(
+    Array.from({ length: Math.min(16, paths.length) }, async () => {
+      for (;;) {
+        const relative = paths[next++];
+        if (relative === undefined) return;
+        options.signal?.throwIfAborted();
+        try {
+          signatures.push(`${relative}:${await contentSignature(path.join(root, relative), options)}`);
+        } catch (error) {
+          options.signal?.throwIfAborted();
+          contentCache.delete(path.join(root, relative));
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') signatures.push(`${relative}:deleted`);
+          else {
+            partial = true;
+            signatures.push(`${relative}:unreadable`);
+          }
+        }
+        checked++;
+        if (Date.now() - lastProgress >= 1000) { lastProgress = Date.now(); options.onProgress?.(checked, paths.length); }
+      }
+    }),
+  );
+  options.onProgress?.(checked, paths.length);
+  return { signatures, partial };
+}
+
+export async function getWorkspaceFingerprint(root: string, options: FingerprintOptions = {}): Promise<string> {
+  options.signal?.throwIfAborted();
   if (!isGitRepo(root)) {
     // Non-git projects use content identity too: timestamps and identical
     // rewrites must not invalidate valid verification.
-    return nonGitFingerprint(root);
+    return nonGitFingerprint(root, options);
   }
   try {
-    // Hash tracked+untracked project contents, marking file-budget limits explicitly.
+    // Hash all tracked+untracked project contents without a file-count ceiling.
     // Hashing only dirty files collapsed the fingerprint to a constant
     // whenever a checkpoint commit flipped the tree clean, falsely marking
     // valid evidence stale — while clean-tree stamps stayed fresh forever.
@@ -50,9 +110,7 @@ export async function getWorkspaceFingerprint(root: string): Promise<string> {
     // reacts to any real edit, addition, or deletion.
     const listing = await gitExec(root, ['ls-files', '-co', '--exclude-standard', '-z']);
     const paths = [...new Set(listing.split('\0').filter(Boolean))].sort();
-    const fileSignatures: string[] = [];
-    let budget = FINGERPRINT_MAX_FILES;
-    let partial = false;
+    const included: string[] = [];
     for (const p of paths) {
       const normPath = p.replace(/\\/g, '/');
       if (
@@ -65,54 +123,49 @@ export async function getWorkspaceFingerprint(root: string): Promise<string> {
       ) {
         continue;
       }
-      if (budget-- <= 0) { partial = true; break; }
-      const full = path.join(root, p);
-      try {
-        fileSignatures.push(`${normPath}:${await contentSignature(full)}`);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') fileSignatures.push(`${normPath}:deleted`);
-        else { partial = true; fileSignatures.push(`${normPath}:unreadable`); }
-      }
+      if (inFingerprintScope(normPath, options)) included.push(normPath);
     }
-    const payload = fileSignatures.sort().join('|');
+    const { signatures, partial } = await contentSignatures(root, included, options);
+    const payload = signatures.sort().join('|');
     const fingerprint = createHash('sha256').update(payload).digest('hex').slice(0, 16);
     return partial ? `partial-${fingerprint}` : fingerprint;
   } catch {
-    return 'unknown-fp';
+    options.signal?.throwIfAborted();
+    return nonGitFingerprint(root, options);
   }
 }
 
 export function gitExec(root: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(
-      'git',
-      args,
-      { cwd: root, encoding: 'utf8', windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
-      (err, stdout, stderr) => {
-        if (err) reject(new Error((stderr || err.message).trim().slice(0, 500)));
-        else resolve(stdout);
-      },
-    );
+    execFile('git', args, { cwd: root, encoding: 'utf8', windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) reject(new Error((stderr || err.message).trim().slice(0, 500)));
+      else resolve(stdout);
+    });
   });
 }
 
 export function isGitRepo(root: string): boolean {
-  return existsSync(path.join(root, '.git'));
+  let current = path.resolve(root);
+  for (;;) {
+    if (existsSync(path.join(current, '.git'))) return true;
+    const parent = path.dirname(current);
+    if (parent === current) return false;
+    current = parent;
+  }
 }
 
 const NON_GIT_SKIP = new Set(['.git', '.hermes', 'node_modules', 'coverage', '.cache', '.freebuff']);
-const NON_GIT_MAX_FILES = 5000;
 
 /**
  * Fallback fingerprint for non-git workspaces: sorted paths and content hashes.
- * The bounded walk explicitly marks incomplete coverage.
+ * File-count/depth ceilings would silently miss later edits. Symbolic links
+ * are fingerprinted as links rather than traversed outside the workspace.
  */
-async function nonGitFingerprint(root: string): Promise<string> {
-  const signatures: string[] = [];
-  let count = 0;
+async function nonGitFingerprint(root: string, options: FingerprintOptions): Promise<string> {
+  const paths: string[] = [];
   let partial = false;
-  const walk = async (dir: string, depth: number): Promise<void> => {
-    if (depth > 12 || count >= NON_GIT_MAX_FILES) { partial = true; return; }
+  const walk = async (dir: string): Promise<void> => {
+    options.signal?.throwIfAborted();
     let entries: string[];
     try {
       entries = readdirSync(dir);
@@ -121,33 +174,35 @@ async function nonGitFingerprint(root: string): Promise<string> {
       return;
     }
     for (const name of entries.sort()) {
-      if (count >= NON_GIT_MAX_FILES) { partial = true; return; }
       if (NON_GIT_SKIP.has(name)) continue;
       const full = path.join(dir, name);
       let st;
       try {
-        st = statSync(full);
+        st = lstatSync(full);
       } catch {
         partial = true;
         continue;
       }
       if (st.isDirectory()) {
-        await walk(full, depth + 1);
+        await walk(full);
       } else {
-        count += 1;
         const rel = path.relative(root, full).replace(/\\/g, '/');
-        try { signatures.push(`${rel}:${await contentSignature(full)}`); }
-        catch { partial = true; signatures.push(`${rel}:unreadable`); }
+        if (inFingerprintScope(rel, options)) paths.push(rel);
       }
     }
   };
   try {
-    await walk(root, 0);
+    await walk(root);
   } catch {
+    options.signal?.throwIfAborted();
     return 'unknown-fp';
   }
-  const fingerprint = createHash('sha256').update(`nogit-v2|${signatures.sort().join('|')}`).digest('hex').slice(0, 16);
-  return partial ? `partial-${fingerprint}` : fingerprint;
+  const scanned = await contentSignatures(root, paths, options);
+  const fingerprint = createHash('sha256')
+    .update(`nogit-v2|${scanned.signatures.sort().join('|')}`)
+    .digest('hex')
+    .slice(0, 16);
+  return partial || scanned.partial ? `partial-${fingerprint}` : fingerprint;
 }
 
 export async function gitInfo(root: string): Promise<GitInfo> {

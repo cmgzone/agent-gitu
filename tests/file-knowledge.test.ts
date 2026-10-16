@@ -378,6 +378,20 @@ describe('AST extraction (primary TS/JS path)', () => {
 });
 
 describe('FileKnowledge telemetry counters', () => {
+  it('does not replay a narrower cached result when a larger file range is requested', async () => {
+    const dir = makeProject('read-ranges');
+    fs.writeFileSync(path.join(dir, 'large.txt'), Array.from({ length: 3000 }, (_, i) => `Requested line ${i + 1}`).join('\n'));
+    const guard = ProjectGuard.detect(dir);
+    const ledger = TaskLedger.create({ repoRoot: dir, goal: 'Inspect the requested range', project: guard.lock, mode: 'fast' });
+    const executor = new Executor(guard, ledger, new PolicyEngine(true), new LoopDetector());
+    const read = (limit: number) => executor.execute({ tool: 'read_file', params: { path: 'large.txt', limit }, reason: 'Inspect requested source', expected: 'Complete requested range' });
+    await read(2001);
+    await read(2001);
+    const expanded = await read(2500);
+    expect(expanded.result.ok).toBe(true);
+    expect(expanded.result.output).toContain('2500: Requested line 2500');
+    expect(expanded.result.output).not.toContain('2501: Requested line 2501');
+  });
   it('counts extraction path, render hits/misses, and invalidations', () => {
     const dir = makeProject('stats');
     fs.mkdirSync(path.join(dir, 'src'), { recursive: true });

@@ -22,7 +22,7 @@ import type { MalformedPolicy } from '../loop/malformed-tracker.js';
 export interface AutonomyPolicy {
   /** Recover from recoverable noise instead of ending the run. Default true. */
   persistent: boolean;
-  /** Absolute turn ceiling for one run. Unset means the effort plan alone decides. */
+  /** User-selected turn ceiling for one run. Unset permits continued recovery. */
   maxTurns?: number;
   /** Per-run spend ceiling in USD. Unset means the host prices no ceiling. */
   maxCostUsd?: number;
@@ -57,15 +57,8 @@ export const MAX_EMPTY_REPLY_RETRIES = 2;
  */
 export const MAX_EMPTY_LADDER_CYCLES = 3;
 
-/**
- * Absolute per-run turn ceiling, independent of effort and autonomy.
- *
- * This is a liveness backstop, not a task limit: it sits far above any real
- * run (a 60-turn high-effort plan extends without bound while it verifies
- * progress) and exists so a provider bug that fabricates endless plausible
- * work cannot spin forever. Reaching it is reported, never silent.
- */
-export const ABSOLUTE_TURN_CEILING = 1_000;
+/** No application-imposed turn ceiling; callers can select one explicitly. */
+export const ABSOLUTE_TURN_CEILING = Infinity;
 
 /** Backoff between contentless-reply retries. */
 export const EMPTY_REPLY_RETRY_BASE_MS = 1_500;
@@ -96,17 +89,15 @@ export function malformedPolicyFor(autonomy: AutonomyPolicy): MalformedPolicy {
  * it without limit.
  */
 export function turnCeilingFor(autonomy: AutonomyPolicy): number {
-  return Math.min(autonomy.maxTurns ?? Number.MAX_SAFE_INTEGER, ABSOLUTE_TURN_CEILING);
+  return autonomy.maxTurns ?? Infinity;
 }
 
 /**
  * Whether the engine may grant another turn extension when a budget is spent.
  *
- * Persistent autonomy is UNLIMITED while verified progress continues — that is
- * the whole point of the policy, and it is what stops a long build, a frontend
- * polish cycle, or a hard debugging run from being cut off mid-task. A run that
- * produces no verifiable movement across every extension window is a different
- * animal: it is stuck, and a stuck run is reported rather than looped forever.
+ * Persistent runs recover and extend until completion, a user stop, a genuine
+ * missing prerequisite, or an explicitly selected ceiling. Fail-fast callers
+ * retain their chosen extension budget.
  */
 export function mayExtendBudget(input: {
   persistent: boolean;

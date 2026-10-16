@@ -4,11 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { Hermes } from '../src/agent/gitu.js';
 import { SubAgentRunner } from '../src/agent/subagent.js';
-import {
-  buildSpecialistEvidenceReport,
-  validateSpecialistEvidence,
-  type SpecialistEvidenceReport,
-} from '../src/agent/specialist-evidence.js';
+import { buildSpecialistEvidenceReport, validateSpecialistEvidence, type SpecialistEvidenceReport } from '../src/agent/specialist-evidence.js';
 import { EvidenceEngine } from '../src/evidence/evidence.js';
 import { ScriptedMockLlm, type LlmMessage } from '../src/llm/llm.js';
 import type { TaskLedgerData } from '../src/types.js';
@@ -57,13 +53,22 @@ describe('buildSpecialistEvidenceReport', () => {
     const ledger = ledgerFixture();
     ledger.acceptanceCriteria[0]!.evidenceIds = ['ev-1'];
     ledger.acceptanceCriteria[0]!.satisfied = true;
-    ledger.evidence = [{ id: 'ev-1', kind: 'test', label: 'npm test -- auth', command: 'npm test -- auth', passed: true, outputExcerpt: 'PASS', createdAt: new Date().toISOString(), workspaceFingerprint: 'fp-1' }];
+    ledger.evidence = [
+      {
+        id: 'ev-1',
+        kind: 'test',
+        label: 'npm test -- auth',
+        command: 'npm test -- auth',
+        passed: true,
+        outputExcerpt: 'PASS',
+        createdAt: new Date().toISOString(),
+        workspaceFingerprint: 'fp-1',
+      },
+    ];
 
     const report = buildSpecialistEvidenceReport(ledger, 'SUCCESS');
     expect(report).toBeDefined();
-    expect(report!.entries).toEqual([
-      { criterionId: 'ac-1', evidenceIds: ['ev-1'], status: 'satisfied', summary: expect.stringContaining('backed by 1 evidence') },
-    ]);
+    expect(report!.entries).toEqual([{ criterionId: 'ac-1', evidenceIds: ['ev-1'], status: 'satisfied', summary: expect.stringContaining('backed by 1 evidence') }]);
     expect(report!.evidence).toMatchObject([{ id: 'ev-1', command: 'npm test -- auth', kind: 'test', passed: true, workspaceFingerprint: 'fp-1' }]);
   });
 
@@ -137,7 +142,10 @@ describe('validateSpecialistEvidence — Hermes-side independent revalidation', 
   });
 
   it('rejects failed evidence', () => {
-    const v = validateSpecialistEvidence(reportWith({ evidence: [{ id: 'ev-1', command: 'npm test -- auth', kind: 'test', passed: false, outputExcerpt: 'FAIL', workspaceFingerprint: 'fp-1' }] }), EXPECTED);
+    const v = validateSpecialistEvidence(
+      reportWith({ evidence: [{ id: 'ev-1', command: 'npm test -- auth', kind: 'test', passed: false, outputExcerpt: 'FAIL', workspaceFingerprint: 'fp-1' }] }),
+      EXPECTED,
+    );
     expect(v.accepted).toEqual([]);
     expect(v.rejected[0]!.reason).toContain('did not pass');
   });
@@ -165,21 +173,30 @@ describe('validateSpecialistEvidence — Hermes-side independent revalidation', 
 
   it('rejects evidence with no valid workspace fingerprint', () => {
     for (const fp of [undefined, 'unknown-fp']) {
-      const v = validateSpecialistEvidence(reportWith({ evidence: [{ id: 'ev-1', command: 'npm test -- auth', kind: 'test', passed: true, outputExcerpt: 'PASS', workspaceFingerprint: fp }] }), EXPECTED);
+      const v = validateSpecialistEvidence(
+        reportWith({ evidence: [{ id: 'ev-1', command: 'npm test -- auth', kind: 'test', passed: true, outputExcerpt: 'PASS', workspaceFingerprint: fp }] }),
+        EXPECTED,
+      );
       expect(v.accepted).toEqual([]);
       expect(v.rejected[0]!.reason).toContain('workspace fingerprint');
     }
   });
 
   it('rejects evidence whose kind does not match the required type', () => {
-    const v = validateSpecialistEvidence(reportWith({ evidence: [{ id: 'ev-1', command: 'npm test -- auth', kind: 'command', passed: true, outputExcerpt: 'PASS', workspaceFingerprint: 'fp-1' }] }), EXPECTED);
+    const v = validateSpecialistEvidence(
+      reportWith({ evidence: [{ id: 'ev-1', command: 'npm test -- auth', kind: 'command', passed: true, outputExcerpt: 'PASS', workspaceFingerprint: 'fp-1' }] }),
+      EXPECTED,
+    );
     expect(v.accepted).toEqual([]);
     expect(v.rejected[0]!.reason).toContain('does not match the required type');
   });
 
   it('rejects no-op commands as evidence for an unverified criterion', () => {
     const expected = [{ id: 'ac-1', text: 'anything works' }];
-    const v = validateSpecialistEvidence(reportWith({ evidence: [{ id: 'ev-1', command: 'ls', kind: 'command', passed: true, outputExcerpt: 'x', workspaceFingerprint: 'fp-1' }] }), expected);
+    const v = validateSpecialistEvidence(
+      reportWith({ evidence: [{ id: 'ev-1', command: 'ls', kind: 'command', passed: true, outputExcerpt: 'x', workspaceFingerprint: 'fp-1' }] }),
+      expected,
+    );
     expect(v.accepted).toEqual([]);
     expect(v.rejected[0]!.reason).toContain('no-op');
   });
@@ -192,7 +209,10 @@ describe('validateSpecialistEvidence — Hermes-side independent revalidation', 
 
   it('accepts passing evidence for a plain-text criterion with no verification', () => {
     const expected = [{ id: 'ac-1', text: 'run something real' }];
-    const v = validateSpecialistEvidence(reportWith({ evidence: [{ id: 'ev-1', command: 'npm test', kind: 'test', passed: true, outputExcerpt: 'PASS', workspaceFingerprint: 'fp-1' }] }), expected);
+    const v = validateSpecialistEvidence(
+      reportWith({ evidence: [{ id: 'ev-1', command: 'npm test', kind: 'test', passed: true, outputExcerpt: 'PASS', workspaceFingerprint: 'fp-1' }] }),
+      expected,
+    );
     expect(v.accepted).toHaveLength(1);
     expect(v.rejected).toEqual([]);
   });
@@ -281,7 +301,18 @@ describe('Hermes — specialist evidence inheritance end-to-end', () => {
       () => JSON.stringify({ action: { type: 'complete', summary: 'done', risks: [], followUps: [] } }),
       () => JSON.stringify({ action: { type: 'request_block', reason: 'specialist evidence was rejected' } }),
     ]);
-    const hermes = new Hermes({ cwd: dir, llm: hermesLlm, mode: 'fast', subagents: runner, onEvent: (e) => events.push(e) });
+    const hermes = new Hermes({
+      cwd: dir,
+      llm: hermesLlm,
+      mode: 'fast',
+      subagents: runner,
+      onEvent: (e) => {
+        events.push(e);
+        // Stop when the unrelated evidence is rejected. The host owns this
+        // test boundary; a synthetic blocker is not a real task prerequisite.
+        if (e.includes('delegate-claim worker ac-1: REJECTED')) hermes.stop();
+      },
+    });
 
     const { ledger } = await hermes.run('verify auth');
 

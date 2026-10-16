@@ -64,6 +64,20 @@ function makeHarness(options: { signal?: () => AbortSignal | undefined; onEvent?
 const run = (executor: Executor, command: string, reason = 'test') => executor.execute({ tool: 'run_command', params: { command }, reason, expected: 'command output' });
 
 describe('command_finished carries the real exit code', () => {
+  it('routes the malformed status shape through the same runner and closes only the original command card', async () => {
+    const { executor, events } = makeHarness();
+    const command = 'node -e "setTimeout(() => console.log(\'COMPILER_RESULT\'), 200)"';
+    const started = await executor.execute({ tool: 'run_command', params: { command, waitMs: 1 }, reason: 'Start compiler', expected: 'Compiler result' });
+    expect(started.result.status).toBe('running');
+    const polled = await executor.execute({ tool: 'run_command', params: { command: 'status', id: started.result.jobId, waitMs: 20000 }, reason: 'Collect result', expected: 'Completed compiler output' });
+    expect(polled.result.status).toBe('exited');
+    expect(polled.result.exitCode).toBe(0);
+    expect(polled.result.output).toContain('COMPILER_RESULT');
+    expect(polled.record.paramsSummary).toBe(`command status ${started.result.jobId}`);
+    expect(events.filter(event => event.type === 'command_started')).toEqual([{ type: 'command_started', command }]);
+    expect(events.filter(event => event.type === 'command_finished')).toHaveLength(1);
+    executor.dispose();
+  }, 30000);
   it('reports a successful command as ok with exit code 0', async () => {
     const { executor, events } = makeHarness();
     const outcome = await run(executor, 'echo hello');
@@ -155,7 +169,6 @@ describe('end to end through the real agent', () => {
           thought: 'verify',
           action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node --version' }, reason: 'verify runtime', expected: 'exit 0' },
         }),
-      () => JSON.stringify({ thought: 'stop', action: { type: 'request_block', reason: 'test collected the events it needed' } }),
     ]);
     const events: CodingEventPayload[] = [];
     const gitu = new Gitu({
@@ -165,7 +178,12 @@ describe('end to end through the real agent', () => {
       criteria: ['node --version runs'],
       autoApprove: true,
       requirePlanReview: false,
-      onCodingEvent: (event) => events.push(event),
+      onCodingEvent: (event) => {
+        events.push(event);
+        // End this lifecycle test at the fact it observes. A synthetic blocker
+        // is not a real missing prerequisite under the task completion policy.
+        if (event.type === 'command_finished') gitu.stop();
+      },
     });
 
     await gitu.run('Check the Node runtime version');

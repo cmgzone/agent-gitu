@@ -1949,7 +1949,6 @@ ${ONBOARDING_HTML}
       };
     });
   }
-  var MAX_PENDING_FILES = 8;
   function humanBytes(value) {
     var n = Math.max(0, Number(value) || 0);
     if (n < 1024) return n + ' B';
@@ -1965,23 +1964,10 @@ ${ONBOARDING_HTML}
     return pendingFor().reduce(function (sum, file) { return sum + (Number(file.size) || dataUrlBytes(file.dataUrl)); }, 0);
   }
   function addPendingFile(file, dataUrl) {
-    if (pendingFor().length >= MAX_PENDING_FILES) { toast('Maximum 8 files per message', true); return; }
     fetch(dataUrl).then(function(response){return response.blob();}).then(function(blob){attachBinary(new File([blob],file.name||'attachment',{type:file.type||blob.type}),pendingFor(),'coding',renderThumbs);});
   }
   function downscaleImage(dataUrl, cb) {
-    var img = new Image();
-    img.onload = function () {
-      var max = 1280;
-      var scale = Math.min(1, max / Math.max(img.width, img.height));
-      if (scale === 1 && dataUrl.length < 700000) { cb(dataUrl); return; }
-      var c = document.createElement('canvas');
-      c.width = Math.max(1, Math.round(img.width * scale));
-      c.height = Math.max(1, Math.round(img.height * scale));
-      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-      try { cb(c.toDataURL('image/jpeg', 0.85)); } catch (e) { cb(dataUrl); }
-    };
-    img.onerror = function () { cb(dataUrl); };
-    img.src = dataUrl;
+    cb(dataUrl);
   }
   function bindPaste(id) {
     var ta = $(id);
@@ -2014,7 +2000,6 @@ ${ONBOARDING_HTML}
 
   function onAttachFiles(files) {
     Array.prototype.slice.call(files).forEach(function (f) {
-      if (pendingFor().length >= MAX_PENDING_FILES) { toast('Maximum 8 files per message', true); return; }
       attachBinary(f,pendingFor(),'coding',renderThumbs);
     });
   }
@@ -2563,6 +2548,7 @@ ${ONBOARDING_HTML}
       text: text, files: attached,
       delivery: running ? S.delivery : undefined,
       provider: useSelectedModel ? mc[0] : undefined, model: useSelectedModel ? mc[1] : undefined, useSelectedModel: useSelectedModel,
+      effort: S.sel.effort,
       mode: 'agent',
       review: review,
       supersede: sup,
@@ -2810,7 +2796,7 @@ ${ONBOARDING_HTML}
   function workingTextFor(text) {
     if (text.indexOf('think') === 0) return publicThinkingStatus(text);
     if (text.indexOf('run ') === 0) {
-      var summary = splitSummary(text.slice(4));
+      var summary = splitSummary(text.slice(4)).trim();
       var k = toolKind(summary);
       if (k === 'edit') return 'Editing ' + summary.slice(summary.indexOf(' ') + 1) + '…';
       if (k === 'read') return 'Reading ' + summary.slice(5) + '…';
@@ -2823,6 +2809,7 @@ ${ONBOARDING_HTML}
     if (text.indexOf('plan ') === 0) return 'Building plan…';
     if (text.indexOf('criteria') === 0) return 'Defining acceptance criteria…';
     if (text.indexOf('evidence') === 0) return 'Recording evidence…';
+    if (text.indexOf('verify ') === 0) return 'Verifying locally…';
     if (text.indexOf('claim') === 0) return 'Checking acceptance…';
     if (text.indexOf('problem') === 0) return 'Investigating a failure…';
     if (text.indexOf('resolved') === 0) return 'Resuming the plan…';
@@ -2830,6 +2817,20 @@ ${ONBOARDING_HTML}
     if (text.indexOf('hypothesis') === 0) return 'Working out the cause…';
     if (text.indexOf('context') === 0) return 'Selecting context…';
     return null;
+  }
+  // Presentation filters may hide technical rows, but must not hide the
+  // actual run phase. Never let a background chat replace the active status.
+  function syncWorkingActivity(runId, text) {
+    if (S.active && S.active !== runId) return;
+    var status = null;
+    if (text === 'activity indexing-project') status = 'Indexing project…';
+    else if (text === 'activity preparing-project') status = 'Preparing project…';
+    else if (text === 'activity preparing-model') status = 'Preparing model…';
+    else if (text.indexOf('activity reasoning') === 0) status = 'Reasoning…';
+    else if (text.indexOf('activity content') === 0 || text.indexOf('activity tool') === 0) status = 'Thinking…';
+    else if (/^(?:ok|error|denied|blocked) /.test(text)) status = 'Thinking…';
+    else status = workingTextFor(text);
+    if (status) setWorking(status);
   }
   // Working indicator with an elapsed-seconds counter that escalates after
   // 60s on the SAME phase text — a hung command becomes visible instead of
@@ -3564,8 +3565,8 @@ ${ONBOARDING_HTML}
         insertTimelineNode(sess,row,ev.t);stickScroll(stream);return;
       } catch { return; }
     }
-    if (text === 'activity preparing-project' || text === 'activity indexing-project') {
-      setWorking(text === 'activity indexing-project' ? 'Indexing project…' : 'Preparing project…');
+    syncWorkingActivity(runId, text);
+    if (text === 'activity preparing-project' || text === 'activity indexing-project' || text === 'activity preparing-model') {
       return;
     }
     if (text === 'activity reasoning-reset' || text.indexOf('activity reasoning-delta ') === 0) {
@@ -4234,9 +4235,9 @@ ${ONBOARDING_HTML}
     }
     var allItems = composerTodoItems(sess.ledger);
     if (!allItems.length) {
-      panel.hidden = true;
-      panel.innerHTML = '';
-      delete panel.dataset.signature;
+      panel.hidden = !sess.ledger;
+      panel.innerHTML = sess.ledger ? '<summary class="composer-todos-head"><span class="composer-todos-title">To-do</span><span class="composer-todos-current">No checklist yet</span></summary><p class="composer-todo-text">The agent has not saved a task checklist yet.</p>' : '';
+      panel.dataset.signature = 'empty';
       return;
     }
     var currentItems = allItems.filter(function (item) { return item.status !== 'done'; }).sort(function (a, b) {
@@ -5368,9 +5369,12 @@ ${ONBOARDING_HTML}
     stat('Provider', session && session.provider ? session.provider : '—');
     stat('Model', session && session.model ? prettyModelName(session.model) : '—');
     stat('Mode', L ? L.mode : '—');
-    // The run's EFFECTIVE effort (the effort planner may escalate); the
-    // composer selection is only what the NEXT run would use.
-    stat('Effort', (L && L.effortPlan && L.effortPlan.llmEffort) ? L.effortPlan.llmEffort + ' (run)' : (S.sel.effort || '—'));
+    var nativeRun = L && L.execution && L.execution.mode === 'codex-native';
+    var nativeSettings = nativeRun && L.execution.native;
+    var actualEffort = nativeRun ? nativeSettings && nativeSettings.effectiveEffort : L && L.effortPlan && L.effortPlan.llmEffort;
+    stat('Effort', actualEffort ? actualEffort + ' (run)' : 'Not recorded for this turn');
+    if (nativeSettings && nativeSettings.requestedEffort && nativeSettings.requestedEffort !== actualEffort) stat('Requested effort', nativeSettings.requestedEffort);
+    if (S.sel.effort && S.sel.effort !== actualEffort) stat('Selected for next turn', S.sel.effort);
     stat('Started', session ? shortDate(session.startedAt) : '—');
     stat('Finished', session && session.finishedAt ? shortDate(session.finishedAt) : 'running…');
     if (L) {

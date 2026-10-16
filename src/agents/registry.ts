@@ -117,7 +117,7 @@ export class AgentStore {
   }
 
   save(input: { id?: string; name: string; role: string; provider?: string; model?: string; effort?: AgentDef['effort'] }): AgentDef {
-    const name = input.name.trim().replace(/\s+/g, '-').toLowerCase().slice(0, 40);
+    const name = input.name.trim().replace(/\s+/g, '-').toLowerCase();
     if (!name) throw new Error('Agent name is required');
     if (!input.role.trim()) throw new Error('Agent role/instructions are required');
     // Operate on the CUSTOM list only: writing list() here would snapshot the

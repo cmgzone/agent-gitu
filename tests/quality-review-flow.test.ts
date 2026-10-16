@@ -48,6 +48,17 @@ function repair(round: number): Reply[] {
 }
 
 describe('final quality review after repairs', () => {
+  it('records an exhausted ordinary review warning on the same completion attempt', async () => {
+    const { dir, responses } = setup('no-extra-completion');
+    let reviews = 0;
+    responses.push(() => { reviews++; return 'VERDICT: REVISE\nFEEDBACK: Adjust the greeting.'; });
+    responses.push(...repair(1));
+    responses.push(() => { reviews++; return 'VERDICT: REVISE\nFEEDBACK: The greeting concern remains.'; });
+    const { report } = await new Hermes({ cwd: dir, llm: new ScriptedMockLlm(responses), mode: 'fast', effort: 'medium', requirePlanReview: false, autoLearn: false }).run('Update the greeting output');
+    expect(report.status).toBe('complete');
+    expect(reviews).toBe(2);
+    expect(report.remainingRisks.some((risk) => risk.includes('The greeting concern remains'))).toBe(true);
+  }, 30_000);
   it.each([
     ['fast', 'medium'], ['fast', 'high'], ['agent', 'medium'], ['agent', 'high'],
   ] as const)('reviews the last allowed %s/%s repair and completes when it passes', async (mode, effort) => {

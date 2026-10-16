@@ -23,8 +23,8 @@ function makeAction(overrides: Partial<ActionRecord>): ActionRecord {
 }
 
 describe('read_file protection redesign', () => {
-  it('has 20MB MAX_FILE_BYTES to allow reading large files', () => {
-    expect(MAX_FILE_BYTES).toBe(20 * 1024 * 1024);
+  it('does not impose a fixed source file size limit', () => {
+    expect(MAX_FILE_BYTES).toBe(Infinity);
   });
 
   describe('exact line range hashing', () => {
@@ -46,7 +46,7 @@ describe('read_file protection redesign', () => {
   });
 
   describe('compaction awareness in loop detection', () => {
-    it('permits rereading previously read ranges after compaction', () => {
+    it('retains completed read identities after compaction', () => {
       const detector = new LoopDetector();
       const readHash = hashParams('read_file', { path: 'src/core.ts', offset: 1, limit: 100 });
 
@@ -63,12 +63,13 @@ describe('read_file protection redesign', () => {
       // Notify detector of compaction after act-2
       detector.noteCompaction('act-2');
 
-      // After compaction: actions before act-2 no longer count toward the repeat block!
+      // Compaction does not change the file or erase completed reads. The
+      // executor can replay persisted source without scanning it again.
       const postVerdict = detector.evaluate(actions, 'read_file', readHash, undefined, 'v1');
-      expect(postVerdict.allowed).toBe(true);
+      expect(postVerdict.allowed).toBe(false);
     });
 
-    it('reusableSuccessfulRead respects compaction boundary', () => {
+    it('rehydrates persisted source through cache after compaction', () => {
       const detector = new LoopDetector();
       const readHash = hashParams('read_file', { path: 'src/core.ts', offset: 1, limit: 100 });
 
@@ -85,9 +86,9 @@ describe('read_file protection redesign', () => {
       // Compaction happens
       detector.noteCompaction('act-2');
 
-      // After compaction, old read is NOT forced into reuse; a fresh read is permitted
+      // The full durable observation is still available after history shrinks.
       const postReusable = detector.reusableSuccessfulRead(actions, 'read_file', readHash, 'v1');
-      expect(postReusable).toBeUndefined();
+      expect(postReusable?.id).toBe('act-2');
     });
   });
 

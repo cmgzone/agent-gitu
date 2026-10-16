@@ -15,8 +15,8 @@ export async function companyBoardroomApi(req: IncomingMessage, res: ServerRespo
         query = params.get('q') || '',
         offset = Number(params.get('offset') || 0),
         limit = Number(params.get('limit') || 20);
-      if (query.length > 200 || !Number.isSafeInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 100)
-        throw new Error('Choose a valid meeting search and page size of 1–100.');
+      if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1)
+        throw new Error('Choose a valid meeting search and positive page size.');
       deps.send(res, 200, room.historyPage(query, offset, limit));
     } else if (method === 'POST') {
       const input = await deps.body(req);

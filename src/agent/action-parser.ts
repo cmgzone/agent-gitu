@@ -2,7 +2,7 @@ import { appendFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { ensureGituHome } from '../workspace/home.js';
 import { extractJson, findXmlCallStart, parseXmlFunctionCall, xmlMarkerHoldBack, type LlmToolDefinition, type LlmTurnResult } from '../llm/llm.js';
-import { KNOWN_TOOL_NAMES } from '../tools/tools.js';
+import { KNOWN_TOOL_NAMES, normalizeCommandParams } from '../tools/tools.js';
 import { normalizeConnectionDocumentationUrl, normalizeConnectionOperation, normalizeConnectionOperationBody, type ConnectionOperation } from '../connections/connections.js';
 import type { DiscoveryIntent } from '../connections/discovery-engine.js';
 import type { CriterionSpec, DecisionBasis, MissingPrerequisite, PlanArea } from '../types.js';
@@ -30,14 +30,13 @@ export function parseArea(value: unknown): PlanArea | undefined {
 export function parseSubtasks(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const items = value
-    .map((t) => String(t).trim().slice(0, 140))
-    .filter(Boolean)
-    .slice(0, 8);
+    .map((t) => String(t).trim())
+    .filter(Boolean);
   return items.length > 0 ? items : undefined;
 }
 
 export type ParsedAction =
-  | { type: 'set_criteria'; criteria: (string | CriterionSpec)[] }
+  | { type: 'set_criteria'; criteria: (string | CriterionSpec)[]; replacementReason?: string }
   | { type: 'set_plan'; steps: PlanActionStep[] }
   | { type: 'add_criteria'; criteria: (string | CriterionSpec)[] }
   | { type: 'append_plan'; steps: PlanActionStep[] }
@@ -223,7 +222,7 @@ export function parseAction(raw: unknown): ParsedAction | undefined {
     return {
       type: 'tool_call',
       tool: type,
-      params,
+      params: type === 'run_command' ? normalizeCommandParams(params) : params,
       reason: String(action['reason'] ?? action['thought'] ?? ''),
       expected: String(action['expected'] ?? ''),
       stepId: typeof action['stepId'] === 'string' ? action['stepId'] : undefined,
@@ -256,9 +255,8 @@ export function parseAction(raw: unknown): ParsedAction | undefined {
                 : {}),
             },
           ];
-        })
-        .slice(0, 10);
-      return parsed.length ? { type, criteria: parsed } : undefined;
+        });
+      return parsed.length ? { type, criteria: parsed, ...(type === 'set_criteria' && typeof action['replacementReason'] === 'string' ? { replacementReason: action['replacementReason'] } : {}) } : undefined;
     }
     case 'set_plan':
     case 'append_plan': {
@@ -270,8 +268,8 @@ export function parseAction(raw: unknown): ParsedAction | undefined {
           const area = parseArea(s['area']);
           const subtasks = parseSubtasks(s['subtasks']);
           return {
-            description: String(s['description'] ?? '').slice(0, 220),
-            verification: String(s['verification'] ?? 'manual check').slice(0, 180),
+            description: String(s['description'] ?? ''),
+            verification: String(s['verification'] ?? 'manual check'),
             ...(area ? { area } : {}),
             ...(subtasks ? { subtasks } : {}),
           };
@@ -279,7 +277,7 @@ export function parseAction(raw: unknown): ParsedAction | undefined {
         .filter((s) => s.description);
       if (parsed.length === 0) return undefined;
       // Bounded plan: ≤30 top-level steps keeps the compact state render cheap.
-      return { type, steps: parsed.slice(0, 30) };
+      return { type, steps: parsed };
     }
     case 'set_design': {
       const raw = action['design'];
@@ -287,7 +285,7 @@ export function parseAction(raw: unknown): ParsedAction | undefined {
       const src = raw as Record<string, unknown>;
       const cap = (value: unknown, max: number): string | undefined => {
         const text = String(value ?? '').trim();
-        return text ? text.slice(0, max) : undefined;
+        return text ? text : undefined;
       };
       const design = {
         frontend: cap(src['frontend'], 1200),
@@ -305,8 +303,8 @@ export function parseAction(raw: unknown): ParsedAction | undefined {
       const addSubtasks = parseSubtasks(action['todos'] ?? action['addTodos']);
       const replaceSubtasks = Array.isArray(action['replaceTodos']) ? (parseSubtasks(action['replaceTodos']) ?? []) : undefined;
       const status = action['status'] === 'pending' || action['status'] === 'cancelled' ? action['status'] : undefined;
-      const description = typeof action['description'] === 'string' && action['description'].trim() ? action['description'].slice(0, 220) : undefined;
-      const verification = typeof action['verification'] === 'string' && action['verification'].trim() ? action['verification'].slice(0, 180) : undefined;
+      const description = typeof action['description'] === 'string' && action['description'].trim() ? action['description'] : undefined;
+      const verification = typeof action['verification'] === 'string' && action['verification'].trim() ? action['verification'] : undefined;
       if (description === undefined && verification === undefined && !area && !addSubtasks && replaceSubtasks === undefined && !status) return undefined;
       return { type, stepId: action['stepId'], reason, description, verification, area, addSubtasks, replaceSubtasks, status };
     }
@@ -351,7 +349,7 @@ export function parseAction(raw: unknown): ParsedAction | undefined {
       return {
         type,
         tool,
-        params,
+        params: tool === 'run_command' ? normalizeCommandParams(params) : params,
         reason: String(action['reason'] ?? action['thought'] ?? ''),
         expected: String(action['expected'] ?? ''),
         stepId: typeof action['stepId'] === 'string' ? action['stepId'] : undefined,
@@ -365,8 +363,7 @@ export function parseAction(raw: unknown): ParsedAction | undefined {
       const freshness = action['freshness'];
       if (freshness !== undefined && freshness !== 'current' && freshness !== 'cached' && freshness !== 'force-refresh') return undefined;
       const reason = String(action['reason'] ?? action['thought'] ?? '')
-        .trim()
-        .slice(0, 240);
+        .trim();
       if (!reason) return undefined;
       return {
         type,
@@ -410,8 +407,7 @@ export function parseAction(raw: unknown): ParsedAction | undefined {
             ...(resourceType ? { resourceType } : {}),
             ...(resourceIdOrName ? { resourceIdOrName } : {}),
             reason: String(action['reason'] ?? action['thought'] ?? '')
-              .trim()
-              .slice(0, 240),
+              .trim(),
           };
         }
       }
@@ -424,8 +420,7 @@ export function parseAction(raw: unknown): ParsedAction | undefined {
         connectionId,
         operationId,
         reason: String(action['reason'] ?? action['thought'] ?? '')
-          .trim()
-          .slice(0, 240),
+          .trim(),
       };
     }
     case 'connection_discovery': {
@@ -447,8 +442,7 @@ export function parseAction(raw: unknown): ParsedAction | undefined {
             : undefined;
       const filters = action['filters'] && typeof action['filters'] === 'object' && !Array.isArray(action['filters']) ? (action['filters'] as Record<string, string>) : undefined;
       const reason = String(action['reason'] ?? action['thought'] ?? '')
-        .trim()
-        .slice(0, 240);
+        .trim();
       return {
         type: 'connection_discovery',
         connectionId,
@@ -475,8 +469,7 @@ export function parseAction(raw: unknown): ParsedAction | undefined {
         const body = action['body'] === undefined ? undefined : normalizeConnectionOperationBody(action['body'] ?? action['params'] ?? action['payload']);
         const reason = String(action['reason'] ?? action['thought'] ?? '')
           .replace(/\s+/g, ' ')
-          .trim()
-          .slice(0, 240);
+          .trim();
         if (!reason) return undefined;
         return { type, connectionId, operation, ...(body !== undefined ? { body } : {}), ...(documentationUrl ? { documentationUrl } : {}), reason };
       } catch {
@@ -507,7 +500,7 @@ export function parseAction(raw: unknown): ParsedAction | undefined {
           const task = String(t?.['task'] ?? '');
           const rawCrit = t?.['criteria'];
           const criteria = Array.isArray(rawCrit)
-            ? (rawCrit as unknown[]).map((c) => (typeof c === 'string' ? c : typeof c === 'object' && c !== null ? (c as CriterionSpec) : String(c))).slice(0, 10)
+            ? (rawCrit as unknown[]).map((c) => (typeof c === 'string' ? c : typeof c === 'object' && c !== null ? (c as CriterionSpec) : String(c)))
             : undefined;
           const rawResume = t?.['resume'];
           const resume =
@@ -520,8 +513,7 @@ export function parseAction(raw: unknown): ParsedAction | undefined {
               : undefined;
           return { agent, task, criteria, ...(resume?.jobId ? { resume } : {}) };
         })
-        .filter((t) => t.agent && t.task)
-        .slice(0, 6);
+        .filter((t) => t.agent && t.task);
       if (parsed.length === 0) return undefined;
       return { type, tasks: parsed, background: action['background'] === true };
     }
@@ -545,12 +537,12 @@ export function parseAction(raw: unknown): ParsedAction | undefined {
           question: typeof q['question'] === 'string' ? q['question'].trim() : '',
           header: typeof q['header'] === 'string' ? q['header'] : undefined,
           ...(q['kind'] === 'workspace' ? { kind: 'workspace' as const } : {}),
-          ...(typeof q['detail'] === 'string' ? { detail: q['detail'].trim().slice(0, 600) } : {}),
+          ...(typeof q['detail'] === 'string' ? { detail: q['detail'].trim() } : {}),
           options: normalizeQuestionOptions(q['options']),
         }))
         .filter((q) => q.question);
       if (parsed.length === 0) return undefined;
-      return { type, questions: parsed.slice(0, 4) };
+      return { type, questions: parsed };
     }
     case 'parallel': {
       const calls = action['calls'];
@@ -564,7 +556,7 @@ export function parseAction(raw: unknown): ParsedAction | undefined {
         }))
         .filter((c) => c.tool);
       if (parsedCalls.length < 2) return undefined;
-      return { type, calls: parsedCalls.slice(0, 6) };
+      return { type, calls: parsedCalls };
     }
     default:
       return undefined;

@@ -64,6 +64,13 @@ function isCachedInvestigation(action: ActionRecord): boolean {
   return action.status === 'success' && Boolean(action.observation?.startsWith(CACHED_INVESTIGATION_PREFIX));
 }
 
+/** Legacy ledgers kept previews, sometimes incorrectly stamped complete on
+ * cached replay. Only actual persisted source can satisfy an unchanged read. */
+export function hasCompleteReadObservation(action: ActionRecord): boolean {
+  return action.readObservationComplete !== false && Boolean(action.observation) &&
+    !/\n\.\.\. \[truncated \d+ chars\] \.\.\.(?:\n|$)/.test(action.observation ?? '');
+}
+
 /**
  * Find the newest command failure that still has no later PASS for the exact
  * same command identity. A successful diagnostic command with a different hash
@@ -147,10 +154,10 @@ export class LoopDetector {
     this.policy = { ...DEFAULT_LOOP_POLICY, ...policy };
   }
 
-  private lastCompactionActionId?: string;
-
-  noteCompaction(actionId?: string): void {
-    this.lastCompactionActionId = actionId;
+  noteCompaction(_actionId?: string): void {
+    // Compaction changes model history, not file contents or completed work.
+    // Durable observations can rehydrate the source through the cached replay;
+    // dropping their identities here creates an endless read/compact/read loop.
   }
 
   /**
@@ -162,18 +169,12 @@ export class LoopDetector {
    */
   reusableSuccessfulRead(actions: ActionRecord[], tool: string, paramsHash: string, contextFingerprint?: string): ActionRecord | undefined {
     if (tool !== 'read_file' || !contextFingerprint) return undefined;
-    const actionsForReuse = this.lastCompactionActionId
-      ? (() => {
-          const idx = actions.findIndex((a) => a.id === this.lastCompactionActionId);
-          return idx >= 0 ? actions.slice(idx + 1) : actions;
-        })()
-      : actions;
-    const sameAction = evidenceWindow(actionsForReuse, tool, paramsHash).filter(
+    const sameAction = evidenceWindow(actions, tool, paramsHash).filter(
       (a) => a.tool === tool && a.paramsHash === paramsHash && a.contextFingerprint === contextFingerprint,
     );
-    const cachedReplayExists = sameAction.some(isCachedInvestigation);
+    const cachedReplayExists = sameAction.some((a) => isCachedInvestigation(a) && hasCompleteReadObservation(a));
     if (cachedReplayExists) return undefined;
-    const realSuccesses = sameAction.filter((a) => a.status === 'success' && !isCachedInvestigation(a) && Boolean(a.observation));
+    const realSuccesses = sameAction.filter((a) => a.status === 'success' && !isCachedInvestigation(a) && hasCompleteReadObservation(a));
     return realSuccesses.length >= this.policy.maxSameSuccessfulRead ? realSuccesses.at(-1) : undefined;
   }
 
@@ -228,17 +229,8 @@ export class LoopDetector {
       // A repeated read is only redundant when its earlier observation is
       // complete, the exact requested range matches, and the file is still
       // the same version. Search/LSP/list calls do not carry this context.
-      const actionsForDuplication = this.lastCompactionActionId
-        ? (() => {
-            const idx = actions.findIndex((a) => a.id === this.lastCompactionActionId);
-            return idx >= 0 ? actions.slice(idx + 1) : actions;
-          })()
-        : actions;
-      const relevantSinceCompaction = evidenceWindow(actionsForDuplication, tool, paramsHash);
-      const sameActionSinceCompaction = relevantSinceCompaction.filter((a) => a.tool === tool && a.paramsHash === paramsHash);
-
       const successfulReads = tool === 'read_file' && contextFingerprint
-        ? sameActionSinceCompaction.filter((a) => a.status === 'success' && a.contextFingerprint === contextFingerprint && Boolean(a.observation))
+        ? sameAction.filter((a) => a.status === 'success' && a.contextFingerprint === contextFingerprint && hasCompleteReadObservation(a))
         : [];
       const pressure = this.investigationPressure(actions);
       const adaptiveMaxReads = Math.max(

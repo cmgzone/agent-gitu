@@ -43,6 +43,11 @@ export interface AcceptanceCriterion {
   text: string;
   /** When set, the criterion can ONLY be satisfied by evidence from this exact command. */
   verification?: string;
+  /** Earlier descriptive guidance retained when an executable oracle is bound. */
+  verificationInstructions?: string;
+  /** Audited changes to model-selected checks; user-pinned checks stay fixed. */
+  verificationHistory?: { command: string; reason: string }[];
+  verificationUserPinned?: boolean;
   /** Expected evidence type. Default: 'any' (any passing evidence). */
   evidenceType?: CriterionEvidenceType;
   evidenceIds: string[];
@@ -50,6 +55,15 @@ export interface AcceptanceCriterion {
 }
 
 export type EvidenceKind = 'test' | 'build' | 'lint' | 'typecheck' | 'command' | 'diff' | 'manual' | 'log' | 'file';
+
+export interface VerificationScope {
+  paths: string[];
+  reason: string;
+  /** Host-computed identity of the declared inputs and project configuration. */
+  fingerprint: string;
+  /** Full workspace version for which the host last confirmed those inputs. */
+  validatedFor?: string;
+}
 
 export interface Evidence {
   id: string;
@@ -62,6 +76,7 @@ export interface Evidence {
   artifactPath?: string;
   createdAt: string;
   workspaceFingerprint?: string;
+  verificationScope?: VerificationScope;
   stale?: boolean;
   /** Identity hash of the evidence itself (command + outcome + workspace +
    *  time + output). Lets a parent detect replayed / recycled evidence. */
@@ -122,6 +137,7 @@ export interface ActionRecord {
   observationOnly?: boolean;
   /** Host-computed workspace version inspected by a successful browser look. */
   verifiedWorkspaceFingerprint?: string;
+  verificationScope?: VerificationScope;
   id: string;
   stepId?: string;
   tool: string;
@@ -671,6 +687,11 @@ export type InvestigationDepth =
 
 export interface TaskLedgerData {
   schemaVersion: 1;
+  /** Durable execution ownership; changing providers requires an explicit continuation. */
+  execution?: {
+    mode: 'gitu' | 'codex-native' | 'codex-legacy';
+    native?: { threadId: string; turnId?: string; cwd: string; toolExecution?: 'gitu-guarded'; phaseId?: string; status: 'starting' | 'running' | 'completed' | 'interrupted' | 'failed'; planStepIds?: string[]; processedItems: string[]; model?: string; requestedEffort?: string; effectiveEffort?: string };
+  };
   taskId: string;
   goal: string;
   status: TaskStatus;

@@ -13,6 +13,14 @@ const config: CodexExecThreadConfig = {
 };
 
 describe('Codex exec transport', () => {
+  it('passes the required response schema on fresh and resumed requests', () => {
+    for (const thread of [undefined, 'thread-1']) {
+      const { args } = execTurnArgs(config, 'Act', thread, 'C:\\temp\\response-schema.json');
+      const at = args.indexOf('--output-schema');
+      expect(args.slice(at, at + 2)).toEqual(['--output-schema', 'C:\\temp\\response-schema.json']);
+      if (thread) expect(at).toBeLessThan(args.indexOf('resume'));
+    }
+  });
   it('always detaches the turn from the user Codex configuration', () => {
     const { args } = execTurnArgs(config, [{ type: 'text', text: 'Hello' }]);
     expect(args.slice(0, 3)).toEqual(['exec', '--experimental-json', '--ignore-user-config']);

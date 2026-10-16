@@ -51,6 +51,7 @@ export function recoveringLlm(client: LlmClient, recovery: {
     }
   };
   return {
+    get nativeTask() { return client.nativeTask; },
     name: client.name,
     rateLimitKey: client.rateLimitKey,
     get lastReasoning() { return client.lastReasoning; },

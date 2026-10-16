@@ -62,16 +62,15 @@ export class CoworkMemory {
       return hits.map((e) => `[${e.type}] ${e.claim}`).join('\n');
     }
     const own = this.memory
-      .query({ limit: 50 }, ctx)
-      .filter((e) => e.agentId === this.identity(agent) && e.status !== 'archived' && e.status !== 'superseded')
-      .slice(0, 20);
+      .query({}, ctx)
+      .filter((e) => e.agentId === this.identity(agent) && e.status !== 'archived' && e.status !== 'superseded');
     if (own.length === 0) return 'Your memory is empty — use action "remember" to persist durable knowledge about the user and your work.';
     return own.map((e, i) => `${i + 1}. [${e.type}] ${e.claim}`).join('\n');
   }
 
   forget(agent: CoworkAgent, query: string): number {
     const matches = this.memory
-      .query({ text: query.trim(), limit: 50 }, this.ctx(agent))
+      .query({ text: query.trim() }, this.ctx(agent))
       .filter((e) => e.agentId === this.identity(agent) && e.status !== 'archived' && e.status !== 'superseded');
     for (const entry of matches) this.memory.archive(entry.id);
     return matches.length;
@@ -89,23 +88,22 @@ export class CoworkMemory {
 
   count(agent: CoworkAgent): number {
     return this.memory
-      .query({ limit: 500 }, this.ctx(agent))
+      .query({}, this.ctx(agent))
       .filter((e) => e.agentId === this.identity(agent) && e.status !== 'archived' && e.status !== 'superseded').length;
   }
 
   entries(agent: CoworkAgent, query = ''): MemoryEntry[] {
-    return this.memory.query({ text: query.slice(0, 100), limit: 2000 }, this.ctx(agent))
-      .filter(entry => entry.agentId === this.identity(agent) && entry.status !== 'archived' && entry.status !== 'superseded')
-      .slice(0, 500);
+    return this.memory.query({ text: query }, this.ctx(agent))
+      .filter(entry => entry.agentId === this.identity(agent) && entry.status !== 'archived' && entry.status !== 'superseded');
   }
 
   details(agent: CoworkAgent, id: string): ReturnType<MemoryStore['explain']> | undefined {
-    const visible = this.memory.query({ limit: 2000 }, this.ctx(agent)).some(entry => entry.id === id && entry.agentId === this.identity(agent));
+    const visible = this.memory.query({}, this.ctx(agent)).some(entry => entry.id === id && entry.agentId === this.identity(agent));
     return visible ? this.memory.explain(id) : undefined;
   }
 
   async correct(agent: CoworkAgent, id: string, claim: string, expectedUpdatedAt?: string): Promise<MemoryEntry> {
-    if (!claim.trim() || claim.length > 4000) throw new Error('Enter memory text of 1–4000 characters.');
+    if (!claim.trim()) throw new Error('Enter nonempty memory text.');
     return this.memory.withLock(() => {
       const old = this.entries(agent).find(entry => entry.id === id);
       if (!old) throw new Error('Memory not found.');

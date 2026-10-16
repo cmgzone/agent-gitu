@@ -2,6 +2,7 @@ import type { TaskLedger } from '../ledger/task-ledger.js';
 import type { CompletionReport, VerificationReportItem } from '../types.js';
 import { nowIso } from '../util.js';
 import { scoreRunQuality } from '../agent/quality-metrics.js';
+import { evidenceMatchesWorkspace, latestVerificationEvidence } from '../evidence/evidence.js';
 
 function isReportableFile(file: string): boolean {
   const normalized = file.replace(/\\/g, '/').replace(/^\.\//, '');
@@ -63,7 +64,7 @@ export class Reporter {
     const latestAtFinal = new Map<string, string>();
     if (finalWorkspaceFingerprint) {
       for (const e of phaseEvidence) {
-        if (e.workspaceFingerprint === finalWorkspaceFingerprint) {
+        if (evidenceMatchesWorkspace(e, finalWorkspaceFingerprint) && (!e.command || latestVerificationEvidence({ evidence: phaseEvidence }, e.command, finalWorkspaceFingerprint)?.id === e.id)) {
           latestAtFinal.set(e.command || `${e.kind}:${e.label}`, e.id);
         }
       }

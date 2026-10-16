@@ -52,6 +52,7 @@ export function execTurnArgs(
   config: CodexExecThreadConfig,
   input: CodexExecInput,
   threadId?: string,
+  outputSchemaFile?: string,
 ): { args: string[]; prompt: string; images: string[] } {
   const prompt: string[] = [];
   const images: string[] = [];
@@ -79,6 +80,7 @@ export function execTurnArgs(
     '--config', `web_search="${config.webSearchMode}"`,
     '--config', `approval_policy="${config.approvalPolicy}"`,
   ];
+  if (outputSchemaFile) args.push('--output-schema', outputSchemaFile);
   // Same resume form the SDK emits; a continued turn keeps one session.
   if (threadId) args.push('resume', threadId);
   for (const image of images) args.push('--image', image);
@@ -91,12 +93,12 @@ export class CodexExecThread {
 
   constructor(private readonly config: CodexExecThreadConfig) {}
 
-  runStreamed(input: CodexExecInput, turnOptions: { signal?: AbortSignal } = {}): { events: AsyncGenerator<CodexExecEvent> } {
-    return { events: this.stream(input, turnOptions.signal) };
+  runStreamed(input: CodexExecInput, turnOptions: { signal?: AbortSignal; outputSchemaFile?: string } = {}): { events: AsyncGenerator<CodexExecEvent> } {
+    return { events: this.stream(input, turnOptions.signal, turnOptions.outputSchemaFile) };
   }
 
-  private async *stream(input: CodexExecInput, signal?: AbortSignal): AsyncGenerator<CodexExecEvent> {
-    const { args, prompt } = execTurnArgs(this.config, input, this.id);
+  private async *stream(input: CodexExecInput, signal?: AbortSignal, outputSchemaFile?: string): AsyncGenerator<CodexExecEvent> {
+    const { args, prompt } = execTurnArgs(this.config, input, this.id, outputSchemaFile);
     const env: NodeJS.ProcessEnv = {};
     for (const [key, value] of Object.entries(process.env)) {
       if (value !== undefined) env[key] = value;
@@ -113,8 +115,10 @@ export class CodexExecThread {
     child.once('error', (err) => {
       spawnError = err;
     });
-    const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
-      child.once('exit', (code, exitSignal) => resolve({ code, signal: exitSignal }));
+    // `exit` precedes stdio teardown. Wait for `close` before the caller removes
+    // the working directory, including cancellation and early iterator return.
+    const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      child.once('close', (code, exitSignal) => resolve({ code, signal: exitSignal }));
     });
     const stderr: Buffer[] = [];
     child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
@@ -132,19 +136,20 @@ export class CodexExecThread {
         yield event;
       }
       if (spawnError) throw spawnError;
-      const { code, signal: exitSignal } = await exited;
+      const { code, signal: exitSignal } = await closed;
       if (code !== 0 || exitSignal) {
         const detail = exitSignal ? `signal ${exitSignal}` : `code ${code ?? 1}`;
         throw new Error(`Codex Exec exited with ${detail}: ${Buffer.concat(stderr).toString('utf8')}`);
       }
     } finally {
       lines.close();
-      child.removeAllListeners();
       try {
-        if (!child.killed) child.kill();
+        if (!child.killed && child.exitCode === null && child.signalCode === null) child.kill();
       } catch {
         /* already gone */
       }
+      await closed;
+      child.removeAllListeners();
     }
   }
 }

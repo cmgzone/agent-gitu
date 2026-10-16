@@ -33,6 +33,47 @@ function emptyLedger(): TaskLedgerData {
 }
 
 describe('EvidenceEngine', () => {
+  it('refuses partial or unknown workspace coverage as proof of freshness', () => {
+    const engine = new EvidenceEngine(),
+      ledger = emptyLedger();
+    const ev = engine.record(ledger, {
+      kind: 'test',
+      label: 'Tests',
+      command: 'npm test',
+      passed: true,
+      exitCode: 0,
+      output: 'pass',
+      workspaceFingerprint: 'partial-same-for-unscanned-edits',
+    });
+    expect(engine.link(ledger, 'ac-1', ev.id, ev.workspaceFingerprint).ok).toBe(false);
+    Object.assign(ledger.acceptanceCriteria[0]!, { satisfied: true, evidenceIds: [ev.id] });
+    expect(engine.gate(ledger, ev.workspaceFingerprint).open).toBe(false);
+  });
+  it('rechecks persisted links against the current command and evidence type', () => {
+    const engine = new EvidenceEngine();
+    const ledger = emptyLedger();
+    ledger.acceptanceCriteria = EvidenceEngine.criteriaFromSpecs([{ text: 'Regression passes', verification: 'npm test', evidenceType: 'test_success' }]);
+    const ev = engine.record(ledger, { kind: 'typecheck', command: 'npx tsc --noEmit', label: 'Typecheck', passed: true, exitCode: 0, output: 'ok' });
+    Object.assign(ledger.acceptanceCriteria[0]!, { satisfied: true, evidenceIds: [ev.id] });
+    expect(engine.gate(ledger).open).toBe(false);
+    ledger.acceptanceCriteria[0]!.verification = 'npx tsc --noEmit';
+    expect(engine.gate(ledger).open).toBe(false);
+  });
+
+  it('does not accept an older pass after a newer failure at the same workspace', () => {
+    const engine = new EvidenceEngine();
+    const ledger = emptyLedger();
+    ledger.acceptanceCriteria = EvidenceEngine.criteriaFromSpecs([{ text: 'Regression passes', verification: 'npm test', evidenceType: 'test_success' }]);
+    const pass = engine.record(ledger, { kind: 'test', command: 'npm test', label: 'Tests', passed: true, exitCode: 0, output: 'pass', workspaceFingerprint: 'workspace' });
+    expect(engine.link(ledger, 'ac-1', pass.id, 'workspace').ok).toBe(true);
+    engine.record(ledger, { kind: 'test', command: 'npm test', label: 'Tests', passed: false, exitCode: 1, output: 'fail', workspaceFingerprint: 'workspace' });
+    expect(engine.gate(ledger, 'workspace').open).toBe(false);
+    expect(engine.link(ledger, 'ac-1', pass.id, 'workspace').ok).toBe(false);
+    const repaired = engine.record(ledger, { kind: 'test', command: 'npm test', label: 'Tests', passed: true, exitCode: 0, output: 'pass', workspaceFingerprint: 'workspace' });
+    expect(engine.link(ledger, 'ac-1', repaired.id, 'workspace').ok).toBe(true);
+    expect(engine.gate(ledger, 'workspace').open).toBe(true);
+  });
+
   it('keeps the gate closed until every criterion has passing evidence', () => {
     const engine = new EvidenceEngine();
     const ledger = emptyLedger();
@@ -123,8 +164,8 @@ describe('manufactured evidence rejection', () => {
   it.each([
     'npm test',
     'node --version',
-    'node -e "const fs=require(\'fs\');if(!fs.existsSync(\'package.json\'))process.exit(1);console.log(\'PASS\')"',
-    'node -e "const{spawnSync}=require(\'child_process\');const r=spawnSync(\'npm\',[\'test\']);if(r.status)process.exit(1);console.log(\'PASS\')"',
+    "node -e \"const fs=require('fs');if(!fs.existsSync('package.json'))process.exit(1);console.log('PASS')\"",
+    "node -e \"const{spawnSync}=require('child_process');const r=spawnSync('npm',['test']);if(r.status)process.exit(1);console.log('PASS')\"",
     'powershell -Command "if (-not (Test-Path package.json)) { exit 1 }; Write-Output PASS"',
   ])('keeps falsifiable verification eligible: %s', (command) => {
     expect(isManufacturedEvidenceCommand(command)).toBe(false);
@@ -134,9 +175,7 @@ describe('manufactured evidence rejection', () => {
     const engine = new EvidenceEngine();
     const ledger = emptyLedger();
     const command = 'node -e "process.stdout.write(\'STEP6_CONTRACT_PASS\')"';
-    ledger.acceptanceCriteria = EvidenceEngine.criteriaFromSpecs([
-      { text: 'recovery contract works', verification: command, evidenceType: 'command_success' },
-    ]);
+    ledger.acceptanceCriteria = EvidenceEngine.criteriaFromSpecs([{ text: 'recovery contract works', verification: command, evidenceType: 'command_success' }]);
     const ev = engine.record(ledger, { kind: 'command', label: command, command, passed: true, output: 'STEP6_CONTRACT_PASS' });
 
     const claim = engine.link(ledger, 'ac-1', ev.id);
@@ -164,9 +203,7 @@ describe('structured criteria — evidence relevance checking', () => {
   it('rejects evidence whose command does not match the required verification', () => {
     const engine = new EvidenceEngine();
     const ledger = emptyLedger();
-    ledger.acceptanceCriteria = EvidenceEngine.criteriaFromSpecs([
-      { text: 'TypeScript compiles', verification: 'npx tsc --noEmit', evidenceType: 'typecheck_success' },
-    ]);
+    ledger.acceptanceCriteria = EvidenceEngine.criteriaFromSpecs([{ text: 'TypeScript compiles', verification: 'npx tsc --noEmit', evidenceType: 'typecheck_success' }]);
 
     const ev = engine.record(ledger, {
       kind: 'typecheck',
@@ -186,9 +223,7 @@ describe('structured criteria — evidence relevance checking', () => {
   it('rejects evidence whose kind does not match the required evidence type', () => {
     const engine = new EvidenceEngine();
     const ledger = emptyLedger();
-    ledger.acceptanceCriteria = EvidenceEngine.criteriaFromSpecs([
-      { text: 'Auth tests pass', verification: 'npm test -- auth', evidenceType: 'test_success' },
-    ]);
+    ledger.acceptanceCriteria = EvidenceEngine.criteriaFromSpecs([{ text: 'Auth tests pass', verification: 'npm test -- auth', evidenceType: 'test_success' }]);
 
     // Correct command but wrong kind classification
     const ev = engine.record(ledger, {
@@ -208,9 +243,7 @@ describe('structured criteria — evidence relevance checking', () => {
   it('accepts evidence when both command and kind match', () => {
     const engine = new EvidenceEngine();
     const ledger = emptyLedger();
-    ledger.acceptanceCriteria = EvidenceEngine.criteriaFromSpecs([
-      { text: 'Auth tests pass', verification: 'npm test -- auth', evidenceType: 'test_success' },
-    ]);
+    ledger.acceptanceCriteria = EvidenceEngine.criteriaFromSpecs([{ text: 'Auth tests pass', verification: 'npm test -- auth', evidenceType: 'test_success' }]);
 
     const ev = engine.record(ledger, {
       kind: 'test',
@@ -249,9 +282,7 @@ describe('structured criteria — evidence relevance checking', () => {
   it('rejects evidence with no command when criterion requires verification', () => {
     const engine = new EvidenceEngine();
     const ledger = emptyLedger();
-    ledger.acceptanceCriteria = EvidenceEngine.criteriaFromSpecs([
-      { text: 'Tests pass', verification: 'npm test', evidenceType: 'test_success' },
-    ]);
+    ledger.acceptanceCriteria = EvidenceEngine.criteriaFromSpecs([{ text: 'Tests pass', verification: 'npm test', evidenceType: 'test_success' }]);
 
     // Manual evidence (no command)
     const ev = engine.record(ledger, {
@@ -282,10 +313,7 @@ describe('structured criteria — evidence relevance checking', () => {
   });
 
   it('normalizeCriteria converts mixed strings and specs', () => {
-    const specs = EvidenceEngine.normalizeCriteria([
-      'plain text criterion',
-      { text: 'structured criterion', verification: 'npm test', evidenceType: 'test_success' },
-    ]);
+    const specs = EvidenceEngine.normalizeCriteria(['plain text criterion', { text: 'structured criterion', verification: 'npm test', evidenceType: 'test_success' }]);
 
     expect(specs).toHaveLength(2);
     expect(specs[0]!.text).toBe('plain text criterion');
@@ -338,9 +366,7 @@ describe('lying-specialist regression', () => {
   it('rejects irrelevant evidence: node --version cannot satisfy "JWT authentication works"', () => {
     const engine = new EvidenceEngine();
     const ledger = emptyLedger();
-    ledger.acceptanceCriteria = EvidenceEngine.criteriaFromSpecs([
-      { text: 'JWT authentication works', verification: 'npm test -- auth', evidenceType: 'test_success' },
-    ]);
+    ledger.acceptanceCriteria = EvidenceEngine.criteriaFromSpecs([{ text: 'JWT authentication works', verification: 'npm test -- auth', evidenceType: 'test_success' }]);
 
     // Specialist runs an irrelevant command
     const fakeEvidence = engine.record(ledger, {
@@ -366,9 +392,7 @@ describe('lying-specialist regression', () => {
   it('rejects command injection: "npm test -- auth && echo hacked" cannot satisfy the criterion', () => {
     const engine = new EvidenceEngine();
     const ledger = emptyLedger();
-    ledger.acceptanceCriteria = EvidenceEngine.criteriaFromSpecs([
-      { text: 'Auth tests pass', verification: 'npm test -- auth', evidenceType: 'test_success' },
-    ]);
+    ledger.acceptanceCriteria = EvidenceEngine.criteriaFromSpecs([{ text: 'Auth tests pass', verification: 'npm test -- auth', evidenceType: 'test_success' }]);
 
     const injectedEvidence = engine.record(ledger, {
       kind: 'test',
@@ -390,9 +414,7 @@ describe('lying-specialist regression', () => {
   it('accepts relevant evidence when the correct verification is run', () => {
     const engine = new EvidenceEngine();
     const ledger = emptyLedger();
-    ledger.acceptanceCriteria = EvidenceEngine.criteriaFromSpecs([
-      { text: 'JWT authentication works', verification: 'npm test -- auth', evidenceType: 'test_success' },
-    ]);
+    ledger.acceptanceCriteria = EvidenceEngine.criteriaFromSpecs([{ text: 'JWT authentication works', verification: 'npm test -- auth', evidenceType: 'test_success' }]);
 
     // Specialist runs the CORRECT command
     const realEvidence = engine.record(ledger, {

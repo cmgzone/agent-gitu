@@ -9,12 +9,15 @@ import { TaskLedger } from '../ledger/task-ledger.js';
 import { extractJson, LlmError, parseXmlFunctionCall, type LlmClient, type LlmMessage } from '../llm/llm.js';
 import { resilientLlm } from '../llm/resilient.js';
 import { DEFAULT_LOOP_POLICY, LoopDetector } from '../loop/loop-detector.js';
+import { deadline } from '../tools/command-timeout.js';
+import { formatToolOutput } from './tool-output.js';
 import { MalformedCallTracker, malformedIntervention, malformedKindFor } from '../loop/malformed-tracker.js';
 import { malformedPolicyFor, resolveAutonomy, type AutonomyPolicy } from './autonomy.js';
 import { PolicyEngine } from '../policy/policy.js';
 import { KNOWN_TOOL_NAMES, runtimeToolNames, commandResultSource, isCommandPending } from '../tools/tools.js';
 import { buildSpecialistEvidenceReport, type SpecialistEvidenceReport } from './specialist-evidence.js';
 import { MemoryStore } from '../memory/memory-store.js';
+import { runNativeCodexTask } from '../coding/native-codex-supervisor.js';
 import {
   captureGitCheckpoint,
   delegatedTaskHash,
@@ -109,13 +112,11 @@ export interface SubAgentRunnerDeps {
   maxConcurrent?: number;
   /** Base turn budget before dynamic extension. Default 30. */
   baseTurns?: number;
-  /** Maximum turns ceiling for dynamic execution. Default 150. */
+  /** Optional host-selected ceiling for dynamic execution; default unrestricted. */
   hardCeilingTurns?: number;
   /**
-   * Hard wall-clock limit for a single specialist model turn.  This is a
-   * watchdog around providers such as the local Codex subscription client,
-   * whose streaming request can otherwise wait forever if its transport stops
-   * producing events. Default: eight minutes.
+   * Optional host-selected watchdog for a specialist model turn.
+   * Unset or zero leaves it running until completion or cancellation.
    */
   turnTimeoutMs?: number;
   /** When the project is a git repo, run each specialist in its own worktree and merge back on success (default true). */
@@ -139,16 +140,16 @@ export interface SubAgentRunnerDeps {
 }
 
 const DEFAULT_BASE_TURNS = 30;
-const DEFAULT_HARD_CEILING_TURNS = 150;
+const DEFAULT_HARD_CEILING_TURNS = Infinity;
 /**
  * How many times one specialist lane may reset a stuck streak before it reports
  * a blocker. Bounds is the lane's own ceiling and the parent's budget, so this
  * only exists to stop a lane that cannot make progress from spinning forever.
  */
-const MAX_LANE_RECOVERIES = 4;
-const MAX_CONCURRENT_SUBAGENTS = 5;
-const DEFAULT_SPECIALIST_TURN_TIMEOUT_MS = 8 * 60_000;
-const MAX_SPECIALIST_TURN_TIMEOUT_MS = 15 * 60_000;
+const MAX_LANE_RECOVERIES = Infinity;
+const MAX_CONCURRENT_SUBAGENTS = Infinity;
+const DEFAULT_SPECIALIST_TURN_TIMEOUT_MS = 0;
+const MAX_SPECIALIST_TURN_TIMEOUT_MS = Infinity;
 
 /** Finished jobs stay queryable for this long, then their memory is freed. */
 const JOB_RETENTION_MS = 10 * 60_000;
@@ -225,12 +226,12 @@ function completeSpecialistTurn(
   return new Promise((resolve, reject) => {
     const controller = new AbortController();
     let settled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let timer: (() => void) | undefined;
 
     const cleanup = (): boolean => {
       if (settled) return false;
       settled = true;
-      if (timer) clearTimeout(timer);
+      timer?.();
       parentSignal.removeEventListener('abort', onParentAbort);
       return true;
     };
@@ -251,11 +252,11 @@ function completeSpecialistTurn(
       return;
     }
     parentSignal.addEventListener('abort', onParentAbort, { once: true });
-    timer = setTimeout(() => {
+    timer = deadline(timeoutMs, () => {
       const error = new Error(`Specialist turn timed out after ${timeoutMs}ms without a model response.`);
       controller.abort(error);
       fail(error);
-    }, timeoutMs);
+    });
 
     void llm
       .complete(messages, { temperature: 0.2, effort: opts.effort, signal: controller.signal })
@@ -996,11 +997,12 @@ export class SubAgentRunner {
     let summary = '';
     let ok = false;
     let status: SpecialistStatus = 'FAILED';
-    let turnBudget = this.deps.baseTurns ?? DEFAULT_BASE_TURNS;
-    const hardCeiling = this.deps.hardCeilingTurns ?? DEFAULT_HARD_CEILING_TURNS;
+    const autonomy = resolveAutonomy(this.deps.autonomy);
+    const hardCeiling = Math.min(this.deps.hardCeilingTurns ?? DEFAULT_HARD_CEILING_TURNS, autonomy.maxTurns ?? Infinity);
+    let turnBudget = Math.min(this.deps.baseTurns ?? DEFAULT_BASE_TURNS, hardCeiling);
     const rawTurnTimeout = Number(this.deps.turnTimeoutMs ?? DEFAULT_SPECIALIST_TURN_TIMEOUT_MS);
     const turnTimeoutMs = Number.isFinite(rawTurnTimeout)
-      ? Math.max(10, Math.min(MAX_SPECIALIST_TURN_TIMEOUT_MS, Math.floor(rawTurnTimeout)))
+      ? Math.max(0, Math.floor(rawTurnTimeout))
       : DEFAULT_SPECIALIST_TURN_TIMEOUT_MS;
     const filesInspected = new Set<string>();
     const filesChanged = new Set<string>(resumedFrom?.filesChanged ?? []);
@@ -1011,7 +1013,6 @@ export class SubAgentRunner {
     // missing executable actions can stop this lane.
     let consecutiveNoAction = 0;
     let consecutiveErrors = 0;
-    const autonomy = resolveAutonomy(this.deps.autonomy);
     const malformed = new MalformedCallTracker(malformedPolicyFor(autonomy));
     // Approach changes already spent by this lane (see MAX_LANE_RECOVERIES).
     let laneRecoveries = 0;
@@ -1026,19 +1027,21 @@ export class SubAgentRunner {
     try {
       const guard = ProjectGuard.detect(workRoot);
       projectScope = guard.lock.name;
-      ledger = TaskLedger.create({
+      const nativeResumeLedger = llm.nativeTask && resumedFrom ? TaskLedger.list(workRoot).find(candidate => candidate.data.execution?.mode === 'codex-native' && candidate.activeWorkPhase()?.goal === task) : undefined;
+      ledger = nativeResumeLedger ?? TaskLedger.create({
         repoRoot: workRoot,
         goal: `[subagent:${name}] ${task.slice(0, 120)}`,
         project: guard.lock,
         mode: 'fast',
         activeSkills: selectedSkills.map((skill) => skill.name),
       });
+      if (nativeResumeLedger) { ledger.data.blockers = []; ledger.data.report = undefined; ledger.save(); }
       ledger.setSelectedSkills(selectedSkills);
       for (const identity of selectedSkills) {
         ledger.recordSkillEvent({ stage: 'selected', name: identity.name, version: identity.version, contentHash: identity.contentHash, scope: identity.scope, specialist: name, reason: recoveredCheckpoint ? 'checkpoint skill state matched' : 'specialist contextual selection' });
       }
       const evidenceEngine = new EvidenceEngine();
-      if (rawCriteria && rawCriteria.length > 0) {
+      if (rawCriteria && rawCriteria.length > 0 && !nativeResumeLedger) {
         const specs = EvidenceEngine.normalizeCriteria(rawCriteria);
         ledger.setCriteriaFromSpecs(specs);
       }
@@ -1255,7 +1258,20 @@ export class SubAgentRunner {
         }
       };
 
-      for (let turn = 0; turn < turnBudget; turn++) {
+      if (llm.nativeTask) {
+        ledger.ensureInitialWorkPhase(task);
+        turnsUsed = 1; job.turn = 1;
+        const native = await runNativeCodexTask({ config: { cwd: workRoot, llm, mode: 'fast', requirePlanReview: false, autoLearn: false, skills: specialistSkills, criteria: EvidenceEngine.normalizeCriteria(rawCriteria ?? []), memoryRetrieval: { requestingAgentId: name, missionId: this.deps.missionId, projectId: projectScope }, onEvent: line => { emit(`subagent ${name}: ${line}`); this.publishJob(job, 'working', line); } }, guard, ledger, memory: this.deps.memory ?? MemoryStore.forProject(workRoot), policy, signal: job.abortController.signal, goal: task, message: job.spec.resume?.note ?? task });
+        summary = native.report.summary;
+        ok = native.report.status === 'complete';
+        status = ok ? 'SUCCESS' : native.report.status === 'aborted' ? 'CANCELLED' : 'PARTIAL_SUCCESS';
+        stopReason = ok ? 'completed' : 'task_failed';
+        for (const file of ledger.data.filesChanged) filesChanged.add(file);
+        for (const action of ledger.data.actions) if (action.tool === 'read_file' && action.status === 'success') filesInspected.add(action.paramsSummary.replace(/^read\s+/, ''));
+        evidenceIds.push(...ledger.data.evidence.map(e => e.id));
+        blockers.push(...ledger.data.blockers);
+      }
+      for (let turn = 0; !llm.nativeTask && turn < turnBudget; turn++) {
         turnsUsed = turn + 1;
         job.turn = turnsUsed;
         emit(`subagent ${name} [running] ${job.id} — turn ${turnsUsed}/${turnBudget}`);
@@ -1357,7 +1373,7 @@ export class SubAgentRunner {
             }
           }
 
-          summary = String(action['summary'] ?? '').slice(0, 4000);
+          summary = String(action['summary'] ?? '');
           status = 'SUCCESS';
           ok = true;
           stopReason = 'completed';
@@ -1499,7 +1515,7 @@ export class SubAgentRunner {
           messages.push({
             role: 'user',
             content:
-              `RESULT [${outcome.result.ok ? 'success' : 'error'}] ${outcome.record.paramsSummary}\n${outcome.result.output.slice(0, 3000)}${evidenceNote}` +
+              `RESULT [${outcome.result.ok ? 'success' : 'error'}] ${outcome.record.paramsSummary}\n${formatToolOutput(outcome.record.tool, outcome.result.output)}${evidenceNote}` +
               (malformed.currentStreak >= 3 ? `\n${malformedIntervention(malformed.currentStreak, toolName)}` : '') +
               recoveryNote,
           });

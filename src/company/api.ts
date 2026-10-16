@@ -120,7 +120,6 @@ export async function companyApi(req: IncomingMessage, res: ServerResponse, path
         activity: d.activity?.() ?? [],
         jobs: activeJobs
           .filter((j) => j.version === company!.directionVersion || j.payload['delivery'] === 'question')
-          .slice(0, 50)
           .map((j) => {
             const mission = j.kind === 'mission' ? cowork.missions().find((m) => m.id === j.payload['missionId']) : undefined;
             return {
@@ -129,7 +128,7 @@ export async function companyApi(req: IncomingMessage, res: ServerResponse, path
               state: j.state,
               agentId: mission?.agentId ?? j.payload['agentId'] ?? company!.leadId,
               missionId: mission?.id,
-              task: String(mission?.goal ?? (j.kind === 'review' ? 'Review company work' : (j.payload['text'] ?? j.payload['note'] ?? company!.direction))).slice(0, 1000),
+              task: String(mission?.goal ?? (j.kind === 'review' ? 'Review company work' : (j.payload['text'] ?? j.payload['note'] ?? company!.direction))),
             };
           }),
         missions: cowork
@@ -298,7 +297,7 @@ export async function companyApi(req: IncomingMessage, res: ServerResponse, path
       else if (method === 'POST') {
         const body = await d.body(req);
         if (company!.state !== 'running') throw new Error('Resume the company before delivering an event.');
-        const job = store.enqueue(company!.id, 'review', { event: String(body['summary'] ?? 'Connection resources changed.').slice(0, 1000) }, 'review');
+        const job = store.enqueue(company!.id, 'review', { event: String(body['summary'] ?? 'Connection resources changed.') }, 'review');
         d.start();
         send(res, 202, { job });
       } else send(res, 405, { error: 'Method not allowed.' });

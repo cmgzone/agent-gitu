@@ -120,6 +120,17 @@ export const COWORK_CSS = String.raw`
   .cw-rail-foot .btn { flex: 1; padding: 6px 10px; font-size: 12px; }
   .cw-empty-note { font-size: 11.5px; color: var(--muted); padding: 8px 6px 4px; line-height: 1.5; }
   .cw-chat { position: relative; flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .cw-teammate-switcher { position:absolute; top:122px; right:12px; z-index:4; display:flex; flex-direction:column; gap:6px; width:52px; max-height:calc(100% - var(--cw-composer-height,148px) - 146px); padding:4px; box-sizing:border-box; overflow-y:auto; overscroll-behavior:contain; scrollbar-width:none; }
+  .cw-teammate-switcher[hidden] { display:none; }
+  .cw-teammate-switcher::-webkit-scrollbar { display:none; }
+  .cw-quick-agent { display:grid; place-items:center; flex:none; width:44px; height:44px; padding:3px; border:0; border-radius:50%; background:transparent; cursor:pointer; opacity:.45; filter:saturate(.65); transition:opacity .18s ease,filter .18s ease; }
+  .cw-quick-agent .cw-ava { width:38px; height:38px; background:transparent!important; }
+  .cw-quick-agent:hover,.cw-quick-agent:focus-visible { opacity:1; filter:none; }
+  .cw-quick-agent:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+  .cw-quick-agent:disabled { cursor:wait; opacity:.25; }
+  .cw .cw-chat.has-teammate-switcher .cw-msgs { padding-right:max(76px,calc((100% - 760px)/2)); }
+  @media(max-width:720px) { .cw-teammate-switcher { right:6px; }.cw .cw-chat.has-teammate-switcher .cw-msgs { padding-right:68px; } }
+  @media(prefers-reduced-motion:reduce) { .cw-quick-agent { transition:none; } }
   .cw-composer-wrap { flex-shrink: 0; }
   .cw-jump-latest { position:absolute; z-index:3; left:50%; bottom:90px; transform:translateX(-50%); display:inline-flex; align-items:center; justify-content:center; width:36px; height:36px; padding:0; border:1px solid var(--border2); border-radius:50%; color:var(--text); background:color-mix(in srgb,var(--bg) 85%,transparent); backdrop-filter:blur(12px); box-shadow:var(--shadow-float); }
   .cw-jump-latest[hidden] { display:none; }
@@ -1097,6 +1108,7 @@ export const COWORK_JS = String.raw`
   function cwRenderRail() {
     cwRenderNow();
     cwRenderWidgets();
+    cwRenderTeammateSwitcher();
     var cw = cwEnsure();
     var el = $('cwRail');
     var cwRoot = $('cw');
@@ -1202,13 +1214,30 @@ export const COWORK_JS = String.raw`
     }
   }
 
+  function cwRenderTeammateSwitcher() {
+    var host=$('cwTeammateSwitcher'),chat=$('cwChat');
+    if(!host||!chat)return;
+    var cw=cwEnsure(),conv=cwActiveConv(),current=conv&&(conv.kind==='dm'?conv.memberIds[0]:cw.selectedAgentId||conv.chiefId||conv.memberIds[0]);
+    var agents=cw.agents.filter(function(agent){return agent.id!==current;}),visible=Boolean(conv&&!cw.profileOpen&&!cw.connectionsOpen&&agents.length);
+    host.hidden=!visible;chat.classList.toggle('has-teammate-switcher',visible);
+    if(!visible)return;
+    var signature=JSON.stringify([current,agents.map(function(agent){return [agent.id,agent.name,agent.avatar];})]);
+    if(host._teammateSignature===signature)return;
+    host._teammateSignature=signature;
+    host.innerHTML=agents.map(function(agent){var label='Chat with '+agent.name;return '<button type="button" class="cw-quick-agent" data-quick-agent="'+esc(agent.id)+'" aria-label="'+esc(label)+'" title="'+esc(label)+'"><span aria-hidden="true">'+cwAva(agent)+'</span></button>';}).join('');
+    host.querySelectorAll('[data-quick-agent]').forEach(function(button){button.onclick=function(){
+      var buttons=host.querySelectorAll('[data-quick-agent]');buttons.forEach(function(item){item.disabled=true;});
+      Promise.resolve(cwOpenDm(button.getAttribute('data-quick-agent'))).finally(function(){buttons.forEach(function(item){item.disabled=false;});});
+    };});
+  }
+
   function cwOpenDm(agentId) {
     var cw = cwEnsure();
     cw.selectedAgentId = agentId;
     var matches = cw.convs.filter(function (c) { return c.kind === 'dm' && c.memberIds[0] === agentId; });
     var existing = matches.find(function(c){return c.id===cw.active;}) || matches.sort(function(a,b){return String(b.updatedAt||b.createdAt||'').localeCompare(String(a.updatedAt||a.createdAt||''));})[0];
     if (existing) { if (existing.id !== cw.active || cw.connectionsOpen || cw.profileOpen) cwOpenConv(existing.id); else cwRenderRail(); return; }
-    api('/api/cowork/conversations', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'dm', memberIds: [agentId] }) })
+    return api('/api/cowork/conversations', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'dm', memberIds: [agentId] }) })
       .then(function (d) { cw.convs.push(d.conversation); cwRenderRail(); cwOpenConv(d.conversation.id); })
       .catch(function (e) { toast(e.message, true); });
   }
@@ -1303,7 +1332,7 @@ export const COWORK_JS = String.raw`
     modal.innerHTML =
       '<div class="box"><div class="bar"><span id="cwThreadTitle">New thread</span><span style="flex:1"></span><button class="btn ghost" id="cwThCancel">Cancel</button></div>' +
       '<div class="cw-body">' +
-        '<label for="cwThTitle">Thread title</label><input type="text" id="cwThTitle" maxlength="120" placeholder="Launch copy">' +
+        '<label for="cwThTitle">Thread title</label><input type="text" id="cwThTitle" placeholder="Launch copy">' +
         '<label for="cwThTopic">Topic / brief (optional)</label><textarea id="cwThTopic" rows="2" placeholder="Only landing-page copy; leave pricing alone"></textarea>' +
         '<div class="cw-note">Threads keep unrelated topics apart. This thread gets its own messages and its own reply from the team; the Main thread stays clean.</div>' +
       '</div>' +
@@ -1385,6 +1414,7 @@ export const COWORK_JS = String.raw`
         '<button class="cw-gallery-toggle" id="cwMediaBtn" aria-label="Media and files" title="Media and files">' + cwIcon('image') + '</button>' +
         '<button class="cw-computer-toggle" id="cwComputerBtn" aria-label="Computer activity" title="Computer activity" aria-controls="cwInlineComputer" hidden>' + cwIcon('monitor') + '</button>' +
       '</div>' +
+      '<nav class="cw-teammate-switcher" id="cwTeammateSwitcher" aria-label="Switch teammate" hidden></nav>' +
       '<div class="cw-msgs" id="cwMsgs"></div>' +
       '<div class="cw-composer-wrap" id="cwComposerWrap">' +
         '<div class="cw-clean-activity" id="cwCleanActivity" hidden><span class="cw-clean-status" id="cwCleanStatus" role="status" aria-live="polite" aria-atomic="true"><span id="cwCleanLabel"></span></span><button type="button" id="cwCleanDetails" aria-label="View work details" hidden></button></div>' +
@@ -1411,6 +1441,7 @@ export const COWORK_JS = String.raw`
     $('cwMediaBtn').onclick = function () { cwOpenGallery(); };
     $('cwInfoBtn').onclick = function () { cwOpenProfile(); };
     cwBindTopNav();
+    cwRenderTeammateSwitcher();
     $('cwVoiceCall').onclick=function(){if(typeof startGituVoice==='function')startGituVoice({kind:'cowork',conversationId:cw.active,threadId:cw.threadId||undefined,agentId:cw.selectedAgentId||(conv.kind==='dm'?conv.memberIds[0]:conv.chiefId||conv.memberIds[0])});};
     if(typeof voiceUpdateButtons==='function')voiceUpdateButtons();
     $('cwDelivery').querySelectorAll('[data-cwdelivery]').forEach(function(button){button.onclick=function(){cw.delivery=button.getAttribute('data-cwdelivery');cwRenderComposerAction();};});
@@ -2853,7 +2884,7 @@ export const COWORK_JS = String.raw`
     modal.innerHTML =
       '<div class="box"><div class="bar"><span style="font-weight:600;font-size:13px">Tag a folder</span><span style="flex:1"></span><button class="btn ghost" id="cwFdCancel">Cancel</button></div>' +
       '<div class="cw-body"><div class="meta" id="cwFdPath">Loading…</div><div id="cwFdList" style="max-height:300px;overflow:auto;border:1px solid var(--border);border-radius:8px;margin:6px 0"></div>' +
-      '<label>Label (optional)</label><input type="text" id="cwFdLabel" maxlength="80" placeholder="site"></div>' +
+      '<label>Label (optional)</label><input type="text" id="cwFdLabel" placeholder="site"></div>' +
       '<div class="cw-foot"><span style="flex:1"></span><button class="btn dark" id="cwFdSave">Tag this folder</button></div></div>';
     document.body.appendChild(modal);
     var current = '';
@@ -3720,7 +3751,7 @@ export const COWORK_JS = String.raw`
     var modal = document.createElement('div');
     modal.className = 'modal cw-modal';
     modal.innerHTML = '<div class="box" style="width:min(540px,calc(100vw - 32px))"><div class="bar"><strong>Add cloud server</strong><span style="flex:1"></span><button type="button" class="btn ghost" data-cancel>Cancel</button></div>' +
-      '<form class="cw-body"><label style="display:block;margin-bottom:14px">Server name<input style="display:block;width:100%;margin-top:6px" name="label" required maxlength="120" placeholder="My VPS" autocomplete="off"></label><label style="display:block;margin-bottom:14px">SSH address<input style="display:block;width:100%;margin-top:6px" name="address" type="url" required placeholder="ssh://user@host:22" autocomplete="off" spellcheck="false"></label><label style="display:block;margin-bottom:14px">SSH password<input style="display:block;width:100%;margin-top:6px" name="password" type="password" required autocomplete="new-password"></label>' +
+      '<form class="cw-body"><label style="display:block;margin-bottom:14px">Server name<input style="display:block;width:100%;margin-top:6px" name="label" required placeholder="My VPS" autocomplete="off"></label><label style="display:block;margin-bottom:14px">SSH address<input style="display:block;width:100%;margin-top:6px" name="address" type="url" required placeholder="ssh://user@host:22" autocomplete="off" spellcheck="false"></label><label style="display:block;margin-bottom:14px">SSH password<input style="display:block;width:100%;margin-top:6px" name="password" type="password" required autocomplete="new-password"></label>' +
       '<label style="display:block;margin-bottom:14px">Private computer quota directory<input style="display:block;width:100%;margin-top:6px" name="computerQuotaRoot" placeholder="/srv/gitu-computers" autocomplete="off"></label><p class="cw-note">Company computers require a Linux server with XFS project quotas, Node 22.22.3+, xfsprogs and quota administrator permissions. Leave this blank for existing Cowork computers without a disk quota.</p>' +
       '<button type="button" class="btn ghost" data-check>Check server identity</button><p class="cw-note" data-fingerprint hidden style="overflow-wrap:anywhere"></p><label data-confirm hidden><input name="confirm" type="checkbox" style="width:auto"> This fingerprint matches my hosting console or known server key.</label><p data-error role="alert" style="color:var(--err)" hidden></p><button type="submit" class="btn dark" data-connect disabled>Connect server</button></form></div>';
     document.body.appendChild(modal);
@@ -3787,9 +3818,9 @@ export const COWORK_JS = String.raw`
     modal.innerHTML =
       '<div class="box"><div class="bar"><span style="font-weight:600;font-size:13px">' + (isEdit ? 'Edit teammate' : 'New teammate') + '</span><span style="flex:1"></span><button class="btn ghost" id="cwAmCancel">Cancel</button></div>' +
       '<div class="cw-body"><section class="cw-editor-section"><h2>Identity &amp; character</h2>' +
-        '<div class="cw-2col"><div><label>Name — yours to choose</label><input type="text" id="cwAmName" value="' + esc(d.name) + '" maxlength="60" placeholder="e.g. Atlas, Vera, Rex…"></div>' +
-        '<div><label>Role / tagline</label><input type="text" id="cwAmTag" value="' + esc(d.tagline) + '" maxlength="120" placeholder="Backend engineer"></div></div>' +
-        '<label for="cwAmDescription">Description</label><textarea id="cwAmDescription" maxlength="600" placeholder="What will this teammate help you with?">'+esc(agent&&agent.description||'')+'</textarea><label>Character</label>' +
+        '<div class="cw-2col"><div><label>Name — yours to choose</label><input type="text" id="cwAmName" value="' + esc(d.name) + '" placeholder="e.g. Atlas, Vera, Rex…"></div>' +
+        '<div><label>Role / tagline</label><input type="text" id="cwAmTag" value="' + esc(d.tagline) + '" placeholder="Backend engineer"></div></div>' +
+        '<label for="cwAmDescription">Description</label><textarea id="cwAmDescription" placeholder="What will this teammate help you with?">'+esc(agent&&agent.description||'')+'</textarea><label>Character</label>' +
         '<div class="cw-avrow">' +
           '<span class="cw-avprev" id="cwAmAvaWrap">' + cwAvaImg(d.avatar) + '</span>' +
           '<div class="cw-avopts">' +
@@ -3963,7 +3994,7 @@ export const COWORK_JS = String.raw`
     modal.innerHTML =
       '<div class="box"><div class="bar"><span style="font-weight:600;font-size:13px">New group chat</span><span style="flex:1"></span><button class="btn ghost" id="cwGmCancel">Cancel</button></div>' +
       '<div class="cw-body">' +
-        '<label>Group name</label><input type="text" id="cwGmTitle" placeholder="Product launch team" maxlength="120">' +
+        '<label>Group name</label><input type="text" id="cwGmTitle" placeholder="Product launch team">' +
         '<label>Members (pick at least two)</label>' +
         '<div class="cw-skills" id="cwGmMembers">' + cw.agents.map(function (a) { return '<button data-id="' + esc(a.id) + '">' + esc(a.name) + '</button>'; }).join('') + '</div>' +
         '<label>Chief of staff (optional — coordinates who answers)</label>' +

@@ -17,6 +17,43 @@ export function evidenceKindForType(type: CriterionEvidenceType): EvidenceKind |
   return EVIDENCE_TYPE_TO_KIND[type];
 }
 
+/** Recheck the contract when loading a ledger as well as when first linking. */
+export function criterionEvidenceMismatch(criterion: AcceptanceCriterion, evidence: Evidence): string | undefined {
+  if (evidence.exitCode !== undefined && evidence.exitCode !== 0) return 'Evidence has a nonzero exit code.';
+  if (criterion.verification && !evidence.command)
+    return `Criterion requires verification command "${criterion.verification}" but evidence has no command. Run the required verification.`;
+  if (criterion.verification && evidence.command && !commandsMatch(criterion.verification, evidence.command))
+    return `Evidence command "${evidence.command.trim()}" does not match the required verification "${criterion.verification}". Run the correct command.`;
+  const requiredType = criterion.evidenceType ?? 'any';
+  const requiredKind = EVIDENCE_TYPE_TO_KIND[requiredType];
+  if (requiredType !== 'any' && !requiredKind) return `Unknown required evidence type "${requiredType}".`;
+  if (requiredKind && evidence.kind !== requiredKind)
+    return `Evidence kind "${evidence.kind}" does not match the required type "${requiredType}" (needs "${requiredKind}"). Run the correct verification.`;
+  return undefined;
+}
+
+/** A newer failure at the same workspace supersedes an older passing run. */
+export function latestVerificationEvidence(ledger: Pick<TaskLedgerData, 'evidence'>, command: string, currentFingerprint?: string): Evidence | undefined {
+  const checks = [...ledger.evidence].reverse().filter((e) => e.command && commandsMatch(e.command, command));
+  const current = checks.find((e) => !currentFingerprint || !e.workspaceFingerprint || evidenceMatchesWorkspace(e, currentFingerprint));
+  // Scoped reuse must never resurrect a pass superseded by a later failure,
+  // including a failure whose full fingerprint predates an unrelated edit.
+  if (currentFingerprint && current?.verificationScope?.validatedFor === currentFingerprint && current.workspaceFingerprint !== currentFingerprint) {
+    const failure = checks.slice(0, checks.indexOf(current)).find((e) => !e.passed || (e.exitCode !== undefined && e.exitCode !== 0));
+    if (failure) return failure;
+  }
+  return current;
+}
+
+export function evidenceMatchesWorkspace(evidence: Pick<Evidence, 'workspaceFingerprint' | 'verificationScope'>, fingerprint: string): boolean {
+  if (incompleteFingerprint(fingerprint)) return false;
+  return evidence.workspaceFingerprint === fingerprint || evidence.verificationScope?.validatedFor === fingerprint;
+}
+
+function incompleteFingerprint(value: string | undefined): boolean {
+  return Boolean(value && /^(?:partial-|unknown(?:-fp)?$)/.test(value));
+}
+
 export function isTrivialEvidenceCommand(command: string): boolean {
   // Split on compound operators first: "cd client && npm test" must count as
   // real verification just because it STARTS with cd, while
@@ -44,8 +81,7 @@ export function isManufacturedEvidenceCommand(command: string): boolean {
   // Direct shell output is the simplest form of self-authored proof.
   if (/^(?:echo|printf|write-host|write-output)\b/i.test(c)) return true;
 
-  const inlineRuntime =
-    /^(?:node(?:\.exe)?\b[\s\S]*?\s-(?:e|p)\s+|(?:python|python3|py)(?:\.exe)?\b[\s\S]*?\s-c\s+|(?:powershell|pwsh)(?:\.exe)?\b[\s\S]*?\s-(?:command|c)\s+)/i;
+  const inlineRuntime = /^(?:node(?:\.exe)?\b[\s\S]*?\s-(?:e|p)\s+|(?:python|python3|py)(?:\.exe)?\b[\s\S]*?\s-c\s+|(?:powershell|pwsh)(?:\.exe)?\b[\s\S]*?\s-(?:command|c)\s+)/i;
   if (!inlineRuntime.test(c)) return false;
 
   // An inline program is manufactured evidence only when it emits output but
@@ -56,15 +92,35 @@ export function isManufacturedEvidenceCommand(command: string): boolean {
   if (!emitsOutput) return false;
 
   const observesOrCanFail =
-    /\brequire\s*\(|\bimport(?:\s|\{)|\bfrom\s+['"]|child_process|\b(?:spawn|spawnsync|exec|execfile|execfilesync)\s*\(|\b(?:readfile|readfilesync|exists|existssync|stat|statsync|access|accesssync)\s*\(|\bfetch\s*\(|\bhttps?\b|\bassert(?:\.|\s*\()|\bexpect\s*\(|\bthrow\b|\braise\b|\bif\s*\(|process\.exit\s*\(\s*[1-9]|sys\.exit\s*\(\s*[1-9]|\b(?:open|subprocess\.|requests\.)\s*\(|\btest-path\b|\bget-content\b|\bget-item\b|\binvoke-[\w-]+\b|\bcompare-object\b|\bwhere-object\b|\$lastexitcode\b/i.test(c);
+    /\brequire\s*\(|\bimport(?:\s|\{)|\bfrom\s+['"]|child_process|\b(?:spawn|spawnsync|exec|execfile|execfilesync)\s*\(|\b(?:readfile|readfilesync|exists|existssync|stat|statsync|access|accesssync)\s*\(|\bfetch\s*\(|\bhttps?\b|\bassert(?:\.|\s*\()|\bexpect\s*\(|\bthrow\b|\braise\b|\bif\s*\(|process\.exit\s*\(\s*[1-9]|sys\.exit\s*\(\s*[1-9]|\b(?:open|subprocess\.|requests\.)\s*\(|\btest-path\b|\bget-content\b|\bget-item\b|\binvoke-[\w-]+\b|\bcompare-object\b|\bwhere-object\b|\$lastexitcode\b/i.test(
+      c,
+    );
 
   return !observesOrCanFail;
 }
 
 const TRIVIAL_WORDS = new Set([
-  'echo', '.', ':', 'true', 'pwd', 'cd', 'ls', 'dir', 'cls', 'whoami', 'hostname',
-  'date', 'ver', 'tree', 'sleep', 'start-sleep',
-  'write-host', 'get-childitem', 'gci', 'set-location', 'sl',
+  'echo',
+  '.',
+  ':',
+  'true',
+  'pwd',
+  'cd',
+  'ls',
+  'dir',
+  'cls',
+  'whoami',
+  'hostname',
+  'date',
+  'ver',
+  'tree',
+  'sleep',
+  'start-sleep',
+  'write-host',
+  'get-childitem',
+  'gci',
+  'set-location',
+  'sl',
 ]);
 /** Read-only git subcommands that keep a `git ...` segment trivial. Write ops
  *  (commit, push, reset, checkout, …) are NOT here on purpose: they mutate
@@ -157,17 +213,14 @@ export function verificationFailureSignature(output: string): string {
  * the bug-rigor completion gate and final report; it is resolved knowledge, not
  * an active reason to keep investigating.
  */
-export function verificationSupersedesHypothesis(
-  previousFailure: Pick<Evidence, 'passed' | 'outputExcerpt'> | undefined,
-  next: { passed: boolean; output: string },
-): boolean {
+export function verificationSupersedesHypothesis(previousFailure: Pick<Evidence, 'passed' | 'outputExcerpt'> | undefined, next: { passed: boolean; output: string }): boolean {
   if (!previousFailure || previousFailure.passed || next.passed) return false;
   return verificationFailureSignature(previousFailure.outputExcerpt) !== verificationFailureSignature(next.output);
 }
 
 /** Structural slice of the ledger needed to prove a bug fix causally. */
 export interface RegressionProofInput {
-  evidence: { command?: string; passed: boolean; createdAt: string }[];
+  evidence: { command?: string; passed: boolean; createdAt: string; workspaceFingerprint?: string }[];
   actions: { tool: string; status: string; createdAt?: string }[];
 }
 
@@ -186,18 +239,15 @@ export function hasRegressionProof(input: RegressionProofInput): boolean {
   };
   // Latest PASS per command: an earlier green baseline must not hide a later
   // fail -> edit -> pass sequence. Any causal pair must precede this pass.
-  const passAt = new Map<string, string>();
+  const passAt = new Map<string, RegressionProofInput['evidence'][number]>();
   for (const ev of input.evidence) {
     const cmd = real(ev.command);
     if (!cmd || !ev.passed) continue;
     const prev = passAt.get(cmd);
-    if (!prev || ev.createdAt > prev) passAt.set(cmd, ev.createdAt);
+    if (!prev || ev.createdAt > prev.createdAt) passAt.set(cmd, ev);
   }
   if (passAt.size === 0) return false;
-  const edits = input.actions.filter(
-    (a) => (a.tool === 'write_file' || a.tool === 'apply_edit') && a.status === 'success' && a.createdAt,
-  );
-  if (edits.length === 0) return false;
+  const edits = input.actions.filter((a) => (a.tool === 'write_file' || a.tool === 'apply_edit') && a.status === 'success' && a.createdAt);
   for (const ev of input.evidence) {
     const cmd = real(ev.command);
     if (!cmd || ev.passed) continue;
@@ -207,8 +257,13 @@ export function hasRegressionProof(input: RegressionProofInput): boolean {
     // stamped at the same instant as the pass is still a genuine prior failure,
     // and an edit stamped at either boundary is still causally between them.
     // Strict > / < made a correct, fast fix unprovable purely on clock ties.
-    if (!pass || ev.createdAt > pass) continue;
-    if (edits.some((a) => a.createdAt! >= ev.createdAt && a.createdAt! <= pass)) return true;
+    if (!pass || ev.createdAt > pass.createdAt) continue;
+    if (edits.some((a) => a.createdAt! >= ev.createdAt && a.createdAt! <= pass.createdAt)) return true;
+    // Shell/native edits may not have a file-tool record. Independent content
+    // identities prove that the failing and passing runs observed a real edit.
+    if (ev.workspaceFingerprint && pass.workspaceFingerprint &&
+        !incompleteFingerprint(ev.workspaceFingerprint) && !incompleteFingerprint(pass.workspaceFingerprint) &&
+        ev.workspaceFingerprint !== pass.workspaceFingerprint) return true;
   }
   return false;
 }
@@ -242,6 +297,7 @@ export class EvidenceEngine {
       output: string;
       artifactPath?: string;
       workspaceFingerprint?: string;
+      verificationScope?: Evidence['verificationScope'];
     },
   ): Evidence {
     // A hypothesis is scoped to the most recent failure of the same
@@ -251,12 +307,7 @@ export class EvidenceEngine {
     if (ledger.currentHypothesis && input.command) {
       const previousFailure = [...ledger.evidence]
         .reverse()
-        .find(
-          (candidate) =>
-            !candidate.passed &&
-            typeof candidate.command === 'string' &&
-            commandsMatch(candidate.command, input.command!),
-        );
+        .find((candidate) => !candidate.passed && typeof candidate.command === 'string' && commandsMatch(candidate.command, input.command!));
       if (verificationSupersedesHypothesis(previousFailure, input)) {
         ledger.currentHypothesis = undefined;
       }
@@ -273,18 +324,14 @@ export class EvidenceEngine {
       artifactPath: input.artifactPath,
       createdAt: nowIso(),
       workspaceFingerprint: input.workspaceFingerprint,
+      verificationScope: input.verificationScope,
       stale: false,
     };
     ledger.evidence.push(evidence);
     return evidence;
   }
 
-  link(
-    ledger: TaskLedgerData,
-    criterionId: string,
-    evidenceId: string,
-    currentFingerprint?: string,
-  ): { ok: boolean; reason: string } {
+  link(ledger: TaskLedgerData, criterionId: string, evidenceId: string, currentFingerprint?: string): { ok: boolean; reason: string } {
     const criterion = ledger.acceptanceCriteria.find((c) => c.id === criterionId);
     if (!criterion) return { ok: false, reason: `Unknown acceptance criterion: ${criterionId}` };
     const evidence = ledger.evidence.find((e) => e.id === evidenceId);
@@ -298,6 +345,11 @@ export class EvidenceEngine {
         reason: `Evidence ${evidenceId} is self-authored output ("${evidence.command.trim()}") and cannot verify a criterion. Run a falsifiable check that observes the application or executes its tests.`,
       };
     }
+    if (incompleteFingerprint(currentFingerprint) || incompleteFingerprint(evidence.workspaceFingerprint))
+      return {
+        ok: false,
+        reason: 'Workspace fingerprint is incomplete; this evidence cannot establish fresh acceptance. Resolve the unreadable workspace paths and verify again.',
+      };
     if (evidence.kind === 'command' && evidence.command && isTrivialEvidenceCommand(evidence.command)) {
       return {
         ok: false,
@@ -309,7 +361,7 @@ export class EvidenceEngine {
     // the workspace reverts to the state this evidence was captured against,
     // the evidence is valid again instead of staying permanently stale.
     if (currentFingerprint && evidence.workspaceFingerprint) {
-      evidence.stale = evidence.workspaceFingerprint !== currentFingerprint;
+      evidence.stale = !evidenceMatchesWorkspace(evidence, currentFingerprint);
     }
     if (evidence.stale) {
       return {
@@ -318,32 +370,11 @@ export class EvidenceEngine {
       };
     }
 
-    // Structured criterion: required verification command must match exactly.
-    if (criterion.verification && evidence.command) {
-      if (!commandsMatch(criterion.verification, evidence.command)) {
-        return {
-          ok: false,
-          reason: `Evidence command "${evidence.command.trim()}" does not match the required verification "${criterion.verification}". Run the correct command.`,
-        };
-      }
-    } else if (criterion.verification && !evidence.command) {
-      return {
-        ok: false,
-        reason: `Criterion requires verification command "${criterion.verification}" but evidence has no command. Run the required verification.`,
-      };
-    }
-
-    // Structured criterion: evidence kind must be compatible with the required type.
-    const requiredType = criterion.evidenceType ?? 'any';
-    if (requiredType !== 'any') {
-      const requiredKind = EVIDENCE_TYPE_TO_KIND[requiredType];
-      if (requiredKind && evidence.kind !== requiredKind) {
-        return {
-          ok: false,
-          reason: `Evidence kind "${evidence.kind}" does not match the required type "${requiredType}" (needs "${requiredKind}"). Run the correct verification.`,
-        };
-      }
-    }
+    const mismatch = criterionEvidenceMismatch(criterion, evidence);
+    if (mismatch) return { ok: false, reason: mismatch };
+    const latest = evidence.command ? latestVerificationEvidence(ledger, evidence.command, currentFingerprint) : undefined;
+    if (latest && (!latest.passed || (latest.exitCode !== undefined && latest.exitCode !== 0)))
+      return { ok: false, reason: 'A newer verification failed for this workspace. Re-run the check; an older pass cannot satisfy the criterion.' };
 
     if (!criterion.evidenceIds.includes(evidenceId)) criterion.evidenceIds.push(evidenceId);
     criterion.satisfied = true;
@@ -362,7 +393,7 @@ export class EvidenceEngine {
         for (const id of c.evidenceIds) {
           const ev = ledger.evidence.find((e) => e.id === id);
           if (ev && ev.workspaceFingerprint) {
-            ev.stale = ev.workspaceFingerprint !== currentFingerprint;
+            ev.stale = !evidenceMatchesWorkspace(ev, currentFingerprint);
           }
         }
       }
@@ -373,13 +404,23 @@ export class EvidenceEngine {
       });
       const validEvidence = c.evidenceIds
         .map((id) => ledger.evidence.find((e) => e.id === id))
-        .filter((e): e is Evidence => Boolean(
-          e &&
-          e.passed &&
-          !e.stale &&
-          (!e.command || !isManufacturedEvidenceCommand(e.command)) &&
-          !(e.kind === 'command' && e.command && isTrivialEvidenceCommand(e.command)),
-        ));
+        .filter((e): e is Evidence =>
+          Boolean(
+            e &&
+            e.passed &&
+            !e.stale &&
+            !incompleteFingerprint(currentFingerprint) &&
+            !incompleteFingerprint(e.workspaceFingerprint) &&
+            !criterionEvidenceMismatch(c, e) &&
+            (!e.command ||
+              (() => {
+                const latest = latestVerificationEvidence(ledger, e.command!, currentFingerprint);
+                return latest?.passed !== false && (latest?.exitCode === undefined || latest.exitCode === 0);
+              })()) &&
+            (!e.command || !isManufacturedEvidenceCommand(e.command)) &&
+            !(e.kind === 'command' && e.command && isTrivialEvidenceCommand(e.command)),
+          ),
+        );
 
       const backed = c.satisfied && validEvidence.length > 0;
       if (backed) {
@@ -387,10 +428,14 @@ export class EvidenceEngine {
       } else {
         if (c.satisfied && invalidManufactured) c.satisfied = false;
         const hasStale = c.evidenceIds.some((id) => ledger.evidence.find((e) => e.id === id)?.stale);
-        if (invalidManufactured) {
+        if (incompleteFingerprint(currentFingerprint) || c.evidenceIds.some((id) => incompleteFingerprint(ledger.evidence.find((e) => e.id === id)?.workspaceFingerprint))) {
+          missing.push(`[INCOMPLETE WORKSPACE] ${c.text} (a partial or unknown fingerprint cannot prove evidence freshness)`);
+        } else if (invalidManufactured) {
           missing.push(`[INVALID EVIDENCE] ${c.text} (linked command only manufactured its expected output — run a falsifiable application check)`);
         } else if (hasStale) {
           missing.push(`[STALE EVIDENCE] ${c.text} (workspace was modified after verification ran — re-run ${c.verification || 'test'})`);
+        } else if (c.satisfied && c.evidenceIds.length) {
+          missing.push(`[INVALID EVIDENCE] ${c.text} (linked evidence does not satisfy the current command/type contract or a newer verification failed)`);
         } else {
           missing.push(c.text);
         }
@@ -431,8 +476,6 @@ export class EvidenceEngine {
    * with evidenceType 'any' and no required verification.
    */
   static normalizeCriteria(criteria: (string | CriterionSpec)[]): CriterionSpec[] {
-    return criteria.map((c) =>
-      typeof c === 'string' ? { text: c } : c,
-    );
+    return criteria.map((c) => (typeof c === 'string' ? { text: c } : c));
   }
 }

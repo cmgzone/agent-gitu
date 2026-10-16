@@ -416,6 +416,41 @@ describe('toolSearchFiles — language-agnostic search engine', async () => {
     const r = await search(dir, { pattern: 'needle', include: ['**/*.bin'] });
     expect(r.output).toContain('(no matches)');
   });
+  it('prunes packaged build copies before checking their contents, while preserving explicit access', async () => {
+    const dir = searchProject(), guard = ProjectGuard.detect(dir), checked: string[] = [];
+    const build = path.join(dir, 'dist-build8', 'mail-win32-x64', 'resources', 'app.asar.unpacked');
+    mkdirSync(build, { recursive: true });
+    writeFileSync(path.join(build, 'copy.ts'), 'generated needle');
+    writeFileSync(path.join(dir, 'source.ts'), 'source needle');
+    // A source file called "build" is not a generated directory.
+    writeFileSync(path.join(dir, 'build'), 'build script needle');
+    const readable = guard.assertReadableAsync.bind(guard);
+    guard.assertReadableAsync = async file => { checked.push(file); await readable(file); };
+    const defaults = await toolSearchFiles({ guard } as Parameters<typeof toolSearchFiles>[0], { pattern: 'needle' });
+    expect(defaults.output).toContain('source.ts');
+    expect(defaults.output).toContain('build:1:');
+    expect(defaults.output).not.toContain('copy.ts');
+    expect(checked.some(file => file.includes('dist-build8'))).toBe(false);
+    const explicit = await search(dir, { pattern: 'needle', path: 'dist-build8' });
+    expect(explicit.output).toContain('copy.ts');
+    const selectedRoot = await search(dir, { pattern: 'needle', path: 'dist-build8/mail-win32-x64/resources/app.asar.unpacked' });
+    expect(selectedRoot.output).toContain('copy.ts');
+    const included = await search(dir, { pattern: 'needle', includeGenerated: true });
+    expect(included.output).toContain('copy.ts');
+  });
+  it('honors compiler output paths while retaining source libraries with the same directory name', async () => {
+    const dir = searchProject();
+    writeFileSync(path.join(dir, 'tsconfig.json'), JSON.stringify({ compilerOptions: { outDir: 'lib' } }));
+    mkdirSync(path.join(dir, 'lib'));
+    writeFileSync(path.join(dir, 'lib', 'compiled.js'), 'generated needle');
+    mkdirSync(path.join(dir, 'src', 'lib'), { recursive: true });
+    writeFileSync(path.join(dir, 'src', 'lib', 'source.ts'), 'source needle');
+    const result = await search(dir, { pattern: 'needle' });
+    expect(result.output).toContain('src/lib/source.ts');
+    expect(result.output).not.toContain('compiled.js');
+    expect((await search(dir, { pattern: 'needle', path: 'lib' })).output).toContain('compiled.js');
+    expect((await search(dir, { pattern: 'needle', includeGenerated: true })).output).toContain('compiled.js');
+  });
   it('services cancellation while a directory search is running', async () => {
     const dir = searchProject(), guard = ProjectGuard.detect(dir), controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 0);

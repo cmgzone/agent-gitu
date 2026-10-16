@@ -107,6 +107,31 @@ function startupFixture() {
 }
 
 describe('desktop startup handoff', () => {
+  it('can exit only the interface without stopping the independent engine', () => {
+    const u = startupFixture();
+    const stop = vi.fn(async () => {}), disconnect = vi.fn();
+    u.context.testEngine = { stop, disconnect };
+    new Script('engine = testEngine; keepEngineRunning = true;').runInContext(u.context);
+    const event = { preventDefault: vi.fn() };
+    u.app.emit('before-quit', event);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(disconnect).toHaveBeenCalledOnce();
+    expect(stop).not.toHaveBeenCalled();
+  });
+  it('drains the independent engine on explicit Quit before allowing Electron to exit', async () => {
+    const u = startupFixture();
+    const stop = vi.fn(async () => {});
+    u.context.testEngine = { stop, disconnect: vi.fn() };
+    new Script('engine = testEngine;').runInContext(u.context);
+    const event = { preventDefault: vi.fn() };
+    u.app.emit('before-quit', event);
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(u.app.quit).toHaveBeenCalledOnce());
+    expect(stop).toHaveBeenCalledOnce();
+    const drained = { preventDefault: vi.fn() };
+    u.app.emit('before-quit', drained);
+    expect(drained.preventDefault).not.toHaveBeenCalled();
+  });
   it('keeps crash reports local and logs native child failures', () => {
     const u = startupFixture();
     expect(u.crashReporter.start).toHaveBeenCalledWith({ uploadToServer: false });

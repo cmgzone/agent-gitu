@@ -77,6 +77,26 @@ function fixture() {
   return { root, store, company, cowork, ceo, worker, org, service, actor, save, start, complete, cancelled, advance: (ms: number) => (clock += ms) };
 }
 describe('Company workflows, typed handoffs and side-effect-free simulation', () => {
+  it('preserves large workflow definitions and dispatches input beyond the old mission briefing cap', () => {
+    const f = fixture();
+    const steps = Array.from({ length: 41 }, (_, i) => task(`step-${i}`, f.worker.id, {
+      goal: 'Complete every requirement. '.repeat(100),
+      criteria: Array.from({ length: 13 }, (_, j) => `Verify requirement ${j}`),
+      maxSessions: 25, maxAttempts: 4, timeoutMinutes: 2000,
+    }));
+    const workflow = f.save(steps, 9);
+    expect(workflow.versions[0]?.steps).toHaveLength(41);
+    f.service.approve(director, workflow.id, 1, workflow.revision);
+    const topic = 'Requested input '.repeat(4000);
+    const run = f.service.start(f.actor, workflow.id, 1, { topic });
+    f.service.prepare();
+    const dispatched = f.service.run(director, run.id).steps.find(step => step.missionId);
+    expect(dispatched).toBeDefined();
+    const mission = f.cowork.getMission(dispatched!.missionId!)!;
+    expect(mission.goal).toContain(topic);
+    expect(mission.maxTurns).toBe(25);
+    expect(mission.criteria).toHaveLength(13);
+  });
   it('persists immutable versions and never allows agents to approve their own workflow', () => {
     const f = fixture(),
       w = f.save([task('a', f.worker.id)]);

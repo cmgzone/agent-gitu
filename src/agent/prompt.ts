@@ -5,9 +5,11 @@ import type { PlanArea, PlanDesign, PlanStep, TaskLedgerData } from '../types.js
 import { builtinSkillByName } from '../skills/builtin.js';
 import { renderDecisions } from './architecture.js';
 import { agentWorkflowPrompt } from './agent-workflow.js';
+import { isProgressNudge } from './follow-up.js';
 import { DOCUMENT_TOOL_DOC } from '../tools/productivity.js';
 import { SCHEDULE_TOOL_DOC } from '../cron/tools.js';
 import { loadOutputStyle, RICH_OUTPUT_GUIDANCE } from './output-style.js';
+import { COMMAND_RECOVERY_CONTRACT } from './command-recovery.js';
 
 // ── Plan & design rendering (token-disciplined) ──────────────────────────
 //
@@ -21,7 +23,6 @@ const COMPACT_TODO_LINES_CAP = 18;
 const DONE_TAIL_CAP = 8;
 const ACTIVE_TODO_CAP = 6;
 const NEXT_ACTIONABLE_CAP = 3;
-const STATE_GOAL_MAX_CHARS = 4_000;
 const STATE_CRITERION_MAX_CHARS = 360;
 const STATE_EVIDENCE_CAP = 12;
 const STATE_EVIDENCE_MAX_CHARS = 260;
@@ -300,7 +301,7 @@ PROTOCOL — each turn you MUST respond in this exact shape:
 Intake/planning actions:
 {"thought":"...","action":{"type":"set_criteria","criteria":["verifiable criterion",...]}}
 {"thought":"...","action":{"type":"set_design","design":{"frontend":"views/components/control intent + placement/interactions/states/data-flow","backend":"routes/contracts/schema/validation","integration":"shared contracts/realtime/persistence"}}}  (${opts.agentWorkflow ? 'optional bounded design notes when architecture or dependencies need explanation; routine edits can proceed directly' : 'bounded notes BEFORE set_plan for frontend/backend/full-stack work'}; omit irrelevant sections)
-{"thought":"...","action":{"type":"set_plan","steps":[{"description":"small focused change","verification":"how verified","area":"frontend|backend|integration|shared|database|infra|tests|docs","subtasks":["todo 1","todo 2"]}]}}  (≤30 steps; ≤8 subtasks each — small, concrete, one execution cycle each)
+{"thought":"...","action":{"type":"set_plan","steps":[{"description":"small focused change","verification":"how verified","area":"frontend|backend|integration|shared|database|infra|tests|docs","subtasks":["todo 1","todo 2"]}]}}  (small, concrete steps and subtasks, one execution cycle each)
 {"thought":"...","action":{"type":"add_criteria","criteria":["new follow-up criterion",...]}}  (use for a new scope in an existing completed task; preserves prior criteria/evidence)
 {"thought":"...","action":{"type":"append_plan","steps":[...]}}  (same step shape; plan the new follow-up work without erasing completed steps)
 {"thought":"...","action":{"type":"set_hypothesis","text":"current hypothesis about the problem/solution"}}
@@ -325,9 +326,11 @@ Tools:
 - write_file   {"path":"src/x.ts","content":"full file content"}
 - apply_edit   {"path":"src/x.ts","oldString":"exact existing text","newString":"replacement","replaceAll":true}
 - list_files   {"path":"src"}
-- search_files {"pattern":"regex or text","path":"src","mode":"literal|regex","flags":"ims","include":["**/*.py"],"exclude":["**/vendor/**"],"maxResults":50,"contextLines":2}
+- search_files {"pattern":"regex or text","path":"src","mode":"literal|regex","flags":"ims","include":["**/*.py"],"exclude":["**/vendor/**"],"maxResults":50,"contextLines":2,"includeGenerated":false} — source searches skip generated build/package directories. To inspect generated output, choose its exact path or set includeGenerated:true.
     language-agnostic whole-file search (any language, any text file). Regex mode scans full file content, so patterns match ACROSS lines: use \\n, \\s or [\\s\\S] spans, or flags "s"/"m". Use mode "literal" for plain text with no regex escaping. Every result ends with a capability line (mode/flags/multiline/matches) telling you exactly what ran.
 - run_command  {"command":"${lock.testCommand ?? 'npm test'}","timeoutMs":0} (no deadline by default; 0 means unlimited; positive timeoutMs is respected without a 600-second ceiling; Stop cancels the process tree)
+${COMMAND_RECOVERY_CONTRACT}
+${process.platform === 'win32' ? '- Host command shell: Windows PowerShell (powershell.exe). Use ; for independent statements; && and || are unsupported. Use if ($LASTEXITCODE -eq 0) { ... } when a later native command must depend on the earlier command succeeding. Preserve a failed verification exit code instead of masking it with another command.' : '- Host command shell: /bin/sh. Use compatible syntax and preserve verification exit codes.'}
 - create_document ${DOCUMENT_TOOL_DOC}
 - schedule_manage ${SCHEDULE_TOOL_DOC}
 - lsp_diagnostics {"path":"src/auth.ts"}  (compiler/type errors for a file; run after edits for fast feedback — it does NOT replace real verification commands)
@@ -393,10 +396,10 @@ Reporting a discovered problem (vulnerability, bug, data risk — use the moment
 {"thought":"...","action":{"type":"report_finding","claim":"what is wrong and why it matters","kind":"security|bug|performance|data|other","severity":"low|medium|high|critical","location":"path/file.ts:42","reproductionCommand":"the exact command that demonstrates it"}}
 Every finding is handed to an independent verifier that tries to REPRODUCE it; only reproduced findings are reported as confirmed.
 
-Parallel independent work (only for tools that do not depend on each other, max 6 — always batch independent reads/searches/commands together instead of one per turn):
+Parallel independent work (only for tools that do not depend on each other, always batch independent reads/searches/commands together instead of one per turn):
 {"thought":"...","action":{"type":"parallel","calls":[{"tool":"read_file","params":{"path":"a.ts"},"reason":"...","expected":"..."},{"tool":"read_file","params":{"path":"b.ts"},"reason":"...","expected":"..."}]}}
 
-Delegate independent sub-tasks to specialist agents (max 6; up to 5 run at once, each returns a summary):
+Delegate independent sub-tasks to specialist agents (each returns a summary):
 {"thought":"...","action":{"type":"delegate","tasks":[{"agent":"<registered specialist name>","task":"one concrete outcome; name the file/symbol boundary, what to change or verify, what is out of scope, and the expected verification"}]}}
 IMPORTANT: \`agent\` MUST be the registered specialist name (e.g. "explore"), NOT the model/provider string (e.g. do NOT use "opencode-zen/hy3-free").
 The runtime adds a bounded WORK HANDOFF with ranked files, excerpts, plan targets, and verification targets. It does NOT give a specialist your conversation. Make the task line precise enough to be an ownership contract; never delegate vague work such as "look into it" or "check the repo".
@@ -428,7 +431,7 @@ ARCHITECTURE DECISIONS:
 
 PLANNING QUALITY (adaptive depth — match ceremony to complexity):
 - Low-complexity tasks: ${opts.agentWorkflow ? 'skip formal plans, criteria, and design unless explicitly requested; edit and verify directly.' : 'short plan, few or no subtasks, minimal design. Do not pay ceremony for trivial work.'}
-- Medium/high complexity, and anything spanning UI + server: ${opts.agentWorkflow ? 'use a concise set_design and set_plan when dependencies make them useful; planning is optional.' : 'FIRST set_design with BOUNDED sections, THEN set_plan.'}
+- Medium/high complexity, and anything spanning UI + server: ${opts.agentWorkflow ? 'save a concise set_plan checklist and update it as work proceeds; design notes are optional and this does not introduce an approval gate.' : 'FIRST set_design with BOUNDED sections, THEN set_plan.'}
   - frontend section: pages/views, layout & components, each control's user intent and placement, interactions, state/data flow, responsive behavior, loading/empty/error states, accessibility, visual requirements that matter.
   - backend section: API routes & request/response contracts, schema/DB changes, authn/authz, validation, business logic, integrations, error handling, tests.
   - integration section (full-stack only): shared data contracts, realtime/SSE behavior, persistence flow.
@@ -468,10 +471,10 @@ export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkil
   // Scope selects this phase's evidence and plan, but durable user direction
   // is authoritative even when the caller captured an older scope goal.
   const currentGoal = auth?.currentGoal ?? stateGoal;
-  const taskGoal =
-    currentGoal.length <= STATE_GOAL_MAX_CHARS
-      ? currentGoal
-      : `${currentGoal.slice(0, 3_000)}\n… [${currentGoal.length - 3_700} characters omitted from this live state. The complete original request is durable in .hermes/tasks/${d.taskId}.json; read it if a missing requirement matters.]\n${currentGoal.slice(-700)}`;
+  // Keep every active requirement in the live authority. The provider context
+  // budget owns compaction; a fixed character crop here loses requirements
+  // from the middle of a long task and sends the agent back to rediscover them.
+  const taskGoal = currentGoal;
 
   const hardInstructions = auth?.instructions.filter((i) => i.status === 'active' && i.enforcement === 'hard') ?? [];
   const activeRequirements = auth?.instructions.filter((i) => i.status === 'active' && i.type === 'requirement') ?? [];
@@ -481,7 +484,7 @@ export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkil
   const latestFollowUp = auth?.followUps
     .slice()
     .reverse()
-    .find((followUp) => followUp.kind !== 'CONTINUE');
+    .find((followUp) => followUp.kind !== 'CONTINUE' && !isProgressNudge(followUp.rawMessage));
 
   const authorityParts: string[] = [
     'TASK AUTHORITY (Precedence: 1. Safety > 2. Hard Instructions > 3. User Goal > 4. Criteria > 5. Visual References > 6. Decisions > 7. Plan)',

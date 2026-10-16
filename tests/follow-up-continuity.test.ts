@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyFollowUp, conversationIntent, extractTargetHints, extractInstructionsFromFollowUp, applyFollowUpToLedger, evaluateInstructionGate, supersedeConflictingAuthority } from '../src/agent/follow-up.js';
+import { classifyFollowUp, conversationIntent, extractTargetHints, extractInstructionsFromFollowUp, applyFollowUpToLedger, evaluateInstructionGate, supersedeConflictingAuthority, recoverProgressNudgeGoal } from '../src/agent/follow-up.js';
 import { TaskLedger } from '../src/ledger/task-ledger.js';
 import type { ProjectLock } from '../src/types.js';
 import fs from 'node:fs';
@@ -29,6 +29,80 @@ function createMockProject(): { repoRoot: string; project: ProjectLock; cleanup:
 }
 
 describe('Follow-up Continuity & Delta Routing', () => {
+  it('keeps requirements in the middle of a long original task in the live authority', () => {
+    const { repoRoot, project, cleanup } = createMockProject();
+    try {
+      const requirement = 'Clicking a search result must open the exact matching message.';
+      const goal = 'Fix individual email search.\n' + 'Existing repository context.\n'.repeat(120) + requirement + '\n' + 'Preserve inbox conversation grouping.\n'.repeat(50);
+      const ledger = TaskLedger.create({ repoRoot, goal, project, mode: 'agent' });
+      expect(buildStateMessage(ledger)).toContain(`CURRENT USER INTENT:\n${goal}`);
+      expect(buildStateMessage(ledger)).toContain(requirement);
+    } finally { cleanup(); }
+  });
+
+  it.each([
+    'why you keep reapiting your self insteade of edditing',
+    'Why do you keep repeating yourself instead of editing?',
+    'Stop repeating yourself and implement the fix.',
+    'You are still reading the same files instead of making progress',
+    'Continue from where you stopped and implement the remaining fix',
+    'and fix the issue',
+    'eddit is available',
+    'continue with task',
+    'Continue with the task please.',
+    'resume the original work',
+    'proceed with our current implementation',
+    'keep going on this project',
+    'carry on with the same task',
+  ])('preserves the mission and epoch for progress steering: %s', message => {
+    const { repoRoot, project, cleanup } = createMockProject();
+    try {
+      const goal = 'Fix individual message search in src/search.ts';
+      const ledger = TaskLedger.create({ repoRoot, goal, project, mode: 'agent' });
+      ledger.ensureInitialWorkPhase();
+      ledger.setTargetHints(extractTargetHints(goal));
+      const epoch = ledger.instructionEpoch;
+      expect(conversationIntent(message)).toBeUndefined();
+      expect(applyFollowUpToLedger(ledger, message).kind).toBe('CONTINUE');
+      const loaded = TaskLedger.load(repoRoot, ledger.data.taskId)!;
+      expect(loaded.ensureTaskAuthority().currentGoal).toBe(goal);
+      expect(loaded.activeWorkPhase()?.goal).toBe(goal);
+      expect(loaded.instructionEpoch).toBe(epoch);
+      expect(loaded.ensureTaskAuthority().targetHints.files).toContain('src/search.ts');
+      expect(loaded.ensureTaskAuthority().followUps.at(-1)?.rawMessage).toBe(message);
+    } finally { cleanup(); }
+  });
+
+  it('repairs old progress-only goals while retaining the latest real correction and evidence', () => {
+    const { repoRoot, project, cleanup } = createMockProject();
+    try {
+      const ledger = TaskLedger.create({ repoRoot, goal: 'Fix original search', project, mode: 'agent' });
+      ledger.ensureInitialWorkPhase();
+      const latest = 'Actually, fix the selection handler in src/search.ts instead';
+      applyFollowUpToLedger(ledger, latest);
+      const epoch = ledger.instructionEpoch;
+      for (const message of ['eddit is available', 'why you keep reapiting your self insteade of edditing', 'and fix the issue', 'continue with task']) {
+        ledger.setCurrentGoal(message);
+        ledger.recordFollowUp({ kind: 'REFINE', rawMessage: message, extractedGoalDelta: message, addedInstructions: [], supersededInstructions: [] });
+      }
+      const before = JSON.stringify({ actions: ledger.data.actions, evidence: ledger.data.evidence, followUps: ledger.ensureTaskAuthority().followUps });
+      expect(recoverProgressNudgeGoal(ledger)).toBe(latest);
+      expect(ledger.activeWorkPhase()?.goal).toBe(latest);
+      expect(ledger.instructionEpoch).toBe(epoch);
+      expect(JSON.stringify({ actions: ledger.data.actions, evidence: ledger.data.evidence, followUps: ledger.ensureTaskAuthority().followUps })).toBe(before);
+      const state = buildStateMessage(ledger);
+      expect(state).toContain(`LATEST DIRECTION (CORRECT):\n${latest}`);
+      expect(state).not.toContain('LATEST DIRECTION (REFINE):\nand fix the issue');
+      expect(recoverProgressNudgeGoal(ledger)).toBeUndefined();
+    } finally { cleanup(); }
+  });
+
+  it('keeps actual repetition bug reports, implementation choices and explicit pauses intact', () => {
+    expect(classifyFollowUp('Fix repeated messages in the search UI').kind).toBe('REFINE');
+    expect(classifyFollowUp('Use React instead of Vue').kind).toBe('CORRECT');
+    expect(conversationIntent('Stop and explain before editing')).toBe('pause');
+  });
+
   it('does not discard a direction attached to a continuation', () => {
     expect(classifyFollowUp('continue with the README fix instead').kind).toBe('CORRECT');
     expect(classifyFollowUp('go ahead and fix src/new.ts').goalDelta).toContain('src/new.ts');

@@ -47,6 +47,20 @@ recorded criteria still require passing evidence. A useful single-surface plan
 does not trigger another design or todo round. Larger or risky work retains
 the stronger review and permission checks.
 
+Verification follows the changed result: reuse fresh focused checks, and add
+complementary checks for security, payments, or data integrity work. Available
+project scripts are choices, not an automatic requirement to run every script.
+Small documentation edits can use the guarded write's on-disk confirmation.
+Commands and browser checks can declare `verificationScope: { paths, reason }`
+covering their source, data, and shared dependencies. Gitu hashes those inputs,
+literal command file arguments, and project configuration before reusing the
+result across unrelated edits. Omit a scope when dependencies are uncertain;
+full-workspace freshness remains the default. Newer failures supersede older
+passes. Model-selected checks can be replaced with an audited explanation while
+preserving the requirement and evidence type; explicit user-pinned checks stay
+fixed. Missing pre-fix reproduction is reported once instead of causing repeated
+completion requests. Recovery stops when unchanged attempts make no progress.
+
 Read-only shell inspection can answer a repository or environment question
 without inventing another verification command. Browser checks are bound to
 the inspected workspace version: unchanged tests and inspection preserve them,
@@ -496,13 +510,24 @@ sidebar. Instead of task runs it gives you a messaging-style team surface:
   the conversation. Configure it per host with `chiefOfStaff: { policy, advisor }`
   (`advisor: false` for policy-only, or supply your own), or `false` to turn the
   chief off (interactive runs keep every gate for you by design).
+- **Independent desktop engine** — Electron is the interface; a detached process
+  owns agents, tools, sessions, and schedules. Reopening the interface reconnects
+  to its running engine. The tray offers **Exit interface (keep agents running)**
+  and **Quit Agent Gitu and stop agents**. See [desktop engine](docs/desktop-engine.md)
+  for lifecycle, browser availability, recovery, and validation.
 - **Long commands and verification** — a command never blocks a turn on output.
   Every call answers with a status: `exited` with an exit code, or `running` with
   a job id that stays pollable (`{"action":"status","id":"cmd-3"}`) and stoppable
   (`{"action":"stop","id":"cmd-3"}`). `waitMs` (default 60 s) is how long a call
   waits for a terminal state; `timeoutMs` remains the hard kill deadline, has no
   implicit value, and is respected without a ten-minute cap. Stop cancels the
-  process tree, and evidence is only ever recorded from a command that reached a
+  process tree asynchronously on Windows so cleanup keeps the app responsive.
+  Running results include elapsed time, output byte count, and time since the
+  last output; silence alone is not classified as a hang. Both agent loops use
+  the same recovery guidance: inspect tool health, avoid duplicate processes
+  and unchanged timeout retries, and preserve work when a prerequisite remains
+  unresolved. This applies to every project and framework. Evidence is only
+  ever recorded from a command that reached a
   terminal state — never from one that is still running. The main agent accepts
   relevant document/browser evidence for productivity work, still checks code
   changes, and reports a blocker after two unsuccessful evidence-correction

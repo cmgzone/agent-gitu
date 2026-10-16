@@ -10,7 +10,6 @@ export const WIDGET_APP_TOOL_GUIDE = 'Interactive mini apps: kind="app", data={h
 
 export function widgetState(value: unknown): Record<string, unknown> {
   const text = JSON.stringify(value ?? {});
-  if (text.length > 128_000) throw new Error('Widget state exceeds 128 KB');
   const state = JSON.parse(text, (key, item: unknown) => ['__proto__', 'constructor', 'prototype'].includes(key) ? undefined : item) as unknown;
   if (!state || typeof state !== 'object' || Array.isArray(state)) throw new Error('Widget state must be an object');
   return state as Record<string, unknown>;
@@ -21,23 +20,22 @@ export function sanitizeWidgetApp(value: unknown): Record<string, unknown> {
   const html = String(raw['html'] ?? '').trim();
   const css = String(raw['css'] ?? '');
   const js = String(raw['js'] ?? '');
-  if (html.length + css.length + js.length > 512_000) throw new Error('Widget app exceeds 512 KB');
   if (!html) throw new Error('A widget app needs HTML');
   const named = (item: unknown) => item && typeof item === 'object' ? item as Record<string, unknown> : {};
-  const name = (item: Record<string, unknown>) => /^[a-zA-Z][\w-]{0,63}$/.test(String(item['name'])) ? String(item['name']) : '';
-  const sources = (Array.isArray(raw['sources']) ? raw['sources'] : []).slice(0, 32).map(item => {
+  const name = (item: Record<string, unknown>) => /^[a-zA-Z][\w-]*$/.test(String(item['name'])) ? String(item['name']) : '';
+  const sources = (Array.isArray(raw['sources']) ? raw['sources'] : []).map(item => {
     const row = named(item);
     let url: URL;
     try { url = new URL(String(row['url'])); } catch { return null; }
     if (!name(row) || !['https:', 'http:'].includes(url.protocol) || url.username || url.password) return null;
-    return { name: name(row), url: url.href, refreshMs: Math.max(5_000, Math.min(3_600_000, Number(row['refreshMs']) || 60_000)) };
+    return { name: name(row), url: url.href, refreshMs: Math.max(1, Number(row['refreshMs']) || 60_000) };
   }).filter(Boolean);
-  const actions = (Array.isArray(raw['actions']) ? raw['actions'] : []).slice(0, 32).map(item => {
+  const actions = (Array.isArray(raw['actions']) ? raw['actions'] : []).map(item => {
     const row = named(item);
-    const prompt = String(row['prompt'] ?? '').trim().slice(0, 8_000);
-    return name(row) && prompt ? { name: name(row), label: String(row['label'] ?? name(row)).slice(0, 100), prompt } : null;
+    const prompt = String(row['prompt'] ?? '').trim();
+    return name(row) && prompt ? { name: name(row), label: String(row['label'] ?? name(row)), prompt } : null;
   }).filter(Boolean);
-  return { html, css, js, state: widgetState(raw['state']), sources, actions, height: Math.max(180, Math.min(900, Number(raw['height']) || 360)) };
+  return { html, css, js, state: widgetState(raw['state']), sources, actions, height: Math.max(1, Number(raw['height']) || 360) };
 }
 
 /** Opaque-origin frames have no access to the host, cookies, keys or tools.

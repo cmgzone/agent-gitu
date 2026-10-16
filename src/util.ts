@@ -129,6 +129,7 @@ export function canonicalToolParams(tool: string, params: unknown): unknown {
       path: normalizeToolPath(p['path'], '.'),
       include: normalizeGlobs(p['include']),
       exclude: normalizeGlobs(p['exclude']),
+      includeGenerated: p['includeGenerated'] === true,
     };
   }
 
@@ -244,6 +245,8 @@ export function summarizeParams(tool: string, params: Record<string, unknown>): 
     case 'apply_edit':
       return `edit ${params['path']}`;
     case 'run_command':
+      if (params['action'] === 'status') return `command status ${params['id'] ?? '(all)'}`;
+      if (params['action'] === 'stop') return `command stop ${params['id'] ?? ''}`;
       return `$ ${String(params['command'] ?? '').slice(0, 160)}`;
     case 'list_files':
       return `list ${params['path'] ?? '.'}`;

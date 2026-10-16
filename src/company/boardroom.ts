@@ -5,12 +5,12 @@ import type { CompanyActor, CompanyMeeting, CompanyMeetingType, MeetingHandReque
 const TYPES: CompanyMeetingType[] = ['onboarding', 'daily', 'weekly', 'strategy', 'roadmap', 'workflow-planning', 'emergency', 'problem-solving', 'department', 'project-review'];
 const iso = (value: number) => new Date(value).toISOString();
 function requiredText(value: unknown, maximum: number): string {
-  if (typeof value !== 'string' || !value.trim() || value.length > maximum) throw new Error(`Enter nonempty text of at most ${maximum} characters.`);
+  if (typeof value !== 'string' || !value.trim()) throw new Error(`Enter nonempty text.`);
   return value.trim();
 }
 function evidence(value: unknown): string[] {
   if (value === undefined) return [];
-  if (!Array.isArray(value) || value.length > 12) throw new Error('Provide at most 12 evidence references.');
+  if (!Array.isArray(value)) throw new Error('Provide evidence references.');
   return value.map((item) => requiredText(item, 1000));
 }
 
@@ -147,12 +147,12 @@ export class CompanyBoardroom {
     if (!TYPES.includes(type)) throw new Error('Choose a supported meeting type.');
     const title = requiredText(input.title, 160),
       description = input.description === undefined ? '' : requiredText(input.description, 2000);
-    if (!Array.isArray(input.agenda) || !input.agenda.length || input.agenda.length > 12) throw new Error('Provide between 1 and 12 agenda items.');
+    if (!Array.isArray(input.agenda) || !input.agenda.length) throw new Error('Provide agenda items.');
     const agenda = input.agenda.map((item) => ({ id: randomUUID(), title: requiredText(item, 500) }));
     const start = input.startAt ? Date.parse(input.startAt) : this.clock(),
       duration = input.durationMinutes ?? 30,
       maxTurns = input.maxTurns ?? 24;
-    if (!Number.isFinite(start) || !Number.isInteger(duration) || duration < 1 || duration > 240 || !Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > 200)
+    if (!Number.isFinite(start) || !Number.isInteger(duration) || duration < 1 || !Number.isInteger(maxTurns) || maxTurns < 1)
       throw new Error('Choose a valid meeting time, 1–240 minutes and 1–200 turns.');
     if (start + duration * 60_000 <= this.clock()) throw new Error('Choose a meeting time that has not already elapsed.');
     const budgetUsd = input.budgetUsd ?? null;
@@ -164,7 +164,7 @@ export class CompanyBoardroom {
     const retrainingChair = actor.kind === 'director' && type === 'onboarding' && ['onboarding', 'retraining'].includes(chair.status);
     if ((!retrainingChair && chair.status !== 'active') || !chair.authority.capabilities.includes('chair-meetings')) throw new Error('The chairperson needs active chair authority.');
     if (input.departmentId && !this.organization.departments().some((d) => d.id === input.departmentId)) throw new Error('Department not found in this company.');
-    if (!Array.isArray(input.participants) || !input.participants.length || input.participants.length > 100) throw new Error('Choose company participants.');
+    if (!Array.isArray(input.participants) || !input.participants.length) throw new Error('Choose company participants.');
     const participantMap = new Map<string, MeetingParticipant>();
     for (const entry of [...input.participants, { agentId: chairId, attendance: 'required' as const }]) {
       const member = this.organization.member(entry.agentId),
@@ -386,7 +386,6 @@ export class CompanyBoardroom {
           throw new Error('Objection must reference a decision on the same agenda.');
         const pending = meeting.requests.find((r) => r.agentId === actor.agentId && ['queued', 'deferred'].includes(r.state));
         if (pending) return structuredClone(meeting);
-        if (meeting.requests.length >= 400) throw new Error('Meeting contribution queue limit reached. Preserve further matters for the next meeting.');
         meeting.requests.push({
           id: randomUUID(),
           agentId: actor.agentId,
@@ -436,7 +435,7 @@ export class CompanyBoardroom {
     this.organization.assertExecution(target, id);
     if(!this.available(target))throw new Error('This teammate is finishing current work. Invite them at the next safe checkpoint.');
     const seconds = input.seconds ?? 120;
-    if (!Number.isInteger(seconds) || seconds < 1 || seconds > 600) throw new Error('Choose a speaking turn of 1–600 seconds.');
+    if (!Number.isInteger(seconds) || seconds < 1) throw new Error('Choose a positive speaking duration.');
     return this.organization.audited(actor, 'chair-meetings', 'meeting.floor-granted', id, () => {
       const meeting = this.raw(id);
       this.active(meeting);
@@ -539,7 +538,6 @@ export class CompanyBoardroom {
     return this.organization.audited(actor, undefined, 'meeting.decision-proposed', id, () => {
       const meeting = this.raw(id);
       this.active(meeting);
-      if (meeting.decisions.length >= 100) throw new Error('Meeting proposal limit reached. Preserve additional matters for a later meeting.');
       const decision: MeetingDecision = {
         id: randomUUID(),
         agendaId: input.agendaId,
@@ -578,7 +576,7 @@ export class CompanyBoardroom {
     const title = requiredText(input.title, 2000),
       target = this.organization.member(input.agentId);
     if (target.status !== 'active') throw new Error('Assign work to an active employee.');
-    if (!Array.isArray(input.criteria) || !input.criteria.length || input.criteria.length > 12) throw new Error('Include 1–12 concrete acceptance criteria.');
+    if (!Array.isArray(input.criteria) || !input.criteria.length) throw new Error('Include concrete acceptance criteria.');
     const criteria = input.criteria.map((c) => requiredText(c, 1000));
     if (input.deadline && !Number.isFinite(Date.parse(input.deadline))) throw new Error('Choose a valid assignment deadline.');
     return this.organization.audited(actor, undefined, 'meeting.assignment-proposed', id, () => {
@@ -587,7 +585,6 @@ export class CompanyBoardroom {
       if (input.decisionId && !meeting.decisions.some((d) => d.id === input.decisionId)) throw new Error('Choose a decision from this meeting.');
       const existing = meeting.actionItems.find((a) => a.title === title && a.agentId === target.agentId && a.decisionId === input.decisionId);
       if (existing) return structuredClone(meeting);
-      if (meeting.actionItems.length >= 100) throw new Error('Meeting assignment limit reached.');
       meeting.actionItems.push({
         id: randomUUID(),
         title,

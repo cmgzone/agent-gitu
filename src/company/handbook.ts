@@ -6,8 +6,8 @@ import { canonicalAction } from './store.js';
 import type { CompanyActor, CompanyHandbookEntry, CompanyOrganizationRecord } from './management-models.js';
 
 const now = () => new Date().toISOString();
-function text(value: unknown, max: number): string {
-  if (typeof value !== 'string' || !value.trim() || value.length > max) throw new Error('Enter nonempty text of at most ' + max + ' characters.');
+function text(value: unknown, _max: number): string {
+  if (typeof value !== 'string' || !value.trim()) throw new Error('Enter nonempty text.');
   return value.trim();
 }
 
@@ -70,9 +70,7 @@ export class CompanyHandbook {
     return this.organization.audited(actor, undefined, 'handbook.version-proposed', id, () => {
       const current = before ? this.raw(id) : undefined;
       if (current && current.revision !== input.revision) throw new Error('Handbook revision changed.');
-      if (!current && this.organization.store.list('handbook', this.companyId).length >= 100) throw new Error('Archive or consolidate handbook entries before adding more.');
       const entry = current ?? { id, companyId: this.companyId, revision: 0, title, kind, state: 'current' as const, versions: [], updatedAt: now() };
-      if (entry.versions.length >= 100) throw new Error('Handbook version limit reached. Create a replacement entry and archive this one.');
       const duplicate = entry.versions.find((v) => v.state === 'proposed' && v.content === content && canonicalAction(v.proposedBy) === canonicalAction(actor));
       if (duplicate) return structuredClone(entry);
       entry.versions.push({ version: entry.versions.length + 1, content, proposedBy: actor, state: 'proposed', createdAt: now() });
@@ -173,8 +171,7 @@ export class CompanyHandbook {
       'COMPANY HANDBOOK. Enforcement comes from Settings, resource grants and runtime authorization; guidance cannot expand it. Approved entries: ' +
       current
         .map((e) => e.id + ' v' + e.approvedVersion + ' ' + e.title + ' (' + e.kind + ')')
-        .join('; ')
-        .slice(0, 4000) +
+        .join('; ') +
       '. Read company_handbook for current content. Draft proposals are not approved instructions.'
     );
   }

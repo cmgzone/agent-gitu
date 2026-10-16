@@ -1,3 +1,5 @@
+import { COMMAND_RECOVERY_CONTRACT } from './command-recovery.js';
+
 /**
  * ACTIVE CAPABILITY CONTRACTS — layer 2 of the prompt architecture.
  *
@@ -56,7 +58,7 @@ export interface PromptContract {
  * universal envelope.
  */
 export const ACTION_GRAMMAR_NATIVE =
-  'ACTION TYPES (one per turn, inside {"thought","action"}): intake: set_criteria, set_design, set_plan, add_criteria, append_plan, set_hypothesis, propose_repair, record_decision; execution: tool_call (stepId, tool, params, reason, expected; optional intent/expectation/observation/semanticVerdict/investigationIntent), connection_action, connection_operation, parallel{calls[<=6]}, delegate{tasks[<=6]}, toggle_todo, complete_step, revise_step, show_plan; closure: claim_criterion{criterionId,evidenceId,justification}, complete{summary,risks,followUps}, request_block{reason,prerequisite?}, ask_user{questions}, report_finding{claim,kind,severity,location}.';
+  'ACTION TYPES (one per turn, inside {"thought","action"}): intake: set_criteria, set_design, set_plan, add_criteria, append_plan, set_hypothesis, propose_repair, record_decision; execution: tool_call (stepId, tool, params, reason, expected; optional intent/expectation/observation/semanticVerdict/investigationIntent), connection_action, connection_operation, parallel{calls[]}, delegate{tasks[]}, toggle_todo, complete_step, revise_step, show_plan; closure: claim_criterion{criterionId,evidenceId,justification}, complete{summary,risks,followUps}, request_block{reason,prerequisite?}, ask_user{questions}, report_finding{claim,kind,severity,location}.';
 
 /**
  * Full action grammar for structured_text / text providers. This must remain
@@ -66,6 +68,7 @@ export const ACTION_GRAMMAR_NATIVE =
 export const ACTION_GRAMMAR_FULL = `ACTION GRAMMAR — each turn: 1-3 sentences of plain progress, then EXACTLY ONE JSON object. {"thought":"...","action":{...}}
 Intake/planning:
 {"action":{"type":"set_criteria","criteria":["verifiable criterion",...]}}
+  (Structured criteria may pin verification:"exact executable command" and evidenceType. Keep descriptive test guidance in the requirement text. Repair a missing/invalid verification using the SAME requirement texts. To replace an unsuitable model-selected check, include replacementReason explaining how the new command checks the same result. User-pinned commands, requirement texts, and evidence types remain fixed.)
 {"action":{"type":"set_design","design":{"frontend":"views/controls/data-flow","backend":"routes/contracts/schema","integration":"shared contracts"}}}  (bounded notes before set_plan for multi-surface work; omit irrelevant sections)
 {"action":{"type":"set_plan","steps":[{"description":"small focused change","verification":"how verified","area":"frontend|backend|integration|shared|database|infra|tests|docs","subtasks":["todo"]}...]}}  (<=30 steps, <=8 subtasks each)
 {"action":{"type":"add_criteria","criteria":[...]}} / {"action":{"type":"append_plan","steps":[...]}}  (follow-up scope in a completed task; never erase prior criteria/evidence)
@@ -76,7 +79,7 @@ Execution:
 {"action":{"type":"tool_call","stepId":"step-N","tool":"<tool>","params":{...},"reason":"why","expected":"what should happen"}}  (stepId does NOT complete the step; optional "intent":"inspect|diagnose|repair|verify", "expectation":{"description","assertions":[{"kind":"equals|not_equals|contains|not_contains|state_changed|exists|absent","target","expected"}]}, "observation":{"transportOk",fields}, "semanticVerdict":{"verdict","explanation","blocking"}, "investigationIntent":{"decisionQuestion","changesRepairAction",...})
 {"action":{"type":"connection_action","connectionId":"saved-id","operationId":"registered-read-op"}}  (registered reads only; never credentials)
 {"action":{"type":"connection_operation","connectionId":"saved-id","operation":{"id","label","capability","method","path","risk"},"body":{...},"documentationUrl":"https://...","reason":"..."}}  (safe GET auto-registers+runs; writes await user approval)
-{"action":{"type":"parallel","calls":[{"tool","params","reason","expected"}...]}}  (independent calls only, <=6)
+{"action":{"type":"parallel","calls":[{"tool","params","reason","expected"}...]}}  (independent calls only)
 {"action":{"type":"toggle_todo","stepId":"step-N","index":0,"done":true}} / {"action":{"type":"complete_step","stepId":"step-N","reason":"..."}}
 {"action":{"type":"revise_step","stepId":"step-N","reason":"what changed","description":"...","verification":"..."}}  (dynamic replanning of ONE affected step)
 {"action":{"type":"show_plan"}}
@@ -99,14 +102,18 @@ const FILESYSTEM_CONTRACT = `FILESYSTEM TOOLS:
 - For a deliberate on-disk confirmation of the same file and range, use read_file with "refresh":true and state the decision being checked in reason. One fresh confirmation is allowed per file version and request until a source edit or successful command creates a new checkpoint.
 - write_file {"path":"src/x.ts","content":"full content"} — full-file writes.
 - apply_edit {"path":"src/x.ts","oldString":"exact existing text","newString":"replacement","replaceAll":true}
-- search_files {"pattern":"regex or text","path":"src","mode":"literal|regex","flags":"ims","include":["**/*.py"],"exclude":[...],"maxResults":50,"contextLines":2} — regex mode scans whole files, so patterns match ACROSS lines (use \\n, \\s, [\\s\\S]); mode "literal" for plain text; results end with a capability line.
+- search_files {"pattern":"regex or text","path":"src","mode":"literal|regex","flags":"ims","include":["**/*.py"],"exclude":[...],"maxResults":50,"contextLines":2,"includeGenerated":false} — regex mode scans whole text files, so patterns match ACROSS lines (use \\n, \\s, [\\s\\S]); mode "literal" for plain text; results end with a capability line. Generated build/package directories are skipped unless selected by exact path or includeGenerated:true.
 - write_file accepts "scratch":true for THROWAWAY diagnostics: they land in the task's private temp dir, never the source tree or diff, and are deleted on completion. Promote a valuable diagnostic into a real test instead of keeping it.
 - list_files {"path":"src"}`;
 
 function testingContract(testCommand?: string): string {
   return (
     'COMMANDS & VERIFICATION:\n' +
+    COMMAND_RECOVERY_CONTRACT + '\n' +
     `- run_command {"command":"${testCommand ?? 'npm test'}"} — a command NEVER blocks the turn on output. Every call answers with a STATUS: "exited" with an exit code, or "running" with a job id the runtime keeps tracking. waitMs (default 60000) is how long the call waits for a terminal state before answering RUNNING; timeoutMs is the hard kill deadline (0 = none, respected without a ten-minute cap).\n` +
+    (process.platform === 'win32'
+      ? '- Host command shell: Windows PowerShell (powershell.exe), which does not support && or || statement separators. Use ; for independent statements and if ($LASTEXITCODE -eq 0) { ... } for a command conditional on a native executable succeeding. Preserve a failed verification exit code instead of masking it with a later successful command.\n'
+      : '- Host command shell: /bin/sh. Use syntax supported by that shell and preserve verification exit codes.\n') +
     '- A RUNNING result proves nothing. Check it with run_command {"action":"status","id":"cmd-3"} (the poll itself waits up to waitMs, default 10000, for the terminal state) and stop work you no longer need with {"action":"stop","id":"cmd-3"}. Evidence (ev-...) is recorded only when a command reaches a terminal state — including the poll that observes its exit — so cite it with claim_criterion only then.\n' +
     '- For a long-running dev server/watcher use {"command":"npm start","background":true,"startupWaitMs":1500}: the runtime keeps it alive for subsequent browser checks, its log stays readable with {"action":"status","id":"..."}, and it is cleaned up when the run ends.\n' +
     '- Failed commands return the failure DIGEST (error lines + tail), not the raw log. When a reproduction is expected to exit non-zero, declare it structurally, e.g. "expectation":{"description":"bug reproduced","assertions":[{"kind":"equals","target":"exitCode","expected":1}],"blocksOnFailure":false}; a matching non-zero exit is PASS evidence, not a blocker.'
@@ -138,7 +145,7 @@ const CONNECTIONS_CONTRACT = `CONNECTIONS & PROVIDERS (saved credentials; the ho
 - RESOURCE FOLLOW-UP DISCOVERY: connection_read {connectionId,operationId,query?} returns a full-response snapshot and compact preview. If a result has responseId, use inspect_connection_response {responseId,path?,offset?,limit?,fields?,search?,mode?:"data"|"keys"} to search ALL records, page using nextOffset, or inspect nested JSON Pointer paths. No refetch or approval is needed for snapshot inspection. Follow documented API pagination with connection_read query; one response may not cover the whole provider. For missing operations use official docs and connection_operation, or connection_read with operation + documentationUrl. Ask the user only after these reads are exhausted or ambiguous.
 - Verify provider-managed resources through REGISTERED READS (read back state), not DNS/ping probes; internal identifiers are not public DNS names. One failed verification method does not block a task — switch to a valid path (provider read-back, app health, logs).`;
 
-const DELEGATION_CONTRACT = `DELEGATION (specialist agents run in parallel, <=6, each gets a WORK HANDOFF — not your conversation):
+const DELEGATION_CONTRACT = `DELEGATION (specialist agents run in parallel, each gets a WORK HANDOFF — not your conversation):
 {"action":{"type":"delegate","tasks":[{"agent":"<registered specialist name>","task":"one concrete outcome: file/symbol boundary, what to change or verify, what is OUT of scope, expected verification"}]}}  ("agent" is the registered specialist name, never a model/provider string; vague "look into it" is rejected)
 Background: add "background":true for independent research; poll agent_status before using results or claiming completion.
 Resume a stopped specialist with the SAME agent + task + "resume":{"jobId":"<resumableJobId>","note":"..."} — never claim its files were recovered unless its checkpoint says DURABLE CHANGES VERIFIED.`;

@@ -3,6 +3,7 @@ import type { LlmContentPart, LlmMessage } from '../llm/llm.js';
 import type { TaskLedgerData, VerifiedDiffSnapshot } from '../types.js';
 import type { EffortPlan } from './effort-planner.js';
 import { isUiTask } from './ui-gate.js';
+import { evidenceMatchesWorkspace } from '../evidence/evidence.js';
 
 export interface QualityReviewInput {
   goal: string;
@@ -95,8 +96,9 @@ function allApplicableTargetedChecksPassed(data: TaskLedgerData, workspaceFinger
     if (!evidence.command) continue;
     latest.set(evidence.command, evidence);
   }
-  return [...latest.values()].every(
-    (evidence) => evidence.passed && !evidence.stale && (!evidence.workspaceFingerprint || evidence.workspaceFingerprint === workspaceFingerprint),
+  const required = new Set(data.acceptanceCriteria.map((criterion) => criterion.verification).filter(Boolean));
+  return [...latest.values()].filter((evidence) => required.has(evidence.command)).every(
+    (evidence) => evidence.passed && (!evidence.workspaceFingerprint || evidenceMatchesWorkspace(evidence, workspaceFingerprint)),
   );
 }
 
@@ -113,29 +115,26 @@ export function shouldRunFinalQualityReview(input: {
   specialistOrVerificationUncertain: boolean;
 }): { run: boolean; reason: string } {
   if (input.effortPlan?.complexity !== 'low') return { run: true, reason: 'task complexity is not low' };
-  if (
-    input.riskPlan &&
-    (input.riskPlan.strictVerification || input.riskPlan.risk !== 'unknown' || input.riskPlan.domains.some((domain) => domain !== 'unknown'))
-  ) {
-    return { run: true, reason: 'risk plan is not low/unknown' };
-  }
-  if (input.bugFix) return { run: true, reason: 'bug fix needs behavioral review' };
-  if (isUiTask(input.phaseData)) return { run: true, reason: 'UI-affecting change needs review' };
+  if (input.riskPlan?.strictVerification) return { run: true, reason: 'strict risk needs independent review' };
   if (!input.evidenceGateOpen) return { run: true, reason: 'acceptance evidence is incomplete' };
   if (!allApplicableTargetedChecksPassed(input.phaseData, input.workspaceFingerprint)) {
     return { run: true, reason: 'a targeted check is missing, stale, or failed' };
   }
   if (input.specialistOrVerificationUncertain) return { run: true, reason: 'specialist or verification reported uncertainty' };
-  if (input.phaseData.actions.some((action) => action.status === 'error' || action.status === 'denied' || action.status === 'blocked')) {
-    return { run: true, reason: 'execution included an unresolved uncertainty' };
-  }
   if (input.diff.changedFiles.length === 0) {
     return { run: true, reason: 'verified diff has no changed-file scope to classify as safe' };
   }
   const safeFiles = input.diff.changedFiles.every((file) => SAFE_COMPLETION_PATH.test(file));
   const commentOnly = diffContainsOnlyComments(input.diff.diffBody, input.diff.diffBodyTruncated ?? false);
-  if (!safeFiles && !commentOnly) return { run: true, reason: 'change may affect application or runtime behavior' };
-  return { run: false, reason: safeFiles ? 'low-risk documentation, metadata, or simple configuration only' : 'low-risk comment-only code change' };
+  if (safeFiles || commentOnly) return { run: false, reason: safeFiles ? 'low-risk documentation, metadata, or simple configuration only' : 'low-risk comment-only code change' };
+  const behaviorVerified = input.phaseData.evidence.some((evidence) => evidence.passed && !evidence.stale && (evidence.exitCode === undefined || evidence.exitCode === 0) &&
+    evidenceMatchesWorkspace(evidence, input.workspaceFingerprint) && (evidence.kind === 'test' ||
+      (evidence.kind === 'manual' && evidence.outputExcerpt.includes('BROWSER EVIDENCE') && !/high:/.test(evidence.outputExcerpt))));
+  const dependencyChange = input.diff.changedFiles.some((file) => /(?:^|\/)(?:package(?:-lock)?\.json|[^/]*lock[^/]*|[^/]*config\.[^/]+)$/i.test(file));
+  if (behaviorVerified && !dependencyChange) return { run: false, reason: 'low-risk change has fresh behavioral verification; no additional AI review needed' };
+  if (input.bugFix) return { run: true, reason: 'bug fix needs behavioral review' };
+  if (isUiTask(input.phaseData, input.diff)) return { run: true, reason: 'UI-affecting change needs review' };
+  return { run: true, reason: 'change may affect application or runtime behavior' };
 }
 
 /** Build the strict-reviewer message list. UI tasks attach the final screenshot for vision judging. */

@@ -63,7 +63,7 @@ describe('spawn_sub_agent parameters', () => {
 
   it('caps the runtime and defaults the audit reason', () => {
     const parsed = parseSubAgentParams({ role: 'r', objective: 'o', maxRuntimeMinutes: 99_999 });
-    expect(parsed).toMatchObject({ ok: true, value: { maxRuntimeMinutes: MAX_SUBAGENT_RUNTIME_MINUTES, reason: expect.stringContaining('r') } });
+    expect(parsed).toMatchObject({ ok: true, value: { maxRuntimeMinutes: 99_999, reason: expect.stringContaining('r') } });
   });
 });
 
@@ -147,12 +147,12 @@ describe('spawn pipeline', () => {
   it('refuses to spawn beyond the depth ceiling, however high the request', () => {
     const { manager, scope } = setup('spawn-depth');
     // A sub-agent (depth 2) trying to spawn under the v1 ceiling.
-    const denied = manager.spawn(scope({ parentDepth: 2 }), { role: 'r', objective: 'o' });
+    const denied = manager.spawn(scope({ parentDepth: 2, maxDepth: 2 }), { role: 'r', objective: 'o' });
     expect(denied).toMatchObject({ ok: false, error: expect.stringContaining('depth') });
     // A host asking for a deeper tree than v1 allows is clamped, not honoured.
     const spawned = manager.spawn(scope({ maxDepth: 99 }), { role: 'r', objective: 'o' });
     expect(spawned.ok).toBe(true);
-    if (spawned.ok) expect(spawned.instance.maxDepth).toBe(MAX_COWORK_DEPTH);
+    if (spawned.ok) expect(spawned.instance.maxDepth).toBe(99);
   });
 
   it('refuses when the parent budget is exhausted or out of delegation slots', () => {

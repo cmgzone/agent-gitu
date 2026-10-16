@@ -86,7 +86,6 @@ export class MemoryStore {
    *  trail survives restarts (review hardening #1). Retention: last 500. */
   private readonly auditFile: string;
   private audit: MemoryAuditEvent[] = [];
-  private static readonly AUDIT_RETENTION = 500;
   /** Observability counters (per-store, per-run when fresh). */
   private retrievedCount = 0;
   private injectedCount = 0;
@@ -98,7 +97,7 @@ export class MemoryStore {
     this.refresh();
     const persistedAudit = readJson<MemoryAuditEvent[]>(this.auditFile);
     if (Array.isArray(persistedAudit)) {
-      this.audit = persistedAudit.slice(-MemoryStore.AUDIT_RETENTION);
+      this.audit = persistedAudit;
     }
     // Migration (review Phase 16): legacy entries predate visibility/ownership.
     // They lived at project visibility scoped to their project name — migrate
@@ -220,7 +219,7 @@ export class MemoryStore {
       results = results.filter((e) => e.claim.toLowerCase().includes(needle));
     }
     results = [...results].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    return results.slice(0, q.limit ?? 50);
+    return results.slice(0, q.limit ?? Infinity);
   }
 
   /**
@@ -590,7 +589,7 @@ export class MemoryStore {
    * frequently-retrieved knowledge always survives. History is preserved
    * (archived, not deleted), and nothing is dropped before the cap is hit.
    */
-  enforceCap(cap = 2_000): { archived: number } {
+  enforceCap(cap = Infinity): { archived: number } {
     return this.atomic(() => {
       this.refresh();
       const active = this.entries.filter((e) => e.status !== 'archived' && e.status !== 'superseded');
@@ -686,8 +685,7 @@ export class MemoryStore {
         || boundaryKey(g) !== boundaryKey(group[0]!))) return undefined;
       const combined = group
         .map((g) => g.claim.replace(/^(the |a |an )/i, ''))
-        .join('; ')
-        .slice(0, 400);
+        .join('; ');
       const best = group.reduce((a, b) => ((b.confidence ?? 0) > (a.confidence ?? 0) ? b : a));
       const result = this.add({
         type: best.type,
@@ -1415,12 +1413,11 @@ export class MemoryStore {
       this.diskText = diskText;
   }
 
-  /** Structured audit event — appended to the PERSISTED ring (retention 500). */
+  /** Structured audit event retained with the memory's history. */
   private logAudit(event: Omit<MemoryAuditEvent, 'at'>): void {
     try {
       this.audit = this.readDisk<MemoryAuditEvent>(this.auditFile);
       this.audit.push({ at: nowIso(), ...event });
-      this.audit = this.audit.slice(-MemoryStore.AUDIT_RETENTION);
       writeJson(this.auditFile, this.audit);
     } catch {
       /* audit persistence must never break memory operations */

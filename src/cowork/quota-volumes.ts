@@ -23,7 +23,7 @@ export class QuotaVolumes {
     private readonly platform: NodeJS.Platform = process.platform,
   ) {}
   prepare(name: string, diskMb: number, signal?: AbortSignal): Promise<void> {
-    if (!/^gitu-cowork-[a-f0-9]{24}$/.test(name) || !Number.isInteger(diskMb) || diskMb < 256 || diskMb > 1048576)
+    if (!/^gitu-cowork-[a-f0-9]{24}$/.test(name) || !Number.isInteger(diskMb) || diskMb < 256)
       return Promise.reject(new Error('Invalid private computer disk quota.'));
     if (this.platform !== 'linux' || !this.root) return Promise.reject(new Error(unavailable));
     if (!/^[a-zA-Z0-9_.:/\\-]+$/.test(this.root) || /\s/.test(this.owner) || !this.owner) return Promise.reject(new Error('Invalid quota server configuration.'));

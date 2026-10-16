@@ -67,8 +67,7 @@ export class UploadStore {
     const name =
       path
         .basename(String(input.name ?? 'file').replace(/\\/g, '/'))
-        .replace(/[\x00-\x1f]/g, '')
-        .slice(0, 240) || 'file';
+        .replace(/[\x00-\x1f]/g, '') || 'file';
     const checksum = input.checksum === undefined ? undefined : String(input.checksum);
     if (checksum && !/^[a-f0-9]{64}$/i.test(checksum)) throw new Error('Invalid SHA-256 checksum.');
     const now = new Date().toISOString();
@@ -76,7 +75,7 @@ export class UploadStore {
       id: `file-${randomUUID()}`,
       scope,
       name,
-      mime: String(input.mime ?? 'application/octet-stream').slice(0, 120),
+      mime: String(input.mime ?? 'application/octet-stream'),
       size: input.size,
       offset: 0,
       state: 'uploading',
@@ -104,7 +103,7 @@ export class UploadStore {
       for await (const value of request) {
         operation.abort.signal.throwIfAborted();
         const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
-        if (received + chunk.length > UPLOAD_CHUNK_BYTES || file.offset + received + chunk.length > file.size) throw new Error('Invalid upload chunk size.');
+        if (file.offset + received + chunk.length > file.size) throw new Error('Invalid upload chunk size.');
         writeSync(fd, chunk, 0, chunk.length, file.offset + received);
         received += chunk.length;
       }

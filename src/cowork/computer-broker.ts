@@ -26,7 +26,7 @@ export class ComputerBroker {
     if (label.trim() !== this.owner) throw new Error('This desktop does not belong to this workspace.');
   }
   async execute(args: unknown, input?: unknown, timeoutMs: unknown = 120_000, signal?: AbortSignal): Promise<string> {
-    if (!Array.isArray(args) || args.length > 60 || args.some((a) => typeof a !== 'string' || a.length > 20_000)) throw new Error('Invalid desktop operation.');
+    if (!Array.isArray(args) || args.some((a) => typeof a !== 'string')) throw new Error('Invalid desktop operation.');
     const argv = args as string[];
     if (input !== undefined && (typeof input !== 'string' || input.length > MAX_COMPUTER_MESSAGE_BYTES)) throw new Error('Invalid desktop input.');
     if (typeof timeoutMs !== 'number' || !Number.isSafeInteger(timeoutMs) || timeoutMs < 0 || (argv[0] !== 'exec' && (timeoutMs > 900_000 || timeoutMs === 0)))
@@ -37,7 +37,7 @@ export class ComputerBroker {
     if (same(argv, ['build', '-t', IMAGE, ASSETS])) return this.exec(argv, undefined, signal, 900_000);
     if (argv[0] === 'gitu-quota' && argv.length === 3) {
       const disk = Number(argv[2]);
-      if (!/^gitu-cowork-[a-f0-9]{24}$/.test(argv[1]!) || !Number.isInteger(disk) || disk < 256 || disk > 1048576) throw new Error('Invalid private disk quota.');
+      if (!/^gitu-cowork-[a-f0-9]{24}$/.test(argv[1]!) || !Number.isInteger(disk) || disk < 256) throw new Error('Invalid private disk quota.');
       return this.exec([...argv, this.owner], undefined, signal, 120000);
     }
     if (argv[0] === 'create') {

@@ -12,6 +12,21 @@ function makeProject(): string {
 }
 
 describe('TaskLedger', () => {
+  it.each([false, true])('retains a same-worded requirement as a fresh criterion in a new phase (structured=%s)', (structured) => {
+    const dir = makeProject(),
+      guard = ProjectGuard.detect(dir);
+    const ledger = TaskLedger.create({ repoRoot: dir, goal: 'First feature', project: guard.lock, mode: 'agent' });
+    ledger.ensureInitialWorkPhase();
+    ledger.setCriteriaFromSpecs([{ text: 'Regression passes', verification: 'node first-test.cjs' }]);
+    ledger.completeActiveWorkPhase();
+    ledger.startWorkPhase({ kind: 'follow_up', goal: 'Second feature' });
+    const added = structured ? ledger.appendCriteriaFromSpecs([{ text: 'Regression passes', verification: 'node second-test.cjs' }]) : ledger.appendCriteria(['Regression passes']);
+    expect(added).toHaveLength(1);
+    expect(added[0]!.id).toBe('ac-2');
+    expect(ledger.data.acceptanceCriteria[0]!.verification).toBe('node first-test.cjs');
+    expect(structured ? ledger.appendCriteriaFromSpecs([{ text: 'Regression passes' }]) : ledger.appendCriteria(['Regression passes'])).toHaveLength(0);
+  });
+
   it('creates, persists, and reloads a ledger', () => {
     const dir = makeProject();
     const guard = ProjectGuard.detect(dir);

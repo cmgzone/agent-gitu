@@ -71,7 +71,7 @@ describe('autonomy policy', () => {
     expect(FAIL_FAST_MALFORMED_POLICY).toEqual({ remindAt: 1, escalateAt: 2, haltAt: 3 });
   });
 
-  it('extends without limit only while progress continues', () => {
+  it('extends persistent work without a hard-coded turn cap', () => {
     const persistent = true;
     const limit = 4;
     expect(mayExtendBudget({ persistent, progressing: true, extensionsUsed: 0, extensionLimit: limit })).toBe(true);

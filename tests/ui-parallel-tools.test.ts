@@ -86,14 +86,15 @@ class Element {
 
 function renderer() {
   const stream = new Element(); stream.attached = true;
-  const session = { nodes: {} as { toolRows?: Element[]; parallelPending?: boolean; toolGroup?: { el: Element } } };
+  const session = { chatish: false, nodes: {} as { toolRows?: Element[]; parallelPending?: boolean; toolGroup?: { el: Element } } };
+  const working: string[] = [];
   let narrationClosures = 0;
   const context = createContext({
-    S: { sessions: { run: session } },
+    S: { active: 'run', sessions: { run: session } },
     $: (id: string) => id === 'stream' ? stream : null,
     document: { createElement: (tag: string) => new Element(tag) },
     updateApproach: () => {}, mascotState: () => {}, mascotPulse: () => {},
-    closeThought: () => { narrationClosures++; }, setWorking: () => {}, trimTimeline: () => {}, stickScroll: () => {},
+    closeThought: () => { narrationClosures++; }, setWorking: (text: string) => { working.push(text); }, trimTimeline: () => {}, stickScroll: () => {},
     hhmm: (iso: string) => 'T' + iso,
     // No intake or specialist tag matches here; falling through to the generic
     // meta block is what exercises the evidence row the stamp test uses.
@@ -108,7 +109,7 @@ function renderer() {
     setupOutputFolding: (_details: Element, pre: Element, value: string) => { pre.textContent = value; },
     esc: (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
   });
-  const functions = ['toolKind', 'humanToolSummary', 'splitSummary', 'splitReason', 'workingTextFor',
+  const functions = ['toolKind', 'humanToolSummary', 'splitSummary', 'splitReason', 'publicThinkingStatus', 'workingTextFor', 'syncWorkingActivity',
     'toolActivityGroupForRow', 'toolActivityHint', 'refreshToolActivityGroup', 'sealToolActivityGroup',
     'createToolActivityGroup', 'ensureToolActivityGroup', 'followActiveToolActivity', 'toolActivityBoundary', 'appendEvent',
     'normalizeToolKey', 'activeToolRows', 'findToolRow',
@@ -133,7 +134,7 @@ function renderer() {
     ? UI_HTML.match(new RegExp('  function ' + name + '\\([^\\n]+'))![0] : source(name)).join('\n');
   new Script(code).runInContext(context);
   return {
-    stream, session, context, narrationClosures: () => narrationClosures,
+    stream, session, context, working, narrationClosures: () => narrationClosures,
     event: (i: number, text: string, t?: string, typed?: Record<string, unknown>) =>
       context.appendEvent('run', { i, text, ...(t ? { t } : {}), ...(typed ? { typed } : {}) }),
     rows: () => stream.querySelectorAll('.tool-call'),
@@ -142,6 +143,24 @@ function renderer() {
 }
 
 describe('UI — parallel tool lifecycle', () => {
+  it('advances beyond indexing even when technical activity rows are hidden', () => {
+    const r = renderer();
+    r.session.chatish = true;
+    r.event(0, 'activity indexing-project');
+    expect(r.working.at(-1)).toBe('Indexing project…');
+    r.event(1, 'activity preparing-model');
+    expect(r.working.at(-1)).toBe('Preparing model…');
+    r.event(2, 'run      read src/search.ts — Inspect the selected result');
+    expect(r.working.at(-1)).toBe('Reading src/search.ts…');
+    expect(r.rows()).toHaveLength(0);
+    r.event(3, 'ok read src/search.ts (86ms)');
+    expect(r.working.at(-1)).toBe('Thinking…');
+    r.context.syncWorkingActivity('background', 'activity indexing-project');
+    expect(r.working.at(-1)).toBe('Thinking…');
+    r.event(2, 'run      read src/search.ts — Inspect the selected result');
+    expect(r.working.at(-1)).toBe('Thinking…');
+  });
+
   it('shows real edit diff totals and colors only when output is a patch', () => {
     const r = renderer();
     r.event(0, 'run edit src/app.ts — Update the greeting');

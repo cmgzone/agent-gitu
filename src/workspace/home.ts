@@ -181,11 +181,10 @@ function sanitizeFallbackModels(value: unknown): string[] | undefined {
   for (const raw of value) {
     if (typeof raw !== 'string') continue;
     const entry = raw.trim();
-    if (!entry || entry.length > 200 || !/^[\w.-]+::[\w.\-/]+$/.test(entry)) continue;
+    if (!entry || !/^[\w.-]+::[\w.\-/]+$/.test(entry)) continue;
     if (seen.has(entry)) continue;
     seen.add(entry);
     out.push(entry);
-    if (out.length >= 8) break;
   }
   return out;
 }
@@ -209,20 +208,19 @@ export function sanitizeCustomProviders(value: unknown): CustomProviderProfile[]
     if (!raw || typeof raw !== 'object') continue;
     const src = raw as Record<string, unknown>;
     const id = String(src['id'] ?? '').trim().toLowerCase();
-    const label = String(src['label'] ?? '').trim().slice(0, 80);
+    const label = String(src['label'] ?? '').trim();
     const baseUrl = safeCustomBaseUrl(String(src['baseUrl'] ?? ''));
-    const defaultModel = String(src['defaultModel'] ?? '').trim().slice(0, 160);
+    const defaultModel = String(src['defaultModel'] ?? '').trim();
     const keyEnvVar = String(src['keyEnvVar'] ?? '').trim().toUpperCase();
-    if (!/^custom-[a-z0-9-]{1,48}$/.test(id) || seen.has(id) || !label || !baseUrl || !defaultModel || !/^HERMES_CUSTOM_[A-Z0-9_]{1,48}$/.test(keyEnvVar)) continue;
+    if (!/^custom-[a-z0-9-]+$/.test(id) || seen.has(id) || !label || !baseUrl || !defaultModel || !/^HERMES_CUSTOM_[A-Z0-9_]+$/.test(keyEnvVar)) continue;
     const models = Array.isArray(src['models'])
-      ? src['models'].map((model) => String(model).trim().slice(0, 160)).filter(Boolean).filter((model, index, all) => all.indexOf(model) === index).slice(0, 50)
+      ? src['models'].map((model) => String(model).trim()).filter(Boolean).filter((model, index, all) => all.indexOf(model) === index)
       : undefined;
     const toolMode = src['toolMode'] === 'native' || src['toolMode'] === 'structured_text' || src['toolMode'] === 'text' || src['toolMode'] === 'auto'
       ? src['toolMode']
       : 'auto';
     seen.add(id);
     out.push({ id, label, baseUrl, defaultModel, keyEnvVar, ...(models?.length ? { models } : {}), toolMode });
-    if (out.length >= 8) break;
   }
   return out;
 }

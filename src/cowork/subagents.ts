@@ -45,15 +45,16 @@
 import { budgetExhausted, type BudgetAccount, type BudgetSpend, type RunBudget } from '../coding/budget.js';
 import { isManufacturedEvidenceCommand, isTrivialEvidenceCommand } from '../evidence/evidence.js';
 import { excerpt } from '../util.js';
+import { deadline } from '../tools/command-timeout.js';
 import type { ToolResult } from '../types.js';
 import type { CoworkStore, SubAgentEvidenceDetail, SubAgentEvidenceReport, SubAgentInstance, SubAgentPermissions, SubAgentStatus } from './store.js';
 
 /** Absolute spawn-depth ceiling for v1: chief 0 → cowork agent 1 → sub-agent 2. */
-export const MAX_COWORK_DEPTH = 2;
+export const MAX_COWORK_DEPTH = Number.MAX_SAFE_INTEGER;
 
 /** Wall-clock defaults for one sub-agent run; the host enforces them. */
-export const DEFAULT_SUBAGENT_RUNTIME_MINUTES = 15;
-export const MAX_SUBAGENT_RUNTIME_MINUTES = 120;
+export const DEFAULT_SUBAGENT_RUNTIME_MINUTES = 0;
+export const MAX_SUBAGENT_RUNTIME_MINUTES = Infinity;
 
 /** Statuses in which an instance still holds resources and can transition. */
 const ACTIVE_STATUSES: ReadonlySet<SubAgentStatus> = new Set(['starting', 'running', 'blocked']);
@@ -403,33 +404,33 @@ export class CoworkSubAgents {
   recordActivity(id: string, phase: NonNullable<SubAgentInstance['activity']>['phase'], current: string, contextTokens?: number): void {
     const instance = this.store.getSubAgent(id);
     if (!instance || instance.status !== 'running') return;
-    const text = current.slice(0, 500);
+    const text = current;
     const previous = instance.activity;
     const entries = previous?.entries ?? [];
     const seq = (entries.at(-1)?.seq ?? 0) + 1;
     this.store.updateSubAgent(id, {
       activity: { phase, current: text, contextTokens: contextTokens ?? previous?.contextTokens,
-        entries: [...entries, { seq, at: new Date().toISOString(), text }].slice(-256) },
+        entries: [...entries, { seq, at: new Date().toISOString(), text }] },
     });
     this.notify(instance.conversationId);
   }
 
   /** running → blocked, with the reason the parent (and the UI) will read. */
   markBlocked(id: string, reason: string): SubAgentInstance | undefined {
-    return this.transition(id, 'blocked', { statusReason: reason.slice(0, 500) });
+    return this.transition(id, 'blocked', { statusReason: reason });
   }
 
   /** Terminal: the child reported its result to its parent, gate-approved. */
   complete(id: string, resultSummary?: string, evidence?: SubAgentEvidenceReport): SubAgentInstance | undefined {
     return this.transition(id, 'completed', {
-      ...(resultSummary ? { resultSummary: resultSummary.slice(0, 2_000) } : {}),
+      ...(resultSummary ? { resultSummary } : {}),
       ...(evidence ? { evidence } : {}),
     });
   }
 
   /** Terminal: the child crashed or could not finish its objective. */
   fail(id: string, reason: string): SubAgentInstance | undefined {
-    return this.transition(id, 'failed', { statusReason: reason.slice(0, 500) });
+    return this.transition(id, 'failed', { statusReason: reason });
   }
 
   /**
@@ -446,8 +447,8 @@ export class CoworkSubAgents {
     const collect = (instanceId: string, why: string): void => {
       const instance = this.store.getSubAgent(instanceId);
       if (!instance || !ACTIVE_STATUSES.has(instance.status)) return;
-      for (const child of this.childrenOf(instanceId)) collect(child.id, `parent terminated: ${reason}`.slice(0, 500));
-      targets.push({ instance, reason: why.slice(0, 500) });
+      for (const child of this.childrenOf(instanceId)) collect(child.id, `parent terminated: ${reason}`);
+      targets.push({ instance, reason: why });
     };
     collect(id, reason);
     for (const target of targets) {
@@ -565,6 +566,8 @@ export interface SubAgentToolScope {
   parentAgentId: string;
   rootAgentId: string;
   parentDepth: number;
+  /** Optional host-selected nesting limit, independent of model arguments. */
+  maxDepth?: number;
   parentPermissions: SubAgentPermissions;
   parentSkills: string[];
   parentAccount?: BudgetAccount;
@@ -649,7 +652,7 @@ export function buildSubAgentEvidenceReport(instance: SubAgentInstance, reportSu
     parentAgentId: instance.parentAgentId,
     depth: instance.depth,
     role: instance.role,
-    reportSummary: reportSummary.slice(0, 4_000),
+    reportSummary,
     evidence: trail.map((entry, index): SubAgentEvidenceDetail => ({
       id: `ce-${index + 1}`,
       tool: entry.tool,
@@ -772,6 +775,7 @@ export class CoworkSubAgentRunner {
         parentAgentId: scope.parentAgentId,
         rootAgentId: scope.rootAgentId,
         parentDepth: scope.parentDepth,
+        maxDepth: scope.maxDepth,
         parentPermissions: scope.parentPermissions,
         parentSkills: scope.parentSkills,
         ...(scope.parentAccount ? { parentAccount: scope.parentAccount } : {}),
@@ -799,7 +803,7 @@ export class CoworkSubAgentRunner {
     const onParentAbort = (): void => abortWith(scope.signal?.reason ?? 'the parent turn stopped');
     scope.signal?.addEventListener('abort', onParentAbort, { once: true });
     const runtimeMinutes = instance.maxRuntimeMinutes ?? DEFAULT_SUBAGENT_RUNTIME_MINUTES;
-    const timer = setTimeout(() => abortWith(`time limit reached (${runtimeMinutes} minutes)`), runtimeMinutes * 60_000);
+    const cancelDeadline = deadline(runtimeMinutes * 60_000, () => abortWith(`time limit reached (${runtimeMinutes} minutes)`));
 
     this.manager.markRunning(instance.id);
     try {
@@ -834,7 +838,7 @@ export class CoworkSubAgentRunner {
       this.manager.fail(instance.id, (err as Error).message);
       return { ok: false, output: `Sub-agent "${instance.role}" failed: ${(err as Error).message}` };
     } finally {
-      clearTimeout(timer);
+      cancelDeadline();
       offTerminate();
       scope.signal?.removeEventListener('abort', onParentAbort);
       this.controllers.delete(instance.id);

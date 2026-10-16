@@ -1,6 +1,6 @@
 /** Contextual computer activity, kept in the conversation rather than a sidebar. */
 export const COWORK_COMPUTER_CSS = String.raw`
-  .cw .cw-chat-head .cw-computer-toggle { position:absolute; right:56px; top:12px; pointer-events:auto; display:grid; place-items:center; width:38px; height:38px; padding:0; border:1px solid #ffffff45; border-radius:50%; background:color-mix(in srgb,var(--card) 48%,transparent); color:var(--text); cursor:pointer; }
+  .cw .cw-chat-head .cw-computer-toggle { position:absolute; right:56px; top:70px; pointer-events:auto; display:grid; place-items:center; width:38px; height:38px; padding:0; border:1px solid #ffffff45; border-radius:50%; background:color-mix(in srgb,var(--card) 48%,transparent); color:var(--text); cursor:pointer; }
   .cw-computer-toggle svg { width:17px; height:17px; }
   .cw-computer-toggle[hidden],.cw-computer-inline[hidden],.cw-computer-preview[hidden] { display:none!important; }
   .cw-computer-toggle[data-handoff=true]::after { content:''; position:absolute; width:6px; height:6px; top:6px; right:6px; border-radius:50%; background:var(--accent); }

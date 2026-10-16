@@ -1,5 +1,6 @@
 import { outputCapabilityFor, resolveOutputBudgetTokens, type OutputBudgetCapability } from './output-budget.js';
 import type { ProviderCapabilities } from './providers.js';
+import type { NativeTaskRuntime } from './native-task.js';
 
 export interface LlmMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -119,6 +120,8 @@ export type LlmTurnResult =
 
 export interface LlmClient {
   readonly name: string;
+  /** Present only when this provider owns the complete agent execution loop. */
+  readonly nativeTask?: NativeTaskRuntime;
   /** Process-local cooldown bucket identifier. Never contains the credential itself. */
   readonly rateLimitKey?: string;
   /** Raw thinking trace from the last response, when the provider returns one. */
@@ -1056,6 +1059,16 @@ export class UsageTrackingClient implements LlmClient {
 
   get rateLimitKey(): string | undefined {
     return this.inner.rateLimitKey;
+  }
+
+  get nativeTask(): NativeTaskRuntime | undefined {
+    const runtime = this.inner.nativeTask;
+    if (!runtime) return undefined;
+    return {
+      mode: runtime.mode,
+      steer: runtime.steer?.bind(runtime),
+      runTurn: input => runtime.runTurn({ ...input, onUsage: usage => { this.onCall(usage); input.onUsage?.(usage); } }),
+    };
   }
 
   async complete(messages: LlmMessage[], opts: LlmOptions = {}): Promise<string> {

@@ -1,6 +1,7 @@
 import type { ProjectGuard } from '../guard/project-guard.js';
+import { captureVerificationScope } from '../evidence/verification-scope.js';
 import type { TaskLedger } from '../ledger/task-ledger.js';
-import { CACHED_INVESTIGATION_PREFIX, LoopDetector } from '../loop/loop-detector.js';
+import { CACHED_INVESTIGATION_PREFIX, LoopDetector, hasCompleteReadObservation } from '../loop/loop-detector.js';
 import type { LspManager } from '../lsp/manager.js';
 import type { McpManager } from '../mcp/client.js';
 import type { ConnectionRegistry } from '../connections/connections.js';
@@ -11,7 +12,7 @@ import type { SkillStore } from '../skills/skills.js';
 import type { BrowserBridge } from '../browser/browser.js';
 import type { CodingEventPayload, CodingEventSink } from '../coding/events.js';
 import type { ActionRecord, MemoryRetrievalContext, ToolResult } from '../types.js';
-import { mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { closestNameMatches, excerpt, hashParams, normalizeToolPath, summarizeParams } from '../util.js';
 import { FileKnowledgeStore } from '../context/file-knowledge.js';
@@ -25,6 +26,7 @@ import {
   BackgroundCommandRegistry,
   commandResultSource,
   isCommandPending,
+  normalizeCommandParams,
   toolAgentStatus,
   toolApplyEdit,
   toolBrowse,
@@ -43,7 +45,7 @@ import {
   toolLspHover,
   toolLspReferences,
   toolLspSymbols,
-  MAX_READ_OUTPUT_CHARS,
+  readFileOptions,
   toolReadFile,
   toolRunCommand,
   toolSearchFiles,
@@ -252,13 +254,9 @@ export class Executor {
       // The loop hash groups nearby offsets into 200-line buckets. A cached
       // observation is safe only for the exact read request, including limit
       // and output cap, against this specific file version.
-      const rawOffset = Number(req.params['offset'] ?? 1);
-      const rawLimit = Number(req.params['limit'] ?? 2000);
       const readParams = {
         path: normalizeToolPath(req.params['path']),
-        offset: Number.isFinite(rawOffset) ? Math.max(1, Math.floor(rawOffset)) : 1,
-        limit: Number.isFinite(rawLimit) ? Math.min(2000, Math.max(1, Math.floor(rawLimit))) : 2000,
-        maxChars: Math.min(60_000, Math.max(4_000, Number(req.params['maxChars'] ?? MAX_READ_OUTPUT_CHARS))),
+        ...readFileOptions(req.params),
       };
       return stat.isFile() ? `${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}:${hashParams('read_file_request', readParams)}` : undefined;
     } catch {
@@ -267,6 +265,7 @@ export class Executor {
   }
 
   async execute(req: ExecuteRequest): Promise<ExecuteOutcome> {
+    if (req.tool === 'run_command') req = { ...req, params: normalizeCommandParams(req.params) };
     const started = Date.now();
     // Model-DECLARED scratch writes (recovery-control fix 8): the model marks
     // a throwaway diagnostic file with scratch:true; the runtime enforces the
@@ -431,7 +430,7 @@ export class Executor {
           readObservationComplete: true,
           reason: req.reason,
           expected: req.expected,
-          observation: excerpt(cached, 800),
+          observation: cached,
           durationMs: Date.now() - started,
         });
         this.emit(`cache    ${summary} (reused unchanged investigation observation)`);
@@ -442,7 +441,16 @@ export class Executor {
 
     const loopVerdict = this.loopDetector.evaluate(this.ledger.data.actions, req.tool, paramsHash, undefined, readContextFingerprint, refreshRead);
     if (!loopVerdict.allowed) {
-      const message = LoopDetector.summarizeBlock(loopVerdict);
+      let message = LoopDetector.summarizeBlock(loopVerdict);
+      // Rehydrate the known source even when a duplicate request is refused.
+      // History compaction must not leave the model with a refusal and no code
+      // to edit. This is evidence reuse, not another file read or new progress.
+      if (req.tool === 'read_file' && readContextFingerprint) {
+        const previousRead = [...this.ledger.data.actions].reverse().find((action) =>
+          action.tool === req.tool && action.paramsHash === paramsHash && action.status === 'success' &&
+          action.contextFingerprint === readContextFingerprint && hasCompleteReadObservation(action));
+        if (previousRead?.observation) message += `\nUNCHANGED SOURCE ALREADY OBSERVED:\n${previousRead.observation}\nUse this source for the requested edit, or request a different region for a concrete unanswered question. Editing tools remain available.`;
+      }
       const record = this.ledger.recordAction({
         stepId,
         tool: req.tool,
@@ -717,10 +725,11 @@ export class Executor {
       }
     }
 
-    // Tool-output discipline: the model receives a bounded digest; the FULL
-    // raw output is persisted as an artifact it can read_file on demand.
-    // Nothing huge ever enters model context just because the tool saw it.
-    let observation = excerpt(result.output, 800);
+    // Read observations are also the durable cache: preserve the complete
+    // requested source across restarts and compaction. Other tool previews have
+    // their full output available in artifacts when it exceeds the threshold.
+    const preserveRead = req.tool === 'read_file' && result.ok;
+    let observation = preserveRead ? result.output : excerpt(result.output, 800);
     if (scratchNote) {
       // The note rides in result.output too: the model receives the tool
       // output, not the ledger observation, and must learn the redirect.
@@ -735,6 +744,9 @@ export class Executor {
     }
 
     const record = this.ledger.recordAction({
+      verificationScope: result.ok && ['write_file', 'apply_edit'].includes(req.tool) && result.filesTouched?.length && result.filesTouched.every((file) => /\.(?:md|rst|txt)$/i.test(file))
+        ? await captureVerificationScope({ paths: result.filesTouched, reason: 'The guarded tool confirmed the exact written document contents on disk.' }, this.guard.activeWritableRoot)
+        : undefined,
       observationOnly: isObservationTool(req.tool, req.params),
       stepId,
       tool: req.tool,
@@ -742,9 +754,7 @@ export class Executor {
       paramsSummary: summary,
       status: result.ok ? 'success' : 'error',
       contextFingerprint: result.ok && readContextFingerprint === this.readContextFingerprint(req) ? readContextFingerprint : undefined,
-      // Only a complete ledger observation can answer a future repeat. The
-      // normal 800-character excerpt may omit the requested middle lines.
-      readObservationComplete: req.tool === 'read_file' && result.ok ? result.output.length <= 800 : undefined,
+      readObservationComplete: preserveRead ? true : undefined,
       readRefresh: refreshRead || undefined,
       errorSignature: result.ok ? undefined : result.errorSignature,
       exitCode: result.exitCode,
@@ -849,7 +859,7 @@ export class Executor {
     }
   }
 
-  /** Persist a large raw tool output under .hermes/artifacts (pruned to 50). */
+  /** Preserve raw output so saved actions remain inspectable on later turns. */
   private persistArtifact(tool: string, output: string): string | undefined {
     try {
       const dir = path.join(this.guard.lock.repoRoot, '.hermes', 'artifacts');
@@ -857,15 +867,6 @@ export class Executor {
       const stamp = new Date().toISOString().replace(/[:.]/g, '-');
       const file = path.join(dir, `${stamp}-${tool.replace(/[^a-z0-9_-]/gi, '_')}.txt`);
       writeFileSync(file, output);
-      // Prune: keep the newest 50 artifacts so the dir cannot grow unbounded.
-      const files = readdirSync(dir).sort();
-      for (const stale of files.slice(0, Math.max(0, files.length - 50))) {
-        try {
-          unlinkSync(path.join(dir, stale));
-        } catch {
-          /* best effort */
-        }
-      }
       return path.join('.hermes', 'artifacts', path.basename(file));
     } catch {
       return undefined; // artifact persistence must never break a tool result

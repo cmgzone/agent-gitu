@@ -1,5 +1,5 @@
 import type { StepStatus, TaskLedgerData } from '../types.js';
-import { isManufacturedEvidenceCommand, isTrivialEvidenceCommand } from '../evidence/evidence.js';
+import { evidenceMatchesWorkspace, isManufacturedEvidenceCommand, isTrivialEvidenceCommand } from '../evidence/evidence.js';
 import type { AskUserQuestion } from './recovery-synthesizer.js';
 import { classifyCommand } from '../policy/policy.js';
 
@@ -67,7 +67,7 @@ export function agentVerificationGate(
   const commandKey = (command: string): string => command.trim().replace(/\s+/g, ' ').toLowerCase();
   const latest = new Map<string, (typeof checks)[number]>();
   for (const check of checks) latest.set(commandKey(check.command!), check);
-  const fresh = checks.filter((e) => latest.get(commandKey(e.command!)) === e && !e.stale && e.workspaceFingerprint === currentFingerprint);
+  const fresh = checks.filter((e) => latest.get(commandKey(e.command!)) === e && !e.stale && evidenceMatchesWorkspace(e, currentFingerprint));
   // Formal criteria identify the checks that are required for completion.
   // A failed exploratory command remains history unless a criterion requires
   // it; the evidence gate separately validates every linked criterion.
@@ -86,10 +86,12 @@ export function agentVerificationGate(
   }
   if (fresh.some((e) => e.passed)) return { open: true, reason: 'Fresh, lightweight verification passed.' };
   const productWork = actions.every((a) => (a.observationOnly ?? isObservationTool(a.tool)) || ['browse', 'create_document', 'schedule_manage'].includes(a.tool));
+  const documentationWork = (data.filesChanged?.length ?? 0) > 0 && data.filesChanged.every((file) => /\.(?:md|rst|txt)$/i.test(file)) &&
+    actions.every((a) => (a.observationOnly ?? isObservationTool(a.tool)) || ['write_file', 'apply_edit'].includes(a.tool));
   const verifiedResults = data.evidence.filter(
-    (e) => !e.command && e.passed && !e.stale && e.workspaceFingerprint === currentFingerprint && ['file', 'manual', 'log'].includes(e.kind),
+    (e) => !e.command && e.passed && !e.stale && evidenceMatchesWorkspace(e, currentFingerprint) && ['file', 'manual', 'log'].includes(e.kind),
   );
-  if (productWork && verifiedResults.length) return { open: true, reason: 'Fresh browser, document or schedule verification recorded.' };
+  if ((productWork || documentationWork) && verifiedResults.length) return { open: true, reason: 'Fresh browser, document or schedule verification recorded.' };
   return {
     open: false,
     reason:
@@ -181,9 +183,11 @@ export function agentWorkflowPrompt(planRequested: boolean): string {
 - Give complete, useful responses. Explain meaningful findings and results in connected prose, include examples or clear lists when they help, and address every part of the request. Match depth to the task and the user's preferences rather than forcing a short answer. Progress updates should name the actual work in natural language without a "Next:" prefix; the final response should explain the outcome, relevant checks, and material limitations without replaying every tool call.
 - For a clear, small edit: read the target, edit it, run the cheapest meaningful check, then complete. No formal acceptance criteria, design document, or plan is required. Do not create set_criteria or set_plan just to unlock tools.
 - The normal coding path is understand → inspect → edit → verify → explain. Take the next useful action without announcing internal bookkeeping. A short plan is useful when dependencies, risk, or multiple outcomes need tracking; its existence does not require a design document, subtasks, or a second planning round.
-- For substantial work, keep a concise plan only when it helps track dependencies. Formal criteria are optional unless supplied by the user. Honor any criteria that are recorded.
+- For substantial work with multiple changes or checks, save a concise set_plan checklist and update its steps and todos as work proceeds so the user can see progress. Reuse an existing checklist on continuation. This tracking does not require plan approval or a design document. Formal criteria are optional unless supplied by the user. Honor any criteria that are recorded.
+- Preserve the engineering goal when the user asks why progress is repeating or tells you to continue. Reuse the files and diagnosis already inspected; read again only for a concrete unanswered question or changed contents. Once the needed code is understood, make the requested edit and verify it instead of restating the diagnosis.
 - Verification scales with actual risk and changed scope, independently of the selected model reasoning effort. Prefer a focused existing test, lint/typecheck, build, or a small assertion of the requested result. Do not invent a full test suite for a wording edit. Keep stronger checks for risky behavior and report what ran and any limitations.
 - After a meaningful check passes, finish unless a new edit, failure, explicit requirement, or unresolved risk calls for another check. Read-only inspection and command status polling are not edits. Reuse a browser check bound to the unchanged workspace rather than taking another screenshot after every test command.
+- For focused run_command or browse checks, optionally supply verificationScope:{paths:["src/module","tests/module.test.ts"],reason:"why these paths cover the checked behavior"}. Include all source/data/shared dependencies the check observes. The host hashes the scope plus project configuration before reusing evidence across unrelated edits; omit the scope when dependencies are uncertain. Never narrow scope just to hide a failure. Keep reproduction evidence for bug fixes when available; a missing pre-fix run is a reported limitation, not a reason to undo working code or repeat completion.
 - Termination rule: requested implementation and delivery complete + required checks pass + no unresolved blocker = necessary cleanup → final report → complete → stop. A completion checkpoint is a cue to finish, not to invent a broader test or another improvement. New user instructions or real changes reopen only the affected work.
 - At the start of substantial work, inspect project instructions and available check commands. Choose and run the smallest meaningful check for the changed result yourself. Do not ask the user which tests, build, lint, or browser checks to run, including after a completion gate rejection. Reuse fresh passing evidence after the last edit. If verification is genuinely impossible because a tool, environment, or credential is unavailable, report that concrete dependency with request_block instead of asking the user to choose checks.
 - When the request is unclear, offer a specific recommendation and two or three concrete options using ask_user. Ask only about choices that change the result; make routine reversible decisions yourself. Inspect relevant context first when it can answer the question.
@@ -192,6 +196,6 @@ export function agentWorkflowPrompt(planRequested: boolean): string {
 ${
   planRequested
     ? '- TEMPORARY PLAN REQUEST: investigate with read-only tools and inspection commands, propose a concise set_plan, and wait for the user to approve it. Do not edit, run mutating commands, delegate, or perform external writes until approval. Once approved, execute immediately in the same task. Approval is needed only for this requested planning step.'
-    : '- Planning is optional. Proceed with authorized work without requiring plan acceptance. A plan from an earlier turn does not put this request into plan review.'
+    : '- Proceed with authorized work without requiring plan acceptance. Track substantial work with a checklist; small edits can proceed directly. A plan from an earlier turn does not put this request into plan review.'
 }`;
 }

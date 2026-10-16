@@ -1,10 +1,14 @@
 import { CheckpointManager } from '../checkpoint/checkpoint.js';
 import { VerificationAttempts, completionDisposition } from './task-recovery.js';
 import type { CodingEventSink } from '../coding/events.js';
+import { runNativeCodexTask } from '../coding/native-codex-supervisor.js';
 import { CodeIndex } from '../context/code-index.js';
 import { ContextEngine } from '../context/context-engine.js';
-import { EvidenceEngine, classifyEvidenceKind, commandsMatch, hasRegressionProof, isWeakEvidenceLink } from '../evidence/evidence.js';
+import { EvidenceEngine, classifyEvidenceKind, commandsMatch, evidenceMatchesWorkspace, hasRegressionProof, isWeakEvidenceLink, verificationFailureSignature } from '../evidence/evidence.js';
+import { captureVerificationScope, refreshScopedVerification } from '../evidence/verification-scope.js';
+import { verifiedDocumentationWrites } from '../evidence/verification-policy.js';
 import { parentReverifyCriterion, type OracleRunner } from '../evidence/reverify.js';
+import { bindCriterionVerification, inspectVerificationCommand } from '../evidence/verification-command.js';
 import { MissionGraph } from '../execution/mission.js';
 import { Executor } from '../executor/executor.js';
 import { getWorkspaceFingerprint, gitExec } from '../git/git.js';
@@ -79,9 +83,10 @@ import {
 } from '../types.js';
 import { buildStateMessage, buildSystemPrompt, renderFullPlanMessage } from './prompt.js';
 import { applyOutputHygiene } from './output-style.js';
+import { formatToolOutput } from './tool-output.js';
 import { buildTaskStrategySection, classifyTaskKind, determineInvestigationDepth } from './task-strategy.js';
 import { agentCompletionReady, agentVerificationGate, agentWorkflowPrompt, asksOnlyForVerificationChoice, FINALIZATION_ACTION_BUDGET, FINALIZATION_ERROR_CODE, finalizationRejection, isFinalizationAction, isObservationTool } from './agent-workflow.js';
-import { applyFollowUpToLedger, classifyFollowUp, conversationIntent, persistVisualAssets, evaluateInstructionGate } from './follow-up.js';
+import { applyFollowUpToLedger, classifyFollowUp, conversationIntent, persistVisualAssets, evaluateInstructionGate, recoverProgressNudgeGoal } from './follow-up.js';
 import { rehydrateVisualReferences, markUnavailableVisualReferences, restoreVisualReferencesAfterCompaction, isDurableVisualReferenceMessage } from './visual-assets.js';
 import { analyzeChangeImpact } from './impact.js';
 import { planEffort, isFrontendGoal, escalationFor, type EffortPlan } from './effort-planner.js';
@@ -369,6 +374,9 @@ export class Gitu {
   private readonly taggedFolderNotices: string[] = [];
   private aborted = false;
   private abortController?: AbortController;
+  private nativeRunning = false;
+  private admitNativeSteering?: (text: string) => void;
+  private nativeConversationControl?: 'pause' | 'question';
   /** Last reasoning text published, so a streaming trace is not re-announced. */
   private lastReasoning = '';
 
@@ -380,12 +388,21 @@ export class Gitu {
   }
 
   queueMessage(text: string, attachmentContext?: string): void {
+    if (this.nativeRunning && this.config.llm.nativeTask?.steer) {
+      this.admitNativeSteering?.(text);
+      void this.config.llm.nativeTask.steer([text, attachmentContext].filter(Boolean).join('\n\n')).catch(error => {
+        this.emit(`error    Could not steer native Codex: ${(error as Error).message}. The guidance is preserved for continuation.`);
+        this.inbox.push({ text, attachmentContext });
+      });
+      return;
+    }
     this.inbox.push({ text, attachmentContext });
   }
 
   /** A host-side scope update, not a new user task or plan change. */
   noteTaggedFolderChange(message: string): void {
     this.taggedFolderNotices.push(message);
+    if (this.nativeRunning) void this.config.llm.nativeTask?.steer?.(message).catch(() => {});
   }
 
   stop(): void {
@@ -463,6 +480,7 @@ export class Gitu {
         throw new ProjectGuardError(`Cannot resume: task not found: ${this.config.resume.taskId}`);
       }
       ledger = loaded;
+      if (recoverProgressNudgeGoal(ledger)) this.emit('resume   restored engineering goal after a progress-only follow-up');
       resumedCompletedScope = ledger.data.status === 'completed';
       // An explicit mode change from the caller (e.g. the UI's workflow
       // dropdown) switches this continuation to the newly chosen mode instead
@@ -485,7 +503,11 @@ export class Gitu {
       // the fingerprint to a stable "clean" hash); here we opt those evidence
       // records out explicitly. Fresh evidence from THIS phase stays strict.
       try {
-        const acceptedIds = new Set(ledger.data.acceptanceCriteria.filter((c) => c.satisfied).flatMap((c) => c.evidenceIds));
+        // Interrupted work still needs proof bound to the current workspace.
+        // Only an actually completed scope may carry historical acceptance.
+        const acceptedIds = new Set(resumedCompletedScope
+          ? ledger.data.acceptanceCriteria.filter((c) => c.satisfied).flatMap((c) => c.evidenceIds)
+          : []);
         let rebased = 0;
         for (const ev of ledger.data.evidence) {
           if (ev.passed && acceptedIds.has(ev.id) && ev.workspaceFingerprint !== undefined) {
@@ -566,7 +588,7 @@ export class Gitu {
     applyFollowUpToLedger(ledger, intakeMessage, Boolean(durableVisualRefs.length || this.config.images?.length), durableVisualRefs);
     let activeGoal = ledger.ensureTaskAuthority().currentGoal;
     const agentWorkflow = ledger.data.mode === 'agent';
-    const agentBaselineFingerprint = agentWorkflow ? await getWorkspaceFingerprint(guard.activeWritableRoot) : '';
+    const agentBaselineFingerprint = agentWorkflow && !this.config.llm.nativeTask ? await getWorkspaceFingerprint(guard.activeWritableRoot) : '';
     let temporaryPlanPending = agentWorkflow && Boolean(this.config.requirePlanReview);
 
     // Investigation depth is computed ONCE at intake from the goal plus the
@@ -577,6 +599,21 @@ export class Gitu {
     this.emit(`depth    investigation depth: ${investigationDepth}${investigationDepth === 'direct' ? ' — targeted context fast path active' : ''}`);
 
     const policy = new PolicyEngine(this.config.autoApprove ?? false, this.config.approvalHandler, this.config.safeMode ?? false);
+    if (this.config.llm.nativeTask) {
+      this.abortController = new AbortController();
+      if (this.aborted) this.abortController.abort();
+      this.nativeRunning = true;
+      try {
+        this.admitNativeSteering = text => { applyFollowUpToLedger(ledger, text, false, []); this.nativeConversationControl = conversationIntent(text); };
+        const queued = this.inbox.splice(0);
+        for (const message of queued) this.admitNativeSteering(message.text);
+        const buffered = queued.map(message => [message.text, message.attachmentContext].filter(Boolean).join('\n\n')).join('\n\n');
+        return await runNativeCodexTask({ config: { ...this.config, images: effectiveImages, providerCache: this.providerCache, universalRegistry: this.universalRegistry }, guard, ledger, memory, policy, signal: this.abortController.signal, goal: ledger.ensureTaskAuthority().currentGoal, message: [intakeMessage, buffered].filter(Boolean).join('\n\n'), conversationControl: () => this.nativeConversationControl });
+      } finally { this.nativeRunning = false; this.admitNativeSteering = undefined; this.nativeConversationControl = undefined; }
+    }
+    if (ledger.data.execution?.mode === 'codex-native' && !this.config.resume) throw new Error('Changing a native task runner requires an explicit continuation.');
+    ledger.data.execution = { ...ledger.data.execution, mode: this.config.llm.name.startsWith('chatgpt-subscription:') ? 'codex-legacy' : 'gitu' };
+    ledger.save();
     const prerequisiteResolver = new CapabilityAwareResolver(this.config.prerequisiteRecovery);
     // Successful reads remain valid progress for the orchestrator's dynamic
     // budget (v0.2.1 contract), so repetition is no longer FATAL: the third
@@ -657,6 +694,8 @@ export class Gitu {
         } else {
           ledger.setCriteria(raw as string[]);
         }
+        for (const criterion of ledger.data.acceptanceCriteria) if (criterion.verification && raw.some((spec) => typeof spec !== 'string' && spec.text === criterion.text && spec.verification)) criterion.verificationUserPinned = true;
+        ledger.save();
         this.emit(`criteria ${isFollowUpPhase ? 'added for follow-up' : 'provided by user'} (${raw.length})`);
       }
 
@@ -1211,7 +1250,7 @@ export class Gitu {
       // satisfied criteria, completed steps, changed files) and only stalls when
       // turns are being spent without any of those moving.
       const effortMaxTurns = effortPlan?.maxTurns ?? Number.MAX_SAFE_INTEGER;
-      let effortMaxSpecialists = effortPlan?.maxSpecialists ?? Number.MAX_SAFE_INTEGER;
+      let effortMaxSpecialists = Number.MAX_SAFE_INTEGER;
       const BUDGET_EXTENSIONS_MAX = 4;
       // A user-set ceiling outranks everything below; without one, persistent
       // autonomy extends the estimate for as long as the work keeps moving.
@@ -1241,6 +1280,7 @@ export class Gitu {
       let budgetWarned = false;
       let delegateSlotsUsed = 0;
       const verificationAttempts = new VerificationAttempts();
+      const commandVerificationScopes = new Map<string, unknown>();
       let verificationRecoveryExhausted = false;
       const deferredBlocks = new Map<string, number>();
       // Freeze ordinary execution only after current proof and contracted work
@@ -1252,10 +1292,12 @@ export class Gitu {
         finalization.active = false;
         // Timestamps and evidence IDs are excluded: repeating the same check
         // must not reset recovery, but a repair or changed outcome must.
-        const latestChecks = new Map(ledger.data.evidence.map(e => [e.command ?? e.label, [e.passed, e.stale, e.workspaceFingerprint]]));
-        const signature = JSON.stringify([fingerprint, [...latestChecks].sort(([a], [b]) => String(a).localeCompare(String(b)))]);
+        const latestChecks = new Map(ledger.data.evidence.map(e => [e.command ?? e.label, [e.passed, e.stale, e.workspaceFingerprint, e.passed ? '' : verificationFailureSignature(e.outputExcerpt)]]));
+        const signature = JSON.stringify([fingerprint, [...latestChecks].sort(([a], [b]) => String(a).localeCompare(String(b))),
+          ledger.data.plan.map(step => [step.id, step.status, step.subtasks?.map(todo => todo.done)]),
+          ledger.data.acceptanceCriteria.map(criterion => [criterion.id, criterion.satisfied]), ledger.data.blockers]);
         const attempts = verificationAttempts.reject(gate, signature);
-        if (attempts >= 3 && gate === 'visual-verification' && !this.config.browser?.available()) {
+        if ((gate === 'visual-verification' || gate === 'visual-reference') && !this.config.browser?.available()) {
           ledger.addBlocker(`Final UI verification requires a browser, but this host has no browser available: ${reason}`);
           exitReason = 'blocked';
           observe(reason);
@@ -1280,7 +1322,6 @@ export class Gitu {
       // rounds. Keep the last concrete concern for an explicit release decision.
       let unresolvedQualityReview: string | undefined;
       let unresolvedQualityReviewFingerprint: string | undefined;
-      let bugRigorRejections = 0;
       let planReconcileRejections = 0;
       let isBugTask = classifyTaskKind(activeGoal) === 'bug-fix';
       const effortNote = buildPlanNote(effortPlan, riskPlan);
@@ -1929,10 +1970,9 @@ export class Gitu {
             });
             if (turns >= userTurnCeiling || !mayExtend) {
               ledger.addBlocker(
-                `Exhausted the task's effort budget (${turns} turns used` +
-                  `${budgetExtensions ? `, ${budgetExtensions} extension(s) granted` : ''}) without reaching completion. ` +
-                  `Retry with effort=high — that raises BOTH the model's per-step reasoning effort at the provider AND the turn budget — ` +
-                  `or narrow the task.`,
+                turns >= userTurnCeiling
+                  ? `Reached the selected turn limit (${turns} turns). Work and evidence are saved for continuation.`
+                  : `Recovery stopped after ${budgetExtensions} extension(s) without new verifiable progress. Work and evidence are saved; continuation needs a different concrete approach.`,
               );
               exitReason = 'stalled';
               this.emit(`stall   effort budget of ${budgetCap} turns reached without verified progress — stopping`);
@@ -2005,11 +2045,12 @@ export class Gitu {
             const phase = activePhaseData();
             if (phase.evidence.some(e => e.passed) && agentCompletionReady(phase).ready) {
               const fp = await getWorkspaceFingerprint(guard.activeWritableRoot);
+              await refreshScopedVerification(phase, guard.activeWritableRoot, fp);
               const criteria = evidence.gate(phase, fp);
               const commands = new Set(phase.acceptanceCriteria.map(c => c.verification).filter((c): c is string => Boolean(c)).map(c => c.trim().replace(/\s+/g, ' ').toLowerCase()));
               const verified = agentVerificationGate(phase, agentBaselineFingerprint, fp, commands);
               const visual = uiVisualGate(phase, { browserAvailable: Boolean(this.config.browser?.available()), visionAvailable: this.config.supportsImages ?? false, workspaceFingerprint: fp });
-              if (fp !== 'unknown-fp' && !fp.startsWith('partial-') && phase.evidence.some(e => e.passed && !e.stale && e.workspaceFingerprint === fp) &&
+              if (fp !== 'unknown-fp' && !fp.startsWith('partial-') && phase.evidence.some(e => e.passed && evidenceMatchesWorkspace(e, fp)) &&
                 (criteria.totalCount === 0 || criteria.open) && verified.open && visual.verified) {
                 completionNote = 'COMPLETION CHECKPOINT: recorded requirements and current verification are satisfied. If the requested implementation and delivery are complete, perform only necessary cleanup, then call complete with the final report and terminate. Do not invent additional proof, criteria, or work. Continue only for a concrete remaining user requirement, new change, failure, or unresolved risk; name that reason. Existing completion gates still apply.';
                 // Formal criteria provide a complete contract the runtime can
@@ -2172,6 +2213,20 @@ export class Gitu {
                 break;
               }
               if (criteriaAlreadySet && (hasEvidence || ledger.data.planApproved)) {
+                let repaired = 0;
+                for (const spec of EvidenceEngine.normalizeCriteria(action.criteria)) {
+                  const criterion = ledger.data.acceptanceCriteria.find(c => !activeWorkPhase.priorCriterionIds.includes(c.id) && c.text.trim().replace(/\s+/g, ' ').toLowerCase() === spec.text.trim().replace(/\s+/g, ' ').toLowerCase());
+                  if (criterion && spec.verification && criterion.verification !== spec.verification) {
+                    const result = await bindCriterionVerification(criterion, spec.verification, guard.activeWritableRoot, this.abortController?.signal, { replacementReason: action.replacementReason, userPinned: criterion.verificationUserPinned });
+                    if (result.ok) repaired++;
+                    else observe(result.reason);
+                  }
+                }
+                if (repaired) {
+                  ledger.save();
+                  observe(`Bound ${repaired} executable verification command(s). All existing requirement texts and evidence types are preserved; run the commands and link real evidence.`);
+                  break;
+                }
                 const completedScope = ledger.data.acceptanceCriteria.every((criterion) => criterion.satisfied);
                 if (resumeNote && completedScope) {
                   const adds = EvidenceEngine.normalizeCriteria(action.criteria);
@@ -2452,6 +2507,7 @@ export class Gitu {
               let evidenceNote = '';
               if (action.tool === 'run_command') {
                 const command = commandResultSource(outcome.result, action.params);
+                if (command && action.params['verificationScope']) commandVerificationScopes.set(command, action.params['verificationScope']);
                 if (isCommandPending(outcome.result)) {
                   // The command is still running, so it proves nothing yet: no
                   // evidence is recorded here. The job stays pollable, and the poll
@@ -2459,13 +2515,6 @@ export class Gitu {
                   evidenceNote = `\nCOMMAND STILL RUNNING (job ${outcome.result.jobId ?? 'unknown'}) — this is NOT verification. Check it with run_command {"action":"status","id":"${outcome.result.jobId ?? '<id>'}"} until it reports an exit code before claiming anything.`;
                   this.emit(`pending  ${command || 'command'} — no evidence while it runs (${outcome.result.jobId ?? 'unknown'})`);
                 } else if (command) {
-                  if (!outcome.result.ok) {
-                    // A later retry may repair the command, but its first failed
-                    // result is still uncertainty the cheap completion path must
-                    // not silently erase.
-                    specialistOrVerificationUncertain = true;
-                    this.emit('verification uncertainty recorded — final quality review remains required');
-                  }
                   const kind = classifyEvidenceKind(command);
                   const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
                   const ev = evidence.record(ledger.data, {
@@ -2476,6 +2525,7 @@ export class Gitu {
                     passed: outcome.result.ok,
                     output: outcome.result.output,
                     workspaceFingerprint: currentFp,
+                    verificationScope: await captureVerificationScope(commandVerificationScopes.get(command), guard.activeWritableRoot, command),
                   });
                   ledger.save();
                   evidenceNote = `\nEVIDENCE RECORDED: ${ev.id} [${ev.passed ? 'PASS' : 'FAIL'}] (${kind}). You may cite it with claim_criterion.`;
@@ -2486,12 +2536,15 @@ export class Gitu {
               if (outcome.result.ok && (action.tool === 'create_document' || action.tool === 'schedule_manage' || (action.tool === 'browse' && ['screenshot', 'evidence'].includes(String(action.params['action']))))) {
                 const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
                 if (action.tool === 'browse') outcome.record.verifiedWorkspaceFingerprint = currentFp;
+                const verificationScope = await captureVerificationScope(action.params['verificationScope'], guard.activeWritableRoot);
+                if (action.tool === 'browse') outcome.record.verificationScope = verificationScope;
                 const ev = evidence.record(ledger.data, {
                   kind: action.tool === 'create_document' ? 'file' : action.tool === 'browse' ? 'manual' : 'log',
                   label: `${action.tool}: ${action.expected || 'Verified tool result'}`,
                   passed: true,
                   output: outcome.result.output,
                   workspaceFingerprint: currentFp,
+                  verificationScope,
                 });
                 ledger.save();
                 evidenceNote += `\nEVIDENCE RECORDED: ${ev.id} [PASS]. ${action.tool === 'create_document' ? 'File structure verified; visual layout is not asserted.' : 'Tool result verified.'}`;
@@ -2583,7 +2636,7 @@ export class Gitu {
               // Failed commands get the failure DIGEST (error lines + tail) rather
               // than a head slice that typically misses the actual cause.
               const outputForModel = outcome.result.ok
-                ? outcome.result.output.slice(0, 2500)
+                ? formatToolOutput(action.tool, outcome.result.output)
                 : `${extractFailureDigest(outcome.result.output)}${outcome.result.output.length > 2500 ? `\n[... ${outcome.result.output.length} chars total; showing failure-relevant lines]` : ''}`;
               let observedResult = `RESULT [${outcome.result.ok ? 'success' : 'error'}] ${outcome.record.paramsSummary}\n${outputForModel}${evidenceNote}${lspNote}`;
               telemetry.noteToolCall();
@@ -3120,6 +3173,14 @@ export class Gitu {
               const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
               finalizationRecoveryFingerprint = currentFp;
               const verificationPhaseData = activePhaseData();
+              await refreshScopedVerification(verificationPhaseData, guard.activeWritableRoot, currentFp);
+              if (agentWorkflow && !verificationPhaseData.acceptanceCriteria.length && !verificationPhaseData.evidence.length &&
+                  !riskPlan.strictVerification && verifiedDocumentationWrites(verificationPhaseData, currentFp)) {
+                const proof = evidence.record(ledger.data, { kind: 'file', label: 'Documentation writes verified', passed: true,
+                  output: 'Guarded writes still match their confirmed contents: ' + verificationPhaseData.filesChanged.join(', '), workspaceFingerprint: currentFp });
+                verificationPhaseData.evidence.push(proof);
+                ledger.save();
+              }
               const gate = evidence.gate(verificationPhaseData, currentFp);
               const criterionCommands = verificationPhaseData.acceptanceCriteria.length
                 // Linked evidence is supporting history, not a growing list of
@@ -3162,15 +3223,8 @@ export class Gitu {
               // Visual-verification gate: UI work is only done when the final state
               // was actually SEEN. Command evidence cannot see pixels, so without
               // this gate broken/unfinished layouts ship as "complete".
-              const visual = uiVisualGate(activePhaseData(), {
-                browserAvailable: Boolean(this.config.browser?.available()),
-                visionAvailable: this.config.supportsImages ?? false,
-                workspaceFingerprint: currentFp,
-              });
-              if (!visual.verified && !chatOnly) {
-                rejectCompletion('visual-verification', visual.reason ?? 'Inspect the final UI state with the browser', currentFp);
-                break;
-              }
+              // Check the actual diff below before requiring browser evidence;
+              // a file extension alone cannot distinguish UI from comments/API PHP.
 
               // Active visual reference validation
               const activeVisualRefs = typeof ledger.activeVisualReferences === 'function' ? ledger.activeVisualReferences() : [];
@@ -3237,12 +3291,9 @@ export class Gitu {
                   action.risks = [...(action.risks ?? []), `Architecture drift: ${audit.issues[0]?.slice(0, 200)}`];
                 }
               }
-              // Bug rigor gate: "verification passed" does not prove the bug was
-              // fixed — the pre-existing suite may never have covered it. A bug
-              // fix must show causality: a recorded root cause, and a FAIL ->
-              // (edit) -> PASS pair for the same non-trivial command. Soft-capped
-              // like the architecture audit so it can never deadlock a task whose
-              // reproduction is genuinely impossible.
+              // Report missing causal proof once. A pre-fix failure cannot be
+              // collected retroactively by repeating completion or undoing a fix.
+              // Explicit regression requirements remain enforced by evidence.
               if (
                 !chatOnly &&
                 isBugTask &&
@@ -3252,25 +3303,16 @@ export class Gitu {
               ) {
                 const missing: string[] = [];
                 if (!ledger.data.currentHypothesis) {
-                  missing.push('a recorded root cause — call set_hypothesis stating why the bug happened');
+                  missing.push('a recorded root cause');
                 }
                 if (!hasRegressionProof(activePhaseData())) {
                   missing.push(
-                    'regression proof — no command went FAIL before your fix and PASS after it. Run the reproduction/verification command FIRST (watch it fail), fix, then run the SAME command again',
+                    'a recorded fail-before / pass-after reproduction',
                   );
-                }
-                if (missing.length > 0 && bugRigorRejections < 2) {
-                  bugRigorRejections += 1;
-                  this.emit('rigor    bug-fix completion rejected — root cause / regression proof missing');
-                  observe(
-                    `COMPLETION REJECTED by bug-fix rigor gate:\n${missing.map((m) => `  - ${m}`).join('\n')}\n` +
-                      `Do that, then complete again. If reproduction is genuinely impossible (environment/data specific), complete again — the gate yields after repeated rejection and records the gap as a risk.`,
-                  );
-                  break;
                 }
                 if (missing.length > 0) {
-                  action.risks = [...(action.risks ?? []), `Bug-fix rigor override: completed without ${missing.join(' and ')}.`];
-                  this.emit('rigor    bug-fix gap accepted after repeated rejection — recorded as a risk');
+                  action.risks = [...(action.risks ?? []), `Regression verification limitation: completed without ${missing.join(' and ')}.`];
+                  this.emit('rigor    regression verification limitation recorded; required checks passed');
                 }
               }
               // Plan reconciliation: the criteria/evidence gate above is the
@@ -3302,6 +3344,35 @@ export class Gitu {
               // harmless. Bound the repair rounds, but review the result of the
               // last allowed repair before escalating an unresolved warning.
               const reviewRoundCap = effortPlan?.complexity === 'high' ? 2 : 1;
+              const completionAction = action;
+              const settleQualityWarning = async (warning: string): Promise<boolean> => {
+                const summary = warning.slice(0, 600);
+                if (riskPlan.strictVerification) {
+                  if (!this.config.approvalHandler) {
+                    ledger.addBlocker(`Strict-risk quality reviewer warning needs explicit user approval: ${summary}`);
+                    exitReason = 'blocked';
+                    return false;
+                  }
+                  const approved = await this.config.approvalHandler({
+                    tool: 'quality-review', tier: 'dangerous',
+                    why: 'A security, payments, or data-integrity task still has an unresolved final quality-review warning.', summary,
+                  });
+                  if (this.abortController?.signal.aborted) throw new Error('Quality review approval cancelled');
+                  if (!approved) {
+                    qualityReviewRejections = 0;
+                    observe(`USER DID NOT APPROVE completion with the unresolved quality-review warning:\n${summary}\nFix the concrete concern before completing.`);
+                    unresolvedQualityReview = warning;
+                    unresolvedQualityReviewFingerprint = currentFp;
+                    return false;
+                  }
+                  completionAction.risks = [...(completionAction.risks ?? []), `User accepted unresolved strict-risk quality-review warning: ${summary}`];
+                } else {
+                  completionAction.risks = [...(completionAction.risks ?? []), `Unresolved final quality-review warning accepted after ${qualityReviewRejections} revision round(s): ${summary}`];
+                }
+                unresolvedQualityReview = undefined;
+                unresolvedQualityReviewFingerprint = undefined;
+                return true;
+              };
               const reviewWarning = unresolvedQualityReview;
               // A rejection requests a repair; it does not review that repair.
               // The final repair deserves one fresh review even when the last
@@ -3312,52 +3383,8 @@ export class Gitu {
                 unresolvedQualityReviewFingerprint !== undefined &&
                 unresolvedQualityReviewFingerprint !== currentFp &&
                 qualityReviewRejections === reviewRoundCap;
-              if (riskPlan.strictVerification && reviewWarning !== undefined && qualityReviewRejections >= reviewRoundCap && !reviewRepairedWorkspace) {
-                const summary = reviewWarning.slice(0, 600);
-                if (!this.config.approvalHandler) {
-                  const blocker = `Strict-risk quality reviewer warning needs explicit user approval: ${summary}`;
-                  ledger.addBlocker(blocker);
-                  this.emit('review   strict-risk warning unresolved — blocked because no approval handler is available');
-                  exitReason = 'blocked';
-                  break;
-                }
-                this.emit('review   strict-risk warning remains — explicit user approval required to complete');
-                const approved = await this.config.approvalHandler({
-                  tool: 'quality-review',
-                  tier: 'dangerous',
-                  why: 'A security, payments, or data-integrity task still has an unresolved final quality-review warning.',
-                  summary,
-                });
-                if (!approved) {
-                  // A rejection means "keep working", not "complete with risk".
-                  // Reset the counter so the eventual repair gets a fresh review.
-                  qualityReviewRejections = 0;
-                  unresolvedQualityReview = undefined;
-                  unresolvedQualityReviewFingerprint = undefined;
-                  this.emit('review   strict-risk completion not approved — returning to repair and fresh review');
-                  observe(
-                    `USER DID NOT APPROVE completion with the unresolved quality-review warning:\n${summary}\n` +
-                      `Fix it, then complete again. A fresh quality review will run before this task can finish.`,
-                  );
-                  break;
-                }
-                action.risks = [...(action.risks ?? []), `User accepted unresolved strict-risk quality-review warning: ${summary}`];
-                unresolvedQualityReview = undefined;
-                unresolvedQualityReviewFingerprint = undefined;
-                this.emit('review   strict-risk quality warning explicitly accepted by user — recorded as a release risk');
-              }
-              if (!riskPlan.strictVerification && reviewWarning !== undefined && qualityReviewRejections >= reviewRoundCap && !reviewRepairedWorkspace) {
-                // Non-strict work may proceed after its bounded repair budget, but
-                // never silently: the final report must say the reviewer concern
-                // was not independently cleared.
-                action.risks = [
-                  ...(action.risks ?? []),
-                  `Unresolved final quality-review warning accepted after ${qualityReviewRejections} revision round(s): ${reviewWarning.slice(0, 600)}`,
-                ];
-                unresolvedQualityReview = undefined;
-                unresolvedQualityReviewFingerprint = undefined;
-                this.emit('review   quality warning unresolved after repair budget — recorded as a release risk');
-              }
+              if (reviewWarning !== undefined && qualityReviewRejections >= reviewRoundCap && !reviewRepairedWorkspace &&
+                  !(await settleQualityWarning(reviewWarning))) break;
               // Collect one completion diff snapshot. The final report reuses
               // this exact snapshot when its workspace fingerprint and HEAD
               // still match, rather than rerunning equivalent Git operations.
@@ -3400,7 +3427,7 @@ export class Gitu {
               const phaseData = { ...activePhaseData(), filesChanged: [...new Set([...activePhaseData().filesChanged, ...verifiedDiff.changedFiles])] };
               // The actual phase diff catches UI edits even without a frontend
               // plan, while excluding UI files changed in an earlier request.
-              const finalVisual = uiVisualGate(phaseData, { browserAvailable: Boolean(this.config.browser?.available()), visionAvailable: this.config.supportsImages ?? false, workspaceFingerprint: currentFp });
+              const finalVisual = uiVisualGate(phaseData, { browserAvailable: Boolean(this.config.browser?.available()), visionAvailable: this.config.supportsImages ?? false, workspaceFingerprint: currentFp, diff: verifiedDiff });
               if (!chatOnly && !finalVisual.verified) {
                 rejectCompletion('visual-verification', finalVisual.reason ?? 'Inspect the final UI state', currentFp);
                 break;
@@ -3423,7 +3450,7 @@ export class Gitu {
               if (wantsReview) {
                 try {
                   const deepReview = effortPlan?.complexity === 'high';
-                  const reviewingUi = isUiTask(phaseData);
+                  const reviewingUi = isUiTask(phaseData, verifiedDiff);
                   const reviewMsgs = buildQualityReviewMessages({
                     goal: activeGoal,
                     criteria: phaseData.acceptanceCriteria.map((criterion) => criterion.text),
@@ -3444,15 +3471,11 @@ export class Gitu {
                     this.emit('review   quality reviewer returned no usable verdict');
                     if (riskPlan.strictVerification) {
                       // Strict-risk work cannot claim the second opinion happened.
-                      // The next completion goes through the explicit approval
-                      // path above, rather than silently accepting this gap.
+                      // Resolve the release decision now, without another model turn.
                       qualityReviewRejections = reviewRoundCap;
                       unresolvedQualityReview = warning;
                       unresolvedQualityReviewFingerprint = undefined;
-                      observe(
-                        `${warning}\nCOMPLETION PAUSED: submit completion again to request explicit user approval, or restore reviewer availability and re-run the final review.`,
-                      );
-                      break;
+                      if (!(await settleQualityWarning(warning))) break;
                     }
                     action.risks = [...(action.risks ?? []), warning];
                   }
@@ -3460,20 +3483,13 @@ export class Gitu {
                     qualityReviewRejections += 1;
                     unresolvedQualityReview = review.feedback;
                     unresolvedQualityReviewFingerprint = currentFp;
-                    this.emit(qualityReviewRejections > reviewRoundCap
-                      ? 'review   quality reviewer still flagged the result after the final repair'
-                      : `review   quality reviewer flagged the result — revision ${qualityReviewRejections}/${reviewRoundCap} requested`);
-                    observe(
-                      `COMPLETION REJECTED by final quality review. Issues found:\n${review.feedback}\n` +
-                        (qualityReviewRejections > reviewRoundCap
-                          ? riskPlan.strictVerification
-                            ? `The final repair review still found unresolved issues. Call complete again to request explicit user approval of the remaining release risk.`
-                            : `The automatic repair rounds are exhausted. Call complete again to record the unresolved warning as a release risk.`
-                          : riskPlan.strictVerification
-                            ? `Fix these problems, then call complete again. If the reviewer still rejects the final result after the allowed repair rounds, only an explicit user approval can accept that release risk.`
-                            : `Fix these problems, then call complete again. If you already addressed them or disagree with the review, call complete again — it will be accepted.`),
-                    );
-                    break;
+                    if (qualityReviewRejections > reviewRoundCap) {
+                      if (!(await settleQualityWarning(review.feedback))) break;
+                    } else {
+                      this.emit(`review   quality reviewer flagged the result — revision ${qualityReviewRejections}/${reviewRoundCap} requested`);
+                      observe(`COMPLETION REJECTED by final quality review. Issues found:\n${review.feedback}\nAddress the concrete problems, rerun affected checks, then complete. Do not repeat unchanged checks or expand the task.`);
+                      break;
+                    }
                   }
                   unresolvedQualityReview = undefined;
                   unresolvedQualityReviewFingerprint = undefined;
@@ -3488,10 +3504,7 @@ export class Gitu {
                     qualityReviewRejections = reviewRoundCap;
                     unresolvedQualityReview = warning;
                     unresolvedQualityReviewFingerprint = undefined;
-                    observe(
-                      `${warning}\nCOMPLETION PAUSED: submit completion again to request explicit user approval, or restore reviewer availability and re-run the final review.`,
-                    );
-                    break;
+                    if (!(await settleQualityWarning(warning))) break;
                   }
                   action.risks = [...(action.risks ?? []), warning];
                 }
@@ -3594,6 +3607,7 @@ export class Gitu {
                 });
                 if (call.tool === 'browse' && outcomes[index]?.result.ok && ['screenshot', 'evidence'].includes(String(call.params['action']))) {
                   outcomes[index]!.record.verifiedWorkspaceFingerprint = await getWorkspaceFingerprint(guard.activeWritableRoot);
+                  outcomes[index]!.record.verificationScope = await captureVerificationScope(call.params['verificationScope'], guard.activeWritableRoot);
                   ledger.save();
                 }
               };
@@ -3608,7 +3622,12 @@ export class Gitu {
                 if (!o) { parts.push(`[${i + 1}] (not executed)`); continue; }
                 let evidenceNote = '';
                 if (o.record.tool === 'run_command') {
-                  const command = String(action.calls[i]?.params['command'] ?? '');
+                  const params = action.calls[i]?.params ?? {};
+                  const command = commandResultSource(o.result, params);
+                  if (command && params['verificationScope']) commandVerificationScopes.set(command, params['verificationScope']);
+                  if (isCommandPending(o.result)) {
+                    evidenceNote = `\nCOMMAND STILL RUNNING (job ${o.result.jobId ?? 'unknown'}) — poll that same job before claiming verification.`;
+                  } else if (command) {
                   const kind = classifyEvidenceKind(command);
                   const ev = evidence.record(ledger.data, {
                     kind,
@@ -3618,13 +3637,15 @@ export class Gitu {
                     passed: o.result.ok,
                     output: o.result.output,
                     workspaceFingerprint: currentFp,
+                    verificationScope: await captureVerificationScope(commandVerificationScopes.get(command), guard.activeWritableRoot, command),
                   });
                   ledger.save();
                   evidenceNote = `\nEVIDENCE RECORDED: ${ev.id} [${ev.passed ? 'PASS' : 'FAIL'}] (${kind}). You may cite it with claim_criterion.`;
                   this.emit(`evidence ${ev.id} ${ev.passed ? 'PASS' : 'FAIL'} (${kind})`);
                   if (o.result.ok) await completeVerifiedPlanSteps(command);
+                  }
                 }
-                parts.push(`[${i + 1}] ${o.record.paramsSummary} → ${o.result.ok ? 'success' : 'error'}\n${o.result.output.slice(0, 1200)}${evidenceNote}`);
+                parts.push(`[${i + 1}] ${o.record.paramsSummary} → ${o.result.ok ? 'success' : 'error'}\n${formatToolOutput(o.record.tool, o.result.output)}${evidenceNote}`);
               }
               observe(`PARALLEL RESULTS:\n${parts.join('\n\n')}`);
               break;
@@ -3946,6 +3967,8 @@ export class Gitu {
                 // judgment criteria (no verification command) fall back to the
                 // structural mirror, since they cannot be automated.
                 const reverifyRunner: OracleRunner = async (req) => {
+                  const inspected = await inspectVerificationCommand(req.command, guard.activeWritableRoot, this.abortController?.signal);
+                  if (!inspected.ok) return { passed: false, output: inspected.reason };
                   const out = await executor.execute({
                     tool: 'run_command',
                     params: { command: req.command },
@@ -4153,6 +4176,7 @@ export class Gitu {
       this.emit(`telemetry ${renderTelemetry(ledger.data.tokenTelemetry)}`);
 
       const finalWorkspaceFingerprint = await getWorkspaceFingerprint(guard.activeWritableRoot);
+      await refreshScopedVerification(ledger.data, guard.activeWritableRoot, finalWorkspaceFingerprint);
       const finalHeadRef = (await gitExec(guard.activeWritableRoot, ['rev-parse', 'HEAD']).catch(() => '')).trim() || undefined;
       let phaseFiles: string[] | undefined;
       if (

@@ -1,5 +1,6 @@
 import { OpenAiCompatClient, type LlmClient } from './llm.js';
-import { CodexSubscriptionClient, codexExecutable } from './codex-subscription.js';
+import { CodexSubscriptionClient, codexExecutable, subscriptionModelContextWindow } from './codex-subscription.js';
+import { CodexNativeRuntime } from './codex-native.js';
 import { mergedEnv } from './keys.js';
 import { createEmbedder, type Embedder } from '../context/embeddings.js';
 import { loadWorkspaceSettings, type CustomProviderProfile } from '../workspace/home.js';
@@ -388,7 +389,7 @@ export interface ModelMetadata {
   /** Image input capability reported by the live catalog. `undefined` when the
    *  catalog did not publish modality info for this model. */
   vision?: boolean;
-  source: 'models.dev';
+  source: 'models.dev' | 'codex-runtime';
 }
 
 export type ModelCatalog = Map<string, Map<string, ModelMetadata>>;
@@ -562,7 +563,12 @@ export async function fetchModelCatalog(timeoutMs = 2500): Promise<ModelCatalog 
 /** Return live metadata for a model served by one of Agent Gitu's providers. */
 export function modelMetadataFor(catalog: ModelCatalog | undefined, providerId: string, model: string): ModelMetadata | undefined {
   const catalogProvider = CATALOG_PROVIDER_IDS[providerId] ?? providerId;
-  return catalog?.get(catalogProvider)?.get(model);
+  const metadata = catalog?.get(catalogProvider)?.get(model);
+  if (providerId === 'chatgpt') {
+    const contextTokens = subscriptionModelContextWindow(model);
+    if (contextTokens) return { ...metadata, contextTokens, source: 'codex-runtime' };
+  }
+  return metadata;
 }
 
 /** Synchronous view of the cached catalog (undefined when not fetched yet). */
@@ -804,6 +810,8 @@ export interface ResolveOptions {
   /** Workspace Codex may inspect while responding. */
   workingDirectory?: string;
   env?: NodeJS.ProcessEnv;
+  /** Explicit comparison/rollback option. Never selected as an automatic fallback. */
+  subscriptionExecutionMode?: 'native' | 'legacy';
 }
 
 export interface ResolvedLlm {
@@ -867,12 +875,13 @@ export function resolveLlm(opts: ResolveOptions = {}): ResolvedLlm {
       }
       const model = opts.model ?? env['HERMES_MODEL'] ?? spec.defaultModel;
       return {
-        client: new CodexSubscriptionClient({ model, workingDirectory: opts.workingDirectory ?? process.cwd() }),
+        client: Object.assign(new CodexSubscriptionClient({ model, workingDirectory: opts.workingDirectory ?? process.cwd() }),
+          (opts.subscriptionExecutionMode ?? env['GITU_CHATGPT_EXECUTION_MODE']) === 'legacy' ? {} : { nativeTask: new CodexNativeRuntime(model) }),
         providerId: spec.id,
         baseUrl: spec.baseUrl,
         model,
         keyEnvVar: 'CHATGPT_SUBSCRIPTION',
-        toolMode: 'text',
+        toolMode: 'native',
         rateLimitKey: 'chatgpt:subscription:chat',
       };
     }

@@ -29,10 +29,7 @@ function makeProject(withFakeLsp: boolean): string {
   writeFileSync(path.join(dir, 'check.js'), "process.exit(require('fs').existsSync('fix.marker') ? 0 : 1);\n");
   if (withFakeLsp) {
     mkdirSync(path.join(dir, '.hermes'), { recursive: true });
-    writeFileSync(
-      path.join(dir, '.hermes', 'lsp.json'),
-      JSON.stringify({ servers: [{ name: 'rust', languageIds: ['rust'], command: 'node', args: [FAKE_SERVER] }] }),
-    );
+    writeFileSync(path.join(dir, '.hermes', 'lsp.json'), JSON.stringify({ servers: [{ name: 'rust', languageIds: ['rust'], command: 'node', args: [FAKE_SERVER] }] }));
   }
   return dir;
 }
@@ -51,6 +48,11 @@ function unavailableLsp(repoRoot: string): LspManager {
 }
 
 describe('classifyTaskKind', () => {
+  it('keeps copy corrections on normal verification while preserving behavioral bug rigor', () => {
+    expect(classifyTaskKind('Can you now fix the typo in README.md?')).toBe('refactor');
+    expect(classifyTaskKind('Fix a typo in the greeting label')).toBe('refactor');
+    expect(classifyTaskKind('Fix a typo causing a ReferenceError at runtime')).toBe('bug-fix');
+  });
   it('detects bug fixes', () => {
     expect(classifyTaskKind('Fix the crash in auth')).toBe('bug-fix');
     expect(classifyTaskKind('the login flow is broken')).toBe('bug-fix');
@@ -114,17 +116,28 @@ describe('Hermes task-strategy injection', () => {
       // Watch the reproduction fail, apply the fix, then run the SAME command
       // green — the bug-fix rigor gate requires exactly this causality chain.
       capture(() =>
-        JSON.stringify({ action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node check.js' }, reason: 'watch the reproduction fail', expected: 'exit 1 before the fix' } }),
+        JSON.stringify({
+          action: {
+            type: 'tool_call',
+            stepId: 'step-1',
+            tool: 'run_command',
+            params: { command: 'node check.js' },
+            reason: 'watch the reproduction fail',
+            expected: 'exit 1 before the fix',
+          },
+        }),
       ),
       capture(() =>
-        JSON.stringify({ action: { type: 'tool_call', tool: 'write_file', params: { path: 'fix.marker', content: 'fixed\n' }, reason: 'apply the fix', expected: 'marker created' } }),
+        JSON.stringify({
+          action: { type: 'tool_call', tool: 'write_file', params: { path: 'fix.marker', content: 'fixed\n' }, reason: 'apply the fix', expected: 'marker created' },
+        }),
       ),
       capture(() =>
-        JSON.stringify({ action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node check.js' }, reason: 'prove the fix', expected: 'exit 0 after the fix' } }),
+        JSON.stringify({
+          action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node check.js' }, reason: 'prove the fix', expected: 'exit 0 after the fix' },
+        }),
       ),
-      capture(() =>
-        JSON.stringify({ action: { type: 'set_hypothesis', text: 'The reproduction failed because fix.marker was missing; creating it makes check.js pass.' } }),
-      ),
+      capture(() => JSON.stringify({ action: { type: 'set_hypothesis', text: 'The reproduction failed because fix.marker was missing; creating it makes check.js pass.' } })),
       capture((_n, messages) => {
         const text = messages.map((m) => (typeof m.content === 'string' ? m.content : '')).join(' ');
         const ids = [...text.matchAll(/(ev-\d{8}-[0-9a-f]{6})/g)].map((m) => m[1]);
@@ -156,13 +169,25 @@ describe('Hermes task-strategy injection', () => {
       },
       () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'x', verification: 'node check.js' }] } }),
       () =>
-        JSON.stringify({ action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node check.js' }, reason: 'watch the reproduction fail', expected: 'exit 1 before the fix' } }),
+        JSON.stringify({
+          action: {
+            type: 'tool_call',
+            stepId: 'step-1',
+            tool: 'run_command',
+            params: { command: 'node check.js' },
+            reason: 'watch the reproduction fail',
+            expected: 'exit 1 before the fix',
+          },
+        }),
       () =>
-        JSON.stringify({ action: { type: 'tool_call', tool: 'write_file', params: { path: 'fix.marker', content: 'fixed\n' }, reason: 'apply the fix', expected: 'marker created' } }),
+        JSON.stringify({
+          action: { type: 'tool_call', tool: 'write_file', params: { path: 'fix.marker', content: 'fixed\n' }, reason: 'apply the fix', expected: 'marker created' },
+        }),
       () =>
-        JSON.stringify({ action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node check.js' }, reason: 'prove the fix', expected: 'exit 0 after the fix' } }),
-      () =>
-        JSON.stringify({ action: { type: 'set_hypothesis', text: 'The reproduction failed because fix.marker was missing; creating it makes check.js pass.' } }),
+        JSON.stringify({
+          action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node check.js' }, reason: 'prove the fix', expected: 'exit 0 after the fix' },
+        }),
+      () => JSON.stringify({ action: { type: 'set_hypothesis', text: 'The reproduction failed because fix.marker was missing; creating it makes check.js pass.' } }),
       (_n, messages) => {
         const text = messages.map((m) => (typeof m.content === 'string' ? m.content : '')).join(' ');
         const ids = [...text.matchAll(/(ev-\d{8}-[0-9a-f]{6})/g)].map((m) => m[1]);

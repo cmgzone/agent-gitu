@@ -170,7 +170,7 @@ describe('spawn_sub_agent execution', () => {
 
   it('derives mission, parent and depth from the host scope — never from tool params', async () => {
     const { store, marketing, mission, runner, scope } = setup('identity-immutable');
-    const result = await runner.run(scope(), okOutcome, {
+    const result = await runner.run(scope({ maxDepth: 2 }), okOutcome, {
       role: 'researcher',
       objective: 'find competitors',
       missionId: 'cm-forged',

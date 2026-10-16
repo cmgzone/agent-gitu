@@ -147,6 +147,11 @@ export class PolicyEngine {
         why = 'MCP server executable configuration';
         break;
       case 'run_command': {
+        if (params['action'] === 'status') {
+          tier = 'safe';
+          why = 'read managed command status';
+          break;
+        }
         const cls = classifyCommand(String(params['command'] ?? ''));
         tier = cls.tier;
         why = cls.why;

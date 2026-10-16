@@ -21,11 +21,11 @@ const ROLE_LIMITS: Record<CompanyRole, OrganizationalCapability[]> = {
 };
 const now = () => new Date().toISOString();
 function text(value: unknown, max: number): string {
-  if (typeof value !== 'string' || !value.trim() || value.length > max) throw new Error(`Enter text between 1 and ${max} characters.`);
+  if (typeof value !== 'string' || !value.trim()) throw new Error(`Enter nonempty text.`);
   return value.trim();
 }
 function strings(value: unknown, max = 100): string[] {
-  if (!Array.isArray(value) || value.length > max || value.some((v) => typeof v !== 'string' || !v.trim() || v.length > 2000))
+  if (!Array.isArray(value) || value.some((v) => typeof v !== 'string' || !v.trim()))
     throw new Error('Enter a bounded list of nonempty strings.');
   return [...new Set(value.map((v) => v.trim()))];
 }
@@ -180,8 +180,8 @@ export class CompanyOrganization {
     this.require(actor, 'manage-departments');
     const current = input.id ? this.departments().find((d) => d.id === input.id) : undefined;
     if (input.id && !current) throw new Error('Department not found in this company.');
-    if (input.purpose !== undefined && (typeof input.purpose !== 'string' || input.purpose.length > 2000))
-      throw new Error('Enter a department purpose of at most 2000 characters.');
+    if (input.purpose !== undefined && (typeof input.purpose !== 'string'))
+      throw new Error('Enter a department purpose as text.');
     const value: CompanyDepartment = {
       id: current?.id ?? 'department-' + randomUUID(),
       companyId: this.companyId,

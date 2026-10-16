@@ -4,7 +4,6 @@ const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
-const DESIRED_PORT = Number(process.env.HERMES_UI_PORT || 8321);
 const APP_ICON_PATH = path.join(__dirname, '..', 'assets', 'agent-gitu-icon.png');
 // Keep native crash dumps on this computer; never submit them to a service.
 if (crashReporter) {
@@ -16,15 +15,18 @@ app.on('child-process-gone', (_event, details) => {
 });
 
 let mainWindow = null;
-let server = null;
+let engine = null;
+let engineStartup = null;
 let boundPort = 0;
 let startupWindow = null;
 let starting = false;
 let runtimeTray = null;
 let quitting = false;
 let runtimeStopped = false;
+let stoppingEngine = false;
+let keepEngineRunning = false;
 function showWorkspace(){if(mainWindow&&!mainWindow.isDestroyed()){mainWindow.show();if(mainWindow.isMinimized())mainWindow.restore();mainWindow.focus();}else if(boundPort)createMainWindow();}
-function createRuntimeTray(){if(runtimeTray)return;const icon=nativeImage.createFromPath(APP_ICON_PATH).resize({width:24,height:24});runtimeTray=new Tray(icon);runtimeTray.setToolTip('Agent Gitu — companies running in the background');runtimeTray.setContextMenu(Menu.buildFromTemplate([{label:'Open Agent Gitu',click:showWorkspace},{type:'separator'},{label:'Quit Agent Gitu',click:()=>app.quit()}]));runtimeTray.on('double-click',showWorkspace);}
+function createRuntimeTray(){if(runtimeTray)return;const icon=nativeImage.createFromPath(APP_ICON_PATH).resize({width:24,height:24});runtimeTray=new Tray(icon);runtimeTray.setToolTip('Agent Gitu — agent engine running independently');runtimeTray.setContextMenu(Menu.buildFromTemplate([{label:'Open Agent Gitu',click:showWorkspace},{type:'separator'},{label:'Exit interface (keep agents running)',click:()=>{keepEngineRunning=true;app.quit();}},{label:'Quit Agent Gitu and stop agents',click:()=>{keepEngineRunning=false;app.quit();}}]));runtimeTray.on('double-click',showWorkspace);}
 
 async function showStartupWindow() {
   if (startupWindow && !startupWindow.isDestroyed()) { startupWindow.show(); return; }
@@ -846,37 +848,31 @@ async function start() {
   try {
     await showStartupWindow();
     startupStatus('Opening your workspace…');
-    if (server) { await server.stop().catch(() => {}); server = null; }
-    const dist = path.join(__dirname, '..', 'dist');
-    log(`dist path: ${dist}`);
-    const serverUrl = pathToFileURL(path.join(dist, 'server', 'server.js')).href;
-    log(`importing server from: ${serverUrl}`);
-    const { HermesServer } = await import(serverUrl);
-    log('server module loaded');
-    const homeUrl = pathToFileURL(path.join(dist, 'workspace', 'home.js')).href;
-    const browserUrl = pathToFileURL(path.join(dist, 'browser', 'browser.js')).href;
-    const homeMod = await import(homeUrl);
-    const browserMod = await import(browserUrl);
-    log('workspace and browser modules loaded');
-    const home = homeMod.ensureHermesHome();
-    log(`hermes home at ${home.root}`);
-    const cwd = process.env.HERMES_CWD || home.workspace;
-    const bridge = makeBrowserBridge(browserMod.normalizeUrl);
-    startupStatus('Preparing your workspace…');
-
-    server = new HermesServer({ cwd, port: DESIRED_PORT, browser: bridge });
-    try {
-      boundPort = await server.start();
-    } catch (err) {
-      log(`first start failed: ${err && err.code} ${err && err.message}`);
-      if (String(err && err.code) === 'EADDRINUSE') {
-        server = new HermesServer({ cwd, port: 0, browser: bridge });
-        boundPort = await server.start();
-      } else {
-        throw err;
-      }
-    }
-    log(`server bound to ${boundPort}`);
+    engine?.disconnect();
+    const appRoot = path.join(__dirname, '..');
+    const { connectEngine } = require('./engine-client.cjs');
+    engineStartup = connectEngine({ appRoot, onStatus: text => startupStatus(text) });
+    engine = await engineStartup;
+    runtimeStopped = false;
+    if (quitting) return;
+    const browserMod = await import(pathToFileURL(path.join(appRoot, 'dist', 'browser', 'browser.js')).href);
+    engine.attachBrowser(makeBrowserBridge(browserMod.normalizeUrl), {
+      onDisconnect: () => {
+        log('engine connection lost; agent work belongs to the independent engine');
+        const disconnected = engine;
+        setTimeout(async () => {
+          if (quitting || starting || engine !== disconnected) return;
+          try { await disconnected.status(); } catch {
+            if (quitting || starting || engine !== disconnected) return;
+            await showStartupWindow();
+            startupStatus('The agent engine disconnected. Your saved work is preserved. Retry to reconnect or restart it.', true);
+          }
+        }, 1_500);
+      },
+      onReconnect: () => log('desktop browser reconnected to the engine'),
+    });
+    boundPort = engine.port;
+    log(`engine connected: pid=${engine.pid} port=${boundPort}`);
     console.log(`[hermes-desktop] UI ready on http://127.0.0.1:${boundPort}`);
     try {
       fs.writeFileSync(path.join(os.tmpdir(), 'hermes-desktop-port'), String(boundPort));
@@ -885,6 +881,9 @@ async function start() {
     }
 
     startupStatus('Loading Agent Gitu…');
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.destroy();
+    }
     createMainWindow();
     log('main window created');
 
@@ -893,6 +892,7 @@ async function start() {
     throw err;
   } finally {
     starting = false;
+    engineStartup = null;
   }
 }
 
@@ -933,11 +933,30 @@ if (!gotLock) {
   app.on('before-quit', (event) => {
     log('app before-quit event fired');
     quitting=true;
-    if(server&&!runtimeStopped){event.preventDefault();void server.stop().catch(()=>{}).finally(()=>{runtimeStopped=true;runtimeTray?.destroy();runtimeTray=null;app.quit();});}
+    if (keepEngineRunning) {
+      engine?.disconnect();
+      log('interface exiting; independent engine retained');
+      return;
+    }
+    if ((engine || engineStartup) && !runtimeStopped) {
+      event.preventDefault();
+      if (stoppingEngine) return;
+      stoppingEngine = true;
+      void (async () => {
+        if (!engine && engineStartup) { try { engine = await engineStartup; } catch {} }
+        await engine?.stop();
+        runtimeStopped=true; runtimeTray?.destroy(); runtimeTray=null; app.quit();
+      })().catch(async error => {
+        stoppingEngine=false; quitting=false;
+        log(`engine shutdown is incomplete: ${error.message}`);
+        await showStartupWindow();
+        startupStatus('The agent engine is still stopping. Your work is saved. Try quitting again shortly.', true);
+      });
+    }
   });
   app.on('will-quit', () => {
     log('app will-quit event fired');
-    if (server) void server.stop().catch(() => {});
+    engine?.disconnect();
   });
   app.on('quit', (_e, exitCode) => {
     log(`app quit event fired with code ${exitCode}`);

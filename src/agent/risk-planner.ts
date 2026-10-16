@@ -26,6 +26,16 @@ export interface RiskPlannerOptions {
 
 const STRICT_DOMAINS = new Set<RiskDomain>(['security', 'payments', 'data']);
 
+/** A subject such as pricing or login does not make a copy-only edit risky.
+ * Mixed requests and changes to behavior retain the normal risk assessment. */
+export function isPresentationOnlyGoal(goal: string): boolean {
+  const clauses = goal.split(/\b(?:and|also|then)\b|[;\n]/i).filter((clause) => clause.trim());
+  return /\b(?:change|edit|update|rewrite|correct|fix|adjust|rename|replace|tweak)\b/i.test(goal) &&
+    clauses.every((clause) => /\b(?:label|wording|typo|spelling|caption|button text|copy|colou?r|font)\b/i.test(clause)) &&
+    !/\b(?:logic|behavio\w*|flow|validat\w*|calculat\w*|charg(?:e|ing)|refund|migrat\w*|encrypt\w*|decrypt\w*|authoriz\w*|permissions?|credentials?|bypass|leak|vulnerab\w*|rate|amount|currency|tax)\b/i.test(goal) &&
+    !/\b(?:copy|move|store|save|log|show|display|expose|reveal)\b.{0,60}\b(?:passwords?|secrets?|credentials?|tokens?|keys?)\b/i.test(goal);
+}
+
 /** Priority order: when a goal matches several risks, the first wins as primary. */
 const PRIORITY: RiskDomain[] = ['security', 'payments', 'data', 'performance', 'frontend', 'refactor', 'bug'];
 
@@ -35,8 +45,8 @@ const RISK_RULES: { domain: RiskDomain; label: string; strict: boolean; patterns
     label: 'security / access control',
     strict: true,
     patterns: [
-      /\b(session|refresh token|token|login|logout|authenticat\w*|auth|password|credential|csrf|rbac|2fa|mfa|permissions?|ssh|encrypt|decrypt|vuln|injection|xss|ssrf|idor)\b/i,
-      /\b(secret|apikey|api ?key|identity provider)\b/i,
+      /\b(session|refresh token|tokens?|login|logout|authenticat\w*|auth|passwords?|credentials?|csrf|rbac|2fa|mfa|permissions?|ssh|encrypt|decrypt|vuln|injection|xss|ssrf|idor)\b/i,
+      /\b(secrets?|apikey|api ?key|identity provider)\b/i,
     ],
   },
   {
@@ -106,6 +116,7 @@ export function classifyRiskDomains(goal: string): RiskDomain[] {
   if (!goal.trim()) return ['unknown'];
   const found: RiskDomain[] = [];
   for (const rule of RISK_RULES) {
+    if (isPresentationOnlyGoal(goal) && STRICT_DOMAINS.has(rule.domain)) continue;
     const hit = rule.patterns.some((re) => re.test(goal));
     if (hit && !found.includes(rule.domain)) found.push(rule.domain);
   }

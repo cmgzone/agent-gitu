@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { execFile, execFileSync } from 'node:child_process';
 import { commandTimeout, commandWaitMs, deadline, pollWaitMs } from '../src/tools/command-timeout.js';
 import { BackgroundCommandRegistry, toolRunCommand, validateToolParams, type ToolContext } from '../src/tools/tools.js';
 
@@ -21,7 +22,10 @@ vi.mock('node:child_process', async () => {
     (mock.children as Record<string, unknown>[]).push(child);
     return child;
   };
-  return { spawn: vi.fn(() => makeChild()), execFile: vi.fn(), execFileSync: vi.fn() };
+  return { spawn: vi.fn(() => makeChild()), execFile: vi.fn((...args: unknown[]) => {
+    const callback = args.at(-1);
+    if (typeof callback === 'function') callback(null);
+  }), execFileSync: vi.fn() };
 });
 const childAt = (index = -1): Record<string, unknown> => (mock.children as Record<string, unknown>[]).at(index)!;
 const ctxWith = (registry: BackgroundCommandRegistry, extra: Partial<ToolContext> = {}): ToolContext =>
@@ -34,6 +38,45 @@ afterEach(() => {
 });
 
 describe('a command answers with a status instead of waiting for output', () => {
+  it('reports output activity without killing a quiet command or starting another process', async () => {
+    vi.useFakeTimers();
+    const registry = new BackgroundCommandRegistry();
+    const run = toolRunCommand(ctxWith(registry), { command: 'any-framework build', waitMs: 2_000 });
+    await vi.advanceTimersByTimeAsync(2_000);
+    const running = await run;
+    expect(running.payload).toMatchObject({ elapsedMs: 2_000, quietForMs: 2_000, outputBytes: 0, timeoutMs: 0 });
+    const child = childAt();
+    child['stdout']!.emit('data', Buffer.from('ready\n'));
+    await vi.advanceTimersByTimeAsync(3_000);
+    const status = await toolRunCommand(ctxWith(registry), { action: 'status', id: running.jobId, waitMs: 0 });
+    expect(status.payload).toMatchObject({ elapsedMs: 5_000, quietForMs: 3_000, outputBytes: 6, timeoutMs: 0 });
+    expect(status.output).toContain('Silence alone does not prove a hang');
+    expect(child['kill']).not.toHaveBeenCalled();
+    expect(mock.children).toHaveLength(1);
+    child['stderr']!.emit('data', 'diagnostic\n');
+    const active = await toolRunCommand(ctxWith(registry), { action: 'status', id: running.jobId, waitMs: 0 });
+    expect(active.payload).toMatchObject({ quietForMs: 0, outputBytes: 17 });
+    child.emit('exit', 0, null);
+    child.emit('close', 0, null);
+  });
+  it('retrieves the completed compiler result from the observed command:status request without launching another shell', async () => {
+    vi.useFakeTimers();
+    const registry = new BackgroundCommandRegistry();
+    const run = toolRunCommand(ctxWith(registry), { command: 'typecheck' });
+    await vi.advanceTimersByTimeAsync(60_000);
+    const running = await run;
+    const child = childAt();
+    child['stdout']!.emit('data', 'search.tsx: actionable compiler diagnostic\n');
+    child.emit('exit', 2, null);
+    child.emit('close', 2, null);
+    await vi.advanceTimersByTimeAsync(300);
+    const result = await toolRunCommand(ctxWith(registry), { command: 'status', id: running.jobId, waitMs: 0 });
+    expect(result.status).toBe('exited');
+    expect(result.exitCode).toBe(2);
+    expect(result.output).toContain('actionable compiler diagnostic');
+    expect(mock.children).toHaveLength(1);
+    expect(child['kill']).not.toHaveBeenCalled();
+  });
   it('settles on the process exit, not on the stdio pipes closing', async () => {
     vi.useFakeTimers();
     const registry = new BackgroundCommandRegistry();
@@ -157,6 +200,33 @@ describe('a command answers with a status instead of waiting for output', () => 
   });
 });
 describe('command deadlines and cancellation', () => {
+  it.runIf(process.platform === 'win32')('keeps the event loop responsive while Windows terminates a process tree', async () => {
+    vi.useFakeTimers();
+    let killed: (() => void) | undefined;
+    vi.mocked(execFile).mockImplementationOnce((...args: unknown[]) => {
+      killed = args.at(-1) as () => void;
+      return {} as ReturnType<typeof execFile>;
+    });
+    const registry = new BackgroundCommandRegistry();
+    const run = toolRunCommand(ctxWith(registry), { command: 'any-framework analyze', timeoutMs: 1_500 });
+    const child = childAt();
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(execFile).toHaveBeenCalledWith('taskkill', ['/pid', '999999', '/T', '/F'], expect.objectContaining({ windowsHide: true }), expect.any(Function));
+    expect(execFileSync).not.toHaveBeenCalled();
+    expect(child['kill']).not.toHaveBeenCalled();
+    const heartbeat = vi.fn();
+    setTimeout(heartbeat, 20);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(heartbeat).toHaveBeenCalledOnce();
+    killed!();
+    expect(child['kill']).toHaveBeenCalledOnce();
+    child.emit('exit', null, 'SIGKILL');
+    const result = await run;
+    expect(result.status).toBe('stopped');
+    expect(result.exitCode).toBeUndefined();
+    expect(result.output).toContain('not a source diagnostic');
+    expect(vi.getTimerCount()).toBe(0);
+  });
   it('still kills the process tree at an explicit hard deadline', async () => {
     vi.useFakeTimers();
     const registry = new BackgroundCommandRegistry();

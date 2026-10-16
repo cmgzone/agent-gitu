@@ -35,7 +35,7 @@ export interface RecallSearchOptions {
   conversationId?: string;
 }
 
-const SYNC_BUDGET = 240;
+const SYNC_BUDGET = Infinity;
 const EMBED_BATCH = 32;
 const SCHEMA_VERSION = '2';
 
@@ -140,6 +140,7 @@ export class CoworkRecall {
   /** Re-index conversations whose change cursor advanced (budgeted). */
   sync(budget = SYNC_BUDGET): { indexed: number } {
     let left = budget;
+    let indexed = 0;
     const live = new Set(this.store.listConversations().map((c) => c.id));
     for (const key of this.metaKeysWithPrefix('cursor:')) {
       const id = key.slice('cursor:'.length);
@@ -177,8 +178,9 @@ export class CoworkRecall {
       if (pending.length > 0) void this.embedKeys(pending).catch(() => {});
       this.setMeta(`cursor:${conv.id}`, String(cursor));
       left -= messages.length;
+      indexed += messages.length;
     }
-    return { indexed: budget - left };
+    return { indexed };
   }
 
   private removeConversation(conversationId: string): void {
@@ -205,13 +207,14 @@ export class CoworkRecall {
    * ties. Only the query embedding needs the network.
    */
   async search(query: string, opts: RecallSearchOptions = {}): Promise<RecallHit[]> {
-    this.sync(120);
-    const limit = Math.min(50, Math.max(1, opts.limit ?? 12));
+    this.sync();
+    const limit = Math.max(1, opts.limit ?? Infinity);
+    const candidateLimit = Number.isFinite(limit) ? Math.min(Number.MAX_SAFE_INTEGER, Math.floor(limit * 4)) : -1;
     const match = this.matchExpression(query);
     const rows = match && this.ftsAvailable
       ? (this.db
           .prepare(`SELECT rowkey, kind FROM fts WHERE fts MATCH ?${opts.conversationId ? " AND kind = 'message' AND rowkey LIKE ?" : ''} ORDER BY rank LIMIT ?`)
-          .all(...(opts.conversationId ? [match, `message:${opts.conversationId}:%`, limit * 4] : [match, limit * 4])) as { rowkey: string; kind: string }[])
+          .all(...(opts.conversationId ? [match, `message:${opts.conversationId}:%`, candidateLimit] : [match, candidateLimit])) as { rowkey: string; kind: string }[])
       : [];
 
     // Blend: keyword rank and embedding similarity are independent signals, so
@@ -273,7 +276,7 @@ export class CoworkRecall {
     if (!queryVec) return out;
     const rows = (conversationId
       ? this.db.prepare('SELECT key, vec FROM vecs WHERE key LIKE ?').all(`message:${conversationId}:%`)
-      : this.db.prepare('SELECT key, vec FROM vecs LIMIT 20000').all()) as { key: string; vec: Uint8Array }[];
+      : this.db.prepare('SELECT key, vec FROM vecs').all()) as { key: string; vec: Uint8Array }[];
     for (const row of rows) {
       const similarity = cosineSimilarity(queryVec, decodeVector(row.vec));
       if (similarity >= 0.35) out.set(row.key, similarity);

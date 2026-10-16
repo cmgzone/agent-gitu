@@ -357,6 +357,9 @@ describe('SubAgentRunner', () => {
       cwd: dir,
       resolveLlm: () => llm,
       agentRole: () => 'auth specialist',
+      autonomy: { persistent: false },
+      baseTurns: 12,
+      hardCeilingTurns: 12,
       onEvent: (e) => events.push(e),
     });
 

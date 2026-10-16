@@ -106,7 +106,7 @@ const stringList = (value: unknown): string[] =>
             .map((s) => s.trim())
             .filter(Boolean),
         ),
-      ].slice(0, 100)
+      ]
     : [];
 export function fileLimit(value: unknown): number | null {
   if (value === null) return null;
@@ -175,14 +175,14 @@ export class CompanyStore {
     return limit;
   }
   runtimeSettings(): { workers: number; computers: number } {
-    return this.read('settings', 'runtime') ?? { workers: 4, computers: 4 };
+    return this.read('settings', 'runtime') ?? { workers: Number.MAX_SAFE_INTEGER, computers: Number.MAX_SAFE_INTEGER };
   }
   setRuntimeSettings(input: Record<string, unknown>): { workers: number; computers: number } {
     const settings = this.runtimeSettings();
     for (const key of ['workers', 'computers'] as const) {
       if (input[key] !== undefined) {
         const n = Number(input[key]);
-        if (!Number.isInteger(n) || n < 1 || n > 64) throw new Error('Choose a runtime limit between 1 and 64.');
+        if (!Number.isSafeInteger(n) || n < 1) throw new Error('Choose a positive runtime limit.');
         settings[key] = n;
       }
     }
@@ -249,9 +249,9 @@ export class CompanyStore {
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       reviewMinutes: 15,
       workers: 2,
-      staffLimit: 10,
+      staffLimit: Number.MAX_SAFE_INTEGER,
       computerLimit: 2,
-      missionSessions: 12,
+      missionSessions: Number.MAX_SAFE_INTEGER,
       skills: [],
       connectionIds: [],
       accountIds: [],
@@ -283,8 +283,7 @@ export class CompanyStore {
     for (const key of ['name', 'purpose', 'timezone', 'computerServerId', 'defaultStorageId', 'logoArtifactId', 'leadId', 'conversationId'] as const) {
       if (input[key] !== undefined)
         company[key] = String(input[key])
-          .trim()
-          .slice(0, key === 'purpose' ? 8000 : 200);
+          .trim();
     }
     if (!company.name) throw new Error('Company name is required.');
     try {
@@ -327,7 +326,7 @@ export class CompanyStore {
       if (input[key] !== undefined) {
         const n = input[key]!;
         const [min, max] = limits[key]!;
-        if (!Number.isInteger(n) || n < min! || n > max!) throw new Error(`Invalid ${key}.`);
+        if (!Number.isSafeInteger(n) || n < min!) throw new Error(`Invalid ${key}.`);
         company[key] = n;
       }
     company.updatedAt = stamp();
@@ -350,7 +349,6 @@ export class CompanyStore {
     const company = this.get(id);
     if (!company) throw new Error('Company not found.');
     if (!direction.trim()) throw new Error('Direction is required.');
-    if (direction.trim().length > 64000) throw new Error('Company direction exceeds 64,000 characters. Shorten it before sending.');
     company.direction = direction.trim();
     company.directionVersion++;
     company.updatedAt = stamp();
@@ -398,7 +396,7 @@ export class CompanyStore {
   }
   finishJob(job: CompanyJob, state: CompanyJob['state'], error?: string): void {
     job.state = state;
-    job.error = error?.slice(0, 500);
+    job.error = error;
     job.updatedAt = stamp();
     this.put('job', job.id, job, job.companyId);
   }
@@ -469,7 +467,6 @@ export class CompanyStore {
         const accounting = this.meetingAccounting(companyId, meeting.id);
         if (meeting.budgetUsd !== null && estimate === undefined) throw new Error('Configure usable model prices before a meeting with a finite budget.');
         if (meeting.budgetUsd !== null && accounting.knownCostUsd + accounting.reservedUsd + (estimate ?? 0) > meeting.budgetUsd) throw new Error('Meeting budget reached.');
-        if (this.usage(companyId).filter(u => u.meetingTurnId === lease.id).length >= 6) throw new Error('Meeting contribution attempt limit reached. Retain outstanding matters.');
         this.db.prepare('INSERT INTO meeting_reservations VALUES(?,?,?,?)').run(id, companyId, meeting.id, estimate ?? 0);
       } else if (attempt?.meetingTurnId) throw new Error('A meeting turn requires its company-scoped meeting.');
       const spend = this.usage(companyId)
@@ -600,7 +597,7 @@ export class CompanyStore {
       const current = this.read<CompanyAction>('action', action.id);
       if (!current || current.companyId !== action.companyId) throw new Error('Action not found.');
       if (expected && current.state !== expected) throw new Error('Action state changed. Refresh before deciding.');
-      const next = { ...current, state, receipt: receipt?.slice(0, 1000), wallet: action.wallet ?? current.wallet };
+      const next = { ...current, state, receipt: receipt, wallet: action.wallet ?? current.wallet };
       this.put('action', action.id, next, action.companyId);
       Object.assign(action, next);
       this.db.exec('COMMIT');

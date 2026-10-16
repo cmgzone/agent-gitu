@@ -1,6 +1,6 @@
-import { execFileSync, spawn } from 'node:child_process';
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
-import { readdir, readFile, realpath, stat } from 'node:fs/promises';
+import { execFile, spawn } from 'node:child_process';
+import { mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { readdir, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { SubAgentJob } from '../agent/subagent.js';
 import type { ProjectGuard } from '../guard/project-guard.js';
@@ -18,6 +18,8 @@ import type { ConnectedAppsProvider } from '../connections/provider.js';
 import { commandTimeout, commandWaitMs, deadline, pollWaitMs } from './command-timeout.js';
 import { diffFileContents, formatDiffBlock, formatLineCounts } from './diff.js';
 import { SearchMatcher } from './search-matcher.js';
+import { readSearchText } from './search-text.js';
+import { isGeneratedIndexDirectory } from '../context/generated-directory.js';
 
 export interface ToolContext {
   /** Trusted owner grant, checked live before Company work uses the runtime host. */
@@ -120,13 +122,11 @@ export function runtimeToolNames(browserAvailable: boolean): string[] {
   return [...KNOWN_TOOL_NAMES].filter((name) => browserAvailable || !BROWSER_TOOL_NAMES.has(name));
 }
 
-export const MAX_FILE_BYTES = 20 * 1024 * 1024; // 20 MB ceiling for text files; output is bounded by line limit and maxChars
-const MAX_LIST_ENTRIES = 400;
-const MAX_SEARCH_MATCHES = 60;
-/** Character cap for read_file output sent to the model. Line count alone is
- *  not a safe bound (wide lines); this is. Overridable per call via the
- *  `maxChars` param (itself capped at 60K). */
-export const MAX_READ_OUTPUT_CHARS = 30_000;
+export const MAX_FILE_BYTES = Infinity;
+const MAX_LIST_ENTRIES = Infinity;
+const MAX_SEARCH_MATCHES = Infinity;
+/** Reads are unrestricted unless the caller requests a range or maxChars. */
+export const MAX_READ_OUTPUT_CHARS = Infinity;
 
 const STDERR_FAIL_RE =
   /(is not recognized as|not recognized as the name of|CommandNotFoundException|ItemNotFoundException|The term ['"].*['"] is not recognized|No such file or directory|Permission denied|Access is denied|cannot find path)/i;
@@ -142,6 +142,16 @@ export interface ToolValidationResult {
   correction?: string;
 }
 
+/** Compatibility for an unambiguous managed-job query. A job id plus the
+ * single word "status" identifies runner management, not shell source. Keep
+ * explicit action:run and every other shell command unchanged. */
+export function normalizeCommandParams(params: Record<string, unknown>): Record<string, unknown> {
+  if (params['action'] !== undefined || typeof params['command'] !== 'string' || params['command'].trim().toLowerCase() !== 'status' || typeof params['id'] !== 'string' || !/^cmd-\d+$/.test(params['id'].trim())) return params;
+  const normalized: Record<string, unknown> = { ...params, action: 'status', id: params['id'].trim() };
+  delete normalized['command'];
+  return normalized;
+}
+
 export function validateToolParams(tool: string, params: unknown): ToolValidationResult {
   if (!params || typeof params !== 'object' || Array.isArray(params)) {
     return {
@@ -151,7 +161,7 @@ export function validateToolParams(tool: string, params: unknown): ToolValidatio
       correction: `Provide a valid JSON object of named parameters.`,
     };
   }
-  const p = params as Record<string, unknown>;
+  const p = tool === 'run_command' ? normalizeCommandParams(params as Record<string, unknown>) : params as Record<string, unknown>;
 
   const checkNonEmptyString = (name: string): string | undefined => {
     const val = p[name];
@@ -278,6 +288,9 @@ export function validateToolParams(tool: string, params: unknown): ToolValidatio
             correction: `e.g. ${key}: ["**/*.py", "*.md"].`,
           };
         }
+      }
+      if (p['includeGenerated'] !== undefined && typeof p['includeGenerated'] !== 'boolean') {
+        return { valid: false, error: 'includeGenerated must be a boolean', schema: 'search_files({ pattern: string, includeGenerated?: boolean })', correction: 'Set includeGenerated:true only when generated application packages are part of the requested search.' };
       }
       for (const key of ['maxResults', 'contextLines'] as const) {
         if (p[key] !== undefined && (typeof p[key] !== 'number' || !Number.isFinite(p[key] as number))) {
@@ -713,6 +726,18 @@ export function formatToolValidationError(tool: string, params: unknown, validat
     .join('\n');
 }
 
+/** Shared by execution and cache identity so different requested ranges cannot collide. */
+export function readFileOptions(params: Record<string, unknown>): { offset: number; limit: number; maxChars: number } {
+  const rawOffset = Number(params['offset'] ?? 1);
+  const rawLimit = Number(params['limit']);
+  const requestedChars = Number(params['maxChars']);
+  return {
+    offset: Number.isFinite(rawOffset) ? Math.max(1, Math.floor(rawOffset)) : 1,
+    limit: Number.isFinite(rawLimit) && rawLimit > 0 ? Math.max(1, Math.floor(rawLimit)) : Infinity,
+    maxChars: Number.isFinite(requestedChars) && requestedChars > 0 ? Math.max(1, Math.floor(requestedChars)) : Infinity,
+  };
+}
+
 export function toolReadFile(ctx: ToolContext, params: Record<string, unknown>): ToolResult {
   const val = validateToolParams('read_file', params);
   if (!val.valid) return fail(formatToolValidationError('read_file', params, val));
@@ -725,17 +750,11 @@ export function toolReadFile(ctx: ToolContext, params: Record<string, unknown>):
     if (st.size > MAX_FILE_BYTES) return fail(`read_file: ${rel} is ${st.size} bytes (limit ${MAX_FILE_BYTES})`);
     const content = readFileSync(abs, 'utf8');
     const lines = content.split('\n');
-    const rawOffset = Number(params['offset'] ?? 1);
-    const rawLimit = Number(params['limit'] ?? 2000);
-    const offset = Number.isFinite(rawOffset) ? Math.max(1, Math.floor(rawOffset)) : 1;
-    const limit = Number.isFinite(rawLimit) ? Math.min(2000, Math.max(1, Math.floor(rawLimit))) : 2000;
+    const { offset, limit, maxChars } = readFileOptions(params);
     const slice = lines.slice(offset - 1, offset - 1 + limit);
     const numbered = slice.map((l, i) => `${offset + i}: ${l}`).join('\n');
     const note = lines.length > offset - 1 + limit ? `\n[... ${lines.length - (offset - 1) - slice.length} more lines]` : '';
-    // Character cap on top of the line cap: 2000 wide lines could still dump
-    // hundreds of KB into model context. Keep the beginning (most informative)
-    // and tell the model how to continue.
-    const maxChars = Math.min(60_000, Math.max(4_000, Number(params['maxChars'] ?? MAX_READ_OUTPUT_CHARS)));
+    // Honor an explicitly requested preview and tell the caller how to continue.
     let body = numbered + note;
     if (body.length > maxChars) {
       const cut = body.lastIndexOf('\n', maxChars);
@@ -964,9 +983,13 @@ export function toolListFiles(ctx: ToolContext, params: Record<string, unknown>)
   ctx.guard.assertReadable(abs);
   const ignores = new Set(ctx.guard.lock.ignorePaths);
   const out: string[] = [];
+  const visited = new Set<string>();
 
   const walk = (dir: string, depth: number): void => {
-    if (depth > 6 || out.length >= MAX_LIST_ENTRIES) return;
+    if (out.length >= MAX_LIST_ENTRIES) return;
+    const canonical = realpathSync(dir);
+    if (visited.has(canonical)) return;
+    visited.add(canonical);
     let entries: string[];
     try {
       entries = readdirSync(dir);
@@ -1078,9 +1101,9 @@ export async function toolSearchFiles(ctx: ToolContext, params: Record<string, u
   await ctx.guard.assertReadableAsync(abs);
   const include = Array.isArray(params['include']) ? (params['include'] as unknown[]).map(String) : [];
   const exclude = Array.isArray(params['exclude']) ? (params['exclude'] as unknown[]).map(String) : [];
-  const maxResults = Math.min(500, Math.max(1, Number(params['maxResults']) || MAX_SEARCH_MATCHES));
-  const contextLines = Math.min(5, Math.max(0, Number(params['contextLines']) || 0));
-  const maxFileSize = 256 * 1024;
+  const includeGenerated = params['includeGenerated'] === true || rel.split(/[\\/]/).some(isGeneratedIndexDirectory);
+  const maxResults = Math.max(1, Number(params['maxResults']) || MAX_SEARCH_MATCHES);
+  const contextLines = Math.max(0, Math.floor(Number(params['contextLines']) || 0));
 
   // Validate before traversing, but run actual matching off the app thread.
   try {
@@ -1093,6 +1116,7 @@ export async function toolSearchFiles(ctx: ToolContext, params: Record<string, u
 
   const ignores = new Set(ctx.guard.lock.ignorePaths);
   const visitedDirectories = new Set<string>();
+  const declaredOutputs = new Set<string>();
   const lines: string[] = [];
   let filesHit = 0;
   let truncated = false;
@@ -1110,21 +1134,48 @@ export async function toolSearchFiles(ctx: ToolContext, params: Record<string, u
 
   const walk = async (dir: string): Promise<void> => {
     if (stopped()) return;
-    let entries: string[];
+    let entries: import('node:fs').Dirent[];
     try {
       await ctx.guard.assertReadableAsync(dir);
       const canonical = await realpath(dir);
       if (visitedDirectories.has(canonical)) return;
       visitedDirectories.add(canonical);
-      entries = await readdir(dir);
+      entries = await readdir(dir, { withFileTypes: true });
     } catch {
       return;
     }
-    for (const name of entries) {
+    if (!includeGenerated) {
+      for (const entry of entries) {
+        if (!/^tsconfig(?:\.[\w-]+)*\.json$/i.test(entry.name)) continue;
+        try {
+          const configPath = path.join(dir, entry.name);
+          await ctx.guard.assertReadableAsync(configPath);
+          const configText = await readSearchText(configPath, ctx.signal);
+          if (!configText) continue;
+          const config = JSON.parse(configText.replace(/^\uFEFF/, '')) as { compilerOptions?: { outDir?: unknown } };
+          const outDir = config.compilerOptions?.outDir;
+          if (typeof outDir !== 'string' || !outDir.trim()) continue;
+          const output = path.resolve(dir, outDir), within = path.relative(abs, output);
+          if (within && within !== '..' && !within.startsWith(`..${path.sep}`) && !path.isAbsolute(within)) declaredOutputs.add(output);
+        } catch {
+          // Optional discovery never prevents a source search. Explicit paths
+          // and includeGenerated remain available for compiler output.
+        }
+      }
+    }
+    for (const entry of entries) {
+      const name = entry.name;
       if (stopped()) return;
       const full = path.join(dir, name);
+      if (!includeGenerated && entry.isDirectory() && declaredOutputs.has(full)) continue;
       const relPath = ctx.guard.toRelative(full).replace(/\\/g, '/');
       if (matchesAnyGlobs(relPath, exclude) || matchesAnyGlobs(relPath + '/', exclude)) continue;
+      // Prune before stat/realpath as well as before reads. Electron may treat
+      // app.asar as a directory, exposing entire packaged copies of the app.
+      // An explicitly selected generated root is still walked; this only
+      // excludes generated children from ordinary source searches.
+      if (!includeGenerated && isGeneratedIndexDirectory(name) &&
+          (entry.isDirectory() || entry.isSymbolicLink() || /\.asar(?:\.unpacked)?$/i.test(name))) continue;
       let st;
       try {
         await ctx.guard.assertReadableAsync(full);
@@ -1133,23 +1184,23 @@ export async function toolSearchFiles(ctx: ToolContext, params: Record<string, u
         continue;
       }
       if (st.isDirectory()) {
-        if (ignores.has(name) || name.startsWith('.')) continue;
+        if ((ignores.has(name) && !(includeGenerated && isGeneratedIndexDirectory(name))) || name.startsWith('.')) continue;
         await walk(full);
         continue;
       }
       if (stopped()) return;
-      if (!st.isFile() || st.size >= maxFileSize) continue;
+      if (!st.isFile()) continue;
       if (include.length > 0 && !matchesAnyGlobs(relPath, include)) continue;
       if (exclude.length > 0 && matchesAnyGlobs(relPath, exclude)) continue;
-      let content: string;
+      let content: string | undefined;
       try {
         await ctx.guard.assertReadableAsync(full);
-        content = await readFile(full, { encoding: 'utf8', signal: ctx.signal });
+        content = await readSearchText(full, ctx.signal);
       } catch {
         continue;
       }
       if (stopped()) return;
-      if (content.includes('\0')) continue; // binary
+      if (content === undefined) continue;
       const found = await matcher.match({ content, pattern, mode, flags, maxResults: maxResults - matches });
       if (stopped()) return;
       if (found.length === 0) continue;
@@ -1171,14 +1222,14 @@ export async function toolSearchFiles(ctx: ToolContext, params: Record<string, u
         if (spanLines > 1) {
           // Multiline match: show the whole matched text with line breaks
           // made visible, so the agent sees what actually spanned lines.
-          const excerpt = content.slice(hit.start, hit.end).replace(/\n/g, ' ⏎ ').replace(/\s+/g, ' ').trim().slice(0, 200);
+          const excerpt = content.slice(hit.start, hit.end).replace(/\n/g, ' ⏎ ').replace(/\s+/g, ' ').trim();
           lines.push(`${relPath}:${lineNo}: ${excerpt}`);
         } else {
-          lines.push(`${relPath}:${lineNo}: ${(fileLines[lineNo - 1] ?? '').trim().slice(0, 160)}`);
+          lines.push(`${relPath}:${lineNo}: ${(fileLines[lineNo - 1] ?? '').trim()}`);
         }
         for (let c = Math.max(1, lineNo - contextLines); c <= Math.min(fileLines.length, lineNo + contextLines); c++) {
           if (c === lineNo) continue;
-          lines.push(`    ${c}: ${(fileLines[c - 1] ?? '').trim().slice(0, 160)}`);
+          lines.push(`    ${c}: ${(fileLines[c - 1] ?? '').trim()}`);
         }
       }
     }
@@ -1257,12 +1308,11 @@ export async function toolLspSymbols(ctx: ToolContext, params: Record<string, un
   return call.ok ? { ok: true, output: call.output, payload: call.payload } : lspUnavailable(call.output);
 }
 
-/** Longest tail of each stream kept for status reads; a chatty server must not
- *  grow the harness without bound. */
-const MAX_CAPTURED_OUTPUT = 64_000;
+/** Keep command output available for subsequent status reads. */
+const MAX_CAPTURED_OUTPUT = Infinity;
 /** Finished jobs stay readable this long, so a poll can still report an exit
  *  code that arrived after the call that started it had already answered. */
-const COMMAND_HISTORY_LIMIT = 20;
+const COMMAND_HISTORY_LIMIT = Infinity;
 /**
  * After the shell exits, how long its pipes may take to drain before the result
  * is reported anyway. A descendant that inherited our stdout (a `.cmd` shim's
@@ -1288,6 +1338,8 @@ export interface CommandJob {
   background: boolean;
   status: CommandJobStatus;
   startedAt: number;
+  lastOutputAt: number;
+  outputBytes: number;
   endedAt?: number;
   pid?: number;
   /** Only ever an OS-reported code. A kill leaves it absent, never invented. */
@@ -1307,6 +1359,23 @@ const delayMs = (ms: number): Promise<void> => new Promise<void>((resolve) => se
 /** The combined capture, formatted exactly as the legacy result always was. */
 function jobBody(job: CommandJob): string {
   return [job.stdout, job.stderr].filter(Boolean).join('\n--- stderr ---\n');
+}
+
+function commandProgress(job: CommandJob) {
+  const now = job.endedAt ?? Date.now();
+  return {
+    command: job.command,
+    elapsedMs: Math.max(0, now - job.startedAt),
+    quietForMs: Math.max(0, now - job.lastOutputAt),
+    outputBytes: job.outputBytes,
+    timeoutMs: job.hardDeadlineMs,
+  };
+}
+
+function commandProgressNote(job: CommandJob): string {
+  const progress = commandProgress(job);
+  return `[Output: ${progress.outputBytes} bytes; quiet for ${(progress.quietForMs / 1000).toFixed(1)}s. Silence alone does not prove a hang. ` +
+    (progress.timeoutMs ? `Explicit kill deadline: ${progress.timeoutMs}ms.]` : 'No hard kill deadline.]');
 }
 
 /**
@@ -1351,12 +1420,12 @@ export class BackgroundCommandRegistry {
           jobId: job.id,
           exitCode: 0,
           durationMs: Date.now() - job.startedAt,
-          payload: { command: job.command },
+          payload: commandProgress(job),
           output:
             `BACKGROUND PROCESS STARTED (${job.id}, pid ${job.pid}); it is still running after ${waitMs}ms. ` +
             `Verify readiness separately (for example with browse or a health request); read its output later with ` +
             `run_command {"action":"status","id":"${job.id}"} and stop it with {"action":"stop","id":"${job.id}"}.` +
-            (startup ? `\nSTARTUP OUTPUT:\n${excerpt(startup, 2500)}` : ''),
+            (startup ? `\nSTARTUP OUTPUT:\n${excerpt(startup, 2500)}` : '') + `\n${commandProgressNote(job)}`,
         });
       }, waitMs);
 
@@ -1464,9 +1533,9 @@ export class BackgroundCommandRegistry {
             status: 'running',
             jobId: job.id,
             durationMs: Date.now() - job.startedAt,
-            payload: { command: job.command },
+            payload: commandProgress(job),
             output:
-              `${excerpt(jobBody(job), 2500) || '(no output yet)'}\n` +
+              `${excerpt(jobBody(job), 2500) || '(no output yet)'}\n${commandProgressNote(job)}\n` +
               `[STILL RUNNING after ${Date.now() - job.startedAt}ms — job ${job.id}${job.pid ? `, pid ${job.pid}` : ''}. Nothing is verified yet: ` +
               `check it with run_command {"action":"status","id":"${job.id}"} and stop it with {"action":"stop","id":"${job.id}"} if it is not needed.]`,
           });
@@ -1535,6 +1604,8 @@ export class BackgroundCommandRegistry {
       background,
       status: 'running',
       startedAt: Date.now(),
+      lastOutputAt: Date.now(),
+      outputBytes: 0,
       pid: child.pid,
       hardDeadlineMs: 0,
       stdout: '',
@@ -1545,7 +1616,10 @@ export class BackgroundCommandRegistry {
     const capture =
       (stream: 'stdout' | 'stderr') =>
       (chunk: unknown): void => {
-        const text = `${job[stream]}${String(chunk)}`;
+        const incoming = String(chunk);
+        job.outputBytes += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(incoming);
+        if (incoming.length) job.lastOutputAt = Date.now();
+        const text = `${job[stream]}${incoming}`;
         // A dev server's log must not grow the harness without bound.
         job[stream] = text.length > MAX_CAPTURED_OUTPUT ? text.slice(text.length - MAX_CAPTURED_OUTPUT) : text;
       };
@@ -1591,7 +1665,7 @@ export class BackgroundCommandRegistry {
     const body = jobBody(job);
     const output = excerpt(body || '(no output)', 4000);
     const durationMs = (job.endedAt ?? Date.now()) - job.startedAt;
-    const payload = { command: job.command };
+    const payload = commandProgress(job);
     const note =
       job.reason === 'timeout'
         ? ` (timeout after ${job.hardDeadlineMs}ms; process tree terminated)`
@@ -1602,7 +1676,8 @@ export class BackgroundCommandRegistry {
             : job.reason === 'spawn-failed'
               ? ' (command failed to start)'
               : '';
-    const held = job.stdioHeldOpen ? "\n[a descendant process still holds this command's output pipe; it outlived the shell]" : '';
+    const held = (job.stdioHeldOpen ? "\n[a descendant process still holds this command's output pipe; it outlived the shell]" : '') +
+      (job.reason === 'timeout' ? '\n[The explicit deadline stopped this command; this is not a source diagnostic. Inspect tool/environment health before choosing one justified retry or an alternative check. Do not repeat the same timeout unchanged.]' : '');
     if (job.reason === 'spawn-failed') {
       return {
         ok: false,
@@ -1651,9 +1726,9 @@ export class BackgroundCommandRegistry {
         status: 'running',
         jobId: job.id,
         durationMs: Date.now() - job.startedAt,
-        payload: { command: job.command },
+        payload: commandProgress(job),
         output:
-          `${this.summaryLine(job)}\n${excerpt(jobBody(job), 2500) || '(no output yet)'}\n` +
+          `${this.summaryLine(job)}\n${excerpt(jobBody(job), 2500) || '(no output yet)'}\n${commandProgressNote(job)}\n` +
           `[Not finished — nothing is verified yet. Poll again with {"action":"status","id":"${job.id}"}, or stop it with {"action":"stop","id":"${job.id}"}.]`,
       };
     }
@@ -1665,9 +1740,17 @@ export class BackgroundCommandRegistry {
    *  (servers, watchers, GUI apps) behind. */
   private killTree(child: ReturnType<typeof spawn>, signal: 'SIGKILL' | 'SIGTERM' = 'SIGKILL'): void {
     const isWindows = process.platform === 'win32';
+    const directKill = (): void => {
+      try {
+        if (child.exitCode == null && child.signalCode == null) child.kill(signal);
+      } catch { /* already gone */ }
+    };
     try {
       if (isWindows && child.pid) {
-        execFileSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore', timeout: 10_000 });
+        // Never block Electron's main event loop while Windows tears down a
+        // compiler tree. Status, cancellation, and the UI must keep responding.
+        execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, timeout: 10_000 }, directKill);
+        return;
       } else if (child.pid) {
         try {
           process.kill(-child.pid, signal);
@@ -1678,11 +1761,7 @@ export class BackgroundCommandRegistry {
     } catch {
       /* best effort — the direct kill below is the backstop */
     }
-    try {
-      child.kill(signal);
-    } catch {
-      /* already gone */
-    }
+    directKill();
   }
   dispose(): void {
     for (const [id, child] of this.children) {
@@ -1709,6 +1788,7 @@ const hostCommands = new BackgroundCommandRegistry();
  * inherited stdio pipes — therefore always reports instead of wedging the turn.
  */
 export function toolRunCommand(ctx: ToolContext, params: Record<string, unknown>): Promise<ToolResult> {
+  params = normalizeCommandParams(params);
   const registry = ctx.backgroundCommands ?? hostCommands;
   const action = String(params['action'] ?? 'run');
 
@@ -1840,20 +1920,20 @@ export async function toolMemory(ctx: ToolContext, params: Record<string, unknow
     switch (action) {
       case 'list': {
         const entries = memory.query(
-          { type: optString('type') as never, scope: optString('scope'), limit: Math.min(50, Math.max(1, Number(params['limit']) || 25)) },
+          { type: optString('type') as never, scope: optString('scope'), limit: Math.max(1, Number(params['limit']) || Infinity) },
           ctx.memoryContext,
         );
         if (entries.length === 0) return { ok: true, output: '(no memories match — nothing recorded yet for this scope)' };
-        const body = entries.map((e) => `${e.id} [${e.type}] (${e.status ?? 'candidate'}, confidence ${e.confidence.toFixed(2)}) ${e.claim.slice(0, 160)}`).join('\n');
+        const body = entries.map((e) => `${e.id} [${e.type}] (${e.status ?? 'candidate'}, confidence ${e.confidence.toFixed(2)}) ${e.claim}`).join('\n');
         return { ok: true, output: `${entries.length} memory(ies):\n${body}\nUse these ids with memory promote/verify/archive/promote_scope.` };
       }
       case 'search': {
         const results = await memory.search(String(params['query'] ?? ''), {
-          limit: Math.min(20, Math.max(1, Number(params['limit']) || 8)),
+          limit: Math.max(1, Number(params['limit']) || Infinity),
           ctx: ctx.memoryContext,
         });
         if (results.length === 0) return { ok: true, output: '(no matching memories)' };
-        const body = results.map((r) => `${r.id} [${r.type}] (${r.status}, score ${r.score.toFixed(2)}) ${r.claim.slice(0, 160)}`).join('\n');
+        const body = results.map((r) => `${r.id} [${r.type}] (${r.status}, score ${r.score.toFixed(2)}) ${r.claim}`).join('\n');
         return { ok: true, output: `${results.length} match(es):\n${body}` };
       }
       case 'promote': {
@@ -2062,7 +2142,8 @@ export async function toolWebFetch(ctx: ToolContext, params: Record<string, unkn
   if (!url.startsWith('http://') && !url.startsWith('https://')) {
     return fail('web_fetch: url must start with http(s)://');
   }
-  const maxChars = Math.min(12000, Number.isFinite(Number(params['maxChars'])) ? Number(params['maxChars']) : 6000);
+  const requestedChars = Number(params['maxChars']);
+  const maxChars = Number.isFinite(requestedChars) && requestedChars > 0 ? requestedChars : Infinity;
   // render:true loads the URL in the in-app browser and returns the RENDERED
   // DOM text — the only way to see JS-built pages (SPAs) that static fetch
   // cannot. The session's previous page is restored afterwards.
@@ -2086,7 +2167,7 @@ export async function toolWebFetch(ctx: ToolContext, params: Record<string, unkn
     }
   }
   const timeoutMs = 20_000;
-  const maxBodyBytes = 2_000_000;
+  const maxBodyBytes = Infinity;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error(`timed out after ${timeoutMs}ms`)), timeoutMs);
   return fetch(url, { headers: { 'user-agent': 'hermes-agent/0.1' }, redirect: 'follow', signal: controller.signal })
@@ -2139,11 +2220,11 @@ export function formatPageDiagnostics(shot: { consoleErrors?: string[]; textDige
   const parts: string[] = [];
   if (Array.isArray(shot.consoleErrors)) {
     const errors = shot.consoleErrors.filter(Boolean).slice(-8);
-    parts.push(errors.length > 0 ? `CONSOLE PROBLEMS (${errors.length}):\n${errors.map((e) => `  - ${e.slice(0, 220)}`).join('\n')}` : 'CONSOLE PROBLEMS: none');
+    parts.push(errors.length > 0 ? `CONSOLE PROBLEMS (${errors.length}):\n${errors.map((e) => `  - ${e}`).join('\n')}` : 'CONSOLE PROBLEMS: none');
   }
   if (shot.loadIncomplete) parts.push('PAGE LOAD: incomplete — the document was still loading; wait and screenshot again before judging the render');
   const text = (shot.textDigest ?? '').trim();
-  if (text) parts.push(`PAGE TEXT (digest):\n${text.slice(0, 1200)}`);
+  if (text) parts.push(`PAGE TEXT (digest):\n${text}`);
   return parts.join('\n');
 }
 
@@ -2238,7 +2319,7 @@ export async function toolBrowse(ctx: ToolContext, params: Record<string, unknow
       case 'wait': {
         if (!ctx.browser.wait) return fail('browse wait is not supported by this browser');
         const rawMs = Number(params['ms'] ?? 1000);
-        const ms = Number.isFinite(rawMs) ? Math.min(10000, Math.max(0, rawMs)) : 1000;
+        const ms = Number.isFinite(rawMs) ? Math.max(0, rawMs) : 1000;
         const st = await ctx.browser.wait(ms);
         return { ok: true, output: `waited ${ms}ms on ${st.url}` };
       }
@@ -2285,55 +2366,41 @@ export async function toolDelegate(ctx: ToolContext, params: Record<string, unkn
   const parseHandoff = (raw: unknown): SpecialistHandoff | undefined => {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
     const source = raw as Record<string, unknown>;
-    const parentGoal = typeof source['parentGoal'] === 'string' ? source['parentGoal'].trim().slice(0, 1_200) : '';
+    const parentGoal = typeof source['parentGoal'] === 'string' ? source['parentGoal'].trim() : '';
     if (!parentGoal) return undefined;
     const startingFiles = Array.isArray(source['startingFiles'])
       ? source['startingFiles']
           .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item))
           .map((item) => ({
-            path: String(item['path'] ?? '')
-              .trim()
-              .slice(0, 320),
-            role: String(item['role'] ?? 'unknown')
-              .trim()
-              .slice(0, 32) as SpecialistHandoff['startingFiles'][number]['role'],
+            path: String(item['path'] ?? '').trim(),
+            role: String(item['role'] ?? 'unknown').trim() as SpecialistHandoff['startingFiles'][number]['role'],
             score: Number.isFinite(Number(item['score'])) ? Number(item['score']) : 0,
-            ...(typeof item['note'] === 'string' && item['note'].trim() ? { note: item['note'].trim().slice(0, 240) } : {}),
+            ...(typeof item['note'] === 'string' && item['note'].trim() ? { note: item['note'].trim() } : {}),
           }))
           .filter((item) => Boolean(item.path))
-          .slice(0, 6)
       : [];
     const excerpts = Array.isArray(source['excerpts'])
       ? source['excerpts']
           .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item))
           .map((item) => ({
-            path: String(item['path'] ?? '')
-              .trim()
-              .slice(0, 320),
-            content: String(item['content'] ?? '').slice(0, 3_000),
+            path: String(item['path'] ?? '').trim(),
+            content: String(item['content'] ?? ''),
           }))
           .filter((item) => Boolean(item.path) && Boolean(item.content))
-          .slice(0, 3)
       : [];
     const planSteps = Array.isArray(source['planSteps'])
       ? source['planSteps']
           .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item))
           .map((item) => ({
-            description: String(item['description'] ?? '')
-              .trim()
-              .slice(0, 280),
-            verification: String(item['verification'] ?? '')
-              .trim()
-              .slice(0, 240),
+            description: String(item['description'] ?? '').trim(),
+            verification: String(item['verification'] ?? '').trim(),
           }))
           .filter((item) => Boolean(item.description))
-          .slice(0, 3)
       : [];
     const verificationTargets = Array.isArray(source['verificationTargets'])
       ? source['verificationTargets']
-          .map((item) => String(item).trim().slice(0, 280))
+          .map((item) => String(item).trim())
           .filter(Boolean)
-          .slice(0, 5)
       : [];
     return { parentGoal, startingFiles, excerpts, planSteps, verificationTargets };
   };
@@ -2359,11 +2426,6 @@ export async function toolDelegate(ctx: ToolContext, params: Record<string, unkn
     ];
   }
   if (specs.length === 0) return fail('delegate: provide {"tasks":[{"agent":"name","task":"..."}]} — or resume a paused attempt with "resume":{"jobId":"sub-…"}');
-  // Match the action parser and the escalation budget, which both allow up to
-  // 6 specialists: a silent truncation here would drop delegated work without
-  // any observation telling the model (the orchestrator still counts the
-  // slots as consumed).
-  if (specs.length > 6) specs = specs.slice(0, 6);
   if (params['background'] === true) {
     if (!ctx.delegateBackground) return fail('delegate: no specialist agents configured — create them in Settings → Agents');
     const jobs = ctx.delegateBackground(specs);
@@ -2376,8 +2438,8 @@ export async function toolDelegate(ctx: ToolContext, params: Record<string, unkn
   }
   if (!ctx.delegate) return fail('delegate: no specialist agents configured — create them in Settings → Agents');
   const results = await ctx.delegate(specs);
-  const output = results.map((r) => `[${r.agent}] ${r.ok ? 'OK' : 'FAILED'} — task: ${r.task.slice(0, 120)}\n${r.summary}`).join('\n\n');
-  return { ok: results.every((r) => r.ok), output: output.slice(0, 6000), payload: { results } };
+  const output = results.map((r) => `[${r.agent}] ${r.ok ? 'OK' : 'FAILED'} — task: ${r.task}\n${r.summary}`).join('\n\n');
+  return { ok: results.every((r) => r.ok), output: output, payload: { results } };
 }
 
 export function toolAgentStatus(ctx: ToolContext, params: Record<string, unknown>): ToolResult {
@@ -2389,14 +2451,14 @@ export function toolAgentStatus(ctx: ToolContext, params: Record<string, unknown
     ok: true,
     output: jobs
       .map((job) => {
-        const detail = job.summary ? `\n${job.summary.slice(0, 1200)}` : '';
+        const detail = job.summary ? `\n${job.summary}` : '';
         const identity =
           job.logicalJobId && job.logicalJobId !== job.id
             ? `${job.id}; logical ${job.logicalJobId}; attempt ${job.executionAttempt ?? 1}`
             : job.executionAttempt && job.executionAttempt > 1
               ? `${job.id}; attempt ${job.executionAttempt}`
               : job.id;
-        return `[${job.status.toUpperCase()}] ${job.agent} (${identity}) — ${job.task.slice(0, 160)}${detail}`;
+        return `[${job.status.toUpperCase()}] ${job.agent} (${identity}) — ${job.task}${detail}`;
       })
       .join('\n\n'),
   };

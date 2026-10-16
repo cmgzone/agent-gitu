@@ -7,8 +7,8 @@ import { canonicalAction } from './store.js';
 
 const now = () => new Date().toISOString();
 function lines(value: unknown): string[] {
-  if (!Array.isArray(value) || value.length > 30 || value.some((v) => typeof v !== 'string' || !v.trim() || v.length > 500))
-    throw new Error('Provide up to 30 nonempty requirements.');
+  if (!Array.isArray(value) || value.some((v) => typeof v !== 'string' || !v.trim()))
+    throw new Error('Provide nonempty requirements.');
   return [...new Set(value.map((v) => String(v).trim()))];
 }
 
@@ -112,7 +112,7 @@ export class CompanyOnboardingService {
     record.history = [
       ...(record.history ?? []),
       { signature: record.signature, orientation: record.orientation, meetingId: record.meetingId, assessment: record.assessment, endedAt: now(), reason },
-    ].slice(-50);
+    ];
     if (record.assessment && this.organization.cowork.getMission(record.assessment.missionId)?.status === 'running')
       this.organization.cowork.cancelMission(record.assessment.missionId);
     if (record.meetingId) {
@@ -234,10 +234,10 @@ export class CompanyOnboardingService {
     const record = this.read(actor, agentId);
     if (record.revision !== revision || !record.resourceCheck || record.resourceCheck.problems.length || record.stage !== 'resources' || this.problems(record).length)
       throw new Error('Pass current resource checks before assigning an assessment.');
-    if (typeof input.goal !== 'string' || !input.goal.trim() || input.goal.length > 2000) throw new Error('Provide a bounded practical assessment goal.');
+    if (typeof input.goal !== 'string' || !input.goal.trim()) throw new Error('Provide a bounded practical assessment goal.');
     const criteria = lines(input.criteria);
-    if (!criteria.length || criteria.length > 12) throw new Error('Provide 1–12 concrete completion criteria.');
-    if (input.maxTurns !== undefined && (!Number.isInteger(input.maxTurns) || input.maxTurns < 1 || input.maxTurns > 5)) throw new Error('Assessments allow 1–5 work sessions.');
+    if (!criteria.length) throw new Error('Provide 1–12 concrete completion criteria.');
+    if (input.maxTurns !== undefined && (!Number.isSafeInteger(input.maxTurns) || input.maxTurns < 1)) throw new Error('Provide a positive number of work sessions.');
     const cowork = this.organization.cowork,
       conversation =
         cowork.listConversations().find((c) => c.kind === 'dm' && c.memberIds.length === 1 && c.memberIds[0] === agentId) ??
@@ -245,7 +245,6 @@ export class CompanyOnboardingService {
     // The scoped Cowork snapshot and onboarding link commit in the same SQLite transaction.
     return this.edit(actor, agentId, revision, (r) => {
       if (r.assessment) {
-        if ((r.history?.length ?? 0) >= 50) throw new Error('Assessment history limit reached. Ask the director to review this onboarding record.');
         r.history = [
           ...(r.history ?? []),
           {
@@ -268,7 +267,7 @@ export class CompanyOnboardingService {
     const record = this.read(actor, agentId),
       mission = record.assessment && this.organization.cowork.getMission(record.assessment.missionId),
       ids = lines(input.evidenceMessageIds);
-    if (typeof input.approved !== 'boolean' || typeof input.notes !== 'string' || !input.notes.trim() || input.notes.length > 2000)
+    if (typeof input.approved !== 'boolean' || typeof input.notes !== 'string' || !input.notes.trim())
       throw new Error('Record an explicit assessment result and review notes.');
     if (!mission || record.stage !== 'assessment' || (input.approved && (mission.status !== 'done' || !mission.result?.trim() || !ids.length)))
       throw new Error('Approve only a completed practical mission with its saved evidence.');

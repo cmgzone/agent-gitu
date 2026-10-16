@@ -188,6 +188,8 @@ export function resilientLlm(client: LlmClient, opts: ResilienceOptions = {}): L
   }
 
   return {
+    // Native execution has its own lifecycle. Never wrap it in the LLM retry loop.
+    get nativeTask() { return client.nativeTask; },
     get name() {
       return `resilient(${client.name})`;
     },

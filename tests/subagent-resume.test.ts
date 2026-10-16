@@ -94,7 +94,7 @@ describe('specialist pause / preserve / resume lifecycle', () => {
     const events: string[] = [];
 
     // Attempt 1: real file write (checkpointed), then spiral into no-action
-    // replies until stagnation stops it — previously this DISCARDED everything.
+    // replies until the host's selected fail-fast policy stops it.
     const llmA = scriptedLlm([
       () =>
         JSON.stringify({
@@ -107,6 +107,7 @@ describe('specialist pause / preserve / resume lifecycle', () => {
       resolveLlm: () => llmA,
       agentRole: () => 'worker',
       isolate: true,
+      autonomy: { persistent: false },
       onEvent: (e) => events.push(e),
     });
 

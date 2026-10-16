@@ -24,7 +24,7 @@ export function saveOnboarding(body: Record<string, unknown>): OnboardingPrefere
     throw new Error('Choose a valid theme and workspace mode.');
   }
   const model = body['model'] ?? '';
-  if (typeof model !== 'string' || model.length > 500 || (model && !/^[^\s:]+::\S+$/.test(model))) throw new Error('Choose a valid model.');
+  if (typeof model !== 'string' || (model && !/^[^\s:]+::\S+$/.test(model))) throw new Error('Choose a valid model.');
   // Keep credentials out of preferences, even if a caller sends extra fields.
   const preferences: OnboardingPreferences = { completed: true, theme: body['theme'] as OnboardingPreferences['theme'], mode: body['mode'] as OnboardingPreferences['mode'], model };
   writeJson(path.join(ensureGituHome().settings, 'onboarding.json'), preferences);

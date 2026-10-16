@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { CodeIndex } from '../src/context/code-index.js';
 import { classifyRole, contextBudgetForWindow, ContextEngine, DEFAULT_CONTEXT_BUDGET, tokenize } from '../src/context/context-engine.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
@@ -37,10 +37,8 @@ describe('contextBudgetForWindow', () => {
   });
 
   it('scales source context while reserving room for the rest of the conversation', () => {
-    expect(contextBudgetForWindow(32_000)).toEqual({ maxFiles: 8, maxBytes: 48_000 });
-    // Very large windows are capped: the pack is a grounding sample, not a
-    // repo dump (~48K chars ≈ 12K tokens is plenty to plan from).
-    expect(contextBudgetForWindow(1_000_000)).toEqual({ maxFiles: 12, maxBytes: 48_000 });
+    expect(contextBudgetForWindow(32_000)).toEqual({ maxFiles: 8, maxBytes: 51_200 });
+    expect(contextBudgetForWindow(1_000_000)).toEqual({ maxFiles: 133, maxBytes: 1_600_000 });
   });
 });
 
@@ -110,6 +108,38 @@ describe('ContextEngine', () => {
     index.stopWatch();
     index.close();
   });
+
+  it('reuses unchanged follow-up context without scans but refreshes changed source', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'hermes-ctx-reuse-'));
+    writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'ctx-reuse' }));
+    mkdirSync(path.join(dir, 'src'));
+    mkdirSync(path.join(dir, '.hermes'));
+    writeFileSync(path.join(dir, 'src', 'main.ts'), 'export const feature = "sprocket";');
+    const guard = ProjectGuard.detect(dir);
+    const db = path.join(mkdtempSync(path.join(tmpdir(), 'hermes-ctxdb-')), 'code-index.db');
+    const index = new CodeIndex(dir, db);
+    index.startWatch(guard.lock.ignorePaths, { debounceMs: 5_000, sweepMs: 60_000 });
+    try {
+      const engine = new ContextEngine(guard, index);
+      await engine.buildPackHybrid('fix the sprocket feature');
+      const refresh = vi.spyOn(index, 'refreshAsync');
+      writeFileSync(path.join(dir, '.hermes', 'task.json'), '{"status":"running"}');
+      await new Promise(resolve => setTimeout(resolve, 50));
+      await engine.buildPackHybrid('continue fixing the sprocket feature');
+      await engine.buildPackHybrid('explain the sprocket feature');
+      expect(refresh).not.toHaveBeenCalled();
+
+      writeFileSync(path.join(dir, 'src', 'main.ts'), 'export const feature = "updatedsprocket";');
+      await new Promise(resolve => setTimeout(resolve, 50));
+      const { pack } = await engine.buildPackHybrid('fix updatedsprocket');
+      expect(refresh).toHaveBeenCalledTimes(1);
+      expect(index.contentMatches(['updatedsprocket']).has('src/main.ts')).toBe(true);
+      expect(engine.renderPackWithContent(pack)).toContain('updatedsprocket');
+      refresh.mockRestore();
+    } finally {
+      index.close();
+    }
+  }, 60000);
 
   it('surfaces a graph-connected helper even when its path has no goal terms', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'hermes-ctx-'));

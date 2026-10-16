@@ -36,21 +36,20 @@ export interface PlanStepInput {
   subtasks?: string[];
 }
 
-const STEP_LIMITS = { count: 30, description: 220, verification: 180, todosPerStep: 8, todoText: 140 } as const;
+const STEP_LIMITS = { count: Infinity, description: Infinity, verification: Infinity, todosPerStep: Infinity, todoText: Infinity } as const;
 
 type NormalizedStep = Required<Pick<PlanStepInput, 'description' | 'verification'>> & Pick<PlanStepInput, 'area' | 'subtasks'>;
 
 function normalizeStepInput(steps: PlanStepInput[]): NormalizedStep[] {
   return steps.map((s) => ({
-    description: String(s.description ?? '').slice(0, STEP_LIMITS.description),
-    verification: String(s.verification ?? '').slice(0, STEP_LIMITS.verification),
+    description: String(s.description ?? ''),
+    verification: String(s.verification ?? ''),
     ...(s.area ? { area: s.area } : {}),
     ...(Array.isArray(s.subtasks)
       ? {
           subtasks: s.subtasks
             .map((t) => String(t).slice(0, STEP_LIMITS.todoText))
-            .filter(Boolean)
-            .slice(0, STEP_LIMITS.todosPerStep),
+            .filter(Boolean),
         }
       : {}),
   }));
@@ -356,7 +355,8 @@ export class TaskLedger {
    * the criteria and evidence that made the earlier work complete.
    */
   appendCriteria(texts: string[]): AcceptanceCriterion[] {
-    const known = new Set(this.data.acceptanceCriteria.map((c) => c.text.trim().replace(/\s+/g, ' ').toLowerCase()));
+    const prior = new Set(this.activeWorkPhase()?.priorCriterionIds ?? []);
+    const known = new Set(this.data.acceptanceCriteria.filter(c => !prior.has(c.id)).map((c) => c.text.trim().replace(/\s+/g, ' ').toLowerCase()));
     const next = this.data.acceptanceCriteria.reduce((max, c) => {
       const match = /^ac-(\d+)$/.exec(c.id);
       return Math.max(max, match ? Number(match[1]) : 0);
@@ -387,7 +387,8 @@ export class TaskLedger {
    * can run the real oracle later.
    */
   appendCriteriaFromSpecs(specs: CriterionSpec[]): AcceptanceCriterion[] {
-    const known = new Set(this.data.acceptanceCriteria.map((c) => c.text.trim().replace(/\s+/g, ' ').toLowerCase()));
+    const prior = new Set(this.activeWorkPhase()?.priorCriterionIds ?? []);
+    const known = new Set(this.data.acceptanceCriteria.filter(c => !prior.has(c.id)).map((c) => c.text.trim().replace(/\s+/g, ' ').toLowerCase()));
     const next = this.data.acceptanceCriteria.reduce((max, c) => {
       const match = /^ac-(\d+)$/.exec(c.id);
       return Math.max(max, match ? Number(match[1]) : 0);
@@ -415,7 +416,7 @@ export class TaskLedger {
   }
 
   setPlan(steps: PlanStepInput[]): void {
-    const normalized = normalizeStepInput(steps).slice(0, STEP_LIMITS.count);
+    const normalized = normalizeStepInput(steps);
     this.data.plan = normalized.map((s, i) => ({
       id: `step-${i + 1}`,
       description: s.description,
@@ -503,7 +504,7 @@ export class TaskLedger {
     const phase: WorkPhase = {
       id: 'phase-1',
       kind: 'initial',
-      goal: goal.trim().slice(0, 1_500) || this.data.goal,
+      goal: goal.trim() || this.data.goal,
       startedAt: this.data.startedAt ?? this.data.createdAt,
       ...(baseRef?.trim() ? { baseRef: baseRef.trim() } : {}),
       evidenceStartIndex: 0,
@@ -524,7 +525,7 @@ export class TaskLedger {
     const phase: WorkPhase = {
       id: `phase-${phases.length + 1}`,
       kind: input.kind,
-      goal: input.goal.trim().slice(0, 1_500) || this.data.goal,
+      goal: input.goal.trim() || this.data.goal,
       startedAt: nowIso(),
       ...(input.baseRef?.trim() ? { baseRef: input.baseRef.trim() } : {}),
       evidenceStartIndex: this.data.evidence.length,
@@ -566,15 +567,13 @@ export class TaskLedger {
 
   /** Record compact design notes (bounded) for the current plan. */
   setPlanDesign(design: { frontend?: string; backend?: string; integration?: string }): void {
-    const DESIGN_CAPS = { frontend: 1200, backend: 1200, integration: 800 } as const;
     const next: PlanDesign = {};
     let total = 0;
     for (const key of ['frontend', 'backend', 'integration'] as const) {
       const raw = design[key];
       if (!raw || !raw.trim()) continue;
-      const text = raw.trim().slice(0, DESIGN_CAPS[key]);
+      const text = raw.trim();
       total += text.length;
-      if (total > 3200) break;
       next[key] = text;
     }
     this.data.planDesign = next;
@@ -588,18 +587,17 @@ export class TaskLedger {
   reviseStep(stepId: string, patch: { description?: string; verification?: string; area?: PlanArea; addSubtasks?: string[]; replaceSubtasks?: string[]; status?: 'pending' | 'cancelled' }, reason: string): PlanStep | undefined {
     const step = this.step(stepId);
     if (!step) return undefined;
-    if (patch.description !== undefined) step.description = patch.description.slice(0, STEP_LIMITS.description);
-    if (patch.verification !== undefined) step.verification = patch.verification.slice(0, STEP_LIMITS.verification);
+    if (patch.description !== undefined) step.description = patch.description;
+    if (patch.verification !== undefined) step.verification = patch.verification;
     if (patch.area !== undefined) step.area = patch.area;
     if (patch.replaceSubtasks !== undefined) {
       const previous = new Map((step.subtasks ?? []).map(todo => [todo.text, todo.done]));
-      step.subtasks = [...new Set(patch.replaceSubtasks.map(text => text.trim().slice(0, STEP_LIMITS.todoText)).filter(Boolean))]
-        .slice(0, STEP_LIMITS.todosPerStep).map(text => ({ text, done: previous.get(text) ?? false }));
+      step.subtasks = [...new Set(patch.replaceSubtasks.map(text => text.trim().slice(0, STEP_LIMITS.todoText)).filter(Boolean))].map(text => ({ text, done: previous.get(text) ?? false }));
     }
     if (patch.addSubtasks && patch.addSubtasks.length > 0) {
       step.subtasks ??= [];
       const room = Math.max(0, STEP_LIMITS.todosPerStep - step.subtasks.length);
-      const additions = [...new Set(patch.addSubtasks.map(text => text.trim().slice(0, STEP_LIMITS.todoText)).filter(Boolean))]
+      const additions = [...new Set(patch.addSubtasks.map(text => text.trim()).filter(Boolean))]
         .filter(text => !step.subtasks!.some(todo => todo.text === text));
       for (const text of additions.slice(0, room)) {
         step.subtasks.push({ text, done: false });
@@ -608,8 +606,7 @@ export class TaskLedger {
     if (patch.status) step.status = patch.status;
     else if (step.status === 'done' && step.subtasks?.some(todo => !todo.done)) step.status = 'pending';
     this.data.planRevisions ??= [];
-    this.data.planRevisions.push({ stepId, reason: reason.slice(0, 300), createdAt: nowIso() });
-    if (this.data.planRevisions.length > 20) this.data.planRevisions.splice(0, this.data.planRevisions.length - 20);
+    this.data.planRevisions.push({ stepId, reason: reason, createdAt: nowIso() });
     this.save();
     return step;
   }
@@ -661,16 +658,13 @@ export class TaskLedger {
     } else {
       this.data.providerEvidence.push(evidence);
     }
-    if (this.data.providerEvidence.length > 100) {
-      this.data.providerEvidence.splice(0, this.data.providerEvidence.length - 100);
-    }
     this.save();
   }
 
   syncProviderState(epochs: Record<string, number>, evidence?: import('../connections/runtime/provider-cache.js').ProviderEvidence[]): void {
     this.data.remoteStateEpochs = { ...(this.data.remoteStateEpochs ?? {}), ...epochs };
     if (evidence) {
-      this.data.providerEvidence = evidence.slice(-100);
+      this.data.providerEvidence = [...evidence];
     }
     this.save();
   }
@@ -700,7 +694,6 @@ export class TaskLedger {
   addBudgetExtension(record: Omit<BudgetExtensionRecord, 'at'>): void {
     this.data.budgetExtensions ??= [];
     this.data.budgetExtensions.push({ ...record, at: nowIso() });
-    if (this.data.budgetExtensions.length > 10) this.data.budgetExtensions.splice(0, this.data.budgetExtensions.length - 10);
     this.save();
   }
 
@@ -741,7 +734,6 @@ export class TaskLedger {
   recordSkillEvent(event: Omit<SkillLifecycleEvent, 'createdAt'>): void {
     const events = this.data.skillEvents ?? [];
     events.push({ ...event, createdAt: nowIso() });
-    if (events.length > 200) events.splice(0, events.length - 200);
     this.data.skillEvents = events;
     this.save();
   }
@@ -750,7 +742,6 @@ export class TaskLedger {
   recordPrerequisiteRecovery(event: Omit<PrerequisiteRecoveryRecord, 'createdAt'>): void {
     const records = this.data.prerequisiteRecoveries ?? [];
     records.push({ ...event, createdAt: nowIso() });
-    if (records.length > 120) records.splice(0, records.length - 120);
     this.data.prerequisiteRecoveries = records;
     this.save();
   }

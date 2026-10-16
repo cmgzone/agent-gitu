@@ -33,6 +33,47 @@ function composerChecklist(ledger: unknown) {
 }
 
 describe('single Agent composer', () => {
+  it('sends the selected effort when continuing an existing task', () => {
+    let sent: { url: string; body: { effort?: string } } | undefined;
+    const context = createContext({
+      S: { active: 'run-1', sessions: { 'run-1': { session: { status: 'completed', mode: 'agent', provider: 'chatgpt', model: 'model' } } }, sel: { model: 'chatgpt::model', effort: 'max' }, settings: {} },
+      $: () => null,
+      removeUserBubble() {}, renderRunSide() {}, pendingFor: () => [], planRequested: () => false,
+      appendPendingUserMessage: () => 'pending', updateSendState() {},
+      api: (url: string, options: { body: string }) => {
+        sent = { url, body: JSON.parse(options.body) };
+        return new Promise(() => {});
+      },
+    });
+    new Script(UI_HTML.slice(UI_HTML.indexOf('  function sendFollow('), UI_HTML.indexOf('  function appendPendingUserMessage('))).runInContext(context);
+    context.sendFollow('Continue');
+    expect(sent?.url).toBe('/api/runs/run-1/message');
+    expect(sent?.body.effort).toBe('max');
+  });
+
+  it('shows recorded native effort and keeps the next-turn selection separate from legacy planner metadata', () => {
+    const ledger = { actions: [], plan: [], evidence: [], filesChanged: [], checkpoints: [], execution: { mode: 'codex-native', native: {} as Record<string, string> }, effortPlan: { llmEffort: 'low' } };
+    const body = { innerHTML: '' }, card = { hidden: false, scrollTop: 0 }, details = { open: false };
+    const context = createContext({
+      S: { sessions: { 'run-1': { session: {}, ledger } }, sel: { effort: 'max' } },
+      $: (id: string) => ({ contextCardBody: body, contextCard: card, contextRunDetails: details })[id as 'contextCardBody'],
+      renderContextRing() {}, esc: (value: unknown) => String(value ?? ''), shortDate: String,
+    });
+    new Script(UI_HTML.slice(UI_HTML.indexOf('  function renderContextCard('), UI_HTML.indexOf('  function openSettings('))).runInContext(context);
+    context.renderContextCard('run-1');
+    expect(body.innerHTML).not.toContain('low (run)');
+    expect(body.innerHTML).toContain('Not recorded for this turn');
+    expect(body.innerHTML).toContain('Selected for next turn');
+    ledger.execution.native = { requestedEffort: 'max', effectiveEffort: 'high' };
+    context.renderContextCard('run-1');
+    expect(body.innerHTML).toContain('high (run)');
+    expect(body.innerHTML).toContain('Requested effort');
+    ledger.execution.native.effectiveEffort = 'max';
+    context.renderContextCard('run-1');
+    expect(body.innerHTML).toContain('max (run)');
+    expect(body.innerHTML).not.toContain('Selected for next turn');
+  });
+
   it('uses one workflow for start, follow-up, and recovery, without a saved mode picker', () => {
     expect(UI_HTML).not.toContain('id="wf"');
     expect(UI_HTML).not.toContain('id="gWf"');
@@ -130,7 +171,7 @@ describe('single Agent composer', () => {
     expect(harness.panel.open).toBe(false);
   });
 
-  it('keeps mixed steps and subtasks in plan order and hides the row when there is no plan', () => {
+  it('keeps plan order and explains an empty checklist without inventing progress', () => {
     const { context, panel, state } = composerChecklist({ plan: [
       { description: 'Prepare', status: 'done' },
       { description: 'Implement', status: 'pending', subtasks: ['First subtask', 'Second subtask'] },
@@ -144,8 +185,18 @@ describe('single Agent composer', () => {
 
     state.sessions['run-1'].ledger = { plan: [] };
     context.renderComposerTodos('run-1');
+    expect(panel.hidden).toBe(false);
+    expect(panel.innerHTML).toContain('No checklist yet');
+    expect(panel.innerHTML).toContain('has not saved');
+    expect(panel.innerHTML).not.toContain('done');
+    state.sessions['run-1'].ledger = null;
+    context.renderComposerTodos('run-1');
     expect(panel.hidden).toBe(true);
-    expect(panel.innerHTML).toBe('');
+    state.sessions['run-1'].ledger = { plan: [{ description: 'Implement search', status: 'pending' }] };
+    context.renderComposerTodos('run-1');
+    expect(panel.hidden).toBe(false);
+    expect(panel.innerHTML).toContain('0/1 done');
+    expect(panel.innerHTML).not.toContain('No checklist yet');
   });
 
   it('restores unified sessions while preserving older chat and build history', () => {

@@ -62,7 +62,7 @@ describe('CoworkStore', () => {
     const store = new CoworkStore(file);
     const agent = store.saveAgent(makeAgentInput('media-owner'));
     const conv = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
-    expect(MAX_ARTIFACT_BYTES).toBe(20_000_000);
+    expect(MAX_ARTIFACT_BYTES).toBe(Infinity);
     const bytes = Buffer.alloc(3_000_000, 7);
     const artifact = store.addArtifact({ conversationId: conv.id, name: 'clip.mp4', mime: 'video/mp4', dataBase64: bytes.toString('base64') });
     expect(artifact.size).toBe(3_000_000);
@@ -231,7 +231,7 @@ describe('CoworkStore', () => {
     expect(after.chiefId).toBeUndefined();
   });
 
-  it('caps the stored transcript instead of growing forever', () => {
+  it('preserves the complete stored transcript across later messages', () => {
     const file = path.join(tempHome('cap'), 'cowork.json');
     const seed = new CoworkStore(file);
     const agent = seed.saveAgent(makeAgentInput('cap'));
@@ -242,7 +242,7 @@ describe('CoworkStore', () => {
     const store = new CoworkStore(file);
     expect(store.messages(conv.id)).toHaveLength(2_050);
     store.appendMessage(conv.id, { role: 'user', text: 'one more', via: 'web' });
-    expect(store.messages(conv.id).length).toBeLessThanOrEqual(2_000);
+    expect(store.messages(conv.id)).toHaveLength(2_051);
     expect(store.messages(conv.id).at(-1)!.text).toBe('one more');
     void readFileSync;
   });
@@ -479,7 +479,7 @@ describe('cowork runner', () => {
       }),
       append: (m) => store.appendMessage(conv.id, m),
     });
-    expect(maxActiveWorkers).toBe(4);
+    expect(maxActiveWorkers).toBe(6);
     expect(startedWorkers).toBe(6);
     const replies = result.messages.map((message) => message.agentName);
     expect(replies[0]).toBe('wave-chief');

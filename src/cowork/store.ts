@@ -515,6 +515,8 @@ export interface CoworkBudgetData {
 }
 
 export interface CoworkData {
+  /** Native Codex session ownership; task data, never credentials. */
+  nativeCodexSessions?: Record<string, CoworkNativeSession>;
   agents: CoworkAgent[];
   conversations: CoworkConversation[];
   /** Messages are keyed by conversation id to keep the document navigable. */
@@ -562,6 +564,16 @@ export interface CoworkContextCheckpoint {
   throughSeq: number;
   summary: string;
   updatedAt: string;
+}
+
+export interface CoworkNativeSession {
+  conversationId: string;
+  agentId: string;
+  threadId: string;
+  cwd: string;
+  turnId?: string;
+  historyKeys: string[];
+  admittedCalls: string[];
 }
 
 export const EMPTY_COWORK_DATA: CoworkData = { agents: [], conversations: [], messages: {}, messageTombstones: {}, missions: [], subAgents: [], followUps: [], inbox: [], artifacts: [], todos: [], requests: [], workLog: [], widgets: [] };
@@ -614,26 +626,26 @@ function emptyCoworkData(): CoworkData {
   return structuredClone(EMPTY_COWORK_DATA);
 }
 
-const MAX_MESSAGES_PER_CONVERSATION = 2_000;
+const MAX_MESSAGES_PER_CONVERSATION = Infinity;
 const MESSAGE_STATUSES = new Set<CoworkMessageStatus>(['sending', 'sent', 'failed', 'retrying']);
 /** A message may cite a bounded set of prior messages and address a bounded
  *  set of teammates; the limits keep one message from flooding the prompt. */
-const MAX_REFERENCED_MESSAGES = 8;
-const MAX_MENTIONED_AGENTS = 12;
+const MAX_REFERENCED_MESSAGES = Infinity;
+const MAX_MENTIONED_AGENTS = Infinity;
 
 /** Legacy JSON control payload / Telegram download bound. Binary web uploads
  * use the owner's file policy instead. Kept for existing channel callers. */
-export const MAX_ARTIFACT_BYTES = 20_000_000;
+export const MAX_ARTIFACT_BYTES = Infinity;
 
 /** Trim + cap credential request metadata; undefined when unusable. Secrets never pass through here. */
 function sanitizeCredentialMeta(input: CoworkRequestCredential | undefined): CoworkRequestCredential | undefined {
-  const providerHint = String(input?.providerHint ?? '').trim().slice(0, 60);
+  const providerHint = String(input?.providerHint ?? '').trim();
   if (!providerHint) return undefined;
-  const connectionId = String(input?.connectionId ?? '').trim().slice(0, 80) || undefined;
-  const baseUrl = String(input?.baseUrl ?? '').trim().slice(0, 300) || undefined;
+  const connectionId = String(input?.connectionId ?? '').trim() || undefined;
+  const baseUrl = String(input?.baseUrl ?? '').trim() || undefined;
   if (!connectionId && !baseUrl) return undefined;
-  const label = String(input?.label ?? '').trim().slice(0, 80) || undefined;
-  const validationPath = String(input?.validationPath ?? '').trim().slice(0, 200) || undefined;
+  const label = String(input?.label ?? '').trim() || undefined;
+  const validationPath = String(input?.validationPath ?? '').trim() || undefined;
   return { providerHint, ...(label ? { label } : {}), ...(baseUrl ? { baseUrl } : {}), ...(validationPath ? { validationPath } : {}), ...(connectionId ? { connectionId } : {}) };
 }
 
@@ -669,6 +681,7 @@ export class CoworkStore {
       if (this.options?.companyId && Array.isArray(parsed.agents) && parsed.agents.some(a => a.companyId && a.companyId !== this.options!.companyId))
         throw new CoworkScopeError('Saved roster belongs to another company. Restore the correct scoped snapshot before continuing.');
       this.data = {
+        nativeCodexSessions: parsed.nativeCodexSessions && typeof parsed.nativeCodexSessions === 'object' && !Array.isArray(parsed.nativeCodexSessions) ? parsed.nativeCodexSessions : {},
         agents: Array.isArray(parsed.agents) ? parsed.agents : [],
         conversations: Array.isArray(parsed.conversations) ? parsed.conversations : [],
         messages: parsed.messages && typeof parsed.messages === 'object' ? parsed.messages : {},
@@ -692,7 +705,7 @@ export class CoworkStore {
         workLog: Array.isArray(parsed.workLog) ? parsed.workLog : [],
         widgets: Array.isArray(parsed.widgets) ? parsed.widgets.map(sanitizeWidget).filter((widget): widget is CoworkWidget => Boolean(widget)) : [],
         budgets: sanitizeBudgets(parsed.budgets),
-        contextCheckpoints: Array.isArray(parsed.contextCheckpoints) ? parsed.contextCheckpoints.filter(entry => entry && typeof entry.conversationId === 'string' && typeof entry.agentId === 'string' && Number.isSafeInteger(entry.throughSeq) && entry.throughSeq > 0 && typeof entry.summary === 'string').map(entry => ({ ...entry, summary: entry.summary.slice(0, 8_000) })) : [],
+        contextCheckpoints: Array.isArray(parsed.contextCheckpoints) ? parsed.contextCheckpoints.filter(entry => entry && typeof entry.conversationId === 'string' && typeof entry.agentId === 'string' && Number.isSafeInteger(entry.throughSeq) && entry.throughSeq > 0 && typeof entry.summary === 'string').map(entry => ({ ...entry, summary: entry.summary })) : [],
         appReviewState: parsed.appReviewState && typeof parsed.appReviewState === 'object' && !Array.isArray(parsed.appReviewState) ? parsed.appReviewState : {},
       };
       // Repair older documents: conversations gain well-formed folders/threads.
@@ -796,7 +809,7 @@ export class CoworkStore {
 
   saveAgent(input: Partial<Omit<CoworkAgent, 'avatar'>> & { name: string; systemPrompt: string; avatar?: unknown }): CoworkAgent {
     const data = this.load();
-    const name = input.name.trim().slice(0, 60);
+    const name = input.name.trim();
     if (!name) throw new Error('Agent name is required');
     if (!input.systemPrompt.trim()) throw new Error('Agent instructions are required');
     const existing = input.id ? data.agents.find((a) => a.id === input.id) : undefined;
@@ -808,8 +821,8 @@ export class CoworkStore {
       name,
       ...sanitizeAgentProfile(input, existing),
       avatar: sanitizeAvatar(input.avatar, existing?.avatar),
-      tagline: (input.tagline ?? existing?.tagline ?? '').trim().slice(0, 120),
-      systemPrompt: input.systemPrompt.trim().slice(0, 8_000),
+      tagline: (input.tagline ?? existing?.tagline ?? '').trim(),
+      systemPrompt: input.systemPrompt.trim(),
       provider: input.provider === undefined ? existing?.provider : input.provider.trim() || undefined,
       model: input.model === undefined ? existing?.model : input.model.trim() || undefined,
       effort: input.effort ?? existing?.effort,
@@ -873,6 +886,7 @@ export class CoworkStore {
     data.appConnections = data.appConnections?.filter(connection => connection.agentId !== id);
     data.workLog = data.workLog.filter((entry) => entry.agentId !== id && conversationIds.has(entry.conversationId));
     data.contextCheckpoints = data.contextCheckpoints?.filter(entry => entry.agentId !== id && conversationIds.has(entry.conversationId));
+    data.nativeCodexSessions = Object.fromEntries(Object.entries(data.nativeCodexSessions ?? {}).filter(([, session]) => session.agentId !== id && conversationIds.has(session.conversationId)));
     data.artifacts = data.artifacts.filter((artifact) => conversationIds.has(artifact.conversationId));
     data.budgets = pruneBudgets(data.budgets, conversationIds, new Set(data.missions.map((mission) => mission.id)));
     this.save(true);
@@ -905,7 +919,7 @@ export class CoworkStore {
     if (input.kind === 'group' && memberIds.length < 2) throw new Error('A group chat needs at least two team members');
     const existing = input.id ? data.conversations.find((c) => c.id === input.id) : undefined;
     const now = new Date().toISOString();
-    const title = (input.title ?? existing?.title ?? '').trim().slice(0, 120);
+    const title = (input.title ?? existing?.title ?? '').trim();
     const conv: CoworkConversation = {
       id: existing?.id ?? `cc-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4)}`,
       kind: input.kind,
@@ -937,7 +951,7 @@ export class CoworkStore {
       existing.memberIds = memberIds;
       if (existing.chiefId && !memberIds.includes(existing.chiefId)) delete existing.chiefId;
     }
-    if (patch.title !== undefined) existing.title = patch.title.trim().slice(0, 120) || existing.title;
+    if (patch.title !== undefined) existing.title = patch.title.trim() || existing.title;
     if (patch.chiefId !== undefined) {
       if (patch.chiefId && existing.memberIds.includes(patch.chiefId)) existing.chiefId = patch.chiefId;
       else if (!patch.chiefId) delete existing.chiefId;
@@ -978,10 +992,10 @@ export class CoworkStore {
     const folderPath = path.resolve(requestedPath);
     const existing = (conversation.folders ?? []).find((tag) => path.resolve(tag.path).toLowerCase() === folderPath.toLowerCase());
     if (existing) return existing;
-    const label = (input.label ?? '').trim().slice(0, 80) || path.basename(folderPath) || folderPath;
+    const label = (input.label ?? '').trim() || path.basename(folderPath) || folderPath;
     const tag: CoworkFolderTag = {
       id: `cfd-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e5)}`,
-      path: folderPath.slice(0, 500),
+      path: folderPath,
       label,
       agentId: input.agentId,
       createdAt: new Date().toISOString(),
@@ -1019,14 +1033,14 @@ export class CoworkStore {
     const conversation = data.conversations.find((candidate) => candidate.id === input.conversationId);
     if (!conversation) throw new Error('Conversation not found');
     if (input.createdByAgentId && !data.agents.some((agent) => agent.id === input.createdByAgentId)) throw new Error('Thread author not found');
-    const title = String(input.title ?? '').trim().slice(0, 120);
+    const title = String(input.title ?? '').trim();
     if (!title) throw new Error('Thread title is required');
     const duplicate = (conversation.threads ?? []).find((thread) => taskKey(thread.title) === taskKey(title));
     if (duplicate) return duplicate;
     const thread: CoworkThread = {
       id: `cth-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e5)}`,
       title,
-      topic: typeof input.topic === 'string' && input.topic.trim() ? input.topic.trim().slice(0, 1_000) : undefined,
+      topic: typeof input.topic === 'string' && input.topic.trim() ? input.topic.trim() : undefined,
       createdByAgentId: input.createdByAgentId,
       createdAt: new Date().toISOString(),
     };
@@ -1041,10 +1055,10 @@ export class CoworkStore {
     const thread = conversation?.threads?.find((candidate) => candidate.id === threadId);
     if (!conversation || !thread) return undefined;
     if (patch.title !== undefined) {
-      const title = patch.title.trim().slice(0, 120);
+      const title = patch.title.trim();
       if (title) thread.title = title;
     }
-    if (patch.topic !== undefined) thread.topic = patch.topic.trim().slice(0, 1_000) || undefined;
+    if (patch.topic !== undefined) thread.topic = patch.topic.trim() || undefined;
     conversation.updatedAt = new Date().toISOString();
     this.save(true);
     return thread;
@@ -1089,6 +1103,7 @@ export class CoworkStore {
     if (!data.conversations.some((c) => c.id === id)) return false;
     data.conversations = data.conversations.filter((c) => c.id !== id);
     delete data.messages[id];
+    data.nativeCodexSessions = Object.fromEntries(Object.entries(data.nativeCodexSessions ?? {}).filter(([, session]) => session.conversationId !== id));
     data.contextCheckpoints = data.contextCheckpoints?.filter(entry => entry.conversationId !== id);
     data.missions = data.missions.filter((mission) => mission.conversationId !== id);
     data.subAgents = data.subAgents.filter((instance) => instance.conversationId !== id);
@@ -1129,7 +1144,7 @@ export class CoworkStore {
   searchMessages(query: string, opts: { limit?: number; conversationId?: string } = {}): { conversationId: string; conversationTitle: string; seq: number; id: string; role: string; agentName?: string; ts: string; snippet: string }[] {
     const terms = query.toLowerCase().split(/\s+/).map((t) => t.trim()).filter(Boolean);
     if (terms.length === 0) return [];
-    const limit = Math.min(50, Math.max(1, opts.limit ?? 12));
+    const limit = Math.max(1, opts.limit ?? Infinity);
     const conversations = this.load().conversations
       .filter((c) => !opts.conversationId || c.id === opts.conversationId);
     const hits: { conversationId: string; conversationTitle: string; seq: number; id: string; role: string; agentName?: string; sortTs: number; ts: string; text: string }[] = [];
@@ -1200,7 +1215,7 @@ export class CoworkStore {
     const message = list.find((entry) => entry.id === messageId);
     if (!message) return undefined;
     if (patch.text !== undefined) {
-      const text = patch.text.trim().slice(0, 20_000);
+      const text = patch.text.trim();
       if (!text) throw new Error('text is required');
       message.text = text;
     }
@@ -1301,7 +1316,7 @@ export class CoworkStore {
   saveUserProfile(patch: CoworkUserProfile): CoworkUserProfile {
     const data = this.load();
     const clean = (value: unknown, max: number): string | undefined =>
-      typeof value === 'string' && value.trim() ? value.trim().slice(0, max) : undefined;
+      typeof value === 'string' && value.trim() ? value.trim() : undefined;
     data.userProfile = {
       name: clean(patch.name, 80),
       about: clean(patch.about, 2_000),
@@ -1334,13 +1349,13 @@ export class CoworkStore {
       id: `cm-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4)}`,
       conversationId: input.conversationId,
       agentId: input.agentId,
-      goal: goal.slice(0, 2_000),
-      criteria: (Array.isArray(input.criteria) ? input.criteria.map((c) => String(c).trim()).filter(Boolean) : []).slice(0, 12),
+      goal: goal,
+      criteria: (Array.isArray(input.criteria) ? input.criteria.map((c) => String(c).trim()).filter(Boolean) : []),
       status: 'running',
       progress: '',
       guidance: [],
       turns: 0,
-      maxTurns: Math.max(1, Math.min(this.options?.missionSessions?.()??50, Math.floor(input.maxTurns ?? this.options?.missionSessions?.()??12))),
+      maxTurns: Math.max(1, Math.min(this.options?.missionSessions?.() ?? Number.MAX_SAFE_INTEGER, Math.floor(input.maxTurns ?? this.options?.missionSessions?.() ?? Number.MAX_SAFE_INTEGER))),
       // Absent means "draw from the conversation pool without its own ceiling",
       // not "unlimited": the pool the mission draws from is finite either way.
       budget:
@@ -1428,14 +1443,14 @@ export class CoworkStore {
       ...(input.missionId !== undefined ? { missionId: input.missionId } : {}),
       parentAgentId: input.parentAgentId,
       rootAgentId: input.rootAgentId,
-      spawnedBy: { agentId: input.spawnedBy.agentId, reason: reason.slice(0, 500), ...(input.spawnedBy.requestId ? { requestId: input.spawnedBy.requestId } : {}) },
+      spawnedBy: { agentId: input.spawnedBy.agentId, reason: reason, ...(input.spawnedBy.requestId ? { requestId: input.spawnedBy.requestId } : {}) },
       depth: input.depth,
       maxDepth: input.maxDepth,
       ...(input.grantedBudget !== undefined ? { grantedBudget: input.grantedBudget } : {}),
       permissions: { ...input.permissions },
       skills: [...new Set(input.skills.map((skill) => String(skill).trim()).filter(Boolean))],
-      role: role.slice(0, 120),
-      objective: objective.slice(0, 2_000),
+      role: role,
+      objective: objective,
       ...(input.maxRuntimeMinutes !== undefined ? { maxRuntimeMinutes: input.maxRuntimeMinutes } : {}),
       status: 'starting',
       createdAt: new Date().toISOString(),
@@ -1460,13 +1475,13 @@ export class CoworkStore {
     const state = this.load().appReviewState?.[agentId];
     return {
       checkedAt: typeof state?.checkedAt === 'string' && Number.isFinite(Date.parse(state.checkedAt)) ? state.checkedAt : '',
-      findings: Array.isArray(state?.findings) ? state.findings.filter(item => item && typeof item.key === 'string' && typeof item.fingerprint === 'string' && typeof item.widgetId === 'string').slice(-100) : [],
+      findings: Array.isArray(state?.findings) ? state.findings.filter(item => item && typeof item.key === 'string' && typeof item.fingerprint === 'string' && typeof item.widgetId === 'string') : [],
     };
   }
 
   saveAppReviewState(agentId: string, state: { checkedAt: string; findings: { key: string; fingerprint: string; widgetId: string }[] }): void {
     if (!this.getAgent(agentId)) return;
-    (this.load().appReviewState ??= {})[agentId] = { checkedAt: state.checkedAt, findings: state.findings.slice(-100) };
+    (this.load().appReviewState ??= {})[agentId] = { checkedAt: state.checkedAt, findings: [...state.findings] };
     this.save();
   }
 
@@ -1477,13 +1492,13 @@ export class CoworkStore {
     const note = input.note.trim();
     if (!note) throw new Error('Follow-up note is required');
     if (!Number.isFinite(Date.parse(input.dueAt))) throw new Error('Follow-up due date is invalid');
-    const existing = data.followUps.find((item) => item.conversationId === input.conversationId && item.agentId === input.agentId && taskKey(item.note) === taskKey(note.slice(0, 1_000)));
+    const existing = data.followUps.find((item) => item.conversationId === input.conversationId && item.agentId === input.agentId && taskKey(item.note) === taskKey(note));
     if (existing) return existing;
     const followUp: CoworkFollowUp = {
       id: `cf-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4)}`,
       conversationId: input.conversationId,
       agentId: input.agentId,
-      note: note.slice(0, 1_000),
+      note: note,
       dueAt: input.dueAt,
       createdAt: new Date().toISOString(),
     };
@@ -1518,14 +1533,14 @@ export class CoworkStore {
     if (!data.conversations.some((conversation) => conversation.id === input.conversationId)) throw new Error('Unknown inbox conversation');
     const text = input.text.trim();
     if (!text) throw new Error('Inbox message is required');
-    const existing = data.inbox.find((item) => !item.deliveredAt && item.fromAgentId === input.fromAgentId && item.toAgentId === input.toAgentId && item.conversationId === input.conversationId && taskKey(item.text) === taskKey(text.slice(0, 4_000)));
+    const existing = data.inbox.find((item) => !item.deliveredAt && item.fromAgentId === input.fromAgentId && item.toAgentId === input.toAgentId && item.conversationId === input.conversationId && taskKey(item.text) === taskKey(text));
     if (existing) return existing;
     const message: CoworkInboxMessage = {
       id: `ci-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4)}`,
       fromAgentId: input.fromAgentId,
       toAgentId: input.toAgentId,
       conversationId: input.conversationId,
-      text: text.slice(0, 4_000),
+      text: text,
       createdAt: new Date().toISOString(),
     };
     data.inbox.push(message);
@@ -1647,7 +1662,7 @@ export class CoworkStore {
     if (!conversation) throw new Error('Widget conversation not found');
     if (input.createdByAgentId && !data.agents.some((agent) => agent.id === input.createdByAgentId)) throw new Error('Widget author not found');
     if (input.createdByAgentId && !conversation.memberIds.includes(input.createdByAgentId)) throw new Error('Widget author is not in this conversation');
-    const title = String(input.title ?? '').trim().slice(0, 120);
+    const title = String(input.title ?? '').trim();
     if (!title) throw new Error('Widget title is required');
     const kind: CoworkWidgetKind = COWORK_WIDGET_KINDS.includes(input.kind) ? input.kind : 'text';
     const existing = data.widgets.find((widget) => widget.conversationId === input.conversationId && (input.id ? widget.id === input.id : !input.createNew && taskKey(widget.title) === taskKey(title)));
@@ -1729,12 +1744,12 @@ export class CoworkStore {
     const data = this.load();
     const conversation = data.conversations.find((candidate) => candidate.id === input.conversationId);
     if (!conversation?.memberIds.includes(input.agentId)) throw new Error('Todo owner is not in this conversation');
-    const text = input.text.trim().slice(0, 500);
+    const text = input.text.trim();
     if (!text) throw new Error('Todo text is required');
     const existing = data.todos.find((todo) => todo.conversationId === input.conversationId && todo.agentId === input.agentId && taskKey(todo.text) === taskKey(text));
     if (existing) return existing;
     const now = new Date().toISOString();
-    const todo: CoworkTodo = { id: `ct-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e5)}`, conversationId: input.conversationId, agentId: input.agentId, text: text.slice(0, 500), status: 'pending', createdAt: now, updatedAt: now };
+    const todo: CoworkTodo = { id: `ct-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e5)}`, conversationId: input.conversationId, agentId: input.agentId, text: text, status: 'pending', createdAt: now, updatedAt: now };
     data.todos.push(todo);
     this.save();
     return todo;
@@ -1744,7 +1759,7 @@ export class CoworkStore {
     const todo = this.load().todos.find((candidate) => candidate.id === id && candidate.agentId === agentId);
     if (!todo) return undefined;
     if (patch.status) todo.status = patch.status;
-    if (patch.note !== undefined) todo.note = patch.note.trim().slice(0, 500) || undefined;
+    if (patch.note !== undefined) todo.note = patch.note.trim() || undefined;
     todo.updatedAt = new Date().toISOString();
     this.save();
     return todo;
@@ -1761,10 +1776,7 @@ export class CoworkStore {
 
   recordWork(input: Omit<CoworkWorkEntry, 'ts'>): void {
     const data = this.load();
-    data.workLog.push({ ...input, output: input.output.slice(0, 3_000), ts: new Date().toISOString() });
-    const own = data.workLog.filter((entry) => entry.conversationId === input.conversationId && entry.agentId === input.agentId);
-    const expired = new Set(own.slice(0, -40));
-    data.workLog = data.workLog.filter((entry) => !expired.has(entry));
+    data.workLog.push({ ...input, output: input.output, ts: new Date().toISOString() });
     this.save();
   }
 
@@ -1773,12 +1785,22 @@ export class CoworkStore {
   }
 
   workHistory(conversationId: string, threadId: string | null = null): CoworkWorkEntry[] {
-    return this.load().workLog.filter((entry) => entry.conversationId === conversationId && (entry.threadId ?? null) === threadId).slice(-200);
+    return this.load().workLog.filter((entry) => entry.conversationId === conversationId && (entry.threadId ?? null) === threadId);
   }
 
   contextCheckpoint(conversationId: string, agentId: string, threadId?: string): CoworkContextCheckpoint | undefined {
     const entry = this.load().contextCheckpoints?.find(item => item.conversationId === conversationId && item.agentId === agentId && item.threadId === threadId);
     return entry ? { ...entry } : undefined;
+  }
+
+  nativeCodexSession(key: string): CoworkNativeSession | undefined {
+    const session = this.load().nativeCodexSessions?.[key];
+    return session && typeof session.threadId === 'string' && typeof session.cwd === 'string' && Array.isArray(session.admittedCalls) && Array.isArray(session.historyKeys) ? structuredClone(session) : undefined;
+  }
+
+  saveNativeCodexSession(key: string, session: CoworkNativeSession): void {
+    (this.load().nativeCodexSessions ??= {})[key] = structuredClone(session);
+    this.save();
   }
 
   saveContextCheckpoint(input: Omit<CoworkContextCheckpoint, 'updatedAt'>): void {
@@ -1787,7 +1809,7 @@ export class CoworkStore {
     const entries = data.contextCheckpoints ??= [];
     const index = entries.findIndex(item => item.conversationId === input.conversationId && item.agentId === input.agentId && item.threadId === input.threadId);
     if (index >= 0 && entries[index]!.throughSeq > input.throughSeq) return;
-    const entry = { ...input, summary: input.summary.slice(0, 8_000), updatedAt: new Date().toISOString() };
+    const entry = { ...input, summary: input.summary, updatedAt: new Date().toISOString() };
     if (index >= 0) entries[index] = entry;
     else entries.push(entry);
     this.save();
@@ -1825,11 +1847,11 @@ export class CoworkStore {
       conversationId: input.conversationId,
       agentId: input.agentId,
       kind: input.kind,
-      title: title.slice(0, 180),
-      detail: detail.slice(0, 2_000),
+      title: title,
+      detail: detail,
       appAction,
       appConnection: input.appConnection,
-      options: [...new Set((input.options ?? []).map((option) => String(option).trim()).filter(Boolean))].slice(0, 6),
+      options: [...new Set((input.options ?? []).map((option) => String(option).trim()).filter(Boolean))],
       permission: input.permission,
       credential,
       desktopHandoff: input.kind === 'question' && input.desktopHandoff === true ? true : undefined,
@@ -1880,7 +1902,7 @@ export class CoworkStore {
     }
     let logo: string | undefined;
     try { const url = new URL(suggestion.logo ?? ''); if (url.protocol === 'https:' && !url.username && !url.password) logo = url.href; } catch { /* use the built-in icon */ }
-    const appConnection = { service: suggestion.service, name: suggestion.name.slice(0, 80), reason: suggestion.reason.slice(0, 600), logo, resumeWork: suggestion.resumeWork === true };
+    const appConnection = { service: suggestion.service, name: suggestion.name, reason: suggestion.reason, logo, resumeWork: suggestion.resumeWork === true };
     return this.addRequest({ conversationId, agentId, kind: 'recommendation', title: `Connect ${appConnection.name}`, detail: appConnection.reason, appConnection });
   }
 
@@ -1935,7 +1957,7 @@ export class CoworkStore {
     const request = this.getRequest(id);
     if (!request || request.status !== 'open') return undefined;
     request.status = status;
-    request.response = response?.trim().slice(0, 2_000) || undefined;
+    request.response = response?.trim() || undefined;
     request.resolvedAt = new Date().toISOString();
     this.save();
     return request;
@@ -2014,11 +2036,11 @@ export class CoworkStore {
 
 function sanitizeNames(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
-  return [...new Set(value.map((v) => String(v).trim()).filter(Boolean))].slice(0, 24);
+  return [...new Set(value.map((v) => String(v).trim()).filter(Boolean))];
 }
 
 function safeArtifactName(value: string): string {
-  return (path.basename(String(value || 'file')).replace(/[\x00-\x1f<>:"/\\|?*]+/g, '-').trim() || 'file').slice(0, 160);
+  return (path.basename(String(value || 'file')).replace(/[\x00-\x1f<>:"/\\|?*]+/g, '-').trim() || 'file');
 }
 
 function artifactMime(name: string, supplied?: string): string {
@@ -2074,8 +2096,8 @@ function sanitizeSchedule(value: unknown): CoworkSchedule | undefined {
   const every = String(raw['every'] ?? '').trim();
   if (!goal || !every) return undefined;
   return {
-    every: every.slice(0, 40),
-    goal: goal.slice(0, 2_000),
+    every: every,
+    goal: goal,
     enabled: raw['enabled'] !== false,
     lastRunAt: typeof raw['lastRunAt'] === 'string' ? raw['lastRunAt'] : undefined,
   };
@@ -2086,7 +2108,7 @@ function randomId(prefix: string): string {
 }
 
 function cleanString(value: unknown, max: number): string {
-  return typeof value === 'string' ? value.trim().slice(0, max) : '';
+  return typeof value === 'string' ? value.trim() : '';
 }
 
 function sanitizeFolderTag(value: unknown): CoworkFolderTag | undefined {
@@ -2120,7 +2142,7 @@ function sanitizeWidgetData(kind: CoworkWidgetKind, value: unknown): Record<stri
   if (kind === 'app') return sanitizeWidgetApp(value);
   const raw = (value ?? {}) as Record<string, unknown>;
   if (kind === 'stats') {
-    const items = (Array.isArray(raw['items']) ? raw['items'] : []).slice(0, 100);
+    const items = (Array.isArray(raw['items']) ? raw['items'] : []);
     return {
       items: items
         .map((item) => {
@@ -2131,7 +2153,7 @@ function sanitizeWidgetData(kind: CoworkWidgetKind, value: unknown): Record<stri
     };
   }
   if (kind === 'list') {
-    const items = (Array.isArray(raw['items']) ? raw['items'] : []).slice(0, 200);
+    const items = (Array.isArray(raw['items']) ? raw['items'] : []);
     return {
       items: items
         .map((item) => {
@@ -2146,7 +2168,7 @@ function sanitizeWidgetData(kind: CoworkWidgetKind, value: unknown): Record<stri
     return { label: cleanString(raw['label'], 120), value: Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : 0 };
   }
   if (kind === 'links') {
-    const items = (Array.isArray(raw['items']) ? raw['items'] : []).slice(0, 100);
+    const items = (Array.isArray(raw['items']) ? raw['items'] : []);
     return {
       items: items
         .map((item) => {
@@ -2160,7 +2182,7 @@ function sanitizeWidgetData(kind: CoworkWidgetKind, value: unknown): Record<stri
     };
   }
   if (kind === 'rich') {
-    const items = (Array.isArray(raw['items']) ? raw['items'] : []).slice(0, 100).map((item) => {
+    const items = (Array.isArray(raw['items']) ? raw['items'] : []).map((item) => {
       const row = (item ?? {}) as Record<string, unknown>;
       const type = cleanString(row['type'], 16).toLowerCase();
       if (!['image', 'video', 'audio', 'file', 'link', 'map'].includes(type)) return null;
@@ -2194,11 +2216,11 @@ function sanitizeWidgetData(kind: CoworkWidgetKind, value: unknown): Record<stri
         ...(Number.isSafeInteger(size) && size >= 0 ? { size } : {}),
       };
     }).filter((item) => item !== null);
-    const stats = (Array.isArray(raw['stats']) ? raw['stats'] : []).slice(0, 50).map((item) => {
+    const stats = (Array.isArray(raw['stats']) ? raw['stats'] : []).map((item) => {
       const row = (item ?? {}) as Record<string, unknown>;
       return { label: cleanString(row['label'], 60), value: cleanString(row['value'], 120) };
     }).filter((row) => row.label);
-    const schedule = (Array.isArray(raw['schedule']) ? raw['schedule'] : []).slice(0, 100).map((item) => {
+    const schedule = (Array.isArray(raw['schedule']) ? raw['schedule'] : []).map((item) => {
       const row = (item ?? {}) as Record<string, unknown>;
       return { label: cleanString(row['label'], 120), when: cleanString(row['when'], 120), note: cleanString(row['note'], 300), url: sanitizeWidgetUrl(row['url']) };
     }).filter((row) => row.label);

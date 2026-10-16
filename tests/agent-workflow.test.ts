@@ -20,6 +20,8 @@ const edit = action({ type: 'tool_call', tool: 'write_file', params: { path: 'RE
 const verify = action({ type: 'tool_call', tool: 'run_command', params: { command: 'node check.cjs' }, reason: 'Check the corrected text', expected: 'Text matches the requested wording' });
 const done = action({ type: 'complete', summary: 'Corrected the wording and checked it.' });
 const reviewer: Reply = () => 'VERDICT: PASS\nFEEDBACK: The requested text is correct.';
+const editModule = action({ type: 'tool_call', tool: 'write_file', params: { path: 'greeting.cjs', content: 'module.exports = "Hello world";\n' }, reason: 'Update the greeting module', expected: 'Module written' });
+const verifyModule = action({ type: 'tool_call', tool: 'run_command', params: { command: 'node --check greeting.cjs' }, reason: 'Check the changed module', expected: 'Syntax passes' });
 function project() {
   const dir = mkdtempSync(path.join(tmpdir(), 'gitu-agent-workflow-'));
   writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'agent-workflow', scripts: { test: 'node check.cjs' } }));
@@ -29,6 +31,166 @@ function project() {
 }
 
 describe('unified Agent workflow', () => {
+  it('repairs descriptive verification through the shared runner without replacing locked requirements', async () => {
+    const dir = project(), guard = ProjectGuard.detect(dir);
+    const ledger = TaskLedger.create({ repoRoot: dir, goal: 'Correct the typo in README.md', project: guard.lock, mode: 'agent' });
+    ledger.setCriteriaFromSpecs([{ text: 'Greeting is correct', verification: 'Run focused checks and record outputs.', evidenceType: 'command_success' }]);
+    ledger.setPlan([{ description: 'Correct greeting', verification: 'node check.cjs' }]);
+    ledger.data.planApproved = true; ledger.save();
+    const result = await new Gitu({ cwd: dir, mode: 'agent', autoLearn: false, autoInstallLsp: false,
+      resume: { taskId: ledger.data.taskId, message: 'continue' },
+      llm: new ScriptedMockLlm([
+        action({ type: 'set_criteria', criteria: [{ text: 'Greeting is correct', verification: 'node check.cjs', evidenceType: 'command_success' }] }),
+        read, edit, verify,
+        (_call, messages) => {
+          const ids = messages.map(m => String(m.content)).join('\n').match(/ev-\d{8}-[0-9a-f]{6}/g) ?? [];
+          return JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: ids.at(-1) } });
+        }, done, reviewer,
+      ]),
+    }).run('continue');
+    expect(result.report.status).toBe('complete');
+    expect(result.ledger.data.acceptanceCriteria).toHaveLength(1);
+    expect(result.ledger.data.acceptanceCriteria[0]).toMatchObject({ text: 'Greeting is correct', verification: 'node check.cjs', verificationInstructions: 'Run focused checks and record outputs.', satisfied: true });
+  }, 30_000);
+
+  it('rehydrates complete source through repeated compaction before editing and verifying', async () => {
+    const dir = project();
+    const source = Array.from({ length: 80 }, (_, i) => i === 39 ? 'MIDDLE SOURCE CONTRACT: Helo world' : `Repository reference line ${i + 1} with implementation context`).join('\n');
+    writeFileSync(path.join(dir, 'README.md'), source);
+    const events: string[] = [];
+    const result = await new Gitu({ cwd: dir, mode: 'agent', autoLearn: false, autoInstallLsp: false,
+      compaction: { charBudget: 1000, triggerMessages: 4, keepRecent: 2 },
+      onEvent: event => events.push(event),
+      llm: new ScriptedMockLlm([read, read, read,
+        (_call, messages) => {
+          const observation = [...messages].reverse().find(m => String(m.content).startsWith('RESULT ['));
+          expect(String(observation?.content)).toContain('CACHED INVESTIGATION OBSERVATION');
+          expect(String(observation?.content)).toContain('40: MIDDLE SOURCE CONTRACT: Helo world');
+          return read(0, messages);
+        },
+        (_call, messages) => {
+          const observation = [...messages].reverse().find(m => String(m.content).startsWith('LOOP PREVENTION'));
+          expect(String(observation?.content)).toContain('UNCHANGED SOURCE ALREADY OBSERVED');
+          expect(String(observation?.content)).toContain('40: MIDDLE SOURCE CONTRACT: Helo world');
+          expect(String(observation?.content)).toContain('Editing tools remain available');
+          return edit(0, messages);
+        }, verify, done, reviewer,
+      ]),
+    }).run('Correct the typo in README.md');
+    expect(events.some(event => event.startsWith('context compacted'))).toBe(true);
+    expect(result.report.status).toBe('complete');
+    expect(readFileSync(path.join(dir, 'README.md'), 'utf8')).toBe('Hello world\n');
+  }, 60000);
+
+  it('restores an older task whose goal became a progress complaint, then edits and verifies it', async () => {
+    const dir = project();
+    const goal = 'Correct the typo in README.md';
+    const ledger = TaskLedger.create({ repoRoot: dir, goal, project: ProjectGuard.detect(dir).lock, mode: 'agent' });
+    ledger.ensureInitialWorkPhase();
+    for (const message of ['eddit is available', 'why you keep reapiting your self insteade of edditing', 'and fix the issue', 'continue with task']) {
+      ledger.setCurrentGoal(message);
+      ledger.recordFollowUp({ kind: 'REFINE', rawMessage: message, extractedGoalDelta: message, addedInstructions: [], supersededInstructions: [] });
+    }
+    ledger.setStatus('blocked');
+    let restoredState = '';
+    const result = await new Gitu({ cwd: dir, mode: 'agent', autoLearn: false, autoInstallLsp: false,
+      resume: { taskId: ledger.data.taskId, message: 'continue with task' },
+      llm: new ScriptedMockLlm([
+        (_call, messages) => { restoredState = String(messages.at(-1)?.content); return read(0, messages); },
+        edit, verify, done, reviewer,
+      ]),
+    }).run(goal);
+    expect(restoredState).toContain(`CURRENT USER INTENT:\n${goal}`);
+    expect(result.ledger.data.taskId).toBe(ledger.data.taskId);
+    expect(result.ledger.activeWorkPhase()?.goal).toBe(goal);
+    expect(result.report.status).toBe('complete');
+    expect(readFileSync(path.join(dir, 'README.md'), 'utf8')).toBe('Hello world\n');
+    expect(result.ledger.data.actions.some(a => a.tool === 'write_file' && a.status === 'success')).toBe(true);
+  }, 60000);
+
+  it.each([false, true])('keeps the editable source beyond a short preview (parallel=%s)', async parallel => {
+    const dir = project();
+    const source = Array.from({ length: 100 }, (_, i) => `// reference ${i} ${'padding '.repeat(8)}`).join('\n') + '\nexport const greeting = "Helo world";\n';
+    writeFileSync(path.join(dir, 'source.js'), source);
+    writeFileSync(path.join(dir, 'check.cjs'), "require('node:assert/strict').ok(require('node:fs').readFileSync('source.js', 'utf8').includes('Hello world'));\n");
+    const call = { tool: 'read_file', params: { path: 'source.js' }, reason: 'Read the editable greeting', expected: 'Exact current source' };
+    const result = await new Gitu({ cwd: dir, mode: 'agent', autoLearn: false, autoInstallLsp: false,
+      llm: new ScriptedMockLlm([
+        action(parallel ? { type: 'parallel', calls: [call, { ...call, params: { path: 'README.md' } }] } : { type: 'tool_call', ...call }),
+        (_call, messages) => {
+          const observation = [...messages].reverse().find(m => /^(?:RESULT \[|PARALLEL RESULTS:)/.test(String(m.content)));
+          expect(String(observation?.content)).toContain('export const greeting = "Helo world"');
+          return JSON.stringify({ action: { type: 'tool_call', tool: 'apply_edit', params: { path: 'source.js', oldString: 'Helo world', newString: 'Hello world' }, reason: 'Correct the observed greeting', expected: 'Correct greeting saved' } });
+        }, verify, done, reviewer,
+      ]),
+    }).run('Correct the greeting in source.js');
+    expect(result.report.status).toBe('complete');
+    expect(readFileSync(path.join(dir, 'source.js'), 'utf8')).toContain('Hello world');
+  }, 60000);
+
+  it('does not impose a fixed number of inspections before an edit', async () => {
+    const dir = project();
+    const inspections: Reply[] = [read];
+    for (let i = 0; i < 5; i++) {
+      writeFileSync(path.join(dir, `notes-${i}.txt`), `Existing reference ${i}`);
+      inspections.push(action({ type: 'tool_call', tool: 'read_file', params: { path: `notes-${i}.txt` }, reason: 'Inspect another reference', expected: 'Reference content' }));
+    }
+    const result = await new Gitu({ cwd: dir, mode: 'agent', autoLearn: false, autoInstallLsp: false,
+      llm: new ScriptedMockLlm([...inspections,
+        (_call, messages) => {
+          expect(String(messages.at(-1)?.content)).not.toContain('INVESTIGATION CHECKPOINT');
+          return edit(0, messages);
+        }, verify,
+        (_call, messages) => {
+          expect(String(messages.at(-1)?.content)).not.toContain('INVESTIGATION CHECKPOINT');
+          return done(0, messages);
+        }, reviewer,
+      ]),
+    }).run('Correct the typo in README.md');
+    expect(result.report.status).toBe('complete');
+    expect(result.ledger.data.actions.filter(a => a.tool === 'write_file' && a.status === 'success')).toHaveLength(1);
+  }, 60000);
+
+  it('requires fresh verification when an unfinished task is resumed after an external edit', async () => {
+    const dir = project();
+    let first: Gitu;
+    first = new Gitu({ cwd: dir, mode: 'agent', autoLearn: false, autoInstallLsp: false,
+      llm: new ScriptedMockLlm([
+        action({ type: 'set_criteria', criteria: [
+          { text: 'Corrected wording passes its check', verification: 'node check.cjs' },
+          { text: 'Delivery notes are also provided' },
+        ] }),
+        read, edit, verify,
+        (_call, messages) => {
+          const evidenceId = [...messages].reverse().map(m => /EVIDENCE RECORDED: (ev-\d{8}-[0-9a-f]{6}) \[PASS\]/.exec(String(m.content))?.[1]).find(Boolean);
+          return JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId } });
+        },
+        () => { first.stop(); return JSON.stringify({ action: { type: 'complete', summary: 'Paused before the remaining work.' } }); },
+      ]),
+    });
+    const paused = await first.run('Correct the typo in README.md and provide delivery notes');
+    expect(paused.ledger.data.acceptanceCriteria[0]?.satisfied).toBe(true);
+    expect(paused.report.status).not.toBe('complete');
+    writeFileSync(path.join(dir, 'README.md'), 'A different, incorrect greeting\n');
+    let staleRejected = false;
+    let resumed: Gitu;
+    resumed = new Gitu({ cwd: dir, mode: 'agent', autoLearn: false, autoInstallLsp: false,
+      resume: { taskId: paused.ledger.data.taskId, message: 'continue' },
+      llm: new ScriptedMockLlm([
+        done,
+        (_call, messages) => {
+          staleRejected = messages.some(m => String(m.content).includes('[STALE EVIDENCE]'));
+          resumed.stop();
+          return JSON.stringify({ action: { type: 'complete', summary: 'Paused for the regression check.' } });
+        },
+      ]),
+    });
+    const result = await resumed.run('Correct the typo in README.md and provide delivery notes');
+    expect(staleRejected).toBe(true);
+    expect(result.report.status).not.toBe('complete');
+    expect(result.ledger.data.taskId).toBe(paused.ledger.data.taskId);
+  }, 60000);
+
   it('resumes an unfinished task with the latest user direction even when the caller passes the original goal', async () => {
     const dir = project();
     const guard = ProjectGuard.detect(dir);
@@ -215,11 +377,11 @@ describe('unified Agent workflow', () => {
   it('tries a different verification path after repeated completion rejection', async () => {
     let recovery = false;
     const result = await new Gitu({ cwd: project(), mode: 'agent', autoLearn: false,
-      llm: new ScriptedMockLlm([read, edit, done, done, done,
-        (_call, messages) => { recovery = messages.some(m => String(m.content).includes('TRY AN ALTERNATIVE')); return verify(0, messages); },
+      llm: new ScriptedMockLlm([editModule, done, done, done,
+        (_call, messages) => { recovery = messages.some(m => String(m.content).includes('TRY AN ALTERNATIVE')); return verifyModule(0, messages); },
         done, reviewer,
       ]),
-    }).run('Correct the typo in README.md');
+    }).run('Update the greeting module');
     expect(recovery).toBe(true);
     expect(result.report.status).toBe('complete');
     expect(result.ledger.data.blockers).toEqual([]);
@@ -373,10 +535,10 @@ describe('unified Agent workflow', () => {
     expect(result.report.risks ?? []).not.toContain('Final UI state was never verified with a screenshot');
   }, 30000);
 
-  it('bounds repeated completion claims after recovery without falsely reporting a task dependency', async () => {
-    const result = await new Gitu({ cwd: project(), mode: 'agent', autoLearn: false,
-      llm: new ScriptedMockLlm([read, edit, done, done, done, done, done, done]),
-    }).run('Correct the typo in README.md');
+  it.each([false, true])('bounds repeated completion claims after recovery without falsely reporting a task dependency (persistent=%s)', async (persistent) => {
+    const result = await new Gitu({ cwd: project(), mode: 'agent', autoLearn: false, autonomy: { persistent },
+      llm: new ScriptedMockLlm([editModule, done, done, done, done, done, done]),
+    }).run('Update the greeting module');
     expect(result.report.status).toBe('failed');
     expect(result.ledger.data.status).toBe('failed');
     expect(result.ledger.data.blockers.join(' ')).toContain('alternative recovery prompt');
@@ -478,7 +640,7 @@ describe('unified Agent workflow', () => {
   });
 
   it('does not terminate on green evidence while contracted work is unresolved', async () => {
-    const result = await new Gitu({ cwd: project(), mode: 'agent', autoLearn: false,
+    const result = await new Gitu({ cwd: project(), mode: 'agent', autoLearn: false, autonomy: { persistent: false },
       llm: new ScriptedMockLlm([
         action({ type: 'set_plan', steps: [
           { description: 'Correct the README wording', verification: 'Read the corrected file', area: 'docs' },
@@ -642,12 +804,36 @@ describe('unified Agent workflow', () => {
 
   it('rejects an unverified edit even when the model calls it a chat reply', async () => {
     let rejected = false;
-    const result = await new Gitu({ cwd: project(), mode: 'agent', autoLearn: false,
-      llm: new ScriptedMockLlm([read, edit, action({ type: 'complete', chat: true, summary: 'Done' }), (_call, messages) => {
+    const root = project();
+    writeFileSync(path.join(root, 'greeting.cjs'), 'module.exports = "Hello";\n');
+    const runtimeEdit = action({ type: 'tool_call', tool: 'write_file', params: { path: 'greeting.cjs', content: 'module.exports = "Hello world";\n' }, reason: 'Update the greeting', expected: 'Greeting updated' });
+    const runtimeCheck = action({ type: 'tool_call', tool: 'run_command', params: { command: 'node --check greeting.cjs' }, reason: 'Check the changed module', expected: 'Syntax passes' });
+    const result = await new Gitu({ cwd: root, mode: 'agent', autoLearn: false,
+      llm: new ScriptedMockLlm([runtimeEdit, action({ type: 'complete', chat: true, summary: 'Done' }), (_call, messages) => {
         rejected = messages.some(m => typeof m.content === 'string' && m.content.includes('COMPLETION REJECTED'));
-        return verify(0, messages);
+        return runtimeCheck(0, messages);
       }, done, reviewer]),
-    }).run('Correct the typo in README.md');
+    }).run('Update the greeting module');
+    expect(rejected).toBe(true);
+    expect(result.report.status).toBe('complete');
+  }, 30000);
+
+  it('finishes a small documentation edit from persisted-write proof without a shell check', async () => {
+    const result = await new Gitu({ cwd: project(), mode: 'agent', autoLearn: false, llm: new ScriptedMockLlm([read, edit, done]) }).run('Correct the typo in README.md');
+    expect(result.report.status, result.ledger.data.blockers.join('; ')).toBe('complete');
+    expect(result.ledger.data.actions.some((record) => record.tool === 'run_command')).toBe(false);
+    expect(result.ledger.data.evidence.some((record) => record.kind === 'file' && record.passed)).toBe(true);
+  }, 30000);
+
+  it('withdraws persisted-write proof when a document changes externally before completion', async () => {
+    const root = project();
+    let rejected = false;
+    const result = await new Gitu({ cwd: root, mode: 'agent', autoLearn: false, llm: new ScriptedMockLlm([
+      read, edit,
+      (_call, messages) => { writeFileSync(path.join(root, 'README.md'), 'External change'); return done(0, messages); },
+      (_call, messages) => { rejected = messages.some((message) => String(message.content).includes('COMPLETION REJECTED')); return edit(0, messages); },
+      done,
+    ]) }).run('Correct the typo in README.md');
     expect(rejected).toBe(true);
     expect(result.report.status).toBe('complete');
   }, 30000);

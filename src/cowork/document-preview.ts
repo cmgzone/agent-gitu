@@ -50,10 +50,10 @@ function docxHtml(filePath: string): string {
 function xlsxHtml(filePath: string): string {
   const archive = unzip(filePath);
   const shared = archive['xl/sharedStrings.xml'] ? taggedText(strFromU8(archive['xl/sharedStrings.xml']!)) : [];
-  const sheets = Object.keys(archive).filter((name) => /^xl\/worksheets\/sheet\d+\.xml$/i.test(name)).sort().slice(0, 12);
+  const sheets = Object.keys(archive).filter((name) => /^xl\/worksheets\/sheet\d+\.xml$/i.test(name)).sort();
   return sheets.map((name, sheetIndex) => {
     const xml = strFromU8(archive[name]!);
-    const rows = [...xml.matchAll(/<row(?:\s[^>]*)?>([\s\S]*?)<\/row>/g)].slice(0, 500).map((row) => {
+    const rows = [...xml.matchAll(/<row(?:\s[^>]*)?>([\s\S]*?)<\/row>/g)].map((row) => {
       const cells = [...row[1]!.matchAll(/<c([^>]*)>([\s\S]*?)<\/c>/g)].map((cell) => {
         const attrs = cell[1]!;
         const body = cell[2]!;
@@ -69,7 +69,7 @@ function xlsxHtml(filePath: string): string {
 
 function pptxHtml(filePath: string): string {
   const archive = unzip(filePath);
-  const slides = Object.keys(archive).filter((name) => /^ppt\/slides\/slide\d+\.xml$/i.test(name)).sort((a, b) => Number(a.match(/\d+/)?.[0]) - Number(b.match(/\d+/)?.[0])).slice(0, 100);
+  const slides = Object.keys(archive).filter((name) => /^ppt\/slides\/slide\d+\.xml$/i.test(name)).sort((a, b) => Number(a.match(/\d+/)?.[0]) - Number(b.match(/\d+/)?.[0]));
   return slides.map((name, index) => {
     const lines = taggedText(strFromU8(archive[name]!));
     return `<section class="slide"><div class="slide-no">Slide ${index + 1}</div>${lines.map((line) => `<p>${esc(line)}</p>`).join('') || '<p class="empty">No readable text</p>'}</section>`;
@@ -77,7 +77,7 @@ function pptxHtml(filePath: string): string {
 }
 
 function textHtml(filePath: string): string {
-  return `<pre>${esc(readFileSync(filePath, 'utf8').slice(0, 2_000_000))}</pre>`;
+  return `<pre>${esc(readFileSync(filePath, 'utf8'))}</pre>`;
 }
 
 // Only generated Markdown markup is trusted. Raw HTML stays visible as text,

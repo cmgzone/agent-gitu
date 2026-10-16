@@ -74,7 +74,7 @@ export function safeFileName(input: string, fallback = 'file'): string {
     .basename(input || fallback)
     .replace(/[\x00-\x1f<>:"/\\|?*]+/g, '-')
     .trim();
-  return (base || fallback).slice(0, 180);
+  return base || fallback;
 }
 
 export function mimeForFile(name: string, supplied?: string): string {

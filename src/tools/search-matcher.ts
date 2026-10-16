@@ -46,11 +46,14 @@ export class SearchMatcher {
     if (this.signal?.aborted) return Promise.reject(new Error('search_files: cancelled.'));
     if (!this.worker) {
       this.worker = new Worker(`
-        const { parentPort } = require('node:worker_threads');
-        const match = (${matchText.toString()});
-        parentPort.on('message', request => {
-          try { parentPort.postMessage({ hits: match(request) }); }
-          catch (error) { parentPort.postMessage({ error: error.message }); }
+        // Dynamic import works in both CommonJS and module-mode workers.
+        // Eval workers inherit the host's --input-type setting.
+        import('node:worker_threads').then(({ parentPort }) => {
+          const match = (${matchText.toString()});
+          parentPort.on('message', request => {
+            try { parentPort.postMessage({ hits: match(request) }); }
+            catch (error) { parentPort.postMessage({ error: error.message }); }
+          });
         });
       `, { eval: true });
       this.worker.on('message', (reply: { hits?: Match[]; error?: string }) => {

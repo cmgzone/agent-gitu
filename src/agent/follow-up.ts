@@ -29,6 +29,38 @@ const CONTINUE_PATTERNS = [
   /^next$/i,
 ];
 
+/** Requests to act on the existing task must not become its replacement goal.
+ * Match conversational complaints narrowly, including observed typing errors;
+ * an actual request to fix repeated messages or change implementation stays a
+ * scope change. The raw follow-up still reaches the model as steering. */
+export function isProgressNudge(message: string): boolean {
+  const text = message.trim().toLowerCase().replace(/[’]/g, "'").replace(/\s+/g, ' ')
+    .replace(/\breapiting\b/g, 'repeating').replace(/\byour self\b/g, 'yourself')
+    .replace(/\binsteade\b/g, 'instead').replace(/\bedditing\b/g, 'editing').replace(/\beddit\b/g, 'edit');
+  const loop = '(?:repeating(?: (?:yourself|the (?:same )?(?:diagnosis|explanation|work)))?|(?:re-?reading|reading)(?: the same (?:files?|code))?|recapping|restating the diagnosis|investigating)';
+  const work = '(?:edit(?:ing)?|implement(?:ing)?|fix(?:ing)?|mak(?:e|ing) progress|do(?:ing)? the work)(?: (?:it|the (?:fix|code|remaining fix)))?';
+  return new RegExp('^(?:why (?:(?:do|are) )?you (?:keep |still )|you(?: are|\'re)? (?:keep |still )|(?:please )?stop )' + loop + '(?: (?:instead of |rather than |and (?:then )?)' + work + ')?[.!?]*$').test(text) ||
+    /^(?:please )?(?:continue|resume|proceed|carry on|keep going|go ahead)(?: (?:on|with|working on|working))? (?:(?:the|this|that|my|our|your) )?(?:(?:same|current|original|existing|previous|remaining) )?(?:task|work|fix|implementation|project|session|coding)(?: please)?[.!?]*$/.test(text) ||
+    /^(?:please )?(?:continue|resume|proceed)(?: (?:on|with))? (?:the same task|(?:from )?where you (?:stopped|left off)|the remaining fix)(?: and (?:implement|finish)(?: the)? (?:remaining )?fix)?[.!?]*$/.test(text) ||
+    /^(?:(?:and|also|now|please) )?(?:fix|implement|finish|do) (?:it|this|that|the (?:issue|bug|fix|task|work))(?: please)?[.!?]*$/.test(text) ||
+    /^(?:edit(?:ing)?|file editing|tools?|read_file|apply_edit|run_command) (?:is|are) available[.!?]*$/.test(text);
+}
+
+/** Repair ledgers saved by earlier classifiers which replaced the mission
+ * with a progress complaint. Preserve the latest real direction and history. */
+export function recoverProgressNudgeGoal(ledger: TaskLedger): string | undefined {
+  const authority = ledger.ensureTaskAuthority();
+  if (!isProgressNudge(authority.currentGoal) || authority.currentGoal === authority.originalGoal) return undefined;
+  const previous = [...authority.followUps].reverse().find((followUp) =>
+    ['CORRECT', 'REFINE', 'EXTEND', 'NEW_TASK'].includes(followUp.kind) &&
+    followUp.extractedGoalDelta && !isProgressNudge(followUp.extractedGoalDelta) &&
+    classifyFollowUp(followUp.extractedGoalDelta).kind !== 'CONTINUE');
+  const goal = previous?.extractedGoalDelta ?? authority.originalGoal;
+  if (!goal || isProgressNudge(goal)) return undefined;
+  ledger.setCurrentGoal(goal, 'Restored task goal after progress-only follow-up');
+  return goal;
+}
+
 /** Conversation control is separate from task authority: asking a question or
  * pausing to discuss must not replace the engineering goal. */
 export function conversationIntent(message: string): 'pause' | 'question' | undefined {
@@ -38,6 +70,7 @@ export function conversationIntent(message: string): 'pause' | 'question' | unde
       /\b(?:stop|pause|hold on|wait)\b[^.!?\n]{0,70}\b(?:discuss|talk|explain|answer|question|first)\b/i.test(text) ||
       /\b(?:discuss|talk|explain|answer|ask me)\b[^.!?\n]{0,80}\b(?:first|before (?:you |we )?(?:start|continue|proceed|work|edit|build|implement|do))\b/i.test(text) ||
       /\b(?:don't|do not)\s+(?:start|continue|proceed|work|do anything)\b/i.test(text)) return 'pause';
+  if (isProgressNudge(text)) return undefined;
   if (isNonMutatingStatusQuestion(text)) return 'question';
   // "Can you fix ...?" is an action request, whereas "Why ...?" or "Can
   // you explain ...?" asks for a response before more autonomous execution.
@@ -304,7 +337,7 @@ export function classifyFollowUp(message: string, hasImages = false): FollowUpCl
   }
 
   // 2. Pure continuation
-  if (CONTINUE_PATTERNS.some((p) => p.test(trimmed)) && trimmed.length < 60) {
+  if (isProgressNudge(trimmed) || CONTINUE_PATTERNS.some((p) => p.test(trimmed))) {
     return {
       kind: 'CONTINUE',
       confidence: 'high',

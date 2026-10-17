@@ -51,7 +51,7 @@ The selected design therefore:
 
 - Pins a named, read-only native permission profile with network disabled, and verifies the effective profile and human approval reviewer before starting a turn.
 - Disables native shell/unified execution, image-file tools, hosted browsing, host skill discovery, hooks, unrelated plugins/connectors, and native autonomous child agents. Configured MCP servers are disabled by name for the task.
-- Declines raw OS approvals and permission expansion. Unexpected direct OS execution/mutation events stop the task.
+- Declines raw OS approvals and permission expansion with a visible denial. Built-in OS effects are never approved. Coding stops native attempts at start; Cowork denies each stray built-in attempt with a steering correction and stops only for a completed built-in mutation or attempts that persist after denial.
 - Executes effects through Gitu's existing policy, human approval callbacks, ProjectGuard, file restrictions, registered connection handlers, audits, and specialist supervision.
 - Uses a minimal child environment and supported Codex sign-in. `account/read` must report ChatGPT authentication; API billing is never a fallback. No password, token extraction, or copied auth file is introduced.
 - Preserves plan review when required, connected-operation approvals, and narrower worker grants. User questions/pause instructions prevent further mutations while allowing inspection.

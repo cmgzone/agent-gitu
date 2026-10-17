@@ -86,6 +86,30 @@ export async function runNativeCoworkTurn(input: {
       input.store?.saveNativeCodexSession(key, session);
     }
   };
+  /** Built-in shell/patch attempts are denied instead of ending the turn: each
+   *  attempt yields one visible denial, one steering correction, and the model
+   *  continues with guarded functions. A completed built-in file mutation or a
+   *  model that keeps attempting native OS execution stops the turn for review. */
+  const deniedBuiltins = new Set<string>();
+  const denyBuiltinOSItem = async (item: NativeRecord): Promise<void> => {
+    const kind = String(item['type']);
+    if (kind !== 'commandExecution' && kind !== 'fileChange') return;
+    if (kind === 'fileChange' && item['status'] === 'completed')
+      throw new Error('Native Cowork changed files through built-in execution instead of Gitu guarded tools. The session is preserved for review.');
+    const id = String(item['id'] ?? '');
+    if (!id || deniedBuiltins.has(id)) return;
+    deniedBuiltins.add(id);
+    input.onProgress?.('Built-in OS execution is not available to this teammate; the same operation runs through Gitu guarded functions.');
+    try {
+      await runtime.steer?.(
+        'Built-in OS execution and patching are disabled for this Gitu task. Perform the same operation with the provided Gitu guarded functions (or gitu_cowork for later functions). A denied built-in attempt is not a blocker; continue with guarded functions.',
+      );
+    } catch {
+      /* Losing the correction must not end the turn; denied approvals already inform the model. */
+    }
+    if (deniedBuiltins.size >= 3)
+      throw new Error('Native Cowork kept attempting built-in OS execution instead of Gitu guarded tools. The session is preserved for review.');
+  };
   const tools = new Map(input.tools.map((tool) => [tool.name, tool]));
   const dynamicTools = input.tools.map((tool) => ({ type: 'function', name: tool.name, description: tool.description, inputSchema: tool.parameters }));
   dynamicTools.push({
@@ -102,7 +126,7 @@ export async function runNativeCoworkTurn(input: {
       .join('\n\n') +
     '\n\nNATIVE CODEX EXECUTION: You own the agent loop. Call the provided functions directly through code mode. Use gitu_cowork({tool:"name",params:{...}}) when a newly permitted tool is absent from the saved native catalog. Currently permitted functions: ' +
     [...tools.keys()].join(', ') +
-    '. Do not emit <tool> markers or Agent Gitu action JSON. Direct OS tools are disabled; all effects use the permission-gated Gitu functions. Reuse actual tool results, command job IDs and stored todos. A progress statement is not completion. Publish a final response only after doing the requested work or identifying a concrete blocker. On a user question/permission card or app approval, stop work and explain what is awaiting the user. Do not retry unchanged failures. Never use Get-Job with a cmd-N ID; use run_command action=status with that ID.';
+    ". Do not emit <tool> markers or Agent Gitu action JSON. Direct OS tools are disabled; all effects use the permission-gated Gitu functions. When a built-in shell or patch attempt is denied or unavailable, perform the same operation with the listed guarded functions and continue; a denied built-in attempt is not a blocker. Reuse actual tool results, command job IDs and stored todos. A progress statement is not completion. Publish a final response only after doing the requested work or identifying a concrete blocker. On a user question/permission card or app approval, stop work and explain what is awaiting the user. Do not retry unchanged failures. Never use Get-Job with a cmd-N ID; use run_command action=status with that ID.";
   try {
     const result = await runtime.runTurn({
       cwd,
@@ -135,8 +159,7 @@ export async function runNativeCoworkTurn(input: {
           reasoning += params['delta'];
           input.onProgress?.(narration, undefined, undefined, undefined, reasoning);
         }
-        if (method === 'item/started' && ['commandExecution', 'fileChange'].includes(String(record(params['item'])['type'])))
-          throw new Error('Native Cowork requires Gitu guarded tools for OS effects.');
+        if (method === 'item/started' || method === 'item/completed') await denyBuiltinOSItem(record(params['item']));
         if (method === 'item/completed') {
           const item = record(params['item']);
           if (item['type'] === 'agentMessage') {
@@ -148,6 +171,10 @@ export async function runNativeCoworkTurn(input: {
       },
       onRequest: async (method, params) => {
         signal.throwIfAborted();
+        if (method === 'item/commandExecution/requestApproval' || method === 'item/fileChange/requestApproval') {
+          input.onProgress?.('Built-in OS execution is disabled for this teammate; the same operation runs through Gitu guarded functions.');
+          return { decision: 'decline' };
+        }
         if (method !== 'item/tool/call') return method === 'item/permissions/requestApproval' ? { permissions: {}, scope: 'turn' } : { decision: 'decline' };
         if (waiting) return refuse('Waiting for the posted human approval/question. End this turn and wait for the user.');
         const id = String(params['callId'] ?? '');

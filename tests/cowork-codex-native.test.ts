@@ -37,7 +37,8 @@ function fixture(scenario: (input: NativeTaskInput) => Promise<void>) {
     await scenario(input);
     return { threadId: 'native-thread', turnId: 'native-turn', status: 'completed' as const };
   });
-  const client = Object.assign(new ScriptedMockLlm([]), { nativeTask: { mode: 'codex-native' as const, runTurn } });
+  const steer = vi.fn(async () => {});
+  const client = Object.assign(new ScriptedMockLlm([]), { nativeTask: { mode: 'codex-native' as const, runTurn, steer } });
   const ctx = { guard: ProjectGuard.detect(root), cwd: root };
   const onTool = vi.fn();
   const run = (messages: LlmMessage[] = [{ role: 'user', content: 'Read a.txt.' }]) =>
@@ -52,7 +53,7 @@ function fixture(scenario: (input: NativeTaskInput) => Promise<void>) {
       perms: { allowShell: false, allowWrites: true, allowConfig: false, chief: false, browser: false },
       onTool,
     });
-  return { root, store, agent, conversation, runTurn, run, onTool };
+  return { root, store, agent, conversation, runTurn, run, onTool, steer };
 }
 
 async function finish(input: NativeTaskInput, text = 'Done.'): Promise<void> {
@@ -134,5 +135,35 @@ describe('native Cowork execution', () => {
     });
     await expect(f.run()).rejects.toThrow('no final response');
     expect(f.runTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it('denies built-in OS attempts with a correction and continues with guarded functions', async () => {
+    const f = fixture(async (input) => {
+      await input.onEvent('item/started', { item: { id: 'cmd-1', type: 'commandExecution' } });
+      await input.onEvent('item/completed', { item: { id: 'cmd-1', type: 'commandExecution', status: 'failed', exitCode: 1 } });
+      // Restarted or duplicated events of the same attempt must stay one denial.
+      await input.onEvent('item/started', { item: { id: 'cmd-1', type: 'commandExecution' } });
+      expect((await input.onRequest('item/commandExecution/requestApproval', {}))['decision']).toBe('decline');
+      expect((await input.onRequest('item/fileChange/requestApproval', {}))['decision']).toBe('decline');
+      await finish(input);
+    });
+    expect((await f.run()).text).toBe('Done.');
+    expect(f.onTool).not.toHaveBeenCalled();
+    expect(f.steer).toHaveBeenCalledTimes(1);
+    expect(String(f.steer.mock.calls[0]![0])).toContain('guarded functions');
+    expect(f.runTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops a model that keeps attempting built-in OS execution or mutates files natively', async () => {
+    const repeated = fixture(async (input) => {
+      for (let i = 0; i < 3; i++) await input.onEvent('item/started', { item: { id: 'cmd-' + i, type: 'commandExecution' } });
+    });
+    await expect(repeated.run()).rejects.toThrow('kept attempting built-in OS execution');
+    expect(repeated.runTurn).toHaveBeenCalledTimes(1);
+    const mutation = fixture(async (input) => {
+      await input.onEvent('item/completed', { item: { id: 'edit-1', type: 'fileChange', status: 'completed', changes: [{ path: 'a.txt' }] } });
+    });
+    await expect(mutation.run()).rejects.toThrow('changed files through built-in execution');
+    expect(JSON.stringify(readFileSync(path.join(mutation.root, 'a.txt'), 'utf8'))).toContain('Before');
   });
 });

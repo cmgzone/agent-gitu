@@ -48,6 +48,8 @@ export interface MailDiscovery {
   provider?: string;
   /** A short, user-facing remark (OAuth2-only host, plain-HTTP lookup, …). */
   note?: string;
+  /** Insecure documents can suggest settings, but must never move saved credentials. */
+  insecure?: boolean;
 }
 
 export interface MailDiscoveryDeps {
@@ -192,7 +194,21 @@ async function fetchAutoconfig(url: string, fetchImpl: typeof fetch, timeoutMs: 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetchImpl(url, { signal: controller.signal, redirect: 'follow', headers: { accept: 'application/xml, text/xml, */*' } });
+    // Reject redirects before following them: checking only the final URL would
+    // already have disclosed the address to the redirect destination.
+    let target = new URL(url);
+    let response: Response | undefined;
+    for (let redirects = 0; redirects <= 3; redirects++) {
+      response = await fetchImpl(target.href, { signal: controller.signal, redirect: 'manual', headers: { accept: 'application/xml, text/xml, */*' } });
+      if (response.status < 300 || response.status >= 400) break;
+      const location = response.headers.get('location');
+      await response.body?.cancel().catch(() => {});
+      if (!location) return undefined;
+      const next = new URL(location, target);
+      if (next.hostname !== target.hostname || next.username || next.password || !['https:', 'http:'].includes(next.protocol) || (target.protocol === 'https:' && next.protocol !== 'https:')) return undefined;
+      target = next;
+    }
+    if (!response) return undefined;
     if (!response.ok) return undefined;
     // A redirect must not carry the lookup off the address's own domain.
     const finalUrl = new URL(response.url || url);
@@ -232,17 +248,34 @@ async function srvEndpoint(
 export async function discoverMailServers(address: string, deps: MailDiscoveryDeps = {}): Promise<MailDiscovery> {
   const fetchImpl = deps.fetchImpl ?? fetch;
   const resolve = deps.resolveSrv ?? resolveSrv;
-  const budget = deps.timeoutMs ?? OVERALL_TIMEOUT_MS;
+  const budget = Math.max(1, deps.timeoutMs ?? OVERALL_TIMEOUT_MS);
   const domain = mailDomainOf(address);
   const nothing: MailDiscovery = { domain, source: 'none', found: false };
   if (!domain || domain.length > 253 || IPV4_RE.test(domain) || !DOMAIN_RE.test(domain)) return nothing;
 
   const deadline = Date.now() + budget;
+  const pendingTimers = new Set<ReturnType<typeof setTimeout>>();
+  // DNS and HTTP both have a real deadline, even if an injected resolver or an
+  // unresponsive response body ignores cancellation. Retain completed SRV
+  // records when another service's DNS lookup hangs.
+  const bounded = async <T>(work: Promise<T>, timeout: number): Promise<T | undefined> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { return await Promise.race([work, new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), Math.max(1, timeout)); pendingTimers.add(timer); })]); }
+    finally { if (timer) { clearTimeout(timer); pendingTimers.delete(timer); } }
+  };
+  try {
+  const srv = Promise.all([
+    bounded(srvEndpoint(resolve, `_imaps._tcp.${domain}`, true), budget),
+    bounded(srvEndpoint(resolve, `_imap._tcp.${domain}`, false), budget),
+    bounded(srvEndpoint(resolve, `_submissions._tcp.${domain}`, true), budget),
+    bounded(srvEndpoint(resolve, `_submission._tcp.${domain}`, false), budget),
+  ]);
   const attempt = async (urls: string[]): Promise<AutoconfigResult | undefined> => {
     for (const url of urls) {
       const remaining = deadline - Date.now();
-      if (remaining < 250) return undefined;
-      const parsed = await fetchAutoconfig(url, fetchImpl, Math.min(FETCH_TIMEOUT_MS, remaining), address);
+      if (remaining <= 0) return undefined;
+      const timeout = Math.min(FETCH_TIMEOUT_MS, remaining);
+      const parsed = await bounded(fetchAutoconfig(url, fetchImpl, timeout, address), timeout);
       if (parsed) return parsed;
     }
     return undefined;
@@ -253,7 +286,7 @@ export async function discoverMailServers(address: string, deps: MailDiscoveryDe
   if (!autoconfig) {
     // Legacy hosts still serve the document over http; the user reviews what it
     // says, and the note tells them the settings arrived unencrypted.
-    autoconfig = await attempt(autoconfigUrls(domain, address));
+    autoconfig = await attempt(autoconfigUrls(domain, address).slice(2));
     overPlainHttp = Boolean(autoconfig);
   }
 
@@ -269,12 +302,7 @@ export async function discoverMailServers(address: string, deps: MailDiscoveryDe
   };
 
   if (!discovery.imap || !discovery.smtp) {
-    const [imaps, imap, submissions, submission] = await Promise.all([
-      srvEndpoint(resolve, `_imaps._tcp.${domain}`, true),
-      srvEndpoint(resolve, `_imap._tcp.${domain}`, false),
-      srvEndpoint(resolve, `_submissions._tcp.${domain}`, true),
-      srvEndpoint(resolve, `_submission._tcp.${domain}`, false),
-    ]);
+    const [imaps, imap, submissions, submission] = await srv;
     const srvImap = imaps ?? imap;
     const srvSmtp = submissions ?? submission;
     if (!discovery.imap && srvImap) discovery.imap = srvImap;
@@ -285,7 +313,9 @@ export async function discoverMailServers(address: string, deps: MailDiscoveryDe
 
   discovery.found = Boolean(discovery.imap || discovery.smtp);
   if (overPlainHttp && discovery.source !== 'none') {
+    discovery.insecure = true;
     discovery.note = discovery.note ?? 'The server settings were read over plain HTTP, so check them before connecting.';
   }
   return discovery;
+  } finally { for (const timer of pendingTimers) clearTimeout(timer); }
 }

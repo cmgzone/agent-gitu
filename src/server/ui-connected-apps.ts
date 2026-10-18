@@ -19,6 +19,7 @@ export const CONNECTED_APPS_CSS = String.raw`
 .cw-mail-section{border-bottom:1px solid var(--border);padding-bottom:26px;margin-bottom:30px}.cw-mail-section h2{font-size:14px;font-weight:600;margin:0 0 8px}.cw-mail-section>p{font-size:12px;margin:0 0 16px;color:var(--muted)}
 .cw-mail-subhead{font-size:12px;font-weight:600;margin:18px 0 8px;color:var(--muted)}
 .cw-mail-actions{margin-top:14px}
+.cw-mail-section .cw-service-grid{grid-template-columns:1fr}.cw-mail-section .cw-service-row{flex-wrap:wrap}.cw-mail-section .cw-service-copy{flex:1 1 150px}.cw-mail-row-controls{display:flex;gap:4px;align-items:center;margin-left:auto;flex:none}.cw-mail-row-controls>.cw-service-action{width:36px;height:36px;min-height:36px;padding:8px;border-radius:50%;color:var(--muted)}@media(max-width:480px){.cw-mail-row-controls>.cw-service-action{width:44px;height:44px;min-height:44px}}
 .cw-mail-form{margin-top:16px}.cw-mail-form label{display:block;font-size:12px;margin:12px 0 6px}.cw-mail-form input,.cw-mail-form select{width:100%;padding:10px 12px;border:1px solid var(--border2);border-radius:9px;background:var(--card);color:var(--text);font:inherit}
 .cw-mail-note{font-size:12px;margin:4px 0 0!important;color:var(--muted)}
 .cw-mail-check{display:flex!important;align-items:center;gap:8px;font-size:12px;margin:8px 0!important}.cw-mail-check input{width:auto}
@@ -260,9 +261,10 @@ export const CONNECTED_APPS_JS = String.raw`
       var controls = connected
         ? action('data-cwmaildisconnect', account.id, 'Remove this teammate access', 'close') + action('data-cwmailforget', account.id, 'Delete this saved mailbox', 'trash')
         : action('data-cwmailassign', account.id, 'Give this teammate access', 'plus') + action('data-cwmailforget', account.id, 'Delete this saved mailbox', 'trash');
+      controls = (scope && !connected ? '' : action('data-cwmailrediscover', account.id, 'Find and verify current mail servers from this address', 'search')) + controls;
       var watch = mail.watching && mail.watching[account.id], status = account.watchInbox === false ? 'New email notifications paused' : watch && watch.state === 'listening' ? 'Listening for new email' : watch && watch.state === 'polling' ? 'Checking for new email · server has no push support' : watch && watch.state === 'reconnecting' ? 'Reconnecting to inbox…' : 'New email notifications enabled';
       var toggle = connected ? '<label class="cw-mail-check"><input type="checkbox" data-cwmailwatch="' + esc(account.id) + '"' + (account.watchInbox !== false ? ' checked' : '') + '> React to new email</label><small role="status">' + esc(status) + '</small>' : '';
-      return '<article class="cw-service-row" data-cwmailrow="' + esc(account.id) + '"><div class="cw-service-symbol" aria-hidden="true"><span>' + esc(label.slice(0, 1).toUpperCase()) + '</span></div><div class="cw-service-copy"><h3>' + esc(label) + '</h3><p>' + esc(account.address || '') + '</p><small class="cw-service-status' + (connected ? ' connected' : '') + '">' + (connected ? 'Connected for this teammate' : 'Saved - assign to give access') + '</small>' + toggle + '</div>' + controls + '</article>';
+      return '<article class="cw-service-row" data-cwmailrow="' + esc(account.id) + '"><div class="cw-service-symbol" aria-hidden="true"><span>' + esc(label.slice(0, 1).toUpperCase()) + '</span></div><div class="cw-service-copy"><h3>' + esc(label) + '</h3><p>' + esc(account.address || '') + '</p><small class="cw-service-status' + (connected ? ' connected' : '') + '">' + (connected ? 'Connected for this teammate' : 'Saved - assign to give access') + '</small>' + toggle + '</div><div class="cw-mail-row-controls">' + controls + '</div></article>';
     };
     var options = providers.map(function (provider) { return '<option value="' + esc(provider.id) + '">' + esc(provider.name) + '</option>'; }).join('');
     var form = '<form class="cw-provider-form cw-mail-form" id="cwMailForm" hidden novalidate>'
@@ -295,6 +297,13 @@ export const CONNECTED_APPS_JS = String.raw`
   function cwBindMail(root, agentId, scope) {
     var cw = scope ? scope.state : cwEnsure(), request = scope ? scope.request : api;
     function reload(){if(scope)scope.reload();else cwLoadServices(cw.servicesSearch || '', false);}
+    root.querySelectorAll('[data-cwmailrediscover]').forEach(function(button){button.onclick=async function(){
+      if(button.disabled)return;
+      button.disabled=true;button.setAttribute('aria-busy','true');
+      try{await request('/api/connected-apps/mail/rediscover',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({accountId:button.getAttribute('data-cwmailrediscover')})});toast('Published mail servers verified. Mailbox settings updated.');reload();}
+      catch(error){toast(cwMailErrorText(error,'Could not verify published mail servers. Your saved settings are unchanged.'),true);}
+      finally{button.disabled=false;button.removeAttribute('aria-busy');}
+    };});
     root.querySelectorAll('[data-cwmailwatch]').forEach(function(input){input.onchange=async function(){
       var enabled=input.checked;input.disabled=true;
       try{await request('/api/connected-apps/mail/watch',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({accountId:input.getAttribute('data-cwmailwatch'),enabled:enabled})});reload();}

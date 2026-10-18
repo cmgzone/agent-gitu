@@ -6,6 +6,7 @@ import type { ToolResult } from '../types.js';
 import { canonicalJson, sha256 } from '../util.js';
 import { executeCoworkTool, type CoworkToolPerms, type CoworkToolScope } from './tools.js';
 import type { CoworkAgent, CoworkNativeSession, CoworkStore } from './store.js';
+import { visibleCoworkText } from './visible-text.js';
 
 function record(value: unknown): NativeRecord {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as NativeRecord) : {};
@@ -122,11 +123,11 @@ export async function runNativeCoworkTurn(input: {
   const instructions =
     input.messages
       .filter((message) => message.role === 'system')
-      .map((message) => (typeof message.content === 'string' ? message.content : ''))
+      .map((message) => (typeof message.content === 'string' ? message.content.replace(/^COMPLETION STATE:.*(?:\r?\n|$)/gm, '') : ''))
       .join('\n\n') +
     '\n\nNATIVE CODEX EXECUTION: You own the agent loop. Call the provided functions directly through code mode. Use gitu_cowork({tool:"name",params:{...}}) when a newly permitted tool is absent from the saved native catalog. Currently permitted functions: ' +
     [...tools.keys()].join(', ') +
-    ". Do not emit <tool> markers or Agent Gitu action JSON. Direct OS tools are disabled; all effects use the permission-gated Gitu functions. When a built-in shell or patch attempt is denied or unavailable, perform the same operation with the listed guarded functions and continue; a denied built-in attempt is not a blocker. Reuse actual tool results, command job IDs and stored todos. A progress statement is not completion. Publish a final response only after doing the requested work or identifying a concrete blocker. On a user question/permission card or app approval, stop work and explain what is awaiting the user. Do not retry unchanged failures. Never use Get-Job with a cmd-N ID; use run_command action=status with that ID.";
+    ". Do not emit <tool> markers, <cowork_state> tags or Agent Gitu action JSON. Native turn events manage completion; your final response is readable prose. Direct OS tools are disabled; all effects use the permission-gated Gitu functions. When a built-in shell or patch attempt is denied or unavailable, perform the same operation with the listed guarded functions and continue; a denied built-in attempt is not a blocker. Reuse actual tool results, command job IDs and stored todos. A progress statement is not completion. Publish a final response only after doing the requested work or identifying a concrete blocker. On a user question/permission card or app approval, stop work and explain what is awaiting the user. Do not retry unchanged failures. Never use Get-Job with a cmd-N ID; use run_command action=status with that ID.";
   try {
     const result = await runtime.runTurn({
       cwd,
@@ -153,17 +154,17 @@ export async function runNativeCoworkTurn(input: {
         if (guidance.length) await runtime.steer?.(guidance.join('\n\n'));
         if (method === 'item/agentMessage/delta') {
           narration += String(params['delta'] ?? '');
-          input.onProgress?.(narration);
+          input.onProgress?.(visibleCoworkText(narration, true));
         }
         if (method.startsWith('item/reasoning/') && typeof params['delta'] === 'string') {
           reasoning += params['delta'];
-          input.onProgress?.(narration, undefined, undefined, undefined, reasoning);
+          input.onProgress?.(visibleCoworkText(narration, true), undefined, undefined, undefined, reasoning);
         }
         if (method === 'item/started' || method === 'item/completed') await denyBuiltinOSItem(record(params['item']));
         if (method === 'item/completed') {
           const item = record(params['item']);
           if (item['type'] === 'agentMessage') {
-            if (item['phase'] !== 'commentary') text = String(item['text'] ?? '');
+            if (item['phase'] !== 'commentary') text = visibleCoworkText(String(item['text'] ?? ''));
             narration = '';
             reasoning = '';
           }
@@ -191,14 +192,22 @@ export async function runNativeCoworkTurn(input: {
         persist();
         const args = params['tool'] === 'gitu_cowork' ? record(passedArgs['params']) : passedArgs;
         const work = (async () => {
-          input.onProgress?.(narration, tool, undefined, JSON.stringify(args));
+          input.onProgress?.(visibleCoworkText(narration, true), tool, undefined, JSON.stringify(args));
           const result = await executeCoworkTool(input.ctx, tool, args, input.perms, input.scope);
           input.onTool?.(tool, args, result);
-          input.onProgress?.(narration, tool, result.ok, result.output);
-          const signature = sha256(tool + canonicalJson(args) + result.output);
-          const count = (repeated.get(signature) ?? 0) + 1;
-          repeated.set(signature, count);
-          if (count >= 4) throw new Error('Native Codex repeated the same Cowork operation and unchanged result without progress.');
+          input.onProgress?.(visibleCoworkText(narration, true), tool, result.ok, result.output);
+          // A managed process can legitimately remain running across several
+          // polls. Terminal results and unchanged failures still stop loops.
+          if (!(tool === 'run_command' && args['action'] === 'status' && result.ok && result.status === 'running')) {
+            const signature = sha256(tool + canonicalJson(args) + result.output);
+            const count = (repeated.get(signature) ?? 0) + 1;
+            repeated.set(signature, count);
+            if (count === 3) {
+              try { await runtime.steer?.('The same Cowork operation returned an unchanged result three times. Use its saved result, take a different useful action, or explain the concrete blocker. Do not repeat the same failed operation.'); }
+              catch { /* A failed correction must not permit an unbounded loop. */ }
+            }
+            if (count >= 4) throw new Error('Native Codex repeated the same Cowork operation and unchanged result without progress.');
+          }
           if (
             result.ok &&
             (['ask_user', 'request_permission', 'computer_handoff'].includes(tool) ||

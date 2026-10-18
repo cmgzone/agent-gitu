@@ -547,6 +547,20 @@ describe('Cowork continuity across providers and restarts', () => {
     expect(result.progress).toContain('not executed');
   });
 
+  it('continues a mission while the same lookup returns new evidence', async () => {
+    const s = setup();
+    const mission = s.store.createMission({ conversationId: s.conversation.id, agentId: s.agent.id, goal: 'Check progress', criteria: [] });
+    let calls = 0;
+    const complete = vi.fn(async () => {
+      if (++calls > 6) return '{"status":"done","progress":"Checked six updates","result":"Ready"}';
+      s.store.addTodo({ conversationId: s.conversation.id, agentId: s.agent.id, text: 'New evidence ' + calls });
+      return '<tool>{"name":"todo_manage","params":{"action":"list"}}</tool>';
+    });
+    const result = await runMissionSession({ mission, agent: s.agent, deps: { agents: [s.agent], store: s.store, memory: s.memory, resolveLlm: () => ({ complete }), toolContext: () => s.ctx, autoLearn: false }, append: message => s.store.appendMessage(s.conversation.id, message) });
+    expect(complete).toHaveBeenCalledTimes(7);
+    expect(result.status).toBe('done');
+  });
+
   it('streams mission prose without exposing its status JSON', async () => {
     const s = setup();
     const mission = s.store.createMission({ conversationId: s.conversation.id, agentId: s.agent.id, goal: 'Check the workspace', criteria: [] });

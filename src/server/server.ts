@@ -5513,7 +5513,7 @@ export class GituServer {
           // is authenticated or stored, and no credential is ever involved.
           try {
             const address = url.searchParams.get('address') ?? '';
-            this.sendJson(res, 200, { address, ...(await this.mailConnections.detect({ address })) }); return;
+            this.sendJson(res, 200, { address, ...(await this.mailConnections.detect({ address, fresh: url.searchParams.get('fresh') === 'true' })) }); return;
           } catch (error) {
             this.sendJson(res, 400, { error: error instanceof Error ? error.message : 'Enter a valid email address.' }); return;
           }
@@ -5539,6 +5539,15 @@ export class GituServer {
           store.revokeAppAccountPermissions(accountId);
           try { await this.mailConnections.remove(accountId); this.sendJson(res, 200, { ok: true }); return; }
           catch (error) { this.sendJson(res, 400, { error: error instanceof Error ? error.message : 'Could not remove this mailbox.' }); return; }
+        }
+        if (path === '/api/connected-apps/mail/rediscover' && method === 'POST') {
+          if (!AppAuth.local(req) && (!this.appAuth.secure(req) || !this.appAuth.authenticated(req))) { this.sendJson(res, 403, { error: 'Mailbox setup requires an authenticated HTTPS session.' }); return; }
+          const body = await this.readBody(req);
+          try {
+            const result = await this.mailConnections.rediscover(String(body['accountId'] ?? ''));
+            void this.mailInboxMonitor?.refresh();
+            this.sendJson(res, 200, result); return;
+          } catch (error) { this.sendJson(res, 400, { error: error instanceof Error ? error.message : 'Could not verify published mail settings.' }); return; }
         }
         if (path === '/api/connected-apps/mail/watch' && method === 'POST') {
           const body = await this.readBody(req);

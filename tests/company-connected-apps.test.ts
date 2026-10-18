@@ -32,6 +32,20 @@ function fixture() {
   return { store, first, second, a, b, lead, colleague, outsider, conversation, apps, call, start: d.start, owned: (value: ConnectedApp[]) => { owned = value; } };
 }
 describe('Company connected accounts', () => {
+  it('limits mailbox rediscovery to a secure session and a granted company account', async () => {
+    const f = fixture(), rediscover = vi.fn(async () => ({ account: { id: 'existing-mail' } }));
+    Object.assign(f.apps.mail, { rediscover });
+    await expect(f.call('/mail/rediscover', 'POST', { accountId: 'foreign' })).rejects.toThrow('granted');
+    expect(rediscover).not.toHaveBeenCalled();
+    await f.call('/assign', 'POST', { accountId: 'existing-mail', agentIds: [f.lead.id] });
+    f.apps.secure.mockReturnValue(false);
+    await expect(f.call('/mail/rediscover', 'POST', { accountId: 'existing-mail' })).rejects.toThrow('HTTPS');
+    expect(rediscover).not.toHaveBeenCalled();
+    f.apps.secure.mockReturnValue(true);
+    expect((await f.call('/mail/rediscover', 'POST', { accountId: 'existing-mail' })).status).toBe(200);
+    expect(rediscover).toHaveBeenCalledWith('existing-mail');
+    expect(f.a.appAccountAssigned(f.lead.id, 'mail', 'existing-mail')).toBe(true);
+  });
   it('allows notification changes only for a mailbox granted to the company', async () => {
     const f = fixture(), setInboxWatch = vi.fn();
     Object.assign(f.apps.mail, { setInboxWatch });

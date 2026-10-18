@@ -131,6 +131,29 @@ afterEach(() => {
 describe('mail connections', () => {
   beforeEach(() => {
     delete process.env['AGENT_GITU_SECRETS_KEY'];
+    process.env['AGENT_GITU_HOME'] = mkdtempSync(path.join(tmpdir(), 'gitu-mail-case-'));
+  });
+
+  it.each([
+    ['CONNECT_TIMEOUT', 'timed out'],
+    ['ETIMEDOUT', 'timed out'],
+    ['ENOTFOUND', 'resolve'],
+    ['ECONNREFUSED', 'refused'],
+    ['ERR_TLS_CERT_ALTNAME_INVALID', 'certificate'],
+    ['AUTHENTICATIONFAILED', 'credentials'],
+  ])('reports %s as a specific IMAP failure without leaking the server response', async (code, expected) => {
+    const { mail, imap } = fixture();
+    imap.connect.mockRejectedValueOnce(Object.assign(new Error('private response ' + PASSWORD), { code }));
+    await expect(mail.connect(valid)).rejects.toThrow(expected);
+    imap.connect.mockRejectedValueOnce(Object.assign(new Error('private response ' + PASSWORD), { code }));
+    await mail.connect(valid).catch(error => { expect(error.message).not.toContain(PASSWORD); expect(error.message).not.toContain('private response'); });
+  });
+
+  it('sends the configured mail host as the TLS server name for IMAP and SMTP', async () => {
+    const { mail, imapOptions, smtpOptions } = fixture();
+    await mail.connect(valid);
+    expect(imapOptions[0]!.tls?.servername).toBe('imap.example.com');
+    expect((smtpOptions[0]!['tls'] as { servername: string }).servername).toBe('smtp.example.com');
   });
 
   it('rejects malformed mailbox details before opening a connection', async () => {
@@ -422,12 +445,53 @@ describe('mail connections', () => {
     expect(discover).not.toHaveBeenCalled();
     expect(imapOptions[2]).toMatchObject({ host: 'imap.gmail.com', port: 993 });
 
-    // connect() already cached this domain; the form needs no extra lookup.
+    // Reuse this address's result; another mailbox needs its own login expansion.
     discover.mockClear();
     await expect(mail.detect({ address: 'nope' })).rejects.toThrow('Enter a valid email address.');
     expect((await mail.detect({ address: 'ada@mailcow.example' })).found).toBe(true);
     expect((await mail.detect({ address: 'other@mailcow.example' })).found).toBe(true);
-    expect(discover).not.toHaveBeenCalled();
+    expect(discover).toHaveBeenCalledWith('other@mailcow.example');
+  });
+
+  it('refreshes each address independently and bypasses stale cached settings', async () => {
+    const { mail, discover } = fixture();
+    discover.mockImplementation(async address => ({ domain: 'example.com', source: 'autoconfig', found: true, username: address }));
+    expect((await mail.detect({ address: 'first@example.com' })).username).toBe('first@example.com');
+    expect((await mail.detect({ address: 'second@example.com' })).username).toBe('second@example.com');
+    await mail.detect({ address: 'first@example.com' });
+    expect(discover).toHaveBeenCalledTimes(2);
+    await mail.detect({ address: 'first@example.com', fresh: true });
+    expect(discover).toHaveBeenCalledTimes(3);
+  });
+
+  it('recovers a saved mailbox from fresh domain settings while retaining its identity', async () => {
+    process.env['AGENT_GITU_SECRETS_KEY'] = serverKey();
+    const { mail, discover, imapOptions, smtpOptions, sent } = fixture();
+    const { account } = await mail.connect({ ...valid, allowSelfSigned: true });
+    await mail.detect({ address: valid.address }); // cache an empty answer
+    discover.mockResolvedValue({ domain: 'example.com', source: 'srv', found: true, imap: { host: 'new-imap.example.com', port: 143, secure: false }, smtp: { host: 'new-smtp.example.com', port: 587, secure: false } });
+    const result = await mail.rediscover(account.id);
+    expect(result.account.id).toBe(account.id);
+    expect(await mail.accounts()).toHaveLength(1);
+    expect(imapOptions.at(-1)).toMatchObject({ host: 'new-imap.example.com', doSTARTTLS: true, tls: { rejectUnauthorized: true, servername: 'new-imap.example.com' } });
+    expect(smtpOptions.at(-1)).toMatchObject({ host: 'new-smtp.example.com', requireTLS: true, tls: { rejectUnauthorized: true } });
+    expect(new MailSecretStore('linux').read()![0]!.imap.host).toBe('new-imap.example.com');
+    expect(sent).toEqual([]);
+  });
+
+  it.each(['missing', 'http', 'tls', 'smtp', 'removed'])('keeps saved credentials and settings intact when rediscovery is %s', async failure => {
+    process.env['AGENT_GITU_SECRETS_KEY'] = serverKey();
+    const { mail, discover, imap, transport, sent } = fixture();
+    const { account } = await mail.connect(valid);
+    const secrets = new MailSecretStore('linux'), before = secrets.read();
+    discover.mockResolvedValue({ domain: 'example.com', source: 'autoconfig', found: true, insecure: failure === 'http', imap: { host: 'new.example.com', port: 993, secure: true }, smtp: { host: 'new.example.com', port: 465, secure: true } });
+    if (failure === 'missing') discover.mockResolvedValue({ domain: 'example.com', source: 'none', found: false });
+    if (failure === 'tls') imap.connect.mockRejectedValueOnce(Object.assign(new Error(PASSWORD), { code: 'ERR_TLS_CERT_ALTNAME_INVALID' }));
+    if (failure === 'smtp') vi.mocked(transport.verify).mockRejectedValueOnce(new Error(PASSWORD));
+    if (failure === 'removed') vi.mocked(transport.verify).mockImplementationOnce(async () => { await mail.remove(account.id); return true; });
+    await expect(mail.rediscover(account.id)).rejects.not.toThrow(PASSWORD);
+    expect(secrets.read()).toEqual(failure === 'removed' ? [] : before);
+    expect(sent).toEqual([]);
   });
 
   it('removes a mailbox and keeps a warning when only sending fails', async () => {

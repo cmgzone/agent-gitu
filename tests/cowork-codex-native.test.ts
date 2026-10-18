@@ -50,10 +50,10 @@ function fixture(scenario: (input: NativeTaskInput) => Promise<void>) {
       messages,
       store,
       tools: coworkNativeTools(agent, false),
-      perms: { allowShell: false, allowWrites: true, allowConfig: false, chief: false, browser: false },
+      perms: { allowShell: agent.allowShell, allowWrites: true, allowConfig: false, chief: false, browser: false },
       onTool,
     });
-  return { root, store, agent, conversation, runTurn, run, onTool, steer };
+  return { root, store, agent, conversation, ctx, runTurn, run, onTool, steer };
 }
 
 async function finish(input: NativeTaskInput, text = 'Done.'): Promise<void> {
@@ -61,6 +61,38 @@ async function finish(input: NativeTaskInput, text = 'Done.'): Promise<void> {
 }
 
 describe('native Cowork execution', () => {
+  it('removes completion metadata from native finals and every streamed marker prefix', async () => {
+    const progress: string[] = [];
+    const f = fixture(async input => {
+      const raw = 'Please review the email.\n<cowork_state>waiting</cowork_state>';
+      for (const char of raw) await input.onEvent('item/agentMessage/delta', { delta: char });
+      await finish(input, raw);
+      expect(input.instructions).not.toContain('COMPLETION STATE:');
+    });
+    const result = await runNativeCoworkTurn({ client: Object.assign(new ScriptedMockLlm([]), { nativeTask: { mode: 'codex-native' as const, runTurn: f.runTurn, steer: f.steer } }), ctx: f.ctx, agent: f.agent, conversationId: f.conversation.id, store: f.store,
+      messages: [{ role: 'system', content: 'COMPLETION STATE: emit a private marker.\nHelp the user.' }, { role: 'user', content: 'Read email.' }], tools: [], perms: { allowShell: false, allowWrites: false, allowConfig: false, chief: false, browser: false }, onProgress: text => progress.push(text) });
+    expect(result.text).toBe('Please review the email.');
+    expect(progress.every(text => !text.includes('<') && !text.includes('cowork_state'))).toBe(true);
+    expect(f.runTurn).toHaveBeenCalledOnce();
+  });
+
+  it('keeps pending command status polls running while steering unchanged terminal results before stopping', async () => {
+    const polling = fixture(async input => {
+      for (let i = 0; i < 6; i++) expect((await input.onRequest('item/tool/call', { turnId: 'native-turn', callId: 'poll-' + i, tool: 'run_command', arguments: { action: 'status', id: 'cmd-1' } }))['success']).toBe(true);
+      await finish(input, 'The command is still running.');
+    });
+    polling.agent.allowShell = true;
+    Object.assign(polling.ctx, { authorizeTool: vi.fn(async () => ({ ok: true, status: 'running', output: 'Still running', payload: { id: 'cmd-1' } })) });
+    expect((await polling.run()).text).toContain('still running');
+    expect(polling.steer).not.toHaveBeenCalled();
+    const terminal = fixture(async input => {
+      for (let i = 0; i < 4; i++) await input.onRequest('item/tool/call', { turnId: 'native-turn', callId: 'same-' + i, tool: 'read_file', arguments: { path: 'a.txt' } });
+    });
+    await expect(terminal.run()).rejects.toThrow('unchanged result without progress');
+    expect(terminal.steer).toHaveBeenCalledOnce();
+    expect(terminal.steer.mock.calls[0]![0]).toContain('different useful action');
+  });
+
   it('ends repeated requests outside the agent grant without starting another turn', async () => {
     const f = fixture(async (input) => {
       for (let i = 0; i < 4; i++)

@@ -444,6 +444,25 @@ describe('animated teammate characters and web activity', () => {
     expect(html).not.toContain('mail-secret-id');
   });
 
+  it('renders reviewed-action wakeups as receipts even when instructions or saved reviews change', () => {
+    const { context } = ui();
+    const action = { service: 'mail', accountId: 'mail-own', tool: 'mail_list', args: { folder: 'INBOX', limit: 10 } };
+    const request = { id: 'review-mail', agentId: 'jelly', kind: 'recommendation', status: 'accepted', response: 'accepted', title: 'Run mail_list', detail: 'Review this mail action:\n' + JSON.stringify(action), appAction: action };
+    context.S.cw.requests = [request];
+    const text = 'Follow-up reminder from @Jelly: The user responded to your recommendation "Run mail_list": accepted. Repeat the original proposed connected_apps action with approvalId: review-mail. The host applies the user-reviewed fields. Do not create a separate send or bypass the reviewed action.. Act on it with your tools and report the result to the user here.';
+    const before = JSON.stringify(request);
+    const html = context.cwSystemEventHtml({ text });
+    expect(html).toContain('Jelly resumed work');
+    expect(html).toContain('After your response · List · Mail');
+    for (const internal of ['approvalId', 'review-mail', 'Repeat the original', 'user-reviewed', 'Do not create', 'Act on it']) expect(html).not.toContain(internal);
+    expect(JSON.stringify(request)).toBe(before);
+    context.S.cw.requests = [];
+    const pruned = context.cwSystemEventHtml({ text });
+    expect(pruned).toContain('Jelly resumed work');
+    expect(pruned).toContain('After your response');
+    expect(pruned).not.toContain('approvalId');
+  });
+
   it('shows saved app permissions with their scope and a revoke control', () => {
     const { context } = ui();
     new Script(CONNECTED_APPS_JS).runInContext(context);

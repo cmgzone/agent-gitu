@@ -6,7 +6,7 @@ import type { Company } from './store.js';
 
 export interface CompanyApps {
   provider: Pick<ComposioConnections, 'configured' | 'setup' | 'catalog' | 'connect'>;
-  mail: Pick<MailConnections, 'accounts' | 'connect' | 'detect' | 'setup' | 'setInboxWatch'>;
+  mail: Pick<MailConnections, 'accounts' | 'connect' | 'detect' | 'setup' | 'setInboxWatch' | 'rediscover'>;
   accounts: () => Promise<ConnectedApp[]>;
   configure: (req: IncomingMessage, key: string) => Promise<void>;
   secure: (req: IncomingMessage) => boolean;
@@ -71,9 +71,15 @@ export async function companyConnectedApps(req: IncomingMessage, res: ServerResp
     });
     return true;
   }
-  if (route === '/mail/detect' && method === 'GET') { d.send(res, 200, await apps.mail.detect({ address: url.searchParams.get('address') ?? '' })); return true; }
+  if (route === '/mail/detect' && method === 'GET') { d.send(res, 200, await apps.mail.detect({ address: url.searchParams.get('address') ?? '', fresh: url.searchParams.get('fresh') === 'true' })); return true; }
   if (method !== 'POST') { d.send(res, 405, { error: 'Method not allowed.' }); return true; }
   const body = await d.body(req);
+  if (route === '/mail/rediscover') {
+    if (!apps.secure(req)) throw new Error('Mailbox setup requires an authenticated HTTPS session.');
+    const accountId = String(body['accountId'] ?? '');
+    if (!d.store.get(company.id)!.accountIds.includes(accountId)) throw new Error('Choose a mailbox granted to this company.');
+    d.send(res, 200, await apps.mail.rediscover(accountId)); return true;
+  }
   if (route === '/mail/watch') {
     const accountId = String(body['accountId'] ?? '');
     if (!d.store.get(company.id)!.accountIds.includes(accountId) || !(await apps.mail.accounts()).some(account => account.id === accountId)) throw new Error('Choose a mailbox granted to this company.');

@@ -56,7 +56,7 @@ describe('mail server discovery', () => {
     // %EMAILADDRESS% in the document is the actual login, so the form can show it.
     expect(result.username).toBe('ada@company.example');
     expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(resolveSrv).not.toHaveBeenCalled();
+    expect(resolveSrv).toHaveBeenCalledTimes(4);
   });
 
   it('falls back to RFC 6186 SRV records when no document is published', async () => {
@@ -74,6 +74,26 @@ describe('mail server discovery', () => {
       imap: { host: 'imap.company.example', port: 993, secure: true },
       smtp: { host: 'smtp.company.example', port: 465, secure: true },
     });
+  });
+
+  it('keeps completed SRV settings when HTTP and another DNS service hang', async () => {
+    const hanging = () => new Promise<never>(() => {});
+    const result = await discoverMailServers('ada@company.example', {
+      timeoutMs: 40,
+      fetchImpl: vi.fn(hanging) as unknown as typeof fetch,
+      resolveSrv: vi.fn(async name => name === '_imaps._tcp.company.example.' ? [{ name: 'new.company.example.', port: 993, priority: 0, weight: 0 }] : hanging()),
+    });
+    expect(result).toMatchObject({ found: true, source: 'srv', imap: { host: 'new.company.example', port: 993, secure: true } });
+  });
+
+  it('blocks off-domain redirects before making a second request', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 302, headers: { location: 'https://other.example/config' } })) as unknown as typeof fetch;
+    const result = await discoverMailServers('ada@company.example', { fetchImpl, resolveSrv: async () => [] });
+    expect(result.found).toBe(false);
+    for (const [url, options] of vi.mocked(fetchImpl).mock.calls) {
+      expect(new URL(String(url)).hostname).toMatch(/^(autoconfig\.)?company\.example$/);
+      expect(options?.redirect).toBe('manual');
+    }
   });
 
   it('honours SRV priority and weight, and uses STARTTLS ports for the plain services', async () => {

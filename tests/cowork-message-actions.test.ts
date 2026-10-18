@@ -339,6 +339,10 @@ describe('Cowork message actions', () => {
     expect(u.context.cwVisibleReply(code)).toBe(code);
     expect(u.context.cwVisibleReply('Checking. <tool>{"name":"read_file"}</tool> Done.')).toBe('Checking.  Done.');
     expect(u.context.cwVisibleReply('Checking. <|tool_ca')).toBe('Checking.');
+    expect(u.context.cwVisibleReply('Please approve.\n<cowork_state>waiting</cowork_state>')).toBe('Please approve.');
+    expect(u.context.cwVisibleReply('Server timed out.\n<COWORK_STATE>waiting</COWORK_STATE>')).toBe('Server timed out.');
+    expect(u.context.cwVisibleReply('Code: `<cowork_state>waiting</cowork_state>`')).toBe('Code: `<cowork_state>waiting</cowork_state>`');
+    for (let length = 1; length < '<cowork_state>'.length; length++) expect(u.context.cwVisibleReply('Working. ' + '<cowork_state>'.slice(0, length))).toBe('Working.');
   });
 
   it('shows prose or a neutral working indicator during tool execution', () => {

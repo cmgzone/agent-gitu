@@ -19,6 +19,7 @@ import nodemailer from 'nodemailer';
 import { execFile, execFileSync } from 'node:child_process';
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { isIP } from 'node:net';
 import { ensureGituHome } from '../workspace/home.js';
 import {SecretVault} from './secret-vault.js';
 import { readCredentialFile, writeCredentialFile, updateCredentialJson } from '../llm/credential-file.js';
@@ -364,6 +365,22 @@ export interface MailConnectResult {
   warning?: string;
 }
 
+/** Classify failures without exposing server responses, usernames or secrets.
+ * A timeout or certificate failure must never be reported as a bad password. */
+function mailConnectionError(account: MailboxRecord, failure: unknown, signingIn = false): Error {
+  const error = failure as { code?: unknown; authenticationFailed?: unknown; message?: unknown } | undefined;
+  const code = String(error?.code ?? '').toUpperCase();
+  const endpoint = `${account.imap.host}:${account.imap.port}`;
+  if (/ENOTFOUND|EAI_AGAIN/.test(code)) return new Error(`Could not resolve the IMAP host ${account.imap.host}. Check the saved server name and its DNS records.`);
+  if (/CERT|TLS|SELF_SIGNED|UNABLE_TO_VERIFY|DEPTH_ZERO/.test(code)) return new Error(`TLS certificate validation failed for ${endpoint}. Check the server certificate and mail host name.`);
+  if (/TIMEOUT|TIMEDOUT/.test(code)) return new Error(`The IMAP connection to ${endpoint} timed out. Check the server address, DNS, firewall and IMAP port; the saved credentials could not be verified.`);
+  if (code === 'ECONNREFUSED') return new Error(`The IMAP server refused the connection at ${endpoint}. Check that the mail service is listening on that port.`);
+  if (error?.authenticationFailed === true || /AUTHENTICATIONFAILED|EAUTH/.test(code)) return new Error(`The IMAP server at ${endpoint} rejected the saved credentials. Reconnect the mailbox with its correct username and password.`);
+  return new Error(signingIn
+    ? `Could not sign in to ${account.imap.host} over IMAP. Check the host, port, and password.`
+    : `Could not connect to the IMAP server at ${endpoint}. Check the saved mail settings and server availability.`);
+}
+
 export class MailConnections {
   private readonly detections = new Map<string, { at: number; value: MailDiscovery }>();
   constructor(
@@ -404,12 +421,34 @@ export class MailConnections {
     const source = (input ?? {}) as Record<string, unknown>;
     const address = asAddress(source['address'], 'email address');
     const domain = address.split('@')[1]!.toLowerCase();
-    const cached = this.detections.get(domain);
-    if (cached && Date.now() - cached.at < DETECT_CACHE_MS) return cached.value;
+    // Autoconfig usernames are address-specific, even on the same domain.
+    const cached = this.detections.get(address);
+    if (source['fresh'] !== true && cached && Date.now() - cached.at < DETECT_CACHE_MS) return cached.value;
     const value = await this.discover(address).catch((): MailDiscovery => ({ domain, source: 'none', found: false }));
     this.pruneDetections();
-    this.detections.set(domain, { at: Date.now(), value });
+    this.detections.set(address, { at: Date.now(), value });
     return value;
+  }
+
+  /** User-requested recovery uses this mailbox's published settings, never a
+   * deployment IP or another account's server. Existing IDs/grants stay intact. */
+  async rediscover(accountId: string): Promise<MailConnectResult> {
+    await this.secrets.readAsync();
+    const account = this.record(accountId);
+    const detected = await this.detect({ address: account.address, fresh: true });
+    if (!detected.imap || !detected.smtp) throw new Error(`No complete mail settings are published for ${detected.domain}. Ask the mail administrator to publish autoconfig or IMAP/SMTP SRV records, or reconnect with the documented server settings.`);
+    if (detected.insecure) throw new Error('The mail settings were published over plain HTTP. Review them in the mailbox connection form before connecting.');
+    const candidate: MailboxRecord = { ...account, imap: detected.imap, smtp: detected.smtp, username: detected.username ?? account.username, allowSelfSigned: false };
+    await this.verifyImap(candidate);
+    try { await this.transport(candidate).verify(); }
+    catch { throw new Error(`The published SMTP server ${candidate.smtp.host}:${candidate.smtp.port} could not be verified. The saved mailbox settings have not changed.`); }
+    // Re-read after network work so a deletion or another settings change cannot
+    // be undone by a late discovery response.
+    const records = this.load(), index = records.findIndex(record => record.id === accountId);
+    if (index < 0 || JSON.stringify(records[index]) !== JSON.stringify(account)) throw new Error('The mailbox changed while checking its servers. Refresh and try again.');
+    records[index] = candidate;
+    this.secrets.save(records);
+    return { account: (await this.accounts()).find(record => record.id === accountId)! };
   }
 
   /** Discovery domains come from untrusted user input, so the cache must stay
@@ -540,13 +579,14 @@ export class MailConnections {
       host: endpoint.host,
       port: endpoint.port,
       secure: endpoint.secure,
+      doSTARTTLS: endpoint.secure ? undefined : true,
       auth,
       logger: false,
       disableAutoIdle: true,
       connectionTimeout: CONNECT_TIMEOUT_MS,
       greetingTimeout: CONNECT_TIMEOUT_MS,
       socketTimeout: SOCKET_TIMEOUT_MS,
-      tls: { rejectUnauthorized: !account.allowSelfSigned },
+      tls: { rejectUnauthorized: !account.allowSelfSigned, ...(!isIP(endpoint.host) ? { servername: endpoint.host } : {}) },
     };
   }
 
@@ -562,11 +602,12 @@ export class MailConnections {
       host: account.smtp.host,
       port: account.smtp.port,
       secure: account.smtp.secure,
+      requireTLS: !account.smtp.secure,
       auth: { user: account.username, pass: account.password },
       connectionTimeout: CONNECT_TIMEOUT_MS,
       greetingTimeout: CONNECT_TIMEOUT_MS,
       socketTimeout: SOCKET_TIMEOUT_MS,
-      tls: { rejectUnauthorized: !account.allowSelfSigned },
+      tls: { rejectUnauthorized: !account.allowSelfSigned, ...(!isIP(account.smtp.host) ? { servername: account.smtp.host } : {}) },
     });
   }
 
@@ -576,8 +617,8 @@ export class MailConnections {
       await client.connect();
       const lock = await client.getMailboxLock('INBOX');
       lock.release();
-    } catch {
-      throw new Error(`Could not sign in to ${account.imap.host} over IMAP. Check the host, port, and password.`);
+    } catch (error) {
+      throw mailConnectionError(account, error, true);
     } finally {
       await client.logout().catch(() => {});
     }
@@ -587,9 +628,9 @@ export class MailConnections {
     const client = this.client(account);
     try {
       await client.connect();
-    } catch {
+    } catch (error) {
       await client.logout().catch(() => {});
-      throw new Error(`Could not reach ${account.imap.host}. Check that IMAP is enabled for this mailbox.`);
+      throw mailConnectionError(account, error);
     }
     let lock: { release(): void } | undefined;
     try {
@@ -647,8 +688,8 @@ export class MailConnections {
         // Paths are what mail_list/mail_read accept; the delimiter is only context.
         delimiter: entry.delimiter,
       }));
-    } catch {
-      throw new Error(`Could not reach ${account.imap.host}. Check that IMAP is enabled for this mailbox.`);
+    } catch (error) {
+      throw mailConnectionError(account, error);
     } finally {
       await client.logout().catch(() => {});
     }

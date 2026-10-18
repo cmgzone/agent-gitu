@@ -2062,13 +2062,13 @@ export const COWORK_JS = String.raw`
     }
     var reminder = /^Follow-up reminder from @([^:\n]+): ([\s\S]+)\. Act on it with your tools and report the result to the user here\.$/.exec(text);
     var instruction = reminder ? reminder[2] : text;
-    var decision = /^The user responded to your (recommendation|question|permission) "([\s\S]+)": ([\s\S]+)\. Continue from that decision and report what you do\.$/.exec(instruction);
+    var decision = /^The user responded to your (recommendation|question|permission) "/.test(instruction);
     var confirmation = /^(Recommendation|Question|Permission) (accepted|dismissed|answered|approved|denied): ([\s\S]+)\.$/.exec(text);
     var request = (cw.requests || []).slice().reverse().find(function (r) {
-      if (decision) return r.kind === decision[1] && r.title === decision[2] && r.status !== 'open' && String(r.response || r.status) === decision[3];
+      if (decision) return r.status !== 'open' && instruction.indexOf('The user responded to your ' + r.kind + ' "' + r.title + '": ' + String(r.response || r.status) + '.') === 0;
       return confirmation && r.kind === confirmation[1].toLowerCase() && r.status === confirmation[2] && String(r.response || r.status) === confirmation[3] && Math.abs(Date.parse(r.resolvedAt) - Date.parse(message.ts)) < 3000;
     });
-    if (!request && !reminder) return null;
+    if (!request && !reminder && !decision) return null;
     var agent = request && cwAgentById(request.agentId), app = request && cwAppApprovalPresentation(request);
     var title, detail, icon = 'clock';
     if (request) {
@@ -2076,7 +2076,8 @@ export const COWORK_JS = String.raw`
       if (decision) { title = (reminder ? reminder[1] : agent ? agent.name : 'Your teammate') + ' resumed work'; detail = 'After your response · ' + action; icon = 'bolt'; }
       else { title = (request.response === 'Always allowed' ? 'You always allowed ' : request.status === 'accepted' || request.status === 'approved' ? 'You approved ' : request.status === 'dismissed' || request.status === 'denied' ? 'You declined ' : 'You answered ') + action; detail = agent ? agent.name : ''; icon = 'check'; }
       if (app) detail += (detail ? ' · ' : '') + app.serviceName;
-    } else { title = 'Scheduled follow-up · ' + reminder[1]; detail = reminder[2]; }
+    } else if (decision) { title = (reminder ? reminder[1] : message.agentName || 'Your teammate') + ' resumed work'; detail = 'After your response'; icon = 'bolt'; }
+    else { title = 'Scheduled follow-up · ' + reminder[1]; detail = reminder[2]; }
     return '<div class="cw-sys cw-event-row">' + cwIcon(icon) + '<div><strong>' + esc(title) + '</strong><span class="cw-event-detail">' + esc(detail) + '</span>' + cwFilesHtml(message.artifactIds) + '</div></div>';
   }
   function cwBubbleHtml(m) {
@@ -2112,9 +2113,15 @@ export const COWORK_JS = String.raw`
   function cwVisibleReply(text) {
     return String(text || '').split(/(\x60\x60\x60[\s\S]*?(?:\x60\x60\x60|$)|\x60[^\x60\n]+\x60)/g).map(function (part, i) {
       if (i % 2) return part;
-      return part.replace(/<tool>[\s\S]*?<\/tool>/gi, '')
+      var visible = part.replace(/<cowork_state>[\s\S]*?(?:<\/cowork_state>|$)/gi, '')
+        .replace(/<tool>[\s\S]*?<\/tool>/gi, '')
         .replace(/<(?:[|｜]\s*(?:DSML\s*[|｜]\s*)?(?:tool_calls?|tool_name|parameters|calls|invoke)\b|[|｜]+\s*DSML\b|tool(?:\s|>|$)|tool_calls?\b|invoke\s+name\s*=)[\s\S]*$/gi, '')
         .replace(/<[|｜][^>]*$|<t(?:o(?:o(?:l)?)?)?$/gi, '');
+      var marker = '<cowork_state>', lower = visible.toLowerCase();
+      for (var length = Math.min(visible.length, marker.length - 1); length > 0; length--) {
+        if (lower.slice(-length) === marker.slice(0, length)) return visible.slice(0, -length);
+      }
+      return visible;
     }).join('').trim();
   }
 

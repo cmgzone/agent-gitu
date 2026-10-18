@@ -28,6 +28,7 @@ import { summarizeCheckpoint, type CheckpointAction } from './checkpoint.js';
 import { agentProfileInstructions } from './profile-config.js';
 import { RICH_OUTPUT_GUIDANCE } from '../agent/output-style.js';
 import { runNativeCoworkTurn } from './codex-native.js';
+import { visibleCoworkText } from './visible-text.js';
 import { AGENT_CREATION_GUIDANCE, agentCreationKind } from './live-messages.js';
 
 /**
@@ -516,26 +517,10 @@ function activeThread(conversation: CoworkConversation, deps: CoworkRunnerDeps, 
 }
 
 type CoworkCompletionState = 'working' | 'done' | 'waiting';
-const COWORK_STATE_MARKER = '<cowork_state>';
 
 function completionState(reply: string): CoworkCompletionState | undefined {
   const match = /(?:^|\r?\n)<cowork_state>\s*(working|done|waiting)\s*<\/cowork_state>\s*$/i.exec(reply);
   return match?.[1]?.toLowerCase() as CoworkCompletionState | undefined;
-}
-
-/** Keep the control marker out of live progress and saved chat, including when
- * its opening tag arrives one character at a time in a model stream. */
-function visibleCoworkText(reply: string, streaming = false): string {
-  const text = stripToolMarkers(reply, streaming);
-  const lower = text.toLowerCase();
-  const start = lower.indexOf(COWORK_STATE_MARKER);
-  if (start >= 0) return text.slice(0, start).trim();
-  if (streaming) {
-    for (let length = Math.min(text.length, COWORK_STATE_MARKER.length - 1); length > 0; length--) {
-      if (lower.endsWith(COWORK_STATE_MARKER.slice(0, length))) return text.slice(0, -length).trim();
-    }
-  }
-  return text;
 }
 
 /** A separate semantic check prevents unmarked promises (or a premature done
@@ -1260,6 +1245,8 @@ export async function runMissionSession(input: {
     let exhausted = false;
     let waiting = false;
     let waitingForAppReview = false;
+    let repeatedWorkStopped = false;
+    const missionResults = new Map<string, { output: string; count: number }>();
     let lastPublicUpdate = '';
     let reasoning = '';
     const publicProgress = (raw: string, tool?: string, toolOk?: boolean, detail?: string, webUrl?: string, mcpServer?: string, phase: CoworkProgress['phase'] = 'working', appService?: string) => {
@@ -1328,6 +1315,8 @@ export async function runMissionSession(input: {
           continue;
         }
         deps.signal?.throwIfAborted();
+        const key = sha256(canonicalJson({ tool: call.tool, params: call.params }));
+        if ((missionResults.get(key)?.count ?? 0) >= 3) { repeatedWorkStopped = true; break; }
         ctx ??= deps.toolContext(agent);
         publicProgress(reply, call.tool, undefined, summarizeParams(call.tool, call.params), coworkWebOrigin(call.tool, call.params), coworkMcpServer(call.tool, call.params), undefined, coworkAppService(call.tool, call.params));
         const result = await executeCoworkTool(
@@ -1338,12 +1327,19 @@ export async function runMissionSession(input: {
           scope,
         );
         recordToolResult(scope, call.tool, result, visibleCoworkText(reply));
+        const repeatableRead = call.tool === 'web_fetch' || call.tool === 'todo_manage' && call.params['action'] === 'list' || call.tool === 'connected_apps' &&
+          (['list', 'tools', 'discover'].includes(String(call.params['action'])) || call.params['action'] === 'execute' && isBackgroundRead(String(call.params['tool'])));
+        if (!result.ok || repeatableRead) {
+          const output = sha256(result.output.replace(/"(responseId|log_id|logId)":"[^"]+"/g, '"$1":"execution"'));
+          const previous = missionResults.get(key);
+          missionResults.set(key, { output, count: previous?.output === output ? previous.count + 1 : 1 });
+        }
         messages.push(toolResultMessage(call.tool, result, supportsImages));
         publicProgress(reply, call.tool, result.ok, summarizeParams(call.tool, call.params), coworkWebOrigin(call.tool, call.params), coworkMcpServer(call.tool, call.params), undefined, coworkAppService(call.tool, call.params));
         waitingForAppReview = result.ok && call.tool === 'connected_apps' && /^(?:Review \S+ posted\.|Waiting for review \S+\.)/.test(result.output);
         if (result.ok && (['ask_user', 'request_permission', 'computer_handoff'].includes(call.tool) || waitingForAppReview)) { waiting = true; break; }
       }
-      if (waiting) break;
+      if (waiting || repeatedWorkStopped) break;
       messages.push({ role: 'user', content: 'Continue the work session. Remember to end with your status JSON when this session is done.' });
     }
 
@@ -1357,7 +1353,7 @@ export async function runMissionSession(input: {
     const criteriaMet = parsed && Array.isArray(parsed.criteriaMet) ? (parsed.criteriaMet as unknown[]).map((value) => value === true) : undefined;
     const allCriteriaMet = mission.criteria.length === 0 || (criteriaMet?.length === mission.criteria.length && criteriaMet.every(Boolean));
     if (status === 'done' && !allCriteriaMet) status = 'working';
-    if (exhausted) status = 'working';
+    if (exhausted || repeatedWorkStopped) status = 'working';
     if (waiting) status = 'blocked';
     if (client.nativeTask && status === 'working') status = 'blocked';
     const rawProgress = parsed && typeof parsed.progress === 'string' && parsed.progress.trim() ? parsed.progress : text;
@@ -1370,6 +1366,7 @@ export async function runMissionSession(input: {
     if (waiting) session.blockers = 'Waiting for the user to respond to the posted request card.';
     if (waitingForAppReview) session.progress = 'The requested app action is waiting for approval. It has not been submitted.';
     if (exhausted) session.progress = 'Tool budget reached; the last requested actions were not executed. Resume from saved tool checkpoints and the checklist.';
+    if (repeatedWorkStopped) session.progress = 'Repeated calls returned no new evidence; the last requested actions were not executed. Continue from the saved results with a different useful action or report the blocker.';
     if (criteriaMet) session.criteriaMet = criteriaMet;
     if (artifactIds.length) session.artifactIds = artifactIds;
     if (session.status === 'working') {

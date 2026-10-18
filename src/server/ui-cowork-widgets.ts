@@ -287,7 +287,7 @@ export const COWORK_WIDGETS_JS = String.raw`
     if (toggle) { toggle.hidden = !visible; toggle.setAttribute('aria-expanded',String(open)); toggle.setAttribute('aria-label',(open ? 'Close' : 'Open') + ' widgets, ' + widgets.length + ' card' + (widgets.length === 1 ? '' : 's')); }
     if (count) count.textContent = String(widgets.length);
     if (backdrop) backdrop.hidden = !open || docked;
-    lane.querySelectorAll('iframe[data-widget-app]').forEach(function (frame) { if (frame._widgetVisible !== open) { frame._widgetVisible = open; if (frame.contentWindow) frame.contentWindow.postMessage({type:'gitu-widget-visibility',visible:open},'*'); } });
+    lane.querySelectorAll('iframe[data-widget-app]').forEach(function (frame) { if (frame._widgetVisible !== open) { frame._widgetVisible = open; if (frame.contentWindow) frame.contentWindow.postMessage({type:'gitu-widget-visibility',visible:open},'null'); } });
     cwBindWidgetControls();
   }
   window.addEventListener('resize', function () { if (S.active === 'cowork') cwRenderWidgets(); });

@@ -264,17 +264,20 @@ function outChartSvg(spec){
     var step = Math.max(1, Math.ceil(labels.length / 12));
     if(type === 'line'){
       for(var li=0; li<series.length; li++){
-        var ld = Array.isArray(series[li].data) ? series[li].data : [], pts = [];
+        var ld = Array.isArray(series[li].data) ? series[li].data : [], pts = [], hover = [];
         for(var lj=0; lj<ld.length; lj++){
           var lv = Number(ld[lj]); if(!isFinite(lv)) continue;
           var lx = labels.length > 1 ? padL + (pw*lj/(labels.length-1)) : padL + pw/2;
+          // Keep the source label/value beside each kept point: skipping a
+          // NaN point would otherwise shift every later tooltip's index.
           pts.push(lx.toFixed(2) + ',' + y(lv).toFixed(2));
+          hover.push({ label: labels[lj], value: lv });
         }
         if(!pts.length) continue;
         s += '<polyline fill="none" stroke="' + outColor(li) + '" stroke-width="2" points="' + pts.join(' ') + '"/>';
         for(var lk=0; lk<pts.length; lk++){
           var pxy = pts[lk].split(',');
-          s += '<circle cx="' + pxy[0] + '" cy="' + pxy[1] + '" r="3" fill="' + outColor(li) + '"><title>' + outEsc(String(series[li].name || 'series') + ' ' + labels[lk] + ': ' + outNum(ld[lk])) + '</title></circle>';
+          s += '<circle cx="' + pxy[0] + '" cy="' + pxy[1] + '" r="3" fill="' + outColor(li) + '"><title>' + outEsc(String(series[li].name || 'series') + ' ' + hover[lk].label + ': ' + outNum(hover[lk].value)) + '</title></circle>';
         }
       }
     } else {
@@ -290,7 +293,13 @@ function outChartSvg(spec){
       }
     }
     for(var lx2=0; lx2<labels.length; lx2+=step){
-      var tx = padL + (labels.length > 1 ? (pw*lx2/(labels.length-1)) : pw/2);
+      // Line charts center labels on data points spread across the full plot
+      // width; bar charts spread labels across per-group slots, so each label
+      // must sit at its slot's center — using the line-chart spacing put
+      // 2+ label groups at the plot edges while the bars stayed centered.
+      var tx = type === 'line'
+        ? padL + (labels.length > 1 ? (pw*lx2/(labels.length-1)) : pw/2)
+        : padL + (pw/labels.length)*lx2 + (pw/labels.length)/2;
       s += '<text class="out-lbl" text-anchor="middle" x="' + tx.toFixed(2) + '" y="' + (padT+ph+16) + '">' + outEsc(labels[lx2]) + '</text>';
     }
     s += '</svg>';

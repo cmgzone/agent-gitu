@@ -35,9 +35,12 @@ export class CheckpointManager {
   }
 
   async isGitRepo(): Promise<boolean> {
-    if (this.available === undefined) {
-      this.available = await this.gitSafe(['rev-parse', '--is-inside-work-tree']) === 'true';
-    }
+    // A confirmed `true` is cached for the process lifetime, but a `false`
+    // result is re-probed each time: the workspace may become a repository
+    // later in the session (e.g. the agent scaffolds one), and a one-shot
+    // negative cache would silently disable snapshots/rollback forever.
+    if (this.available === true) return true;
+    this.available = (await this.gitSafe(['rev-parse', '--is-inside-work-tree'])) === 'true';
     return this.available;
   }
 

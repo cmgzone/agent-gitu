@@ -58,7 +58,7 @@ export interface PromptContract {
  * universal envelope.
  */
 export const ACTION_GRAMMAR_NATIVE =
-  'ACTION TYPES (one per turn, inside {"thought","action"}): intake: set_criteria, set_design, set_plan, add_criteria, append_plan, set_hypothesis, propose_repair, record_decision; execution: tool_call (stepId, tool, params, reason, expected; optional intent/expectation/observation/semanticVerdict/investigationIntent), connection_action, connection_operation, parallel{calls[]}, delegate{tasks[]}, toggle_todo, complete_step, revise_step, show_plan; closure: claim_criterion{criterionId,evidenceId,justification}, complete{summary,risks,followUps}, request_block{reason,prerequisite?}, ask_user{questions}, report_finding{claim,kind,severity,location}.';
+  'ACTION TYPES (one per turn, inside {"thought","action"}): intake: set_criteria, set_design, set_plan, add_criteria, append_plan, set_hypothesis, record_decision; execution: tool_call (stepId, tool, params, reason, expected; optional intent/expectation/observation/semanticVerdict/investigationIntent), connection_action, connection_operation, parallel{calls[]}, delegate{tasks[]}, toggle_todo, complete_step, revise_step, show_plan; closure: claim_criterion{criterionId,evidenceId,justification}, complete{summary,risks,followUps}, request_block{reason,prerequisite?}, ask_user{questions}, report_finding{claim,kind,severity,location}.';
 
 /**
  * Full action grammar for structured_text / text providers. This must remain
@@ -73,7 +73,6 @@ Intake/planning:
 {"action":{"type":"set_plan","steps":[{"description":"small focused change","verification":"how verified","area":"frontend|backend|integration|shared|database|infra|tests|docs","subtasks":["todo"]}...]}}  (<=30 steps, <=8 subtasks each)
 {"action":{"type":"add_criteria","criteria":[...]}} / {"action":{"type":"append_plan","steps":[...]}}  (follow-up scope in a completed task; never erase prior criteria/evidence)
 {"action":{"type":"set_hypothesis","text":"current hypothesis","target":"repair-target kind when known"}}  (confidence is telemetry only)
-{"action":{"type":"propose_repair","targetKind":"...","targetDescription":"...","intendedEffect":"state change","reversible":true,"requiresApproval":false,"evidenceBasis":["ev-..."]}}  (decision sufficiency -> ACT_NOW)
 {"action":{"type":"record_decision","decision":"one line","alternatives":[...],"repoEvidence":"...","requirements":[...],"rejected":[{"alternative","reason"}],"reconsiderIf":"...","basis":"explicit-requirement|repository-constraint|recommendation|preference","supersedes":"ad-..."}}
 Execution:
 {"action":{"type":"tool_call","stepId":"step-N","tool":"<tool>","params":{...},"reason":"why","expected":"what should happen"}}  (stepId does NOT complete the step; optional "intent":"inspect|diagnose|repair|verify", "expectation":{"description","assertions":[{"kind":"equals|not_equals|contains|not_contains|state_changed|exists|absent","target","expected"}]}, "observation":{"transportOk",fields}, "semanticVerdict":{"verdict","explanation","blocking"}, "investigationIntent":{"decisionQuestion","changesRepairAction",...})

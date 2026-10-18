@@ -149,17 +149,36 @@ interface CacheEntry {
   role: DiscoveryRole;
 }
 
+/** Order-stable JSON: object keys are sorted at every nesting level, so two
+ *  calls with semantically identical arguments share one cache key instead of
+ *  missing whenever nested objects serialized in a different insertion
+ *  order. */
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
 export class DiscoveryFactCache {
   private entries = new Map<string, CacheEntry>();
 
   private key(connectionId: string, operationId: string, args: Record<string, unknown>): string {
-    return `${connectionId}:${operationId}:${JSON.stringify(args, Object.keys(args).sort())}`;
+    return `${connectionId}:${operationId}:${stableJson(args)}`;
   }
 
-  get(connectionId: string, operationId: string, args: Record<string, unknown>, role: DiscoveryRole): unknown | undefined {
+  get(connectionId: string, operationId: string, args: Record<string, unknown>, _role: DiscoveryRole): unknown | undefined {
     const entry = this.entries.get(this.key(connectionId, operationId, args));
     if (!entry) return undefined;
-    const ttl = CACHE_TTL_MS[role];
+    // Freshness belongs to the entry, not the caller: a get() under a
+    // different role label (same operation) would otherwise read another
+    // TTL than the one the producer cached under.
+    const ttl = CACHE_TTL_MS[entry.role];
     if (ttl === 'run-scoped') return entry.data;
     if (Date.now() - entry.cachedAt > ttl) return undefined; // expired
     return entry.data;

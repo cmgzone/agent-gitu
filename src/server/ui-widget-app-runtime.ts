@@ -62,7 +62,7 @@ export const WIDGET_APP_RUNTIME_JS = String.raw`
         card = next;
       } else if (widget.kind === 'app') {
         var frame = card.querySelector('iframe[data-widget-app]');
-        if (frame && frame.contentWindow) frame.contentWindow.postMessage({ type:'gitu-widget-state',state:widget.data.state || {} }, '*');
+        if (frame && frame.contentWindow) frame.contentWindow.postMessage({ type:'gitu-widget-state',state:widget.data.state || {} }, 'null');
       }
       if (cards.children[index] !== card) cards.insertBefore(card, cards.children[index] || null);
     });
@@ -75,7 +75,7 @@ export const WIDGET_APP_RUNTIME_JS = String.raw`
     var widget = (cwEnsure().widgets || []).find(function (item) { return item.id === frame.getAttribute('data-widget-app'); });
     if (!widget || widget.kind !== 'app') return;
     var payload = message.payload || {}, result;
-    function reply(value, error) { if (frame.isConnected) frame.contentWindow.postMessage({ type: 'gitu-widget-result', id: message.id, result: value, error: error }, '*'); }
+    function reply(value, error) { if (frame.isConnected) frame.contentWindow.postMessage({ type: 'gitu-widget-result', id: message.id, result: value, error: error }, 'null'); }
     if (message.method === 'resize') { frame.style.height = Math.max(180, Math.min(900, Number(payload.height) || 360)) + 'px'; reply(true); return; }
     if (message.method === 'agent') {
       var action = (widget.data.actions || []).find(function (item) { return item.name === payload.name; });

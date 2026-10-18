@@ -45,7 +45,7 @@ describe('widget app runtime and creation flow',()=>{
     const appCard=cards.children[0],frame=appCard!.frame;
     f.context.cwRenderWidgetGrid(cards,[{...app,data:{...app.data,state:{count:2}},updatedAt:'second'},{...text,data:{text:'Updated'}}]);
     expect(cards.children[0]).toBe(appCard);expect(cards.children[0]!.frame).toBe(frame);
-    expect(frame.contentWindow.postMessage).toHaveBeenCalledWith({type:'gitu-widget-state',state:{count:2}},'*');
+    expect(frame.contentWindow.postMessage).toHaveBeenCalledWith({type:'gitu-widget-state',state:{count:2}},'null');
     expect(cards.children).toHaveLength(2);
   });
   it('rejects messages from other windows and routes owned-frame state through the saved API',async()=>{
@@ -56,7 +56,7 @@ describe('widget app runtime and creation flow',()=>{
     f.handlers['message']!({source,data:message});expect(f.api).not.toHaveBeenCalled();
     f.handlers['message']!({source:frame.contentWindow,data:message});await Promise.resolve();await Promise.resolve();
     expect(f.api).toHaveBeenCalledWith('/api/cowork/widgets/app-1/runtime',expect.objectContaining({method:'POST',body:JSON.stringify({op:'saveState',state:{count:2}})}));
-    expect(post).toHaveBeenCalledWith(expect.objectContaining({type:'gitu-widget-result',result:{count:2}}),'*');
+    expect(post).toHaveBeenCalledWith(expect.objectContaining({type:'gitu-widget-result',result:{count:2}}),'null');
   });
   it('runs a declared host action through the agent without submitting or overwriting a draft',async()=>{
     const f=fixture();await f.context.cwRunWidgetAction({id:'app-1',conversationId:'conv'},{name:'refresh',prompt:'Update this widget'});

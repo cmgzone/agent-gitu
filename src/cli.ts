@@ -382,7 +382,10 @@ async function main(): Promise<void> {
     case 'ui': {
       const portRaw = flags.get('port');
       const port = typeof portRaw === 'string' ? Number(portRaw) : 8321;
-      if (!Number.isFinite(port) || port < 1 || port > 65535) throw new Error('Invalid --port');
+      // Integer 0..65535 for both server commands: fractions previously passed
+      // this check and crashed in Node's listen(), and 0 (ephemeral, resolved
+      // by start()) is as valid here as it is for `serve`.
+      if (!Number.isInteger(port) || port < 0 || port > 65535 || (portRaw !== undefined && !/^\d+$/.test(String(portRaw)))) throw new Error('Invalid --port');
       const host = typeof flags.get('host') === 'string' ? String(flags.get('host')) : undefined;
       const server = new GituServer({ cwd, port, host });
       const bound = await server.start();
@@ -408,7 +411,7 @@ async function main(): Promise<void> {
     case 'serve': {
       const portRaw = flags.get('port');
       const port = typeof portRaw === 'string' ? Number(portRaw) : 8321;
-      if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Invalid --port');
+      if (!Number.isInteger(port) || port < 0 || port > 65535 || (portRaw !== undefined && !/^\d+$/.test(String(portRaw)))) throw new Error('Invalid --port');
       const host = typeof flags.get('host') === 'string' ? String(flags.get('host')) : undefined;
       const server = new GituServer({ cwd, port, host });
       const bound = await server.start();

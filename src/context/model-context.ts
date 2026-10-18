@@ -88,6 +88,16 @@ export const DEFAULT_CONTEXT_MAX_CHARS = 48_000;
  * erase the immediate story the model is actively reasoning about. */
 export const MIN_RECENT_HISTORY_MESSAGES = 12;
 
+/** Wire-text estimate for the attached images, in the same 4-chars-per-token
+ *  budget units the history text uses. Kept in ONE helper because the trim
+ *  loop and the final accounting must count the identical figure. */
+function imagePayloadChars(images: ModelContextImage[] | undefined): number {
+  if (!images?.length) return 0;
+  let total = 0;
+  for (const img of images) total += Math.floor(img.dataUrl.length / 4);
+  return total;
+}
+
 export function buildModelContext(input: ModelContextInput): ModelContextResult {
   const maxChars = Math.max(1_000, input.budget?.maxChars ?? DEFAULT_CONTEXT_MAX_CHARS);
   const trims: ModelContextResult['trims'] = [];
@@ -107,9 +117,7 @@ export function buildModelContext(input: ModelContextInput): ModelContextResult 
   const charsOf = (): number => {
     let total = input.system.length + (input.strategy?.length ?? 0) + (input.memory?.length ?? 0) + (input.protectedMemory?.length ?? 0) + (input.fileKnowledge?.length ?? 0) + (contextPack?.length ?? 0) + (input.followUp?.length ?? 0) + (attachmentContent?.length ?? 0) + (digestContent?.length ?? 0);
     for (const m of history) total += messageTextChars(m);
-    if (input.images?.length && input.supportsImages) {
-      for (const img of input.images) total += Math.floor(img.dataUrl.length / 4);
-    }
+    if (input.supportsImages) total += imagePayloadChars(input.images);
     return total;
   };
 
@@ -175,6 +183,7 @@ export function buildModelContext(input: ModelContextInput): ModelContextResult 
 
   let imagesAttached = 0;
   let imagesSkipped = false;
+  let imagesMessageIndex = -1;
   if (input.images && input.images.length > 0) {
     if (input.supportsImages) {
       const parts: LlmContentPart[] = [
@@ -182,6 +191,7 @@ export function buildModelContext(input: ModelContextInput): ModelContextResult 
       ];
       for (const img of input.images) parts.push({ type: 'image_url', image_url: { url: img.dataUrl } });
       messages.push({ role: 'user', content: parts });
+      imagesMessageIndex = messages.length - 1;
       imagesAttached = input.images.length;
     } else {
       messages.push({
@@ -196,9 +206,14 @@ export function buildModelContext(input: ModelContextInput): ModelContextResult 
 
   const sections: ContextSections = { system: 0, taskState: 0, digest: 0, contextPack: 0, strategy: 0, memory: 0, protected: 0, conversation: 0 };
   let totalChars = 0;
-  for (const m of messages) {
-    sections[sectionOfMessage(m)] += messageTextChars(m);
-    totalChars += messageTextChars(m);
-  }
+  messages.forEach((m, index) => {
+    // The attached image payload rides on the multi-part message above;
+    // messageTextChars sees only its text part, so the image estimate the
+    // budget loop counted must be added here or every utilization number
+    // understates the real context by the whole image size.
+    const chars = messageTextChars(m) + (index === imagesMessageIndex ? imagePayloadChars(input.images) : 0);
+    sections[sectionOfMessage(m)] += chars;
+    totalChars += chars;
+  });
   return { messages, sections, totalChars, imagesAttached, imagesSkipped, trims };
 }

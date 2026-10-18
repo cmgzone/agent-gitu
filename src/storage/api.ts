@@ -99,7 +99,7 @@ export async function storageApi(req: IncomingMessage, res: ServerResponse, comp
   if (action === '/files' && method === 'GET') {
     d.registry.authorize(connection, 'list');
     const folder = new URL(req.url ?? '/', 'http://localhost').searchParams.get('folder') ?? undefined;
-    d.send(res, 200, { items: await adapter.list(folder), capabilities: adapter.capabilities.filter((capability) => connection.permissions.includes(capability)) });
+    d.send(res, 200, { items: await adapter.list(folder), capabilities: adapter.capabilities.filter((capability) => connection.permissions.includes(capability)), authority: d.registry.authority(connection) });
     return true;
   }
   if (action === '/health' && method === 'GET') {
@@ -127,7 +127,12 @@ export async function storageApi(req: IncomingMessage, res: ServerResponse, comp
   }
   if (action === '/import' && method === 'POST') {
     const body = await d.body(req);
-    d.send(res, 201, { file: await importStorageFile(companyId, connection, String(body['id']), d) });
+    // Direct imports have no stored reference pin, but a listing can give the
+    // client the connection's current authority: pass it through so a project
+    // re-attached to a different account cannot silently import look-alike
+    // files. Clients that do not send one keep the previous behavior.
+    const authority = typeof body['authority'] === 'string' && body['authority'] ? body['authority'] : undefined;
+    d.send(res, 201, { file: await importStorageFile(companyId, connection, String(body['id']), d, authority) });
     return true;
   }
   if (action === '/operation' && method === 'POST') {

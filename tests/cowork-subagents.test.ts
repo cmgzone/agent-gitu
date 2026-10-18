@@ -149,10 +149,11 @@ describe('spawn pipeline', () => {
     // A sub-agent (depth 2) trying to spawn under the v1 ceiling.
     const denied = manager.spawn(scope({ parentDepth: 2, maxDepth: 2 }), { role: 'r', objective: 'o' });
     expect(denied).toMatchObject({ ok: false, error: expect.stringContaining('depth') });
-    // A host asking for a deeper tree than v1 allows is clamped, not honoured.
+    // A host asking for a deeper tree than v1 allows is clamped, not honoured
+    // (MAX_COWORK_DEPTH caps v1: chief 0 → cowork agent 1 → sub-agent 2).
     const spawned = manager.spawn(scope({ maxDepth: 99 }), { role: 'r', objective: 'o' });
     expect(spawned.ok).toBe(true);
-    if (spawned.ok) expect(spawned.instance.maxDepth).toBe(99);
+    if (spawned.ok) expect(spawned.instance.maxDepth).toBe(MAX_COWORK_DEPTH);
   });
 
   it('refuses when the parent budget is exhausted or out of delegation slots', () => {

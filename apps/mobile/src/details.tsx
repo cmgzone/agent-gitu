@@ -390,8 +390,16 @@ function EventEditor({
   const conflicts = (neighbors || w.events).filter(
     (item) =>
       item.id !== e?.id &&
-      Date.parse(start) < Date.parse(item.end) &&
-      Date.parse(end) > Date.parse(item.start),
+      (allDay
+        ? // All-day start/end are bare YYYY-MM-DD dates: Date.parse reads
+          // them as UTC midnight, which misplaces the window for events in
+          // non-UTC zones. Represent the covered local days of the event's
+          // zone instead — end carries the day AFTER the last day, so the
+          // exclusive upper bound is that day's zoned midnight.
+          Date.parse(zonedInstant(start, "00:00", zone)) < Date.parse(item.end) &&
+          Date.parse(zonedInstant(end, "00:00", zone)) > Date.parse(item.start)
+        : Date.parse(start) < Date.parse(item.end) &&
+          Date.parse(end) > Date.parse(item.start)),
   );
   async function propose(remove = false) {
     setBusy(true);
@@ -766,6 +774,19 @@ function FileDetail({ file: f }: { file: Artifact }) {
     setError("");
     try {
       if (Platform.OS === "web") {
+        // A plain navigation can never carry the Authorization header, so the
+        // API fallback content path must be fetched with the token and opened
+        // as a blob URL; pre-signed provider URLs open directly.
+        if (/\/api\/files\/[^/]+\/content/.test(url)) {
+          const response = await fetch(url, {
+            headers: { Authorization: `Bearer ${api.token}` },
+          });
+          if (!response.ok) throw new Error(`Request failed (${response.status})`);
+          const objectUrl = URL.createObjectURL(await response.blob());
+          window.open(objectUrl, "_blank");
+          setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+          return;
+        }
         await Linking.openURL(url);
         return;
       }

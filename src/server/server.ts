@@ -1400,7 +1400,8 @@ export class GituServer {
       if(!this.cowork().getConversation(conversationId))throw new Error('Company conversation no longer exists.');
       if(this.coworkRuns.get(conversationId)?.busy)throw new Error('Company lead is still working.');
       if(job.payload['delivery']==='question'){
-        const store=this.cowork(),agent=store.getAgent(c.leadId!)!,conversation=store.getConversation(conversationId)!;
+        const store=this.cowork(),agent=c.leadId?store.getAgent(c.leadId):undefined,conversation=store.getConversation(conversationId)!;
+        if(!agent)throw new Error('The company lead agent no longer exists; it cannot answer questions. Appoint a new lead first.');
         const question=String(job.payload['text']??''),abort=new AbortController(),signal=AbortSignal.any([abort.signal,AbortSignal.timeout(120000)]);
         this.companyQuestionRuns.set(job.id,{companyId:c.id,abort});
         try{await this.companyWorkers.run(c.id,agent.id,signal,async()=>{
@@ -1413,7 +1414,18 @@ export class GituServer {
       if(job.kind==='wake'){const agentId=String(job.payload['agentId']);if(!this.cowork().getAgent(agentId))return;this.dispatchAgentWake(conversationId,agentId,String(job.payload['note']),'schedule');}
       else if(job.kind==='review')this.dispatchAgentWake(conversationId,c.leadId!,`Company review. Current owner direction (version ${c.directionVersion}): ${c.direction||c.purpose}. ${String(job.payload['event']??'')} Review work and blockers. Create or continue a bounded mission only when there is actionable work. Verify helper results. If nothing needs action, report waiting and finish this review; do not create busywork or an endless tool loop.`,'schedule');
       else this.dispatchCoworkMessage(conversationId,String(job.payload['text']??''),'web',undefined,job.payload['artifactIds'] as string[]|undefined,undefined,{id:'company-message-'+job.id,delivery:job.payload['delivery'] as CoworkDelivery});
-      while(this.coworkRuns.get(conversationId)?.busy){if(this.companies().get(c.id)?.state!=='running'){this.coworkRuns.get(conversationId)?.abort.abort();throw new Error('Company paused.');}await new Promise(resolve=>setTimeout(resolve,200));}
+      const jobDeadline=Date.now()+300000;
+      while(this.coworkRuns.get(conversationId)?.busy){
+        if(this.companies().get(c.id)?.state!=='running'){this.coworkRuns.get(conversationId)?.abort.abort();throw new Error('Company paused.');}
+        if(Date.now()>jobDeadline){
+          // Without this bound a hung run (stalled stream, event-loop
+          // contention) would hold the scheduled job and its worker slot
+          // forever; the sibling question path applies the same idea (120s).
+          this.coworkRuns.get(conversationId)?.abort.abort(new Error('Company job exceeded its wall-clock budget.'));
+          throw new Error('Company job timed out waiting for its run to finish; the run was stopped.');
+        }
+        await new Promise(resolve=>setTimeout(resolve,200));
+      }
       if(job.payload['followUpId'])this.cowork().takeFollowUp(String(job.payload['followUpId']));if(job.payload['inboxId'])this.cowork().markInboxDelivered([String(job.payload['inboxId'])]);
     });
   }
@@ -3951,6 +3963,10 @@ export class GituServer {
         const run = this.coworkRuns.get(convId);
         run?.abort?.abort();
         this.coworkRuns.delete(convId);
+        // Stop the conversation's live sub-agents BEFORE their rows are
+        // removed: an un-stopped worker would keep spending tokens on a
+        // mission whose store is gone and re-attach when it settles.
+        this.subAgents().terminateConversationSubtree(convId, 'conversation deleted');
         const removed = store.deleteConversation(convId);
         this.sendJson(res, removed ? 200 : 404, removed ? { ok: true } : { error: 'conversation not found' });
         return true;
@@ -4743,7 +4759,7 @@ export class GituServer {
       catch { /* Ignore an invalid configured origin. */ }
     }
     if (name === 'localhost' || name.endsWith('.localhost')) return true;
-    if (name === '::1' || name === '[::1]') return true;
+    if (name === '::1') return true; // brackets were stripped above, so '[::1]' can never occur again
     // Any IP literal (loopback or LAN) — browsers reach local servers by IP.
     if (/^\d{1,3}(\.\d{1,3}){3}$/.test(name)) return true;
     if (/^[0-9a-f:]+:[0-9a-f:]*$/i.test(name)) return true; // IPv6 literal

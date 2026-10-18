@@ -72,6 +72,14 @@ export class MobileAccess {
   }
 
   private secure(req: IncomingMessage): boolean {
-    return Boolean((req.socket as { encrypted?: boolean }).encrypted) || req.headers['x-forwarded-proto'] === 'https';
+    // Mirror AppAuth: the client-supplied `x-forwarded-proto` header is only
+    // trusted when the message arrives from a loopback peer (a local reverse
+    // proxy). Any remote client can set the header on a plain-HTTP request,
+    // and it feeds the Secure-cookie decision and sameOrigin()'s expected
+    // scheme, so trusting it unconditionally weakens both.
+    return (
+      Boolean((req.socket as { encrypted?: boolean }).encrypted) ||
+      (['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress ?? '') && req.headers['x-forwarded-proto'] === 'https')
+    );
   }
 }

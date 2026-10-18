@@ -50,7 +50,7 @@ import type { ToolResult } from '../types.js';
 import type { CoworkStore, SubAgentEvidenceDetail, SubAgentEvidenceReport, SubAgentInstance, SubAgentPermissions, SubAgentStatus } from './store.js';
 
 /** Absolute spawn-depth ceiling for v1: chief 0 → cowork agent 1 → sub-agent 2. */
-export const MAX_COWORK_DEPTH = Number.MAX_SAFE_INTEGER;
+export const MAX_COWORK_DEPTH = 2;
 
 /** Wall-clock defaults for one sub-agent run; the host enforces them. */
 export const DEFAULT_SUBAGENT_RUNTIME_MINUTES = 0;
@@ -463,6 +463,14 @@ export class CoworkSubAgents {
     return this.active(missionId).map((instance) => this.terminate(instance.id, reason)).filter((instance): instance is SubAgentInstance => Boolean(instance));
   }
 
+  /** A conversation is about to be deleted: stop its whole sub-agent forest. */
+  terminateConversationSubtree(conversationId: string, reason: string): SubAgentInstance[] {
+    return this.active()
+      .filter((instance) => instance.conversationId === conversationId)
+      .map((instance) => this.terminate(instance.id, reason))
+      .filter((instance): instance is SubAgentInstance => Boolean(instance));
+  }
+
   /**
    * Startup sweep: any instance still active whose id the live runtime does
    * not claim is a corpse from before a restart — its account is gone, its
@@ -744,6 +752,11 @@ export class CoworkSubAgentRunner {
   /** Mission settled: terminate every worker it still owns (aborts live turns first). */
   terminateMissionSubtree(missionId: string, reason: string): SubAgentInstance[] {
     return this.manager.terminateMissionSubtree(missionId, reason);
+  }
+
+  /** Conversation deleted: stop its whole sub-agent forest (aborts live turns first). */
+  terminateConversationSubtree(conversationId: string, reason: string): SubAgentInstance[] {
+    return this.manager.terminateConversationSubtree(conversationId, reason);
   }
 
   /** Startup sweep, wired to this runner's live set by construction. */

@@ -125,6 +125,17 @@ export class RecoveryOrchestrator {
   // when the stored `observed` text is a model explanation rather than raw output.
   private readonly lastRawDigests = new Map<string, string>();
 
+  /** Digests are only ever compared against the ACTIVE problem, which is by
+   * definition open, so resolved/superseded episodes can drop their entries;
+   * the tracker keeps closed problems as audit history and this map would
+   * otherwise grow for the whole process lifetime. */
+  private pruneRawDigests(): void {
+    for (const [id] of this.lastRawDigests) {
+      const problem = this.tracker.getProblem(id);
+      if (!problem || problem.status === 'resolved' || problem.status === 'superseded') this.lastRawDigests.delete(id);
+    }
+  }
+
   // Drift window (AC-34): bounded progress window that resets on material progress.
   private static readonly DRIFT_ACTION_WINDOW = 8;
   private static readonly DRIFT_READ_WINDOW = 6;
@@ -505,6 +516,7 @@ export class RecoveryOrchestrator {
         this.tracker.noteImmaterialAction(active, this.isReadTool(input.tool));
       }
       this.lastRawDigests.set(active.id, digest);
+      this.pruneRawDigests();
     }
 
     // Case 1: Verification succeeded on active problem — CONTRACT-GATED or an
@@ -598,6 +610,7 @@ export class RecoveryOrchestrator {
       // Seed raw-output tracking for the (possibly newly created) problem so
       // immediate re-observation of identical output counts as duplicate.
       this.lastRawDigests.set(problem.id, digestObservation(input.output || ''));
+      this.pruneRawDigests();
 
       if (isNew) {
         this.problemsDetected += 1;

@@ -222,6 +222,8 @@ export class LspManager {
   private readonly clients = new Map<string, LspClient>();
   private readonly diags = new DiagnosticsCache();
   private readonly versions = new Map<string, number>();
+  /** Per-client didOpen tracking (see syncDocument). */
+  private readonly openedDocuments = new WeakMap<LspClient, Set<string>>();
   /** Per-URI serialization chains for document syncs. */
   private readonly syncChains = new Map<string, Promise<string>>();
   /** A missing server is installed at most once, even when queries run in parallel. */
@@ -376,10 +378,19 @@ export class LspManager {
     // The document is about to change server-side: any cached push-model
     // diagnostics are for a pre-edit version and must not be served again.
     this.diags.invalidate(uri);
-    if (version === 1) {
-      await client.openDocument(uri, languageId, text, version);
-    } else {
+    // Versions are globally monotonic per URI, but "has this server seen the
+    // document" is per client: a freshly restarted server (withServer recovery)
+    // has never seen any document, so it must receive didOpen again even
+    // though the counter is past 1 — didChange for a document it never opened
+    // is a protocol violation and most servers ignore it, silently breaking
+    // every subsequent hover/definition/diagnostics query for that file.
+    const opened = this.openedDocuments.get(client);
+    if (opened?.has(uri)) {
       await client.changeDocument(uri, text, version);
+    } else {
+      if (opened) opened.add(uri);
+      else this.openedDocuments.set(client, new Set([uri]));
+      await client.openDocument(uri, languageId, text, version);
     }
     this.versions.set(uri, version);
     return uri;

@@ -546,22 +546,37 @@ export class TelegramPoller {
           if (callback) {
             const chat = callback.message?.chat;
             if (chat?.id !== undefined) this.seenChats.set(String(chat.id), chat.title || callback.from?.first_name || String(chat.id));
-            if (!callback.data || chat?.id === undefined) continue;
-            if (this.options.chatId !== '*' && String(chat.id) !== String(this.options.chatId)) continue;
-            if (callback.from?.is_bot) continue;
-            const from = callback.from?.first_name || callback.from?.username || 'telegram user';
-            try {
-              const notice = await this.options.onCallback?.(from, callback.data, String(chat.id), callback.id, callback.message?.message_id);
-              await callTelegram(
-                fetchImpl,
-                this.options.token,
-                'answerCallbackQuery',
-                { callback_query_id: callback.id, text: String(notice || 'Recorded').slice(0, 180), show_alert: false },
-                this.controller.signal,
-              );
-            } catch (err) {
-              this.options.onError?.(`cowork telegram callback failed: ${(err as Error).message}`);
+            const signal = this.controller.signal;
+            const answer = async (text: string): Promise<void> => {
+              try {
+                await callTelegram(
+                  fetchImpl,
+                  this.options.token,
+                  'answerCallbackQuery',
+                  { callback_query_id: callback.id, text: text.slice(0, 180), show_alert: false },
+                  signal,
+                );
+              } catch (err) {
+                this.options.onError?.(`cowork telegram callback failed: ${(err as Error).message}`);
+              }
+            };
+            // Telegram keeps a pressed inline button in its loading state until the
+            // query is answered, so even filtered callbacks get a neutral reply.
+            if (!callback.data || chat?.id === undefined) {
+              await answer('Not actionable');
+              continue;
             }
+            if (this.options.chatId !== '*' && String(chat.id) !== String(this.options.chatId)) {
+              await answer('This chat is not connected to this agent.');
+              continue;
+            }
+            if (callback.from?.is_bot) {
+              await answer('Ignored: callbacks from bots are not processed.');
+              continue;
+            }
+            const from = callback.from?.first_name || callback.from?.username || 'telegram user';
+            const notice = await this.options.onCallback?.(from, callback.data, String(chat.id), callback.id, callback.message?.message_id);
+            await answer(String(notice || 'Recorded'));
             continue;
           }
           const message = update.message;

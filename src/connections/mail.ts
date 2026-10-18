@@ -360,8 +360,21 @@ export class MailConnections {
     const cached = this.detections.get(domain);
     if (cached && Date.now() - cached.at < DETECT_CACHE_MS) return cached.value;
     const value = await this.discover(address).catch((): MailDiscovery => ({ domain, source: 'none', found: false }));
+    this.pruneDetections();
     this.detections.set(domain, { at: Date.now(), value });
     return value;
+  }
+
+  /** Discovery domains come from untrusted user input, so the cache must stay
+   * bounded: expired entries go first, then (insertion) oldest when still
+   * over the cap. */
+  private pruneDetections(): void {
+    if (this.detections.size < 512) return;
+    const now = Date.now();
+    for (const [key, entry] of this.detections) {
+      if (now - entry.at >= DETECT_CACHE_MS) this.detections.delete(key);
+    }
+    while (this.detections.size >= 512) this.detections.delete(this.detections.keys().next().value!);
   }
 
   async accounts(): Promise<MailAccount[]> {

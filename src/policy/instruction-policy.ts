@@ -27,17 +27,28 @@ function normalizePath(p: string): string {
   return p.replace(/\\/g, '/').toLowerCase();
 }
 
+/** Collapse syntactic noise so the same path written differently compares
+ *  equal: empty, "." and inner "x/.." segments, and duplicate slashes. */
+function canonicalPath(p: string): string {
+  const segments = normalizePath(p).split('/');
+  const collapsed: string[] = [];
+  for (const segment of segments) {
+    if (!segment || segment === '.') continue;
+    if (segment === '..' && collapsed.length > 0 && collapsed[collapsed.length - 1] !== '..') collapsed.pop();
+    else collapsed.push(segment);
+  }
+  return collapsed.join('/');
+}
+
 /** A target path matches a scope entry when it is the entry, lives under it,
  *  or the entry names the target's basename (users say "llm.ts", not the
- *  full path). */
+ *  full path). Matching is segment-aware: substring-comparing raw strings
+ *  let "src/./x" bypass a deny of "src/x" and made an allow entry "src"
+ *  match "src-anything/file.ts". */
 function pathMatchesScope(normalizedTarget: string, scopeEntry: string): boolean {
-  const entry = normalizePath(scopeEntry);
-  return (
-    normalizedTarget === entry ||
-    normalizedTarget.endsWith('/' + entry) ||
-    normalizedTarget.includes(entry) ||
-    entry.includes(normalizedTarget)
-  );
+  const targetSegments = `/${canonicalPath(normalizedTarget)}/`;
+  const entrySegments = `/${canonicalPath(scopeEntry)}/`;
+  return targetSegments.startsWith(entrySegments) || targetSegments.includes(entrySegments);
 }
 
 function evaluateStructured(

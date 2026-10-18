@@ -217,8 +217,23 @@ export class S3Storage implements StorageAdapter {
     return { id: key, name, folder: true };
   }
   async move(id: string, name: string, parent?: string): Promise<StorageItem> {
-    const source = this.key(id),
-      key = this.key([parent ?? this.prefix, path.posix.basename(name) + '-' + randomUUID().slice(0, 8)].filter(Boolean).join('/'));
+    const source = this.key(id);
+    const stem = path.posix.basename(name);
+    const keyFor = (leaf: string): string => this.key([parent ?? this.prefix, leaf].filter(Boolean).join('/'));
+    // Mirror LocalStorage.move: rename to the requested name; only an object
+    // that already exists gets a collision suffix. Appending it unconditionally
+    // made every rename surface as "report-8f2a1c3d" in listings and downloads.
+    let key = keyFor(stem);
+    for (let attempt = 0; attempt < 8; attempt++) {
+      try {
+        await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }));
+      } catch (error) {
+        const status = (error as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode;
+        if (status === 404) break; // target is free
+        throw error;
+      }
+      key = keyFor(`${stem}-${randomUUID().slice(0, 8)}`);
+    }
     await this.client.send(new CopyObjectCommand({ Bucket: this.bucket, Key: key, CopySource: this.bucket + '/' + source.split('/').map(encodeURIComponent).join('/') }));
     await this.remove(id);
     return { id: key, name: path.posix.basename(key), folder: false };

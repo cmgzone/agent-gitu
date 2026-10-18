@@ -78,7 +78,18 @@ export class ProviderReadCache {
    * Unrelated resources (e.g. databases on another server, other connections) remain intact.
    */
   invalidateForWrite(connectionId: string, resourceType?: string, resourceId?: string): void {
-    const newEpoch = this.advanceStateEpoch(connectionId, resourceType, resourceId);
+    this.advanceStateEpoch(connectionId, resourceType, resourceId);
+    // Evidence is always stamped and read under the wildcard-type key
+    // (`conn:*:{resourceId}` — see get()/record()). When a specific
+    // resourceType is supplied, the bump above only advances
+    // `conn:{type}:{id}`, which the read path never compares against, so
+    // cached data observed before the mutation would stay fresh forever.
+    // Advance that key directly — advanceStateEpoch convenience would also
+    // bump the connection-wide epoch a second time for the same write.
+    if (resourceId) {
+      const readKey = this.epochKey(connectionId, undefined, resourceId);
+      this.remoteStateEpochs.set(readKey, (this.remoteStateEpochs.get(readKey) ?? 1) + 1);
+    }
     const targetConn = connectionId.toLowerCase();
     const targetResource = resourceId?.toLowerCase();
 
@@ -88,8 +99,14 @@ export class ProviderReadCache {
       if (targetResource && ev.resourceId && ev.resourceId.toLowerCase() !== targetResource) {
         continue;
       }
-      // Outdated epoch
-      if (ev.stateEpoch < newEpoch) {
+      // An entry is stale when its stamp predates the current epoch its
+      // holder would read now: same-resource evidence compares against the
+      // bumped wildcard-resource key, resource-agnostic evidence against
+      // the connection-wide epoch (bumped once by the call above).
+      const current = ev.resourceId !== undefined
+        ? this.getStateEpoch(connectionId, undefined, ev.resourceId)
+        : this.getStateEpoch(connectionId);
+      if (ev.stateEpoch < current) {
         this.evidence.delete(key);
       }
     }

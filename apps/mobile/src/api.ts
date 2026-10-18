@@ -18,12 +18,24 @@ export class MuseApi {
       },
       body: body === undefined ? undefined : body instanceof FormData ? body : JSON.stringify(body),
     });
-    const payload = await response.json();
+    // Read as text first: gateways and the server itself can answer failures
+    // with HTML/empty bodies, and response.json() would crash with a raw
+    // SyntaxError before the friendly error could form.
+    const raw = await response.text();
+    let payload: unknown;
+    try {
+      payload = raw ? JSON.parse(raw) : {};
+    } catch {
+      if (!response.ok) throw new Error(`Request failed (${response.status})`);
+      throw new Error("The workspace returned an unreadable response.");
+    }
     if (!response.ok)
       throw new Error(
-        typeof payload.error === "string" ? payload.error : `Request failed (${response.status})`,
+        payload && typeof payload === "object" && typeof (payload as { error?: unknown }).error === "string"
+          ? ((payload as { error: string }).error)
+          : `Request failed (${response.status})`,
       );
-    return payload;
+    return payload as T;
   }
   url(path: string) {
     return path.startsWith("http") ? path : `${API_URL}${path}`;
@@ -38,7 +50,13 @@ export async function createSession(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ accessKey }),
   });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.error || "Could not open your workspace.");
-  return payload;
+  const raw = await response.text();
+  let payload: { error?: unknown; token?: string; mode?: string };
+  try {
+    payload = raw ? JSON.parse(raw) : {};
+  } catch {
+    throw new Error(response.ok ? "The workspace returned an unreadable response." : "Could not open your workspace.");
+  }
+  if (!response.ok) throw new Error(typeof payload.error === "string" ? payload.error : "Could not open your workspace.");
+  return payload as { token: string; mode: "sample" | "live" };
 }

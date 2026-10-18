@@ -32,6 +32,39 @@ function randomSuffix(): string {
   return Math.random().toString(36).slice(2, 8);
 }
 
+/** Providers that accept the TCP connection but never respond must not hang
+ * the invocation (and its verification read-back) indefinitely; every other
+ * network path in the codebase uses ~15 s caps. */
+const HTTP_TIMEOUT_MS = 15_000;
+
+/** GraphQL field/input names must match [_A-Za-z][_0-9A-Za-z]*. */
+function safeGraphQlName(name: string): string {
+  const sanitized = name.replace(/[^_A-Za-z0-9]/g, '_').replace(/^([^_A-Za-z])/, '_$1');
+  return /^[A-Za-z_]/.test(sanitized) ? sanitized : `_${sanitized}`;
+}
+
+/** Inline a value as a syntactically valid GraphQL input literal. The old
+ * implementation inlined raw JSON.stringify output — String literals where an
+ * enum input is expected and quoted-key object literals are both parse
+ * errors, so capabilities with enum/object inputs could never execute. */
+function graphqlLiteral(value: unknown, input?: CapabilityInput): string {
+  if (value === null || value === undefined) return 'null';
+  if (typeof value === 'boolean') return String(value);
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'null';
+  if (typeof value === 'string') {
+    // Schema-declared enums arrive as strings and must be inlined unquoted.
+    if (input?.enumValues && input.enumValues.includes(value)) return value;
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) return `[${value.map((item) => graphqlLiteral(item)).join(', ')}]`;
+  if (typeof value === 'object') {
+    return `{ ${Object.entries(value as Record<string, unknown>)
+      .map(([key, item]) => `${safeGraphQlName(key)}: ${graphqlLiteral(item)}`)
+      .join(', ')} }`;
+  }
+  return 'null';
+}
+
 export class UniversalExecutor {
   constructor(private options: ExecutorOptions) {
     if (!options.broker) throw new Error('UniversalExecutor requires a CredentialBroker — execution without broker-mediated credentials is forbidden.');
@@ -116,7 +149,7 @@ export class UniversalExecutor {
     const { url, body } = this.buildUrl(capability, operation.pathTemplate, params);
     const { headers, secrets } = await this.authenticatedHeaders();
     const fetchImpl = this.options.fetchImpl ?? fetch;
-    const response = await fetchImpl(url, { method: operation.method, headers, body: operation.method === 'GET' || operation.method === 'DELETE' || Object.keys(body).length === 0 ? undefined : JSON.stringify(body) });
+    const response = await fetchImpl(url, { method: operation.method, headers, body: operation.method === 'GET' || operation.method === 'DELETE' || Object.keys(body).length === 0 ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) });
     const text = await response.text();
     const safeText = scrub(text, secrets);
     let data: unknown;
@@ -134,11 +167,13 @@ export class UniversalExecutor {
   private async executeGraphQl(capability: Capability, operation: Extract<Capability['externalOperation'], { protocol: 'graphql' }>, params: Record<string, unknown>, fingerprint: string): Promise<ExecutionOutcome> {
     const endpoint = this.options.graphqlEndpoint ?? this.options.baseUrl;
     const { headers, secrets } = await this.authenticatedHeaders();
-    const args = Object.entries(params).map(([name, value]) => `${name}: ${JSON.stringify(value)}`).join(', ');
+    const args = Object.entries(params)
+      .map(([name, value]) => `${safeGraphQlName(name)}: ${graphqlLiteral(value, capability.inputs.find((input) => input.externalName === name))}`)
+      .join(', ');
     const selections = capability.outputs.length > 0 ? capability.outputs.map((o) => o.externalName).join(' ') : '__typename';
     const query = `${operation.operationType} { ${operation.field}${args ? `(${args})` : ''} { ${selections} } }`;
     const fetchImpl = this.options.fetchImpl ?? fetch;
-    const response = await fetchImpl(endpoint, { method: 'POST', headers, body: JSON.stringify({ query, variables: {} }) });
+    const response = await fetchImpl(endpoint, { method: 'POST', headers, body: JSON.stringify({ query, variables: {} }), signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) });
     const text = await response.text();
     const safeText = scrub(text, secrets);
     let payload: { data?: unknown; errors?: { message?: string }[] } | undefined;

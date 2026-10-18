@@ -145,10 +145,18 @@ describe('native Cowork execution', () => {
       await input.onEvent('item/started', { item: { id: 'cmd-1', type: 'commandExecution' } });
       expect((await input.onRequest('item/commandExecution/requestApproval', {}))['decision']).toBe('decline');
       expect((await input.onRequest('item/fileChange/requestApproval', {}))['decision']).toBe('decline');
+      const recovered = await input.onRequest('item/tool/call', {
+        turnId: 'native-turn',
+        callId: 'recovered-read',
+        tool: 'read_file',
+        arguments: { path: 'a.txt' },
+      });
+      expect(recovered['success']).toBe(true);
+      expect(JSON.stringify(recovered)).toContain('Before');
       await finish(input);
     });
     expect((await f.run()).text).toBe('Done.');
-    expect(f.onTool).not.toHaveBeenCalled();
+    expect(f.onTool).toHaveBeenCalledTimes(1);
     expect(f.steer).toHaveBeenCalledTimes(1);
     expect(String(f.steer.mock.calls[0]![0])).toContain('guarded functions');
     expect(f.runTurn).toHaveBeenCalledTimes(1);

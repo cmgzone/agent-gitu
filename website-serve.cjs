@@ -45,7 +45,14 @@ const server = http.createServer((req, res) => {
   fs.readFile(file, (err, buf) => {
     if (err) {
       res.writeHead(404, { 'content-type': 'text/html; charset=utf-8' });
-      return res.end(req.method === 'HEAD' ? undefined : fs.readFileSync(path.join(root, '404.html')));
+      // A missing 404.html (fresh checkout, partial build) must not crash the
+      // dev server from inside the response callback — serve a fallback page.
+      const notFound = () => res.end(req.method === 'HEAD' ? undefined : '<!doctype html><title>404</title><h1>404 — not found</h1><p><a href="/">Back to the site</a></p>');
+      fs.readFile(path.join(root, '404.html'), (notFoundErr, notFoundBuf) => {
+        if (notFoundErr) return notFound();
+        res.end(req.method === 'HEAD' ? undefined : notFoundBuf);
+      });
+      return;
     }
     res.writeHead(200, {
       'content-type': types[path.extname(file).toLowerCase()] || 'application/octet-stream',

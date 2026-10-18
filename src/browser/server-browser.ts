@@ -1,4 +1,4 @@
-import { chromium, type BrowserContext, type Page } from 'playwright';
+import { chromium, type BrowserContext, type CDPSession, type Page } from 'playwright';
 import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { BrowserBridge, BrowserState, BrowserScreenshot } from './browser.js';
@@ -14,6 +14,8 @@ export class ServerBrowser implements BrowserBridge {
   private opening?: Promise<Page>;
   private control: 'agent' | 'user' = 'agent';
   private current: BrowserState = { available: true, url: '', title: '', canBack: false, canForward: false, loading: false };
+  private cdp?: CDPSession;
+  private cdpPage?: Page;
   constructor(private readonly profile: string) {
     const file = path.join(profile, 'gitu-control.json');
     if (existsSync(file)) {
@@ -58,7 +60,25 @@ export class ServerBrowser implements BrowserBridge {
     if (this.control === 'user') throw new Error('The owner controls this browser. Wait until control is returned.');
   }
   private async update(page: Page): Promise<BrowserState> {
-    this.current = { available: true, url: page.url(), title: await page.title(), canBack: false, canForward: false, loading: false };
+    let canBack = false;
+    let canForward = false;
+    try {
+      // Playwright exposes no history position of its own; CDP does (the
+      // server browser is Chromium-only by design). These flags drive the
+      // navigation affordances in the agent bridge, so the previous
+      // hardcoded `false` made history look permanently unavailable.
+      const cdp = this.cdp && this.cdpPage === page ? this.cdp : await page.context().newCDPSession(page);
+      if (this.cdp !== cdp) {
+        this.cdp = cdp;
+        this.cdpPage = page;
+      }
+      const nav = (await cdp.send('Page.getNavigationHistory')) as { currentIndex: number; entries: unknown[] };
+      canBack = nav.currentIndex > 0;
+      canForward = nav.currentIndex < nav.entries.length - 1;
+    } catch {
+      /* history probing is best-effort; state still reports url/title */
+    }
+    this.current = { available: true, url: page.url(), title: await page.title(), canBack, canForward, loading: false };
     return this.state();
   }
   private async mutate(action: (p: Page) => Promise<unknown>): Promise<BrowserState> {
@@ -132,6 +152,9 @@ export class ServerBrowser implements BrowserBridge {
     return this.update(page);
   }
   async close(): Promise<void> {
+    try { await this.cdp?.detach(); } catch { /* session already gone */ }
+    this.cdp = undefined;
+    this.cdpPage = undefined;
     await this.opening?.catch(() => {});
     await this.context?.close();
     this.context = undefined;

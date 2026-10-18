@@ -154,7 +154,13 @@ export class LiveKitCloudWorker {
       const values = Object.fromEntries((settings.params ?? []).map(item => [item.name, item.value]));
       const regions = (values.available_regions || 'us-east').split(',').map(value => value.trim()).filter(Boolean);
       const warnings = (values.residency_warning_regions ?? '').split(',');
-      const region = regions.find(value => value === values.project_data_region) ?? regions.find(value => !warnings.includes(value)) ?? regions[0]!;
+      // A whitespace-only configured list must not send `[null]` to CreateAgent
+      // (a list element serializes as null when undefined) — that surfaces as an
+      // opaque provider 400; fall back to the built-in default region instead.
+      const region = regions.find(value => value === values.project_data_region)
+        ?? regions.find(value => !warnings.includes(value))
+        ?? regions[0]
+        ?? 'us-east';
       upload = await rpc<Upload>('CreateAgent', { secrets: [secret], regions: [region] });
       if (!upload.agentId) throw new CloudSetupError('LiveKit did not return a voice deployment. Retry setup.');
       record = { url: config.url, name: config.agentName, agentId: upload.agentId };

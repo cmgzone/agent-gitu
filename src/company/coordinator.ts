@@ -9,6 +9,7 @@ export class CompanyCoordinator {
   private timer?: ReturnType<typeof setInterval>;
   private cursor = 0;
   private stopped = false;
+  private leaseHeld = false;
   constructor(
     private readonly store: CompanyStore,
     private readonly execute: (job: CompanyJob) => Promise<void>,
@@ -20,6 +21,7 @@ export class CompanyCoordinator {
     if (this.timer) return;
     this.stopped = false;
     if (!this.store.acquireScheduler(this.owner)) throw new Error('Another company scheduler is using this data directory.');
+    this.leaseHeld = true;
     this.store.recover();
     this.prepare(true);
     this.tick();
@@ -40,6 +42,7 @@ export class CompanyCoordinator {
     if (this.stopped) return;
     try {
       if (!this.store.acquireScheduler(this.owner)) {
+        this.leaseHeld = false;
         this.stop();
         this.onLeaseLost();
         this.onError(new Error('Company scheduler ownership was lost. Work has been interrupted.'));
@@ -67,11 +70,24 @@ export class CompanyCoordinator {
           this.active.set(job.id, job);
           running++;
           const task = this.execute(job)
-            .then(() => this.store.finishJob(job, 'done'))
+            .then(() => {
+              // After the lease is lost the store belongs to another scheduler:
+              // in-flight completions must stop writing to it.
+              if (this.leaseHeld) this.store.finishJob(job, 'done');
+            })
             .catch((error) => {
-              const paused = this.store.get(job.companyId)?.state !== 'running';
+              if (!this.leaseHeld) return;
+              const company = this.store.get(job.companyId);
               const deferred = error instanceof Error && error.message === 'Company lead is still working.';
-              this.store.finishJob(job, paused || deferred ? 'queued' : 'failed', paused || deferred ? undefined : 'Company work failed. See the work transcript.');
+              if (!company) {
+                // A deleted company would leave the job queued forever (nothing
+                // ever claims it again) — record the dead end instead.
+                this.store.finishJob(job, 'failed', 'The company was deleted while this work ran. It can no longer resume.');
+                this.onError(error);
+                return;
+              }
+              const resume = company.state !== 'running' || deferred;
+              this.store.finishJob(job, resume ? 'queued' : 'failed', resume ? undefined : 'Company work failed. See the work transcript.');
               if (!deferred) this.onError(error);
             })
             .finally(() => {

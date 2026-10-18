@@ -202,6 +202,11 @@ export class Executor {
    * of unchanged files without filesystem I/O or loop-prevention failures.
    */
   readonly readCache = new Map<string, { output: string; contextFingerprint: string; timestamp: number }>();
+  /** Groups cache keys by the resolved path they were read from: cache keys
+   * hash the read parameters, so a write's path can never substring-match a
+   * key — without this index the only eviction below never fired and every
+   * distinct read snapshot stayed in memory for the process lifetime. */
+  readonly readCacheByPath = new Map<string, Set<string>>();
 
   noteCompaction(actionId?: string): void {
     if (typeof (this.loopDetector as unknown as { noteCompaction?: (id?: string) => void }).noteCompaction === 'function') {
@@ -259,6 +264,17 @@ export class Executor {
         ...readFileOptions(req.params),
       };
       return stat.isFile() ? `${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}:${hashParams('read_file_request', readParams)}` : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Resolved absolute path backing a read/write cache index entry — the
+   * same resolution both the fingerprint and the eviction path use. */
+  private readCachePathKey(req: ExecuteRequest): string | undefined {
+    if (typeof req.params['path'] !== 'string') return undefined;
+    try {
+      return this.guard.resolve(req.params['path']);
     } catch {
       return undefined;
     }
@@ -773,12 +789,20 @@ export class Executor {
         contextFingerprint: readContextFingerprint,
         timestamp: Date.now(),
       });
+      const readPath = this.readCachePathKey(req);
+      if (readPath) {
+        const keys = this.readCacheByPath.get(readPath) ?? new Set<string>();
+        keys.add(readContextFingerprint);
+        this.readCacheByPath.set(readPath, keys);
+      }
     }
     if ((req.tool === 'write_file' || req.tool === 'apply_edit') && result.ok) {
-      const changedPath = typeof req.params['path'] === 'string' ? normalizeToolPath(req.params['path']) : undefined;
+      const changedPath = typeof req.params['path'] === 'string' ? this.readCachePathKey(req) : undefined;
       if (changedPath) {
-        for (const [key] of this.readCache) {
-          if (key.includes(changedPath)) this.readCache.delete(key);
+        const keys = this.readCacheByPath.get(changedPath);
+        if (keys) {
+          for (const key of keys) this.readCache.delete(key);
+          this.readCacheByPath.delete(changedPath);
         }
       }
     }

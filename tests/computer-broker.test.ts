@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ComputerBroker, createComputerBrokerServer } from '../src/cowork/computer-broker.js';
-import { MAX_COMPUTER_MESSAGE_BYTES, computerCreateArgs, computerExec, type ComputerExec } from '../src/cowork/computer.js';
+import { computerCreateArgs, computerExec, type ComputerExec } from '../src/cowork/computer.js';
 
 const owner = 'test-workspace-owner';
 const name = 'gitu-cowork-' + 'a'.repeat(24);
@@ -35,7 +35,7 @@ describe('private desktop broker', () => {
       const returned = await computerExec(args, payload);
       expect(Buffer.from(JSON.parse(returned).params.data, 'base64').length).toBe(20_000_000);
       expect(returned === payload).toBe(true);
-      await expect(new ComputerBroker(owner, exec).execute(args, 'x'.repeat(MAX_COMPUTER_MESSAGE_BYTES + 1))).rejects.toThrow('input');
+      await expect(new ComputerBroker(owner, exec).execute(args, { invalid: 'input' })).rejects.toThrow('input');
     } finally {
       vi.unstubAllEnvs(); server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));

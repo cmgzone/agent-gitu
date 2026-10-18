@@ -54,6 +54,19 @@ Give the broker `AGENT_GITU_COMPUTER_BROKER_OWNER` (a stable workspace ID) and
 Give the web app the same private key and
 `AGENT_GITU_COMPUTER_BROKER_URL=http://your-private-broker-name:8787`.
 
+Redeploy the broker and web application from the same Git revision. Update the
+broker first when the desktop image changes. The broker deliberately rejects
+images outside its bundled version; updating only the web app can produce
+`Unsupported desktop operation: build -t agent-gitu-cowork:...` even while both
+applications have healthy containers. A restart alone keeps the old broker code.
+Keep the existing broker owner, shared key, socket mount, and web data volume.
+
+After updating, run `node /app/deploy/verify-computer-broker.mjs` inside the
+broker, or temporarily use it as its Coolify post-deployment command. It starts
+a separate test desktop, verifies the worker user, screenshot, browser and
+authenticated stream, then stops that test desktop. The first run may build the
+desktop image. This leaves existing teammates and their saved files untouched.
+
 The broker is a privileged control service because it uses the Docker socket;
 keep it private and trusted. Its API accepts only the bundled desktop image,
 bounded unprivileged containers with private volumes, and lifecycle/exec

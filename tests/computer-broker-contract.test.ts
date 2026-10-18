@@ -2,10 +2,10 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 import { ComputerBroker } from '../src/cowork/computer-broker.js';
-import { CoworkComputer, computerCreateArgs, type ComputerExec } from '../src/cowork/computer.js';
+import { COWORK_COMPUTER_IMAGE, CoworkComputer, type ComputerExec } from '../src/cowork/computer.js';
 
 describe('computer broker operation contract', () => {
-  it('records every operation the client sends during start()', async () => {
+  it('provisions the current desktop image through the broker allowlist', async () => {
     const owner = 'workspace_owner';
     const sent: string[][] = [];
     const exec: ComputerExec = async (args) => {
@@ -21,16 +21,13 @@ describe('computer broker operation contract', () => {
     const computer = new CoworkComputer('scratch-agent', path.join(tmpdir(), 'scratch-home'), (args, input, signal, timeoutMs) =>
       broker.execute(args, input, timeoutMs, signal),
     );
-    let failure: string | undefined;
-    try {
-      await computer.start();
-    } catch (error) {
-      failure = (error as Error).message;
-    }
-    console.log('OPERATIONS SENT:');
-    for (const args of sent) console.log('  ' + JSON.stringify(args));
-    console.log('CREATE ARGS MATCH WHITELIST:', JSON.stringify(computerCreateArgs(computer.name)) === JSON.stringify(computerCreateArgs(computer.name)));
-    console.log('FAILURE:', failure ?? '(none)');
-    expect(sent.length).toBeGreaterThan(0);
+    await expect(computer.start()).resolves.toBeUndefined();
+    expect(computer.status().state).toBe('running');
+    expect(sent).toContainEqual(['image', 'inspect', COWORK_COMPUTER_IMAGE]);
+    expect(sent.find(args => args[0] === 'build')?.slice(0, 3)).toEqual(['build', '-t', COWORK_COMPUTER_IMAGE]);
+    const created = sent.find(args => args[0] === 'create');
+    expect(created).toContain('dev.agentgitu.broker=' + owner);
+    expect(created?.at(-1)).toBe(COWORK_COMPUTER_IMAGE);
+    expect(sent).toContainEqual(['start', computer.name]);
   });
 });

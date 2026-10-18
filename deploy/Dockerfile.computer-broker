@@ -18,6 +18,7 @@ COPY --from=build /app/dist ./dist
 COPY --from=build /app/node_modules/ws ./node_modules/ws
 COPY package.json ./
 COPY assets/cowork-computer ./assets/cowork-computer
+COPY deploy/verify-computer-broker.mjs ./deploy/verify-computer-broker.mjs
 EXPOSE 8787
 HEALTHCHECK --interval=30s --timeout=20s --start-period=10s --retries=3 CMD node -e "fetch('http://127.0.0.1:8787/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 ENTRYPOINT ["/usr/bin/tini", "--"]

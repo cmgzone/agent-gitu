@@ -4,6 +4,7 @@ import { sanitizeWidgetApp, widgetState } from './widget-app.js';
 import { ensureGituHome } from '../workspace/home.js';
 import { roleAppSuggestions, type AppSuggestion } from './app-recommendations.js';
 import { sanitizeAgentProfile, type AgentProfileSettings } from './profile-config.js';
+import { requiresMessageReview } from '../connections/provider.js';
 
 /**
  * Cowork mode: a small team of named agent profiles the user chats with
@@ -454,7 +455,7 @@ function sanitizeAppAction(value: unknown): CoworkAppAction | undefined {
   const action = value as Partial<CoworkAppAction>;
   if (typeof action.service !== 'string' || !/^[a-z][a-z0-9_-]{0,63}$/i.test(action.service) || typeof action.tool !== 'string' || !/^[\w-]{1,180}$/.test(action.tool) || typeof action.accountId !== 'string' || !action.accountId || action.accountId.length > 512 || !action.args || typeof action.args !== 'object' || Array.isArray(action.args)) return undefined;
   const text = JSON.stringify({ service: action.service, accountId: action.accountId, tool: action.tool, args: action.args });
-  return text.length <= 16000 ? JSON.parse(text) as CoworkAppAction : undefined;
+  return text.length <= 262144 ? JSON.parse(text) as CoworkAppAction : undefined;
 }
 
 /** Also understands saved cards created before structured action metadata. */
@@ -478,6 +479,8 @@ export interface CoworkRequest {
   detail: string;
   /** Full review payload, separate from the bounded description. */
   appAction?: CoworkAppAction;
+  /** Authenticated user edits; the original proposal remains bound to its approval. */
+  reviewedAction?: CoworkAppAction;
   /** Optional app suggestion, not a blocking question or an execution grant. */
   appConnection?: AppSuggestion;
   options: string[];
@@ -1926,6 +1929,7 @@ export class CoworkStore {
   allowAppActionForRequest(requestId: string): CoworkAppPermission {
     const request = this.getRequest(requestId);
     const action = request && coworkRequestAppAction(request);
+    if (action && requiresMessageReview(action.service, action.tool)) throw new Error('Email messages require review each time');
     if (!request || request.status !== 'open' || !action || !this.getAgent(request.agentId) || !this.appAccountAssigned(request.agentId, action.service, action.accountId)) throw new Error('A complete open review for an assigned app is required');
     const data = this.load();
     const permissions = data.appPermissions ??= [];
@@ -1953,9 +1957,17 @@ export class CoworkStore {
     this.save();
   }
 
-  resolveRequest(id: string, status: Exclude<CoworkRequest['status'], 'open'>, response?: string): CoworkRequest | undefined {
+  resolveRequest(id: string, status: Exclude<CoworkRequest['status'], 'open'>, response?: string, review?: { args?: unknown; saveDraft?: boolean }): CoworkRequest | undefined {
     const request = this.getRequest(id);
     if (!request || request.status !== 'open') return undefined;
+    if (review) {
+      const original = coworkRequestAppAction(request);
+      if (!original || status !== 'accepted') throw new Error('Only an accepted app action can be edited');
+      if (review.saveDraft && (original.service !== 'mail' || original.tool !== 'mail_send')) throw new Error('Save draft requires a native mailbox send proposal');
+      const reviewed = sanitizeAppAction({ ...original, args: review.args === undefined ? original.args : review.args, tool: review.saveDraft ? 'mail_save_draft' : original.tool });
+      if (!reviewed) throw new Error('Provide valid action fields (maximum 256 KiB)');
+      request.reviewedAction = reviewed;
+    }
     request.status = status;
     request.response = response?.trim() || undefined;
     request.resolvedAt = new Date().toISOString();

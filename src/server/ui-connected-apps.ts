@@ -33,7 +33,7 @@ export const CONNECTED_APPS_JS = String.raw`
     return {
       cancel:function(){if(tab)try{tab.close();}catch(e){}},
       open:async function(value){
-        var url=new URL(value);if(url.protocol!=='https:'||url.username||url.password||['connect.composio.dev','backend.composio.dev'].indexOf(url.hostname)<0)throw new Error('Invalid sign-in link');
+        var url=new URL(value);if(url.protocol!=='https:'||url.username||url.password||url.port||['connect.composio.dev','backend.composio.dev'].indexOf(url.hostname)<0)throw new Error('Invalid sign-in link');
         if(desktop&&typeof desktop.openAppSignIn==='function')return await desktop.openAppSignIn(url.href);
         if(tab&&!tab.closed){tab.location.replace(url.href);return true;}
         return false;
@@ -141,8 +141,9 @@ export const CONNECTED_APPS_JS = String.raw`
     }).catch(function(){}).finally(function(){cw.appConnectionsLoading=false;});
   }
   function cwServiceStatus(status, disabled) {
+    if(status==='UNKNOWN'||status==='UNAVAILABLE')return 'Status unavailable · refresh to check';
     if(disabled)return 'Disconnected';
-    return ({ACTIVE:'Connected',EXPIRED:'Reconnect needed',REVOKED:'Disconnected',INACTIVE:'Disconnected',INITIATED:'Waiting for sign-in',INITIALIZING:'Waiting for sign-in',FAILED:'Connection failed'})[status] || 'Not connected';
+    return ({ACTIVE:'Connected',EXPIRED:'Reconnect needed',REVOKED:'Disconnected',INACTIVE:'Disconnected',PENDING:'Waiting for sign-in',INITIATED:'Waiting for sign-in',INITIALIZING:'Waiting for sign-in',FAILED:'Connection failed'})[status] || 'Not connected';
   }
   function cwServiceIcon(service) {
     var name=String(service.name||service.toolkit||service.slug||'App'),logo='';
@@ -205,6 +206,7 @@ export const CONNECTED_APPS_JS = String.raw`
       var browse=services.filter(function(service){return !suggestions.has(service.slug)&&cwServiceMatches(service,search);}),agent=(data.agents||cw.agents||[]).find(function(a){return a.id===agentId;});
       content.innerHTML=(suggestions.size?'<section class="cw-service-section" aria-label="Suggested apps"><h2>Suggested for '+esc(agent?agent.name:'this teammate')+'</h2>'+rows(Array.from(suggestions.values()).map(appRow))+'</section>':'')+'<section class="cw-service-section" aria-label="Browse apps"><h2>Browse apps</h2>'+ (browse.length?rows(browse.map(appRow)):suggestions.size?'':'<p>No apps match your search.</p>')+(cw.servicesCursor?'<button class="btn ghost cw-service-more" id="cwServicesMore">Load more apps</button>':'')+'</section>';
     }
+    if(data.accountStatusIncomplete||data.catalogUnavailable)content.innerHTML='<p class="cw-services-error" role="status">'+(data.accountStatusIncomplete?'Some account statuses could not be checked. Saved access is preserved. ':'')+(data.catalogUnavailable?'The app catalog is unavailable. Your connected accounts are still listed in Connected. ':'')+'Refresh to try again.</p>'+content.innerHTML;
     cwBindServiceIcons(content);cwBindAppPermissions(content);cwBindServiceActions(content,agentId);cwInsertMail(content,agentId);
     var moreButton=$('cwServicesMore');if(moreButton)moreButton.onclick=function(){moreButton.disabled=true;cwLoadServices(cw.servicesSearch||'',true);};
   }
@@ -258,7 +260,9 @@ export const CONNECTED_APPS_JS = String.raw`
       var controls = connected
         ? action('data-cwmaildisconnect', account.id, 'Remove this teammate access', 'close') + action('data-cwmailforget', account.id, 'Delete this saved mailbox', 'trash')
         : action('data-cwmailassign', account.id, 'Give this teammate access', 'plus') + action('data-cwmailforget', account.id, 'Delete this saved mailbox', 'trash');
-      return '<article class="cw-service-row" data-cwmailrow="' + esc(account.id) + '"><div class="cw-service-symbol" aria-hidden="true"><span>' + esc(label.slice(0, 1).toUpperCase()) + '</span></div><div class="cw-service-copy"><h3>' + esc(label) + '</h3><p>' + esc(account.address || '') + '</p><small class="cw-service-status' + (connected ? ' connected' : '') + '">' + (connected ? 'Connected for this teammate' : 'Saved - assign to give access') + '</small></div>' + controls + '</article>';
+      var watch = mail.watching && mail.watching[account.id], status = account.watchInbox === false ? 'New email notifications paused' : watch && watch.state === 'listening' ? 'Listening for new email' : watch && watch.state === 'polling' ? 'Checking for new email · server has no push support' : watch && watch.state === 'reconnecting' ? 'Reconnecting to inbox…' : 'New email notifications enabled';
+      var toggle = connected ? '<label class="cw-mail-check"><input type="checkbox" data-cwmailwatch="' + esc(account.id) + '"' + (account.watchInbox !== false ? ' checked' : '') + '> React to new email</label><small role="status">' + esc(status) + '</small>' : '';
+      return '<article class="cw-service-row" data-cwmailrow="' + esc(account.id) + '"><div class="cw-service-symbol" aria-hidden="true"><span>' + esc(label.slice(0, 1).toUpperCase()) + '</span></div><div class="cw-service-copy"><h3>' + esc(label) + '</h3><p>' + esc(account.address || '') + '</p><small class="cw-service-status' + (connected ? ' connected' : '') + '">' + (connected ? 'Connected for this teammate' : 'Saved - assign to give access') + '</small>' + toggle + '</div>' + controls + '</article>';
     };
     var options = providers.map(function (provider) { return '<option value="' + esc(provider.id) + '">' + esc(provider.name) + '</option>'; }).join('');
     var form = '<form class="cw-provider-form cw-mail-form" id="cwMailForm" hidden novalidate>'
@@ -276,7 +280,7 @@ export const CONNECTED_APPS_JS = String.raw`
       + '<label class="cw-mail-check"><input id="cwMailSmtpSecure" type="checkbox" checked> Implicit TLS (usually 465)</label>'
       + '<label class="cw-mail-check"><input id="cwMailSelfSigned" type="checkbox"> Allow a self-signed certificate</label>'
       + '<label for="cwMailUsername">Username (only if it differs from the address)</label><input id="cwMailUsername" type="text" autocomplete="username">'
-      + '</details><button class="btn dark" type="submit">Connect mailbox</button><p id="cwMailError" role="alert" class="cw-services-error" hidden></p></form>';
+      + '</details><label class="cw-mail-check"><input id="cwMailWatch" type="checkbox" checked> React when new email arrives</label><button class="btn dark" type="submit">Connect mailbox</button><p id="cwMailError" role="alert" class="cw-services-error" hidden></p></form>';
     var saved = available.length ? '<h3 class="cw-mail-subhead">Saved mailboxes</h3><div class="cw-service-grid">' + available.map(function (account) { return row(account, false); }).join('') + '</div>' : '';
     return '<section class="cw-service-section cw-mail-section" aria-label="Email"><h2>Email</h2><p>' + (scope ? 'Connect a company mailbox over IMAP/SMTP. Choose team access above; existing permission rules still apply.' : 'Connect any mailbox over IMAP/SMTP - hosted or self-hosted. Only the selected teammate can use it.') + '</p>'
       + (assigned.length ? '<div class="cw-service-grid">' + assigned.map(function (account) { return row(account, true); }).join('') + '</div>' : '') + saved
@@ -291,6 +295,12 @@ export const CONNECTED_APPS_JS = String.raw`
   function cwBindMail(root, agentId, scope) {
     var cw = scope ? scope.state : cwEnsure(), request = scope ? scope.request : api;
     function reload(){if(scope)scope.reload();else cwLoadServices(cw.servicesSearch || '', false);}
+    root.querySelectorAll('[data-cwmailwatch]').forEach(function(input){input.onchange=async function(){
+      var enabled=input.checked;input.disabled=true;
+      try{await request('/api/connected-apps/mail/watch',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({accountId:input.getAttribute('data-cwmailwatch'),enabled:enabled})});reload();}
+      catch(error){input.checked=!enabled;toast('Could not update mailbox notifications. Try again.',true);}
+      finally{input.disabled=false;}
+    };});
     var find = function (id) { return typeof root.querySelector === 'function' ? root.querySelector('#' + id) : null; };
     var form = find('cwMailForm');
     if (!form) return;
@@ -386,7 +396,7 @@ export const CONNECTED_APPS_JS = String.raw`
         agentId: agentId, provider: provider ? provider.value : undefined, address: value('cwMailAddress'), password: password ? password.value || '' : '', label: value('cwMailLabel'), username: value('cwMailUsername') || undefined,
         imapHost: value('cwMailImapHost') || (preset ? preset.imap.host : ''), imapPort: Number(value('cwMailImapPort')) || (preset ? preset.imap.port : 0), imapSecure: checked('cwMailImapSecure'),
         smtpHost: value('cwMailSmtpHost') || (preset ? preset.smtp.host : ''), smtpPort: Number(value('cwMailSmtpPort')) || (preset ? preset.smtp.port : 0), smtpSecure: checked('cwMailSmtpSecure'),
-        allowSelfSigned: checked('cwMailSelfSigned')
+        allowSelfSigned: checked('cwMailSelfSigned'), watchInbox: !find('cwMailWatch') || checked('cwMailWatch')
       };
       if (error) error.hidden = true;
       if (button) button.disabled = true;

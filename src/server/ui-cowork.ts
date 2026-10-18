@@ -387,6 +387,10 @@ export const COWORK_CSS = String.raw`
   .cw-action-fields dt { color: var(--muted); overflow-wrap: anywhere; }
   .cw-action-fields dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
   .cw-action-fields .cw-action-fields { margin: 0; }
+  .cw-action-editor { display:grid; gap:12px; margin:14px 0; }
+  .cw-action-editor label { display:grid; gap:5px; font-size:12px; color:var(--muted); }
+  .cw-action-editor textarea { width:100%; box-sizing:border-box; resize:vertical; min-height:38px; max-height:60vh; border:0; border-radius:12px; padding:10px 12px; background:rgba(140,160,180,.1); color:var(--text); font:inherit; line-height:1.55; }
+  .cw-action-editor textarea:focus { outline:2px solid var(--accent); outline-offset:2px; }
   .cw-action-values { margin: 0; padding-left: 18px; }
   .cw-action-values li + li { margin-top: 4px; }
   .cw-action-account { margin-top: 8px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
@@ -1784,13 +1788,26 @@ export const COWORK_JS = String.raw`
     var payload = request.appAction;
     if (payload === undefined) try { payload = JSON.parse(request.detail.slice(heading[0].length).split(/\r?\n/)[0]); } catch (e) {}
     var valid = payload && payload.service === service && payload.tool === tool && typeof payload.accountId === 'string' && payload.accountId && payload.args && typeof payload.args === 'object' && !Array.isArray(payload.args);
+    var messageReview = service === 'mail' ? tool === 'mail_send' || tool === 'mail_save_draft' : /^(gmail|outlook|outlookemail|outlook365|office365|microsoftoutlook)$/i.test(service) && /(?:SEND|REPLY|FORWARD|CREATE.*DRAFT|UPDATE.*DRAFT|DRAFT.*CREATE|DRAFT.*UPDATE)/i.test(tool);
+    var nativeSend = service === 'mail' && tool === 'mail_send';
     var html = '<div class="cw-action-service">' + cwToolIconHtml({ tool: 'connected_apps', appService: service }) + '<span>' + esc(serviceName) + ' · Connected account</span></div>';
     if (valid) {
-      if (Object.keys(payload.args).length) html += cwActionValueHtml(payload.args);
-      html += '<div class="d">Accept once, or always allow this tool for this teammate and account. Manage saved permissions in Connections.</div>' +
+      var args = request.reviewedAction ? request.reviewedAction.args : payload.args;
+      if (request.status === 'open') {
+        var cw = cwEnsure(), drafts = cw.reviewDrafts || (cw.reviewDrafts = Object.create(null));
+        var draft = drafts[request.id] || (drafts[request.id] = { values: Object.create(null), changed: false });
+        var keys = Object.keys(args);
+        if (service === 'mail' && messageReview) ['to', 'subject', 'text', 'cc', 'bcc'].forEach(function (key) { if (keys.indexOf(key) < 0) keys.push(key); });
+        html += '<div class="cw-action-editor">' + keys.map(function (key) {
+          var value = args[key], type = value === undefined || typeof value === 'string' ? 'string' : 'json';
+          var text = Object.prototype.hasOwnProperty.call(draft.values, key) ? draft.values[key] : type === 'string' ? String(value === undefined ? '' : value) : JSON.stringify(value, null, 2);
+          return '<label>' + esc(key === 'text' ? 'Message' : cwActionWords(key)) + (type === 'json' ? ' (JSON)' : '') + '<textarea data-cwreview="' + esc(request.id) + '" data-key="' + esc(key) + '" data-value-type="' + type + '" rows="' + (key === 'text' || key === 'body' || key === 'message_body' ? 7 : type === 'json' ? 3 : 1) + '" spellcheck="' + (type === 'string' ? 'true' : 'false') + '"' + (cw.requestPending && cw.requestPending[request.id] ? ' disabled' : '') + '>' + esc(text) + '</textarea></label>';
+        }).join('') + '</div><div class="d">Edit before approving. Only your reviewed version will run.' + (nativeSend ? ' Save draft keeps it unsent in your mailbox.' : '') + '</div>';
+      } else if (Object.keys(args).length) html += cwActionValueHtml(args);
+      html += '<div class="d">' + (messageReview ? 'Email messages are reviewed each time.' : 'Accept once, or always allow this tool for this teammate and account. Manage saved permissions in Connections.') + '</div>' +
         '<details class="cw-action-account"><summary>Account details</summary><div>Connection: ' + esc(payload.accountId) + '</div></details>';
     } else html += '<div class="d">The action details are incomplete. Ask your teammate to create a fresh review.</div>';
-    return { title: actionName, serviceName: serviceName, html: html, valid: Boolean(valid) };
+    return { title: actionName, serviceName: serviceName, html: html, valid: Boolean(valid), messageReview: messageReview, nativeSend: nativeSend };
   }
   function cwRequestHtml(request) {
     if (request.appConnection) return cwAppConnectionHtml(request);
@@ -1805,7 +1822,11 @@ export const COWORK_JS = String.raw`
     else if (request.kind === 'credential') controls = cwCredentialFormHtml(request);
     else controls = (request.options || []).map(function (option) { return '<button class="btn ghost" data-cwrequest="' + esc(request.id) + '" data-action="answer" data-response="' + esc(option) + '">' + esc(option) + '</button>'; }).join('') + '<input data-cwanswer="' + esc(request.id) + '" aria-label="Answer: ' + esc(request.title) + '" placeholder="Type your answer"><button class="btn dark" data-cwrequest="' + esc(request.id) + '" data-action="answer">Send</button>';
     if (appApproval && !appApproval.valid && request.status === 'open') controls = controls.replace('data-action="accept"', 'data-action="accept" disabled');
-    if (appApproval && appApproval.valid && request.status === 'open') controls = controls.replace('<button class="btn ghost"', '<button class="btn ghost" data-cwrequest="' + esc(request.id) + '" data-action="always-allow" title="Always allow this teammate to use this tool with this account. Revoke in Connections.">Always allow</button><button class="btn ghost"');
+    if (appApproval && appApproval.valid && request.status === 'open') {
+      if (appApproval.nativeSend) controls = controls.replace('>Accept</button>', '>Approve send</button>').replace('<button class="btn ghost"', '<button class="btn ghost" data-cwrequest="' + esc(request.id) + '" data-action="save-draft">Save draft</button><button class="btn ghost"');
+      else if (appApproval.messageReview) controls = controls.replace('>Accept</button>', '>Approve</button>');
+      if (!appApproval.messageReview) controls = controls.replace('<button class="btn ghost"', '<button class="btn ghost" data-cwrequest="' + esc(request.id) + '" data-action="always-allow" title="Always allow this teammate to use this tool with this account. Revoke in Connections.">Always allow</button><button class="btn ghost"');
+    }
     if (request.desktopHandoff && request.status === 'open') controls = '<button class="btn dark" data-cwhandoff="' + esc(request.agentId) + '">Open computer</button>' + controls;
     if (cw.requestPending && cw.requestPending[request.id]) controls = controls.replace(/<(button|input)\b/g, '<$1 disabled');
     return '<div class="cw-row cw-request-row" data-cwrequest-row="' + esc(request.id) + '">' + cwAva(agent) + '<div class="cw-bubble">' +
@@ -1835,6 +1856,12 @@ export const COWORK_JS = String.raw`
 
   function cwBindRequests(el) {
     var cw = cwEnsure();
+    el.querySelectorAll('[data-cwreview]').forEach(function (input) {
+      input.oninput = function () {
+        var draft = cw.reviewDrafts && cw.reviewDrafts[input.getAttribute('data-cwreview')];
+        if (draft) { draft.values[input.getAttribute('data-key')] = input.value; draft.changed = true; }
+      };
+    });
     if (typeof cwBindAppConnections === 'function') cwBindAppConnections(el);
     if (typeof cwShowAppConnectionPrompt === 'function') cwShowAppConnectionPrompt();
     el.querySelectorAll('[data-cwhandoff]').forEach(function (button) {
@@ -1848,13 +1875,24 @@ export const COWORK_JS = String.raw`
         var input = el.querySelector('[data-cwanswer="' + id + '"]');
         if (!response && input) response = input.value.trim();
         if (action === 'answer' && !response) { toast('Type an answer first', true); return; }
+        var reviewedArgs, draft = cw.reviewDrafts && cw.reviewDrafts[id];
+        if (action === 'always-allow' && draft && draft.changed) { toast('Accept your edited version once first', true); return; }
+        if (action === 'accept' || action === 'save-draft') {
+          var fields = el.querySelectorAll('[data-cwreview="' + id + '"]');
+          if (fields.length) {
+            reviewedArgs = Object.create(null);
+            try { fields.forEach(function (field) { reviewedArgs[field.getAttribute('data-key')] = field.getAttribute('data-value-type') === 'json' ? JSON.parse(field.value) : field.value; }); }
+            catch (error) { toast('Check the JSON in the edited fields', true); return; }
+          }
+        }
         var pending = cw.requestPending || (cw.requestPending = {});
         if (pending[id]) return;
         pending[id] = true;
         var convId = cw.active;
-        el.querySelectorAll('[data-cwrequest="' + id + '"]').forEach(function (control) { control.disabled = true; });
-        api('/api/cowork/requests/' + encodeURIComponent(id), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: action, response: response }) })
+        el.querySelectorAll('[data-cwrequest="' + id + '"], [data-cwreview="' + id + '"]').forEach(function (control) { control.disabled = true; });
+        api('/api/cowork/requests/' + encodeURIComponent(id), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: action, response: response, reviewedArgs: reviewedArgs }) })
           .then(function (d) {
+            if (cw.reviewDrafts) delete cw.reviewDrafts[id];
             if (cw.active !== convId) return;
             cw.requests = (cw.requests || []).map(function (request) { return request.id === id ? d.request : request; });
             if (d.agent) cw.agents = cw.agents.map(function (agent) { return agent.id === d.agent.id ? d.agent : agent; });
@@ -2017,6 +2055,11 @@ export const COWORK_JS = String.raw`
 
   function cwSystemEventHtml(message) {
     var cw = cwEnsure(), text = String(message.text || '');
+    if (text.indexOf('NEW EMAIL NOTIFICATION.') === 0) {
+      var email = {};try { email = JSON.parse(text.slice(text.indexOf('\n') + 1)); } catch (error) {}
+      var emailDetail = [email.mailbox, email.from, email.subject].filter(function(value){return typeof value === 'string' && value;}).join(' · ').slice(0, 500);
+      return '<div class="cw-sys cw-event-row">' + cwIcon('mail') + '<div><strong>New email received</strong><span class="cw-event-detail">' + esc(emailDetail) + '</span></div></div>';
+    }
     var reminder = /^Follow-up reminder from @([^:\n]+): ([\s\S]+)\. Act on it with your tools and report the result to the user here\.$/.exec(text);
     var instruction = reminder ? reminder[2] : text;
     var decision = /^The user responded to your (recommendation|question|permission) "([\s\S]+)": ([\s\S]+)\. Continue from that decision and report what you do\.$/.exec(instruction);
@@ -2060,7 +2103,8 @@ export const COWORK_JS = String.raw`
 
   // Shared by Cowork replies and the main agent's completion report.
   function cwReplyHtml(agent, meta, body, actions, messageId) {
-    return '<div class="cw-row"' + (messageId ? ' data-cwentrance="' + esc(messageId) + '"' : '') + '>' + cwAva(agent) + '<div class="cw-bubble"><div class="cw-meta"><span class="nm">' + esc(agent.name) + '</span><span class="tg">' + esc(meta) + '</span></div>' + body + (actions || '') + '</div></div>';
+    var resultOnly = /^<div class="out-card(?: |")/.test(body);
+    return '<div class="cw-row"' + (messageId ? ' data-cwentrance="' + esc(messageId) + '"' : '') + '>' + cwAva(agent) + '<div class="cw-bubble' + (resultOnly ? ' cw-result-bubble' : '') + '"><div class="cw-meta"><span class="nm">' + esc(agent.name) + '</span><span class="tg">' + esc(meta) + '</span></div>' + body + (actions || '') + '</div></div>';
   }
 
   // Older stored replies can contain raw tool protocol text. Hide that display
@@ -2281,7 +2325,7 @@ export const COWORK_JS = String.raw`
       var fence = '\x60\x60\x60output ' + kind + '\n' + payload + '\n\x60\x60\x60';
       var html = outRenderBlocks(fence);
       if (!html || html === fence) return all;
-      outs.push(html);
+      outs.push(html.trim());
       return lead + '\x00OUT' + (outs.length - 1) + '\x00';
     });
     // Markdown images, including map snapshots, share the same image viewer as
@@ -2293,6 +2337,9 @@ export const COWORK_JS = String.raw`
         if(!html)return all;outs.push(html);return '\x00OUT'+(outs.length-1)+'\x00';
       });
     }).join('');
+    // A result on its own supplies its own soft surface. Avoid empty inline
+    // wrappers and a second bubble around it.
+    if (outs.length === 1 && laid.trim() === '\x00OUT0\x00') return outs[0];
     var stripped = laid.replace(/(^|\n)(\|[^\n]*\|\n\|[\s:|-]*\|(?:\n\|[^\n]*\|)+)/g, function (all, lead, block) {
       var html = cwTableHtml(block.replace(/^\n/, ''));
       if (!html) return all;
@@ -2526,6 +2573,13 @@ export const COWORK_JS = String.raw`
       drafts[id] = input.value;
       if (input === document.activeElement) focused = { id: id, start: input.selectionStart, end: input.selectionEnd };
     });
+    var reviewFocus = null;
+    wrap.querySelectorAll('[data-cwreview]').forEach(function (input) {
+      var id = input.getAttribute('data-cwreview'), key = input.getAttribute('data-key');
+      var draft = cw.reviewDrafts && cw.reviewDrafts[id];
+      if (draft) draft.values[key] = input.value;
+      if (input === document.activeElement) reviewFocus = { id: id, key: key, start: input.selectionStart, end: input.selectionEnd, scroll: input.scrollTop };
+    });
     cwReplaceTranscript(wrap, cwTranscriptHtml() + '<div class="cw-row cw-working-row" id="cwWorkingBubble" hidden><div class="cw-working-bubble" role="status" aria-live="polite" aria-atomic="true"><span class="cw-working-dot" aria-hidden="true"></span><span id="cwWorkingLabel"></span></div></div><div id="cwLive" hidden></div>');
     wrap.querySelectorAll('details[data-cwworkhistory]').forEach(function (details) {
       var saved = workHistoryState[details.getAttribute('data-cwworkhistory')];
@@ -2542,6 +2596,11 @@ export const COWORK_JS = String.raw`
       var id = input.getAttribute('data-cwanswer');
       if (drafts[id] !== undefined) input.value = drafts[id];
       if (focused && focused.id === id) { input.focus({ preventScroll: true }); input.setSelectionRange(focused.start, focused.end); }
+    });
+    wrap.querySelectorAll('[data-cwreview]').forEach(function (input) {
+      if (reviewFocus && reviewFocus.id === input.getAttribute('data-cwreview') && reviewFocus.key === input.getAttribute('data-key')) {
+        input.focus({ preventScroll: true }); input.setSelectionRange(reviewFocus.start, reviewFocus.end); input.scrollTop = reviewFocus.scroll;
+      }
     });
     cwAnimateChatBubbles(wrap);
     cwBindFileCards(wrap);

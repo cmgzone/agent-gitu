@@ -30,6 +30,65 @@ function load() {
 
 const api = load();
 
+describe('content-specific chat results', () => {
+  it('renders an expandable inbox digest with verified sender, unread state and source', () => {
+    const html = api.outRenderBlock('email', { title: 'Morning inbox', messages: [
+      { sender: 'Amina Otieno', from: 'amina@example.com', subject: 'Launch review', summary: 'Please review the revised copy.', unread: true, section: 'Needs you', nextStep: 'Review by Friday.', url: 'https://mail.example.com/message/12' },
+      { sender: 'Leo', subject: 'Weekly report', summary: 'The report is attached.' },
+    ] }) as string;
+    expect(html).toContain('data-out-kind="email"');
+    expect(html).toContain('<details class="out-mail" data-unread="true">');
+    expect(html).toContain('class="out-mail-section">Needs you');
+    expect(html).toContain('Amina Otieno');
+    expect(html).toContain('1 unread');
+    expect(html).toContain('amina@example.com');
+    expect(html).toContain('Review by Friday.');
+    expect(html).toContain('href="https://mail.example.com/message/12"');
+    expect(html.match(/Open email/g)).toHaveLength(1);
+    expect(html).not.toContain('Reply');
+  });
+
+  it('escapes email content and drops executable or credential-bearing links', () => {
+    const html = api.outRenderBlock('email', { messages: [
+      { sender: '<script>alert(1)</script>', subject: '<img src=x onerror=alert(1)>', summary: '<b>Do not render HTML</b>', date: '"><script>x</script>', url: 'javascript:alert(1)' },
+      { subject: 'Private link', url: 'https://user:password@example.com/inbox' },
+    ] }) as string;
+    expect(html).toContain('&lt;script&gt;');
+    expect(html).toContain('&lt;img');
+    expect(html).toContain('&lt;b&gt;');
+    expect(html).not.toContain('<script>');
+    expect(html).not.toContain('<img');
+    expect(html).not.toContain('javascript:');
+    expect(html).not.toContain('user:password');
+    expect(html).not.toContain('Open email');
+  });
+
+  it('renders brief findings and task progress without controls that imply saved actions', () => {
+    const brief = api.outRenderBlock('brief', { summary: 'Release ready.', highlights: [{ label: 'Validation', text: 'All checks passed.' }], nextStep: 'Review the rollout.' }) as string;
+    expect(brief).toContain('out-highlights');
+    expect(brief).toContain('All checks passed.');
+    expect(brief).toContain('Review the rollout.');
+    const tasks = api.outRenderBlock('tasks', { items: [
+      { text: 'Review', status: 'done' }, { text: 'Prepare', status: 'in_progress', detail: 'Confirm the dates.' }, { text: 'Publish', status: 'pending' },
+    ] }) as string;
+    expect(tasks).toContain('aria-valuemax="3" aria-valuenow="1"');
+    expect(tasks).toContain('data-status="in_progress"');
+    expect(tasks).toContain('<summary>View details</summary>');
+    expect(tasks).not.toContain('type="checkbox"');
+  });
+
+  it('preserves malformed and unfinished blocks and handles empty results', () => {
+    for (const [kind, data] of [['email', { messages: [{ body: 'Missing subject' }] }], ['brief', { highlights: [null] }], ['tasks', { items: [{ detail: 'Missing task' }] }]]) {
+      const fence = '```output ' + kind + '\n' + JSON.stringify(data) + '\n```';
+      expect(api.outRenderBlocks(fence)).toBe(fence);
+    }
+    const partial = '```output email\n{"messages":[';
+    expect(api.outRenderBlocks(partial)).toBe(partial);
+    expect(api.outRenderBlock('email', { messages: [] })).toContain('No emails in this result.');
+    expect(api.outRenderBlock('tasks', { items: [] })).toContain('No tasks in this result.');
+  });
+});
+
 describe('shared output viewers: escaping and numbers', () => {
   it('escapes markup so a cell or title cannot smuggle HTML', () => {
     expect(api.outEsc('<b>&"x\'y</b>')).toBe(

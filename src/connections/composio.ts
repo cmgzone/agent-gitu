@@ -1,11 +1,12 @@
 import { Composio } from '@composio/core';
 import { execFileSync } from 'node:child_process';
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { ensureGituHome } from '../workspace/home.js';
 import { SecretVault } from './secret-vault.js';
 import { readCredentialFile, readCredentialJson, writeCredentialFile } from '../llm/credential-file.js';
+import { redactConnectionData } from './response-data.js';
 
 export interface ConnectedApp {
   id: string;
@@ -99,9 +100,14 @@ export class ComposioKeyStore {
 }
 
 type Client = Pick<Composio, 'sessions' | 'connectedAccounts' | 'tools' | 'toolkits' | 'getClient'>;
+export class ComposioExecutionUncertainError extends Error {
+  constructor() { super('The connected service did not confirm completion. This action may already have run. Check the destination app before any retry. No automatic retry was attempted.'); }
+}
 export class ComposioConnections {
   private sdk?: Client;
   private session?: ReturnType<Client['sessions']['create']>;
+  private sessionOwner?: string;
+  private generation = 0;
   private executionSessions = new Map<string, ReturnType<Client['sessions']['create']>>();
   constructor(
     private readonly owner: () => string,
@@ -123,24 +129,38 @@ export class ComposioConnections {
     return this.sdk;
   }
   private userSession() {
-    if (!this.session) {
-      const owner = this.owner();
+    const owner = this.owner();
+    if (!this.session || this.sessionOwner !== owner) {
+      const sdk = this.client(), generation = this.generation;
       const file = path.join(ensureGituHome().settings, 'composio-session.json');
-      const saved = existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')) as { owner: string; sessionId: string }) : undefined;
+      let saved: { owner?: unknown; sessionId?: unknown } | undefined;
+      try {
+        const value: unknown = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : undefined;
+        if (value && typeof value === 'object' && !Array.isArray(value)) saved = value;
+      } catch (error) { if (!(error instanceof SyntaxError)) throw error; }
       const request = { signal: AbortSignal.timeout(15_000) };
-      this.session = (
-        saved?.owner === owner && saved.sessionId
-          ? this.client().sessions.use(saved.sessionId, undefined, request)
-          : this.client().sessions.create(owner, { manageConnections: false }, request)
+      const create = () => sdk.sessions.create(owner, { manageConnections: false }, request);
+      const pending = (
+        saved?.owner === owner && typeof saved.sessionId === 'string' && /^[\w-]{1,512}$/.test(saved.sessionId)
+          ? sdk.sessions.use(saved.sessionId, undefined, request).catch(error => {
+            // Only a confirmed missing session is replaced. Authentication and
+            // transient failures must not start a new session repeatedly.
+            if (![404, 410].includes(Number(error?.status))) throw error;
+            return create();
+          })
+          : create()
       )
         .then((session) => {
-          writeFileSync(file, JSON.stringify({ owner, sessionId: session.sessionId }), { mode: 0o600 });
+          if (generation !== this.generation || this.session !== pending) throw new Error('Connection setup changed. Refresh and try again.');
+          writeCredentialFile(file, JSON.stringify({ owner, sessionId: session.sessionId }));
           return session;
         })
         .catch((error) => {
-          this.session = undefined;
+          if (this.session === pending) this.session = undefined;
           throw error;
         });
+      this.sessionOwner = owner;
+      this.session = pending;
     }
     return this.session;
   }
@@ -150,16 +170,23 @@ export class ComposioConnections {
     const sdk = this.factory(key.trim());
     await sdk.toolkits.get({ limit: 1 });
     this.keys.save(key.trim());
+    this.generation++;
     this.sdk = sdk;
     this.session = undefined;
     this.executionSessions.clear();
     const file = path.join(ensureGituHome().settings, 'composio-session.json');
     // A session belongs to the provider project; key changes create a fresh one.
-    writeFileSync(file, JSON.stringify({ owner: '', sessionId: '' }), { mode: 0o600 });
+    writeCredentialFile(file, JSON.stringify({ owner: '', sessionId: '' }));
   }
   async catalog(search = '', cursor?: string): Promise<{ services: ServiceCard[]; cursor?: string }> {
-    const session = await this.userSession();
-    const result = await session.toolkits({ search: search.slice(0, 100), cursor, limit: 50 });
+    const pending = this.userSession();
+    const session = await pending;
+    let result: Awaited<ReturnType<typeof session.toolkits>>;
+    try { result = await session.toolkits({ search: search.slice(0, 100), cursor, limit: 50 }); }
+    catch (error) {
+      if (this.session === pending && [404, 410].includes(Number(error && typeof error === 'object' ? (error as { status?: unknown }).status : 0))) this.session = undefined;
+      throw error;
+    }
     return {
       services: result.items.map((item) => ({
         slug: item.slug,
@@ -172,21 +199,27 @@ export class ComposioConnections {
     };
   }
   async accounts(): Promise<ConnectedApp[]> {
-    const items: ConnectedApp[] = [];
+    const owner = this.owner();
+    const items = new Map<string, ConnectedApp>();
+    const cursors = new Set<string>();
     let cursor: string | undefined;
+    let pages = 0;
     do {
-      const result = await this.client().connectedAccounts.list({ userIds: [this.owner()], accountType: 'PRIVATE', limit: 100, cursor }, { signal: AbortSignal.timeout(15_000) });
-      items.push(...result.items.map((account) => ({ id: account.id, toolkit: account.toolkit.slug, status: account.status, disabled: account.isDisabled })));
+      const result = await this.client().connectedAccounts.list({ userIds: [owner], accountType: 'PRIVATE', limit: 100, cursor }, { signal: AbortSignal.timeout(15_000) });
+      for (const account of result.items) items.set(account.id, { id: account.id, toolkit: account.toolkit.slug, status: account.status, disabled: account.isDisabled });
       cursor = result.nextCursor ?? undefined;
-    } while (cursor && items.length < 1000);
-    return items;
+      if (cursor && (cursors.has(cursor) || ++pages >= 10)) throw new Error('The connected account list is incomplete. Refresh Connections before selecting an account.');
+      if (cursor) cursors.add(cursor);
+    } while (cursor);
+    if (owner !== this.owner()) throw new Error('The connection owner changed. Refresh Connections.');
+    return [...items.values()];
   }
   async connect(slug: string): Promise<{ url: string; accountId: string }> {
     if (!/^[a-z0-9_-]{1,100}$/.test(slug)) throw new Error('Invalid service.');
     const session = await this.userSession();
     const request = await session.authorize(slug);
     const url = new URL(request.redirectUrl ?? '');
-    if (url.protocol !== 'https:' || !['connect.composio.dev', 'backend.composio.dev'].includes(url.hostname)) throw new Error('Composio returned an invalid connection link.');
+    if (url.protocol !== 'https:' || url.username || url.password || url.port || !['connect.composio.dev', 'backend.composio.dev'].includes(url.hostname)) throw new Error('Composio returned an invalid connection link.');
     if (!request.id) throw new Error('Composio returned no connection identifier.');
     return { url: url.href, accountId: request.id };
   }
@@ -204,7 +237,7 @@ export class ComposioConnections {
       { signal: AbortSignal.timeout(15_000) },
     );
     return tools
-      .filter((item) => !tool || item.toolkit?.slug === slug)
+      .filter((item) => item.toolkit?.slug === slug && (!tool || item.slug === tool))
       .map((tool) => ({
         slug: tool.slug,
         name: tool.name,
@@ -213,19 +246,20 @@ export class ComposioConnections {
       }));
   }
   async execute(slug: string, tool: string, args: Record<string, unknown>, accountId: string): Promise<unknown> {
+    const owner = this.owner(), sdk = this.client(), generation = this.generation;
     const account = (await this.accounts()).find((item) => item.id === accountId && item.toolkit === slug && item.status === 'ACTIVE' && !item.disabled);
     if (!account) throw new Error('This service is disconnected or needs to be reconnected.');
     // Bind the account and toolkit on the server. Model-supplied user IDs or
     // account IDs can never select another user's connection.
     const signal = AbortSignal.timeout(30_000);
-    const owner = this.owner();
     const sessionKey = JSON.stringify([owner, slug, tool, account.id]);
     let pendingSession = this.executionSessions.get(sessionKey);
     if (!pendingSession) {
-      const matches = await this.client().tools.getRawComposioTools({ tools: [tool] }, undefined, { signal });
-      if (!matches.some((item) => item.slug === tool && item.toolkit?.slug === slug)) throw new Error('That tool does not belong to the connected service.');
-      pendingSession = this.client()
-        .sessions.create(
+      const pending = (async () => {
+        const matches = await sdk.tools.getRawComposioTools({ tools: [tool] }, undefined, { signal });
+        if (!matches.some((item) => item.slug === tool && item.toolkit?.slug === slug)) throw new Error('That tool does not belong to the connected service.');
+        if (generation !== this.generation || owner !== this.owner()) throw new Error('Connection setup changed. Refresh and try again.');
+        return sdk.sessions.create(
           owner,
           {
             toolkits: [slug],
@@ -234,19 +268,30 @@ export class ComposioConnections {
             manageConnections: false,
           },
           { signal },
-        )
+        );
+      })()
         .catch((error) => {
-          this.executionSessions.delete(sessionKey);
+          if (this.executionSessions.get(sessionKey) === pending) this.executionSessions.delete(sessionKey);
           throw error;
         });
+      pendingSession = pending;
       this.executionSessions.set(sessionKey, pendingSession);
     }
     const session = await pendingSession;
+    if (generation !== this.generation || owner !== this.owner()) throw new Error('Connection setup changed. No action was submitted.');
     // Mutating service calls must never be retried automatically after an
     // ambiguous network failure. The SDK's typed transport exposes this option.
-    const result = await this.client().getClient().withOptions({ maxRetries: 0 }).toolRouter.session.execute(session.sessionId, { tool_slug: tool, arguments: args }, { signal });
+    let result: Awaited<ReturnType<ReturnType<Client['getClient']>['toolRouter']['session']['execute']>>;
+    try {
+      result = await sdk.getClient().withOptions({ maxRetries: 0 }).toolRouter.session.execute(session.sessionId, { tool_slug: tool, arguments: args }, { signal });
+    } catch (error) {
+      const status = Number(error && typeof error === 'object' ? (error as { status?: unknown }).status : 0);
+      if ([404, 410].includes(status) && this.executionSessions.get(sessionKey) === pendingSession) this.executionSessions.delete(sessionKey);
+      if (status >= 400 && status < 500 && status !== 408) throw error;
+      throw new ComposioExecutionUncertainError();
+    }
     if (result.error) throw new Error(`The connected service rejected this action: ${String(result.error).slice(0, 600)}`);
-    return result;
+    return redactConnectionData(result);
   }
   /** Fixed Calendar endpoints through the existing OAuth account transport; no raw tokens or arbitrary URLs. */
   async googleCalendarRequest(

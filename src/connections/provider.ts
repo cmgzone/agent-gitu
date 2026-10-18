@@ -9,7 +9,7 @@
  */
 
 import type { ComposioConnections } from './composio.js';
-import type { MailAccount, MailConnections } from './mail.js';
+import type { MailConnections } from './mail.js';
 
 export interface ConnectedAppAccount {
   id: string;
@@ -56,7 +56,14 @@ export function isNativeMailRead(service: string, tool: string): boolean {
 }
 
 export function isNativeMailTool(service: string, tool: string): boolean {
-  return isNativeMailRead(service, tool) || service === MAIL_SERVICE_SLUG && ['mail_send', 'mail_mark'].includes(tool);
+  return isNativeMailRead(service, tool) || service === MAIL_SERVICE_SLUG && ['mail_send', 'mail_mark', 'mail_save_draft'].includes(tool);
+}
+
+/** Email content is reviewed even when a tool/account has a standing grant. */
+export function requiresMessageReview(service: string, tool: string): boolean {
+  if (service === 'mail') return tool === 'mail_send' || tool === 'mail_save_draft';
+  return /^(gmail|outlook|outlookemail|outlook365|office365|microsoftoutlook)$/i.test(service)
+    && /(?:SEND|REPLY|FORWARD|CREATE.*DRAFT|UPDATE.*DRAFT|DRAFT.*CREATE|DRAFT.*UPDATE)/i.test(tool);
 }
 
 function mailSearchTerms(query: string): string[] {
@@ -104,15 +111,11 @@ export class ConnectionsHub implements ConnectedAppsProvider {
 
   async accounts(): Promise<ConnectedAppAccount[]> {
     this.accountStatusIncomplete = false;
-    const mail = await this.mail.accounts();
-    const accounts: ConnectedAppAccount[] = mail.map((account: MailAccount) => ({ ...account, label: account.label, address: account.address }));
-    if (this.composio.configured) {
-      try {
-        accounts.push(...(await this.composio.accounts()));
-      } catch {
-        this.accountStatusIncomplete = true;
-        // Keep the mailbox list; a Composio failure is reported by its own UI.
-      }
+    const results = await Promise.allSettled([this.mail.accounts(), this.composio.configured ? this.composio.accounts() : Promise.resolve([])]);
+    const accounts: ConnectedAppAccount[] = [];
+    for (const result of results) {
+      if (result.status === 'fulfilled') accounts.push(...result.value);
+      else this.accountStatusIncomplete = true;
     }
     return accounts;
   }

@@ -194,6 +194,18 @@ describe('account and Connections UI', () => {
     expect(f.cw.connectionsOpen).toBe(false);
     expect(f.context.cwRenderChat).not.toHaveBeenCalled();
   });
+  it('shows incomplete provider status without labelling saved accounts disconnected', async () => {
+    const f = fixture();
+    f.api.mockResolvedValue({ configured: true, accountStatusIncomplete: true, catalogUnavailable: true, accounts: [{ id: 'saved', toolkit: 'gmail', status: 'UNKNOWN', disabled: true }], services: [] });
+    f.context.cwOpenConnections();
+    await vi.waitFor(() => expect(f.content.innerHTML).toContain('Saved access is preserved'));
+    f.elements.cwServicesConnected.onclick!();
+    expect(f.content.innerHTML).toContain('Status unavailable');
+    expect(f.content.innerHTML).toContain('data-cwdisconnect="saved"');
+    expect(f.content.innerHTML).not.toContain('Disconnected');
+    expect(f.context.cwServiceStatus('PENDING', false)).toBe('Waiting for sign-in');
+  });
+
   it('offers an Email section that connects any mailbox and opens it from a mail suggestion', async () => {
     const f = fixture();
     const mailPayload = {

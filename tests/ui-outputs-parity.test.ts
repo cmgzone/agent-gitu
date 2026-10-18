@@ -74,6 +74,23 @@ function coworkBody(source: string): AnyRecord {
 }
 
 describe('shared output viewers: Coding and Cowork parity', () => {
+  it.each([
+    ['ui', { title: 'Overview', tone: 'teal', blocks: [{ type: 'metrics', items: [{ label: 'Ready', value: '3' }] }, { type: 'callout', tone: 'amber', text: 'Choose a date.' }] }],
+    ['email', { title: 'Inbox', messages: [{ sender: 'Amina', subject: 'Review', summary: 'Ready to review.' }] }],
+    ['brief', { summary: 'Ready.', highlights: [{ label: 'Checks', text: 'Passed.' }] }],
+    ['tasks', { items: [{ text: 'Review', status: 'done' }] }],
+  ])('renders %s cards through both real chat renderers', (kind, payload) => {
+    const message = '```output ' + kind + '\n' + JSON.stringify(payload) + '\n```';
+    const coding = baseContext();
+    new Script(OUTPUT_JS + '\n' + UI_RESPONSE_JS).runInContext(coding);
+    const cowork = coworkBody(OUTPUT_JS + '\n' + COWORK_JS);
+    for (const html of [(coding.renderResponseText as AnyFn)(message), (cowork.cwBody as AnyFn)(message, [])]) {
+      expect(html).toContain('data-out-kind="' + kind + '"');
+      expect(html).not.toContain('```output');
+      expect(html).not.toMatch(/<span><\/span><br>/);
+    }
+  });
+
   it('routes the same message through the shared renderer on both surfaces', () => {
     const coding = baseContext();
     new Script(SPY + UI_RESPONSE_JS).runInContext(coding);

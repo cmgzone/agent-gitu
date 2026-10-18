@@ -132,6 +132,7 @@ export interface MailAccount {
   address: string;
   provider: string;
   createdAt: string;
+  watchInbox: boolean;
 }
 
 export interface MailTool {
@@ -152,6 +153,7 @@ interface MailboxRecord {
   smtp: MailEndpoint;
   allowSelfSigned: boolean;
   createdAt: string;
+  watchInbox?: boolean;
 }
 
 /** Minimal surface we need from nodemailer, so tests can inject a fake. */
@@ -387,6 +389,7 @@ export class MailConnections {
       address: account.address,
       provider: account.provider,
       createdAt: account.createdAt,
+      watchInbox: account.watchInbox !== false,
     }));
   }
 
@@ -398,7 +401,8 @@ export class MailConnections {
     // "custom" means the user is supplying their own servers, so detection may help.
     const requested = typeof source['provider'] === 'string' ? MAIL_PROVIDERS.find((provider) => provider.id === source['provider']) : undefined;
     const preset = requested ?? mailPresetFor(address);
-    const password = asString(source['password'], 'password', 512);
+    const password = source['password'];
+    if (typeof password !== 'string' || !password.length || password.length > 512 || /[\r\n\0]/.test(password)) throw new Error('Enter a valid password.');
     // A server the user typed always wins. Otherwise the preset fills it in, and
     // when there is no preset we ask the discovery sources — that is what makes
     // a Mailcow or otherwise self-hosted domain work from the address alone.
@@ -407,8 +411,9 @@ export class MailConnections {
     const imapFallback = preset?.imap ?? (givenHost(source['imapHost']) ? undefined : detected?.imap);
     const smtpFallback = preset?.smtp ?? (givenHost(source['smtpHost']) ? undefined : detected?.smtp);
     const username = typeof source['username'] === 'string' && source['username'].trim()
-      ? asAddress(source['username'], 'username')
+      ? asString(source['username'], 'username', 512)
       : (detected?.username ?? address);
+    if (/[\r\n\0]/.test(username)) throw new Error('Enter a valid username.');
     const imap: MailEndpoint = {
       host: asHost(source['imapHost'], imapFallback?.host ?? ''),
       port: asPort(source['imapPort'], imapFallback?.port ?? 993),
@@ -431,6 +436,7 @@ export class MailConnections {
       imap,
       smtp,
       allowSelfSigned,
+      watchInbox: source['watchInbox'] !== false,
       createdAt: new Date().toISOString(),
     };
     await this.verifyImap(draft);
@@ -453,6 +459,35 @@ export class MailConnections {
     const next = records.filter((account) => account.id !== accountId);
     if (next.length === records.length) throw new Error('That mailbox is no longer connected.');
     this.secrets.save(next);
+  }
+
+  setInboxWatch(accountId: string, enabled: boolean): void {
+    const records = this.load(), account = records.find(record => record.id === accountId);
+    if (!account) throw new Error('That mailbox is no longer connected.');
+    account.watchInbox = enabled;
+    this.secrets.save(records);
+  }
+
+  /** Host-only dedicated listener; credentials never enter an API response. */
+  createInboxClient(accountId: string): ImapFlow {
+    const account = this.record(accountId);
+    if (account.watchInbox === false) throw new Error('Inbox notifications are paused.');
+    const client = this.createImap({ ...this.options(account, account.imap, { user: account.username, pass: account.password }), disableAutoIdle: false, autoIdleDelay: 100, maxIdleTime: 20 * 60 * 1000, socketTimeout: 30 * 60 * 1000 });
+    client.on('error', () => {});
+    return client;
+  }
+
+  async readInboxArrival(accountId: string, uid: number, uidValidity: string): Promise<Record<string, unknown> | undefined> {
+    return this.withMailbox(this.record(accountId), 'INBOX', async client => {
+      if (!client.mailbox || client.mailbox.uidValidity.toString() !== uidValidity) return undefined;
+      const header = await client.fetchOne(String(uid), { envelope: true, flags: true, size: true }, { uid: true });
+      if (!header) return undefined;
+      if ((header.size ?? 0) > 2 * 1024 * 1024) return { ...this.summarize(header), folder: 'INBOX', body: 'This message is large. Only its headers were read for this notification; open the email to review its content.', bodyOmitted: true };
+      const message = await client.fetchOne(String(uid), { source: true, envelope: true, flags: true }, { uid: true });
+      if (!message || !message.source) return undefined;
+      const parsed = await simpleParser(message.source);
+      return { ...this.summarize(message), folder: 'INBOX', body: truncate(parsed.text?.trim() || (typeof parsed.html === 'string' ? htmlToText(parsed.html) : ''), BODY_LIMIT), messageId: parsed.messageId, attachments: parsed.attachments.map(file => ({ filename: file.filename, size: file.size })) };
+    });
   }
 
   private options(account: MailboxRecord, endpoint: MailEndpoint, auth: { user: string; pass: string }): ImapFlowOptions {
@@ -511,11 +546,12 @@ export class MailConnections {
       await client.logout().catch(() => {});
       throw new Error(`Could not reach ${account.imap.host}. Check that IMAP is enabled for this mailbox.`);
     }
-    const lock = await client.getMailboxLock(folder);
+    let lock: { release(): void } | undefined;
     try {
+      lock = await client.getMailboxLock(folder);
       return await run(client);
     } finally {
-      lock.release();
+      lock?.release();
       await client.logout().catch(() => {});
     }
   }
@@ -528,6 +564,7 @@ export class MailConnections {
       subject: message.envelope?.subject ?? '(no subject)',
       date: message.envelope?.date ? new Date(message.envelope.date).toISOString() : message.internalDate ? new Date(message.internalDate).toISOString() : '',
       seen: message.flags?.has('\\Seen') ?? false,
+      draft: message.flags?.has('\\Draft') ?? false,
       flagged: message.flags?.has('\\Flagged') ?? false,
       size: message.size,
     };
@@ -548,7 +585,7 @@ export class MailConnections {
         range = `${Math.max(1, exists - limit + 1)}:${exists}`;
       }
       const messages: Record<string, unknown>[] = [];
-      for await (const message of client.fetch(range, query, { uid: true })) messages.push(this.summarize(message));
+      for await (const message of client.fetch(range, query, { uid: unreadOnly })) messages.push(this.summarize(message));
       return messages.reverse();
     });
   }
@@ -585,6 +622,9 @@ export class MailConnections {
         from: parsedAddress(parsed.from) || addressLine(message.envelope?.from),
         to: parsedAddress(parsed.to),
         cc: parsedAddress(parsed.cc),
+        messageId: parsed.messageId,
+        inReplyTo: parsed.inReplyTo,
+        references: parsed.references,
         subject: parsed.subject ?? message.envelope?.subject ?? '(no subject)',
         date: (parsed.date ?? (message.envelope?.date ? new Date(message.envelope.date) : undefined))?.toISOString() ?? '',
         seen: message.flags?.has('\\Seen') ?? false,
@@ -596,37 +636,136 @@ export class MailConnections {
 
   private async mark(account: MailboxRecord, folder: string, uid: number, read: boolean): Promise<Record<string, unknown>> {
     return this.withMailbox(account, folder, async (client) => {
-      if (read) await client.messageFlagsAdd(String(uid), ['\\Seen'], { uid: true });
-      else await client.messageFlagsRemove(String(uid), ['\\Seen'], { uid: true });
+      const changed = read ? await client.messageFlagsAdd(String(uid), ['\\Seen'], { uid: true }) : await client.messageFlagsRemove(String(uid), ['\\Seen'], { uid: true });
+      if (!changed) throw new Error('The mail server did not confirm this read-state change.');
       return { uid, folder, seen: read };
     });
   }
 
-  private async send(account: MailboxRecord, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  private outgoing(account: MailboxRecord, args: Record<string, unknown>, draft = false): Record<string, unknown> {
     const list = (value: unknown, field: string): string[] | undefined => {
       if (value === undefined || value === null || value === '') return undefined;
-      const raw = Array.isArray(value) ? value.map(String) : String(value).split(',');
+      if (typeof value !== 'string' && (!Array.isArray(value) || value.some(entry => typeof entry !== 'string'))) throw new Error(`Provide valid ${field} addresses.`);
+      const raw = Array.isArray(value) ? value as string[] : (value as string).split(',');
       const parsed = raw.map((entry) => entry.trim()).filter(Boolean);
       if (!parsed.length) return undefined;
       if (parsed.length > 25) throw new Error(`Too many ${field} recipients.`);
       return parsed.map((entry) => asAddress(entry, `${field} address`));
     };
     const to = list(args['to'], 'to');
-    if (!to) throw new Error('Provide at least one "to" address.');
-    const subject = typeof args['subject'] === 'string' ? args['subject'].trim().slice(0, 300) : '';
-    const body = String(args['text'] ?? args['body'] ?? '');
-    if (!body.trim()) throw new Error('Provide the message text.');
+    if (!to && !draft) throw new Error('Provide at least one "to" address.');
+    const subject = args['subject'] ?? '';
+    if (typeof subject !== 'string' || subject.length > 300 || /[\r\n\0]/.test(subject)) throw new Error('Provide a subject of at most 300 characters without line breaks.');
+    const body = args['text'] ?? args['body'] ?? '';
+    if (typeof body !== 'string') throw new Error('Provide plain message text.');
+    if (!body.trim() && !draft) throw new Error('Provide the message text.');
     if (body.length > 200_000) throw new Error('This message is too large to send.');
-    const result = await this.transport(account).sendMail({
+    const headers: Record<string, unknown> = {};
+    for (const key of ['inReplyTo', 'references']) {
+      if (args[key] === undefined) continue;
+      if (typeof args[key] !== 'string' || (args[key] as string).length > 4000 || /[\r\n\0]/.test(args[key] as string)) throw new Error(`Provide valid ${key} message IDs.`);
+      headers[key] = args[key];
+    }
+    return {
       from: account.address,
       to,
       cc: list(args['cc'], 'cc'),
       bcc: list(args['bcc'], 'bcc'),
       subject,
       text: body,
-      ...(typeof args['replyTo'] === 'string' && ADDRESS_RE.test(args['replyTo'].trim()) ? { replyTo: args['replyTo'].trim() } : {}),
-    });
-    return { sent: true, messageId: result.messageId, accepted: result.accepted?.length ?? 0, rejected: result.rejected?.length ?? 0 };
+      ...(args['replyTo'] ? { replyTo: asAddress(args['replyTo'], 'reply-to address') } : {}),
+      ...headers,
+      messageId: `<${randomUUID()}@${account.address.split('@')[1]}>`,
+      date: new Date(),
+    };
+  }
+
+  /** Respect localized/provider-specific special folders instead of assuming names. */
+  private async specialFolder(client: ImapFlow, kind: 'Sent' | 'Drafts'): Promise<string> {
+    const folders = await client.list();
+    const existing = folders.find(folder => folder.specialUse === `\\${kind}`)
+      ?? folders.find(folder => folder.path.toLowerCase() === kind.toLowerCase());
+    if (existing) return existing.path;
+    const created = await client.mailboxCreate([kind]);
+    return created.path;
+  }
+
+  private async mime(message: Record<string, unknown>): Promise<Buffer> {
+    const result = await nodemailer.createTransport({ streamTransport: true, buffer: true, newline: 'windows' }).sendMail(message);
+    return result.message as Buffer;
+  }
+
+  private async saveDraft(account: MailboxRecord, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const message = this.outgoing(account, args, true);
+    const raw = await this.mime(message);
+    const previousUid = args['draftUid'] === undefined ? undefined : Number(args['draftUid']);
+    if (previousUid !== undefined && (!Number.isInteger(previousUid) || previousUid < 1)) throw new Error('Provide a valid draftUid.');
+    const client = this.client(account);
+    let lock: { release(): void } | undefined;
+    try {
+      await client.connect();
+      const folder = await this.specialFolder(client, 'Drafts');
+      lock = await client.getMailboxLock(folder);
+      if (previousUid !== undefined) {
+        const previous = await client.fetchOne(String(previousUid), { flags: true, source: true }, { uid: true });
+        if (!previous || !previous.flags?.has('\\Draft')) throw new Error('The original draft no longer exists. Refresh Drafts before saving again.');
+        if (!previous.source || (await simpleParser(previous.source)).attachments.length) throw new Error('This draft cannot be safely replaced here because its attachments could be lost. Edit it in your email app or save a new draft without draftUid.');
+      }
+      let appended: Awaited<ReturnType<ImapFlow['append']>>;
+      try { appended = await client.append(folder, raw, ['\\Draft', '\\Seen']); }
+      catch {
+        return { saved: null, draft: true, sent: false, status: 'unknown', folder, messageId: message['messageId'], warning: 'The mail server did not confirm saving this draft. Check Drafts before retrying. The previous draft was kept.' };
+      }
+      if (!appended) return { saved: null, draft: true, sent: false, status: 'unknown', folder, messageId: message['messageId'], warning: 'The mail server did not confirm saving this draft. Check Drafts before retrying.' };
+      let warning: string | undefined;
+      if (previousUid !== undefined) {
+        try {
+          if (!client.capabilities.has('UIDPLUS')) throw new Error('Selective expunge unavailable');
+          if (!await client.messageDelete(String(previousUid), { uid: true })) throw new Error('Old draft not removed');
+        }
+        catch { warning = 'The updated draft was saved, but the old draft could not be removed. You may see both versions.'; }
+      }
+      return { saved: true, draft: true, sent: false, folder, uid: appended.uid, uidValidity: appended.uidValidity?.toString(), messageId: message['messageId'], ...(warning ? { warning } : {}) };
+    } finally {
+      lock?.release();
+      await client.logout().catch(() => {});
+    }
+  }
+
+  private async send(account: MailboxRecord, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const message = this.outgoing(account, args);
+    // Compose before SMTP: a local MIME error must never happen after delivery.
+    const raw = await this.mime(message);
+    let result: Awaited<ReturnType<MailTransport['sendMail']>>;
+    try { result = await this.transport(account).sendMail(message); }
+    catch (error) {
+      const failure = (error && typeof error === 'object' ? error : {}) as { code?: string; responseCode?: number };
+      if (failure.code === 'EAUTH' || failure.code === 'EENVELOPE' || (failure.responseCode && failure.responseCode >= 400)) return { sent: false, status: 'rejected', warning: failure.code === 'EAUTH' ? 'The outgoing server rejected sign-in. Check SMTP credentials or the app password in Connections.' : 'The outgoing server rejected this message or all recipients. Check the addresses and server settings before retrying.' };
+      return { sent: null, status: 'unknown', messageId: message['messageId'], warning: 'SMTP did not confirm delivery. Check Sent and the recipient before retrying; resending could create a duplicate.' };
+    }
+    const accepted = result.accepted?.length ?? 0;
+    const rejected = result.rejected?.length ?? 0;
+    if (!accepted) return { sent: false, accepted, rejected, warning: 'The outgoing server accepted no recipients.' };
+    const delivery = { sent: true, messageId: message['messageId'], accepted, rejected, partial: rejected > 0,
+      ...(rejected ? { warning: 'Only some recipients were accepted. Do not resend to recipients already accepted.' } : {}) };
+    let client: ImapFlow | undefined;
+    let lock: { release(): void } | undefined;
+    try {
+      client = this.client(account);
+      await client.connect();
+      const folder = await this.specialFolder(client, 'Sent');
+      lock = await client.getMailboxLock(folder);
+      const found = await client.search({ header: { 'Message-ID': String(message['messageId']) } }, { uid: true });
+      const existingUid = Array.isArray(found) ? found[0] : undefined;
+      const appended = existingUid ? undefined : await client.append(folder, raw, ['\\Seen']);
+      if (!existingUid && !appended) throw new Error('Sent copy not confirmed');
+      return { ...delivery, sentCopySaved: true, folder, uid: existingUid ?? (appended && appended.uid) };
+    } catch {
+      return { ...delivery, sentCopySaved: false, warning: `${rejected ? 'Some recipients were rejected. ' : ''}The outgoing server accepted this email, but its Sent copy could not be saved. Do not resend it.` };
+    } finally {
+      lock?.release();
+      await client?.logout().catch(() => {});
+    }
   }
 
   /** Exact schemas shared by discovery and the model-facing account context. */
@@ -653,6 +792,8 @@ export class MailConnections {
         return await this.mark(account, folder, uid, args['read'] !== false);
       case 'mail_send':
         return await this.send(account, args);
+      case 'mail_save_draft':
+        return await this.saveDraft(account, args);
       default:
         throw new Error('Unknown mail tool. Use connected_apps tools for the mailbox to see the exact slugs.');
     }
@@ -696,8 +837,14 @@ export function mailToolDefinitions(): MailTool[] {
     {
       slug: 'mail_send',
       name: 'Send a message',
-      description: 'Send an email from this connected mailbox. This is an external write: obey the company/account grants and any review required by the host.',
-      inputParameters: { type: 'object', properties: { to: { type: 'string', description: 'One or more addresses, comma separated' }, subject: { type: 'string' }, text: { type: 'string' }, cc: { type: 'string' }, bcc: { type: 'string' }, replyTo: { type: 'string' } }, required: ['to', 'text'] },
+      description: 'Propose an email for editable user review before sending. Saves a Sent copy in the connected mailbox. Inspect sent, partial, sentCopySaved and warning; never automatically retry an uncertain delivery.',
+      inputParameters: { type: 'object', properties: { to: { type: 'string', description: 'One or more addresses, comma separated' }, subject: { type: 'string' }, text: { type: 'string' }, cc: { type: 'string' }, bcc: { type: 'string' }, replyTo: { type: 'string' }, inReplyTo: { type: 'string' }, references: { type: 'string' } }, required: ['to', 'text'] },
+    },
+    {
+      slug: 'mail_save_draft',
+      name: 'Save an email draft',
+      description: 'Save an unsent email in the connected mailbox Drafts folder, visible in the user’s email app. Optionally replace a plain-text draft without attachments using its draftUid. Inspect saved and warning before claiming success. This does not send email.',
+      inputParameters: { type: 'object', properties: { to: { type: 'string' }, subject: { type: 'string' }, text: { type: 'string' }, cc: { type: 'string' }, bcc: { type: 'string' }, replyTo: { type: 'string' }, inReplyTo: { type: 'string' }, references: { type: 'string' }, draftUid: { type: 'integer', minimum: 1 } } },
     },
     {
       slug: 'mail_mark',

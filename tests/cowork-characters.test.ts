@@ -382,6 +382,26 @@ describe('animated teammate characters and web activity', () => {
     expect(context.cwRequestHtml(ordinary)).not.toContain('data-action="accept" disabled');
   });
 
+  it('shows editable emails with send/draft choices and retains unsent user edits', () => {
+    const { context } = ui();
+    const action = { service: 'mail', accountId: 'mail-own', tool: 'mail_send', args: { to: 'original@example.com', subject: 'Proposed', text: 'Original body' } };
+    const request = { id: 'mail-review', agentId: 'jelly', kind: 'recommendation', status: 'open', createdAt: '2026-10-04T06:00:00Z', title: 'Run mail_send', detail: 'Review this mail action:\n' + JSON.stringify(action), appAction: action };
+    let html = context.cwRequestHtml(request);
+    expect(html).toContain('data-cwreview="mail-review" data-key="text"');
+    expect(html).toContain('>Approve send</button>');
+    expect(html).toContain('>Save draft</button>');
+    expect(html).not.toContain('data-action="always-allow"');
+    context.S.cw.reviewDrafts['mail-review'].values.text = 'Edited </textarea><script>alert(1)</script>';
+    html = context.cwRequestHtml(request);
+    expect(html).toContain('Edited &lt;/textarea&gt;&lt;script&gt;');
+    expect(html).not.toContain('<script>');
+    expect(request.appAction.args.text).toBe('Original body');
+    const resolved = context.cwRequestHtml({ ...request, status: 'accepted', reviewedAction: { ...action, tool: 'mail_save_draft', args: { text: 'Final user draft' } }, response: 'Save draft only' });
+    expect(resolved).toContain('Final user draft');
+    expect(resolved).not.toContain('Original body');
+    expect(resolved).not.toContain('data-cwreview=');
+  });
+
   it('reviews full stored inputs even when an older bounded description is incomplete', () => {
     const { context } = ui();
     const message = 'Full message '.repeat(300);
@@ -412,6 +432,16 @@ describe('animated teammate characters and web activity', () => {
     expect(scheduled).toContain('Scheduled follow-up · Jelly');
     expect(scheduled).toContain('Check &lt;img src=x&gt; tomorrow');
     expect(scheduled).not.toContain('<img src=x>');
+  });
+
+  it('shows an email arrival as a quiet receipt without its private body or host instructions', () => {
+    const { context } = ui();
+    const html = context.cwSystemEventHtml({ text: 'NEW EMAIL NOTIFICATION. Private host instructions\n' + JSON.stringify({ mailbox: 'Work', from: 'sender@example.com', subject: '<script>New update</script>', body: 'Private email contents', accountId: 'mail-secret-id' }) });
+    expect(html).toContain('New email received');
+    expect(html).toContain('Work · sender@example.com');
+    expect(html).toContain('&lt;script&gt;New update&lt;/script&gt;');
+    expect(html).not.toContain('Private');
+    expect(html).not.toContain('mail-secret-id');
   });
 
   it('shows saved app permissions with their scope and a revoke control', () => {

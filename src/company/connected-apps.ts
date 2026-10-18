@@ -6,7 +6,7 @@ import type { Company } from './store.js';
 
 export interface CompanyApps {
   provider: Pick<ComposioConnections, 'configured' | 'setup' | 'catalog' | 'connect'>;
-  mail: Pick<MailConnections, 'accounts' | 'connect' | 'detect' | 'setup'>;
+  mail: Pick<MailConnections, 'accounts' | 'connect' | 'detect' | 'setup' | 'setInboxWatch'>;
   accounts: () => Promise<ConnectedApp[]>;
   configure: (req: IncomingMessage, key: string) => Promise<void>;
   secure: (req: IncomingMessage) => boolean;
@@ -74,6 +74,13 @@ export async function companyConnectedApps(req: IncomingMessage, res: ServerResp
   if (route === '/mail/detect' && method === 'GET') { d.send(res, 200, await apps.mail.detect({ address: url.searchParams.get('address') ?? '' })); return true; }
   if (method !== 'POST') { d.send(res, 405, { error: 'Method not allowed.' }); return true; }
   const body = await d.body(req);
+  if (route === '/mail/watch') {
+    const accountId = String(body['accountId'] ?? '');
+    if (!d.store.get(company.id)!.accountIds.includes(accountId) || !(await apps.mail.accounts()).some(account => account.id === accountId)) throw new Error('Choose a mailbox granted to this company.');
+    if (typeof body['enabled'] !== 'boolean') throw new Error('enabled must be a boolean');
+    apps.mail.setInboxWatch(accountId, body['enabled']);
+    d.send(res, 200, { ok: true }); return true;
+  }
   if (route === '/configure') {
     if (!apps.secure(req)) throw new Error('Integration setup requires an authenticated HTTPS session.');
     const key = String(body['apiKey'] ?? '');

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ImapFlow, ImapFlowOptions } from 'imapflow';
 import { MAIL_PROVIDERS, MailConnections, MailSecretStore, mailPresetFor, type MailTransport } from '../src/connections/mail.js';
 import type { MailDiscovery } from '../src/connections/mail-detect.js';
+import { simpleParser } from 'mailparser';
 import { ConnectionsHub, MAIL_SERVICE_SLUG } from '../src/connections/provider.js';
 import type { ComposioConnections } from '../src/connections/composio.js';
 import { roleAppSuggestions } from '../src/cowork/app-recommendations.js';
@@ -23,12 +24,14 @@ const RAW_MESSAGE = [
   'From: Ada Lovelace <ada@example.com>',
   'To: agent@example.com',
   'Subject: Hello from the fixture',
+  'Message-ID: <original@example.com>',
   'Date: Mon, 6 Oct 2026 10:00:00 +0000',
   '',
   'Body text for the mailbox reader.',
 ].join('\r\n');
 
 class FakeImap {
+  capabilities = new Map([['UIDPLUS', true]]);
   exists = 2;
   messages: Record<string, unknown>[] = [
     {
@@ -54,23 +57,34 @@ class FakeImap {
   list = vi.fn(async () => [
     { path: 'INBOX', name: 'INBOX', delimiter: '/', specialUse: undefined },
     { path: 'Sent', name: 'Sent', delimiter: '/', specialUse: '\\Sent' },
+    { path: 'Drafts', name: 'Drafts', delimiter: '/', specialUse: '\\Drafts' },
   ]);
   messageFlagsAdd = vi.fn(async () => true);
   messageFlagsRemove = vi.fn(async () => true);
+  append = vi.fn(async (_folder: string, _raw: Buffer, _flags: string[]) => ({ uid: 101, uidValidity: 1n }));
+  mailboxCreate = vi.fn(async (path: string[]) => ({ path: path.join('/') }));
+  messageDelete = vi.fn(async () => true);
+  fetchCalls: { range: string; uid: boolean }[] = [];
   on(): this {
     return this;
   }
-  get mailbox(): { exists: number } {
-    return { exists: this.exists };
+  get mailbox(): { exists: number; uidValidity: bigint; uidNext: number } {
+    return { exists: this.exists, uidValidity: 1n, uidNext: 3 };
   }
-  async *fetch(): AsyncGenerator<Record<string, unknown>> {
-    for (const message of [...this.messages].sort((a, b) => Number(a['uid']) - Number(b['uid']))) yield message;
+  async *fetch(range: string, _query: unknown, options: { uid: boolean }): AsyncGenerator<Record<string, unknown>> {
+    this.fetchCalls.push({ range, uid: options.uid });
+    const matches = (n: number) => range.split(',').some(part => {
+      const [start, end] = part.split(':').map(Number);
+      return end === undefined ? n === start : n >= start! && n <= end;
+    });
+    for (const message of [...this.messages].sort((a, b) => Number(a['uid']) - Number(b['uid']))) if (matches(Number(message[options.uid ? 'uid' : 'seq']))) yield message;
   }
   async fetchOne(seq: string): Promise<Record<string, unknown> | false> {
     const message = this.messages.find((candidate) => String(candidate['uid']) === String(seq));
     return message ? { ...message, source: Buffer.from(RAW_MESSAGE) } : false;
   }
-  async search(): Promise<number[]> {
+  async search(query: Record<string, unknown>): Promise<number[]> {
+    if (query['header']) return [];
     return this.messages.map((message) => Number(message['uid']));
   }
 }
@@ -174,6 +188,165 @@ describe('mail connections', () => {
     await expect(mail.execute('mail_delete_everything', {}, account.id)).rejects.toThrow('Unknown mail tool');
     await expect(mail.execute('mail_list', {}, 'mail-missing')).rejects.toThrow('no longer connected');
   });
+  it('lists recent messages by sequence even when IMAP UIDs have gaps', async () => {
+    process.env['AGENT_GITU_SECRETS_KEY'] = serverKey();
+    const { mail, imap } = fixture();
+    const { account } = await mail.connect(valid);
+    imap.messages[0]!['uid'] = 400;
+    imap.messages[1]!['uid'] = 900;
+    const result = await mail.execute('mail_list', { limit: 1 }, account.id) as { messages: { uid: number }[] };
+    expect(result.messages.map(message => message.uid)).toEqual([900]);
+    expect(imap.fetchCalls.at(-1)).toEqual({ range: '2:2', uid: false });
+    const unread = await mail.execute('mail_list', { unreadOnly: true }, account.id) as { messages: { uid: number }[] };
+    expect(unread.messages.map(message => message.uid)).toEqual([900, 400]);
+    expect(imap.fetchCalls.at(-1)?.uid).toBe(true);
+  });
+
+  it('preserves password whitespace and accepts non-email IMAP usernames', async () => {
+    process.env['AGENT_GITU_SECRETS_KEY'] = serverKey();
+    const { mail, imapOptions, smtpOptions } = fixture();
+    await mail.connect({ ...valid, username: 'local-user', password: '  password  ' });
+    expect(imapOptions[0]?.auth).toEqual({ user: 'local-user', pass: '  password  ' });
+    expect(smtpOptions[0]?.['auth']).toEqual({ user: 'local-user', pass: '  password  ' });
+  });
+
+  it('closes the IMAP connection when selecting a folder fails', async () => {
+    process.env['AGENT_GITU_SECRETS_KEY'] = serverKey();
+    const { mail, imap } = fixture();
+    const { account } = await mail.connect(valid);
+    imap.logout.mockClear();
+    imap.getMailboxLock.mockRejectedValueOnce(new Error('Missing folder'));
+    await expect(mail.execute('mail_list', { folder: 'missing' }, account.id)).rejects.toThrow('Missing folder');
+    expect(imap.logout).toHaveBeenCalledOnce();
+  });
+
+  it('opens a dedicated IDLE listener and persists its pause preference without exposing credentials', async () => {
+    process.env['AGENT_GITU_SECRETS_KEY'] = serverKey();
+    const { mail, imapOptions } = fixture();
+    const { account } = await mail.connect(valid);
+    expect(account.watchInbox).toBe(true);
+    mail.createInboxClient(account.id);
+    expect(imapOptions.at(-1)).toMatchObject({ disableAutoIdle: false, autoIdleDelay: 100, maxIdleTime: 1200000, socketTimeout: 1800000 });
+    mail.setInboxWatch(account.id, false);
+    expect((await mail.accounts())[0]?.watchInbox).toBe(false);
+    expect(() => mail.createInboxClient(account.id)).toThrow('paused');
+    mail.setInboxWatch(account.id, true);
+    expect((await mail.accounts())[0]?.watchInbox).toBe(true);
+    expect(JSON.stringify(await mail.accounts())).not.toContain(PASSWORD);
+  });
+
+  it('reads an arrival only in its original UID generation and bounds automatic large-message reads', async () => {
+    process.env['AGENT_GITU_SECRETS_KEY'] = serverKey();
+    const { mail, imap } = fixture();
+    const { account } = await mail.connect(valid);
+    expect(await mail.readInboxArrival(account.id, 1, '2')).toBeUndefined();
+    expect(await mail.readInboxArrival(account.id, 1, '1')).toMatchObject({ uid: 1, body: expect.stringContaining('Body text for the mailbox reader') });
+    imap.messages[0]!['size'] = 3 * 1024 * 1024;
+    const fetch = vi.spyOn(imap, 'fetchOne');
+    expect(await mail.readInboxArrival(account.id, 1, '1')).toMatchObject({ uid: 1, bodyOmitted: true });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(imap.messageFlagsAdd).not.toHaveBeenCalled();
+  });
+
+  it('saves real editable MIME in the provider Drafts folder without SMTP', async () => {
+    process.env['AGENT_GITU_SECRETS_KEY'] = serverKey();
+    const { mail, imap, sent } = fixture();
+    const { account } = await mail.connect(valid);
+    imap.list.mockResolvedValue([{ path: 'Entwuerfe', name: 'Entwuerfe', delimiter: '/', specialUse: '\\Drafts' }]);
+    const result = await mail.execute('mail_save_draft', { to: 'someone@example.com', subject: 'Draft subject', text: 'User can edit this', bcc: 'private@example.com' }, account.id);
+    expect(result).toMatchObject({ saved: true, sent: false, draft: true, folder: 'Entwuerfe', uid: 101 });
+    expect(sent).toEqual([]);
+    const [folder, raw, flags] = imap.append.mock.calls[0]!;
+    expect(folder).toBe('Entwuerfe');
+    expect(flags).toContain('\\Draft');
+    const parsed = await simpleParser(raw);
+    expect(parsed.subject).toBe('Draft subject');
+    expect(parsed.text?.trim()).toBe('User can edit this');
+    expect(JSON.stringify(parsed.bcc)).toContain('private@example.com');
+    expect(parsed.messageId).toBeTruthy();
+  });
+
+  it('creates a missing Drafts folder and saves incomplete unsent drafts', async () => {
+    process.env['AGENT_GITU_SECRETS_KEY'] = serverKey();
+    const { mail, imap, sent } = fixture();
+    const { account } = await mail.connect(valid);
+    imap.list.mockResolvedValue([]);
+    expect(await mail.execute('mail_save_draft', { subject: 'Work in progress' }, account.id)).toMatchObject({ saved: true, sent: false, folder: 'Drafts' });
+    expect(imap.mailboxCreate).toHaveBeenCalledWith(['Drafts']);
+    expect(sent).toEqual([]);
+  });
+
+  it('saves a replacement draft before deleting the previous version', async () => {
+    process.env['AGENT_GITU_SECRETS_KEY'] = serverKey();
+    const { mail, imap } = fixture();
+    const { account } = await mail.connect(valid);
+    imap.messages[0]!['flags'] = new Set(['\\Draft']);
+    imap.append.mockRejectedValueOnce(new Error('Quota exceeded'));
+    expect(await mail.execute('mail_save_draft', { draftUid: 1, text: 'Replacement' }, account.id)).toMatchObject({ saved: null, sent: false, status: 'unknown' });
+    expect(imap.messageDelete).not.toHaveBeenCalled();
+    expect(await mail.execute('mail_save_draft', { draftUid: 1, text: 'Replacement' }, account.id)).toMatchObject({ saved: true, uid: 101 });
+    expect(imap.messageDelete).toHaveBeenCalledWith('1', { uid: true });
+    await expect(mail.execute('mail_save_draft', { draftUid: 2, text: 'Wrong UID' }, account.id)).rejects.toThrow('original draft');
+  });
+
+  it('keeps attached originals and avoids unscoped expunge on older IMAP servers', async () => {
+    process.env['AGENT_GITU_SECRETS_KEY'] = serverKey();
+    const { mail, imap } = fixture();
+    const { account } = await mail.connect(valid);
+    vi.spyOn(imap, 'fetchOne').mockResolvedValueOnce({ uid: 1, flags: new Set(['\\Draft']), source: Buffer.from('Content-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=keep.txt\r\n\r\nOriginal attachment') });
+    await expect(mail.execute('mail_save_draft', { draftUid: 1, text: 'Replacement' }, account.id)).rejects.toThrow('attachments could be lost');
+    expect(imap.append).not.toHaveBeenCalled();
+    imap.messages[0]!['flags'] = new Set(['\\Draft']);
+    imap.capabilities.clear();
+    expect(await mail.execute('mail_save_draft', { draftUid: 1, text: 'Replacement' }, account.id)).toMatchObject({ saved: true, warning: expect.stringContaining('both versions') });
+    expect(imap.messageDelete).not.toHaveBeenCalled();
+  });
+
+  it('saves the sent MIME with the same Message-ID and exposes reply headers', async () => {
+    process.env['AGENT_GITU_SECRETS_KEY'] = serverKey();
+    const { mail, imap, sent } = fixture();
+    const { account } = await mail.connect(valid);
+    expect(await mail.execute('mail_read', { uid: 1 }, account.id)).toMatchObject({ messageId: '<original@example.com>' });
+    const result = await mail.execute('mail_send', { to: 'someone@example.com', text: 'Reply', inReplyTo: '<original@example.com>', references: '<original@example.com>' }, account.id);
+    expect(result).toMatchObject({ sent: true, sentCopySaved: true, folder: 'Sent' });
+    const parsed = await simpleParser(imap.append.mock.calls[0]![1]);
+    expect(parsed.messageId).toBe(sent[0]!['messageId']);
+    expect(parsed.inReplyTo).toBe('<original@example.com>');
+  });
+
+  it('reports rejection, partial acceptance, and SMTP uncertainty accurately', async () => {
+    process.env['AGENT_GITU_SECRETS_KEY'] = serverKey();
+    const { mail, transport, imap } = fixture();
+    const { account } = await mail.connect(valid);
+    vi.mocked(transport.sendMail).mockResolvedValueOnce({ accepted: [], rejected: ['someone@example.com'] });
+    expect(await mail.execute('mail_send', { to: 'someone@example.com', text: 'Test' }, account.id)).toMatchObject({ sent: false, accepted: 0 });
+    expect(imap.append).not.toHaveBeenCalled();
+    vi.mocked(transport.sendMail).mockResolvedValueOnce({ accepted: ['a@example.com'], rejected: ['b@example.com'] });
+    expect(await mail.execute('mail_send', { to: 'a@example.com,b@example.com', text: 'Test' }, account.id)).toMatchObject({ sent: true, partial: true, rejected: 1 });
+    vi.mocked(transport.sendMail).mockRejectedValueOnce(new Error('Connection lost'));
+    expect(await mail.execute('mail_send', { to: 'someone@example.com', text: 'Test' }, account.id)).toMatchObject({ sent: null, status: 'unknown', warning: expect.stringContaining('duplicate') });
+    vi.mocked(transport.sendMail).mockRejectedValueOnce(Object.assign(new Error('Authentication failed'), { code: 'EAUTH' }));
+    expect(await mail.execute('mail_send', { to: 'someone@example.com', text: 'Test' }, account.id)).toMatchObject({ sent: false, status: 'rejected', warning: expect.stringContaining('SMTP credentials') });
+  });
+
+  it('does not turn a Sent-copy failure into a retryable delivery failure', async () => {
+    process.env['AGENT_GITU_SECRETS_KEY'] = serverKey();
+    const { mail, imap, sent } = fixture();
+    const { account } = await mail.connect(valid);
+    imap.append.mockRejectedValueOnce(new Error('Disk full'));
+    expect(await mail.execute('mail_send', { to: 'someone@example.com', text: 'Test' }, account.id)).toMatchObject({ sent: true, sentCopySaved: false, warning: expect.stringContaining('Do not resend') });
+    expect(sent).toHaveLength(1);
+  });
+
+  it('does not append a second Sent copy when the server already saved it', async () => {
+    process.env['AGENT_GITU_SECRETS_KEY'] = serverKey();
+    const { mail, imap } = fixture();
+    const { account } = await mail.connect(valid);
+    vi.spyOn(imap, 'search').mockResolvedValueOnce([42]);
+    expect(await mail.execute('mail_send', { to: 'someone@example.com', text: 'Test' }, account.id)).toMatchObject({ sent: true, sentCopySaved: true, uid: 42 });
+    expect(imap.append).not.toHaveBeenCalled();
+  });
+
   it('migrates legacy plaintext mailboxes and their recovery copies without losing account IDs', async () => {
     process.env['AGENT_GITU_SECRETS_KEY'] = serverKey();
     const { mail } = fixture();
@@ -286,6 +459,36 @@ describe('mail provider presets', () => {
 });
 
 describe('mail API routes', () => {
+  it.each(['accept', 'save-draft'])('stores authenticated edits for %s without changing account or running SMTP', async (action) => {
+    process.env['AGENT_GITU_SECRETS_KEY'] = serverKey();
+    const { mail, sent } = fixture();
+    const { account } = await mail.connect(valid);
+    const server = new GituServer({ cwd: process.env['AGENT_GITU_HOME']!, port: 0, passwordRequired: false, mailConnections: mail, mailInboxWatching: false, llm: { name: 'fixture', async complete() { return 'Done.'; } }, coworkCompletionProtocol: 'legacy' });
+    const store = (server as unknown as { cowork(): CoworkStore }).cowork();
+    const agent = store.saveAgent({ name: 'Writer', systemPrompt: 'Write emails' });
+    store.assignAppAccount(agent.id, 'mail', account.id);
+    const conversation = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
+    const original = { service: 'mail', accountId: account.id, tool: 'mail_send', args: { to: 'original@example.com', text: 'Original' } };
+    const request = store.addRequest({ conversationId: conversation.id, agentId: agent.id, kind: 'recommendation', title: 'Run mail_send', detail: 'Review this mail action:\n' + JSON.stringify(original), appAction: original });
+    const base = 'http://127.0.0.1:' + await server.start();
+    const post = (body: unknown) => fetch(base + '/api/cowork/requests/' + request.id, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    try {
+      expect((await post({ action: 'always-allow' })).status).toBe(400);
+      expect((await post({ action, reviewedArgs: [] })).status).toBe(400);
+      expect(store.getRequest(request.id)?.status).toBe('open');
+      expect(store.appPermissions()).toEqual([]);
+      const reviewedArgs = { to: 'edited@example.com', text: 'User edited text', subject: 'User subject' };
+      const response = await post({ action, reviewedArgs, service: 'attacker', tool: 'OTHER', accountId: 'foreign' });
+      expect(response.status).toBe(200);
+      const result = await response.json();
+      expect(result.request.reviewedAction).toEqual({ ...original, tool: action === 'save-draft' ? 'mail_save_draft' : 'mail_send', args: reviewedArgs });
+      expect(result.request.appAction).toEqual(original);
+      expect(sent).toEqual([]);
+      expect((await post({ action, reviewedArgs })).status).toBe(404);
+      expect(new CoworkStore().getRequest(request.id)?.reviewedAction?.args).toEqual(reviewedArgs);
+    } finally { await server.stop(); }
+  });
+
   it('connects, assigns, lists, and deletes a mailbox through the Connections API', async () => {
     process.env['AGENT_GITU_SECRETS_KEY'] = serverKey();
     const { mail, imap, imapOptions, discover } = fixture();
@@ -294,6 +497,7 @@ describe('mail API routes', () => {
       port: 0,
       passwordRequired: false,
       mailConnections: mail,
+      mailInboxWatching: false,
       llm: { name: 'fixture', async complete() { return 'Done.'; } },
       coworkCompletionProtocol: 'legacy',
     });
@@ -322,6 +526,10 @@ describe('mail API routes', () => {
       expect(connected.status).toBe(200);
       const first = (await connected.json()).account as { id: string; address: string };
       expect(first.address).toBe('agent@example.com');
+      expect((await post('/api/connected-apps/mail/watch', { accountId: first.id, enabled: 'false' })).status).toBe(400);
+      expect((await post('/api/connected-apps/mail/watch', { accountId: first.id, enabled: false })).status).toBe(200);
+      expect((await mail.accounts())[0]?.watchInbox).toBe(false);
+      expect((await post('/api/connected-apps/mail/watch', { accountId: first.id, enabled: true })).status).toBe(200);
       expect(store.appAccountAssigned(agent.id, 'mail', first.id)).toBe(true);
 
       const listed = await connections();
@@ -394,6 +602,14 @@ describe('connections hub', () => {
     expect((await hub.accounts()).map((entry) => entry.id)).toContain(account.id);
     expect((await hub.tools(MAIL_SERVICE_SLUG)).map((tool) => tool.slug)).toContain('mail_send');
     expect(await hub.execute(MAIL_SERVICE_SLUG, 'mail_folders', {}, account.id)).toMatchObject({ folders: expect.any(Array) });
+  });
+
+  it('keeps OAuth accounts usable when native mailbox storage is unavailable', async () => {
+    const { mail } = fixture();
+    vi.spyOn(mail, 'accounts').mockRejectedValue(new Error('Mailbox key unavailable'));
+    const hub = new ConnectionsHub(composio(), mail);
+    expect(await hub.accounts()).toEqual([{ id: 'own', toolkit: 'github', status: 'ACTIVE', disabled: false }]);
+    expect(hub.accountStatusIncomplete).toBe(true);
   });
 
   it('routes non-mail services to the OAuth provider', async () => {
@@ -494,7 +710,7 @@ describe('connections hub', () => {
     const ctx = { connectedApps: hub } as ToolContext;
     const perms = { allowWrites: true, allowConfig: false, allowShell: false, chief: false, browser: false };
     const params = { action: 'execute', service: 'mail', tool: 'mail_send', args: { to: 'someone@example.com', text: 'Reviewed update' } };
-    expect((await executeCoworkTool(ctx, 'connected_apps', params, perms, scope)).output).toMatch(/^Review /);
+    expect((await executeCoworkTool(ctx, 'connected_apps', params, perms, scope)).output).toMatch(/review .* posted/i);
     expect(sent).toEqual([]);
     const card = store.openRequests(conversation.id)[0]!;
     store.resolveRequest(card.id, 'accepted');
@@ -502,5 +718,56 @@ describe('connections hub', () => {
     expect(sent).toHaveLength(1);
     expect(store.appConnections(agent.id)).toHaveLength(1);
     expect(store.getAgent(agent.id)?.allowConfig).toBe(false);
+  });
+
+  it.each([false, true])('executes only the user-edited email, saveDraft=%s, once', async (saveDraft) => {
+    process.env['AGENT_GITU_SECRETS_KEY'] = serverKey();
+    const { mail, sent, imap } = fixture();
+    const { account } = await mail.connect(valid);
+    const hub = new ConnectionsHub(composio({ configured: false }), mail), store = new CoworkStore();
+    const agent = store.saveAgent({ name: 'Writer', systemPrompt: 'Write emails', allowWrites: true });
+    const conversation = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
+    store.assignAppAccount(agent.id, 'mail', account.id);
+    const scope = { store, agent, conversationId: conversation.id } as CoworkToolScope;
+    const ctx = { connectedApps: hub } as ToolContext;
+    const perms = { allowWrites: true, allowConfig: false, allowShell: false, chief: false, browser: false };
+    const params = { action: 'execute', service: 'mail', tool: 'mail_send', args: { to: 'original@example.com', text: 'Original' } };
+    vi.spyOn(store, 'appActionAllowed').mockReturnValue(true);
+    await executeCoworkTool(ctx, 'connected_apps', params, perms, scope);
+    const card = store.openRequests(conversation.id)[0]!;
+    expect(() => store.allowAppActionForRequest(card.id)).toThrow('review each time');
+    store.resolveRequest(card.id, 'accepted', saveDraft ? 'Save draft only' : '', { args: { to: 'edited@example.com', subject: 'Changed', text: 'Edited by user' }, saveDraft });
+    // The original agent call is repeated; execution substitutes the user version.
+    const renewedContext = { ...ctx, connectedApps: new ConnectionsHub(composio({ configured: false }), mail) };
+    const results = await Promise.all([1, 2].map(() => executeCoworkTool(renewedContext, 'connected_apps', { ...params, args: { text: 'Original', to: 'original@example.com' }, approvalId: card.id }, perms, scope)));
+    expect(results.some(result => result.output.includes(saveDraft ? '"draft":true' : '"sent":true'))).toBe(true);
+    expect(sent).toHaveLength(saveDraft ? 0 : 1);
+    expect(imap.append).toHaveBeenCalledOnce();
+    const parsed = await simpleParser(imap.append.mock.calls[0]![1]);
+    expect(parsed.text?.trim()).toBe('Edited by user');
+    expect(JSON.stringify(parsed.to)).toContain('edited@example.com');
+    expect(parsed.subject).toBe('Changed');
+    expect(store.getRequest(card.id)?.appAction?.args).toEqual(params.args);
+  });
+
+  it('reuses edited review for other connected apps without allowing a tool/account switch', async () => {
+    fixture();
+    const provider = composio(), store = new CoworkStore();
+    const hub = new ConnectionsHub(provider, new MailConnections(new MailSecretStore('linux')));
+    const agent = store.saveAgent({ name: 'Writer', systemPrompt: 'Prepare app actions', allowWrites: true, allowConfig: true });
+    const conversation = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
+    store.assignAppAccount(agent.id, 'github', 'own');
+    const scope = { store, agent, conversationId: conversation.id } as CoworkToolScope;
+    const ctx = { connectedApps: hub } as ToolContext;
+    const perms = { allowWrites: true, allowConfig: true, allowShell: false, chief: false, browser: false };
+    const params = { action: 'execute', service: 'github', tool: 'GITHUB_LIST', args: { title: 'Original' } };
+    await executeCoworkTool(ctx, 'connected_apps', params, perms, scope);
+    const card = store.openRequests(conversation.id)[0]!;
+    expect(() => store.resolveRequest(card.id, 'accepted', '', { args: [], saveDraft: false })).toThrow('valid action');
+    expect(() => store.resolveRequest(card.id, 'accepted', '', { saveDraft: true })).toThrow('native mailbox');
+    expect(store.getRequest(card.id)?.status).toBe('open');
+    store.resolveRequest(card.id, 'accepted', '', { args: { title: 'User edit', enabled: false, labels: ['one'] } });
+    await executeCoworkTool(ctx, 'connected_apps', { ...params, approvalId: card.id }, perms, scope);
+    expect(provider.execute).toHaveBeenCalledWith('github', 'GITHUB_LIST', { title: 'User edit', enabled: false, labels: ['one'] }, 'own');
   });
 });

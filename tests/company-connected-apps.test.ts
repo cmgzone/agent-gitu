@@ -32,6 +32,17 @@ function fixture() {
   return { store, first, second, a, b, lead, colleague, outsider, conversation, apps, call, start: d.start, owned: (value: ConnectedApp[]) => { owned = value; } };
 }
 describe('Company connected accounts', () => {
+  it('allows notification changes only for a mailbox granted to the company', async () => {
+    const f = fixture(), setInboxWatch = vi.fn();
+    Object.assign(f.apps.mail, { setInboxWatch });
+    await expect(f.call('/mail/watch', 'POST', { accountId: 'foreign', enabled: true })).rejects.toThrow('granted');
+    expect(setInboxWatch).not.toHaveBeenCalled();
+    await f.call('/assign', 'POST', { accountId: 'existing-mail', agentIds: [f.lead.id] });
+    f.apps.mail.accounts.mockResolvedValue([{ id: 'existing-mail' }] as never);
+    await expect(f.call('/mail/watch', 'POST', { accountId: 'existing-mail', enabled: 'false' })).rejects.toThrow('boolean');
+    expect((await f.call('/mail/watch', 'POST', { accountId: 'existing-mail', enabled: false })).status).toBe(200);
+    expect(setInboxWatch).toHaveBeenCalledWith('existing-mail', false);
+  });
   it('connects a company resource without requiring any agent and persists pending sign-in', async () => {
     const f = fixture(); await f.call('/connect', 'POST', { service: 'gmail', agentIds: [] });
     expect(f.store.get(f.first.id)?.accountIds).toEqual(['new-gmail']);

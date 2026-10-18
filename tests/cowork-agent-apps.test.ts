@@ -91,7 +91,7 @@ describe('teammate app connections', () => {
     const f = fixture();
     f.store.assignAppAccount(f.agent.id, 'gmail', 'gmail-own');
     f.store.assignAppAccount(f.other.id, 'gmail', 'gmail-own');
-    const card = f.store.addRequest({ conversationId: f.conv.id, agentId: f.agent.id, kind: 'recommendation', title: 'Run GMAIL_SEND', detail: 'Review this gmail action:\n' + JSON.stringify({ service: 'gmail', accountId: 'gmail-own', tool: 'GMAIL_SEND', args: {} }) });
+    const card = f.store.addRequest({ conversationId: f.conv.id, agentId: f.agent.id, kind: 'recommendation', title: 'Run GMAIL_FETCH', detail: 'Review this gmail action:\n' + JSON.stringify({ service: 'gmail', accountId: 'gmail-own', tool: 'GMAIL_FETCH', args: {} }) });
     f.store.allowAppActionForRequest(card.id);
     const restored = new CoworkStore();
     expect(restored.appAccountAssigned(f.agent.id, 'gmail', 'gmail-own')).toBe(true);
@@ -134,6 +134,27 @@ describe('teammate app connections', () => {
       expect(ownerAccounts.accounts).toEqual([]);
       expect((await post('/api/connected-apps/disconnect', { agentId: agent.id, accountId: 'gmail-own' })).status).toBe(200);
       expect(store.appAccountAssigned(f.other.id, 'github', 'github-other')).toBe(true);
+    } finally { await server.stop(); }
+  });
+
+  it('preserves assignments and distinguishes unknown status from disconnection during provider outages', async () => {
+    const f = fixture();
+    f.store.assignAppAccount(f.agent.id, 'gmail', 'gmail-own');
+    const server = new GituServer({ cwd: process.env['AGENT_GITU_HOME']!, port: 0, passwordRequired: false, connectedApps: f.apps as unknown as ComposioConnections, llm: { name: 'fixture', async complete() { return 'Done.'; } }, coworkCompletionProtocol: 'legacy' });
+    const base = 'http://127.0.0.1:' + await server.start();
+    try {
+      f.apps.accounts.mockRejectedValueOnce(new Error('Provider timeout'));
+      const unavailable = await fetch(base + '/api/connected-apps?agentId=' + f.agent.id + '&statusOnly=true').then(response => response.json());
+      expect(unavailable.accountStatusIncomplete).toBe(true);
+      expect(unavailable.accounts).toEqual([{ id: 'gmail-own', toolkit: 'gmail', status: 'UNKNOWN', disabled: true }]);
+      f.apps.catalog.mockRejectedValueOnce(new Error('Catalog unavailable'));
+      const catalogDown = await fetch(base + '/api/connected-apps?agentId=' + f.agent.id).then(response => response.json());
+      expect(catalogDown.catalogUnavailable).toBe(true);
+      expect(catalogDown.accounts).toEqual([f.accounts[0]]);
+      const restored = await fetch(base + '/api/connected-apps?agentId=' + f.agent.id + '&statusOnly=true').then(response => response.json());
+      expect(restored.accountStatusIncomplete).toBe(false);
+      expect(restored.accounts).toEqual([f.accounts[0]]);
+      expect(f.store.appAccountAssigned(f.agent.id, 'gmail', 'gmail-own')).toBe(true);
     } finally { await server.stop(); }
   });
 

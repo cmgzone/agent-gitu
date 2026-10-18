@@ -1,3 +1,6 @@
+import { CHAT_RESULT_CSS, CHAT_RESULT_JS } from './ui-result-cards.js';
+import { ADAPTIVE_RESULT_CSS, ADAPTIVE_RESULT_JS } from './ui-adaptive-results.js';
+
 /**
  * Shared output viewers for chat.
  *
@@ -18,6 +21,9 @@
  *   ```output gallery   [{"url","caption"}]
  *   ```output map       {"q":"Berlin"} or {"lat","lon","zoom"}
  *   ```output json      any JSON
+ *   ```output email     {"title","summary","messages":[{"sender","subject","summary","url"}]}
+ *   ```output brief     {"title","summary","highlights":[{"label","text"}],"nextStep"}
+ *   ```output tasks     {"title","items":[{"text","status","detail","due"}]}
  *
  * outRenderBlocks rewrites only those fences and returns every other byte of
  * the text untouched, so ordinary code fences keep flowing through the normal
@@ -103,6 +109,9 @@ svg.out-svg{display:block;width:100%;min-width:320px;height:auto;max-height:340p
 .out-gal img{width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:7px;display:block;cursor:zoom-in;background:var(--card2, #171a21)}
 .out-gal figcaption{font-size:10.5px;color:var(--muted, #8a93a3);padding-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
+${CHAT_RESULT_CSS}
+${ADAPTIVE_RESULT_CSS}
+
 /* workspace overlay: the "expand to full screen" surface */
 .out-ov{position:fixed;inset:0;z-index:9000;background:rgba(6,8,12,.74);display:flex;align-items:center;justify-content:center;padding:24px}
 .out-ov[hidden]{display:none}
@@ -114,6 +123,8 @@ svg.out-svg{display:block;width:100%;min-width:320px;height:auto;max-height:340p
 
 export const OUTPUT_JS = String.raw`
 /* ================= shared output viewers ================= */
+${CHAT_RESULT_JS}
+${ADAPTIVE_RESULT_JS}
 var OUT_COLORS = ['#6a8cff','#3fb984','#e0a34a','#c9607f','#8b6ae0','#4aa3c7','#9aa4b8','#d1663f'];
 function outEsc(s){
   return String(s == null ? '' : s)
@@ -428,6 +439,7 @@ function outDocsHtml(list){
     try { basename = decodeURIComponent(basename); } catch(e){}
     var name = d.name || d.filename || d.title || basename || ('file-' + (i+1));
     var k = outDocKind(d.mime || d.type, name);
+    var typeLabels = { PDF:'PDF document', DOC:'Word document', XLS:'Spreadsheet', PPT:'Presentation', ZIP:'Archive', IMG:'Image', VID:'Video', AUD:'Audio', JSON:'JSON', MD:'Markdown', TXT:'Text file', FILE:'File' };
     var size = d.size;
     if(typeof size === 'number' && isFinite(size) && size >= 0){
       var unit = size >= 1048576 ? 'MB' : size >= 1024 ? 'KB' : 'B';
@@ -436,7 +448,7 @@ function outDocsHtml(list){
     h += '<a class="out-doc" href="' + outEsc(url) + '" download="' + outEsc(name) + '" target="_blank" rel="noopener noreferrer">'
       + '<span class="out-ic" style="background:' + k.c + '">' + k.t + '</span>'
       + '<span><span class="out-n" title="' + outEsc(name) + '">' + outEsc(name) + '</span>'
-      + '<span class="out-m">' + outEsc(d.mime || k.t.toLowerCase()) + (size != null && size !== '' ? ' &middot; ' + outEsc(size) : '') + '</span></span></a>';
+      + '<span class="out-m">' + outEsc(typeLabels[k.t] || k.t) + (size != null && size !== '' ? ' &middot; ' + outEsc(size) : '') + '</span></span></a>';
   }
   return h ? '<div class="out-docs">' + h + '</div>' : null;
 }
@@ -522,14 +534,14 @@ function outMapHtml(spec){
   return source ? outLinksHtml([{ url: source, title: title, description: spec.caption || 'Open this map at its source.' }]) : null;
 }
 
-/* Card chrome shared by every viewer. */
-function outCard(kind, title, body){
-  return '<div class="out-card' + (kind === 'image' ? ' out-media-image' : '') + '" data-out-card="1">'
-    + '<div class="out-head"><span class="out-kind">' + outEsc(kind) + '</span>'
-    + (title ? '<span class="out-title">' + outEsc(title) + '</span>' : '')
+/* Soft panel shared by every viewer. */
+function outCard(kind, title, body, presentation){
+  var labels={email:'Inbox briefing',brief:'At a glance',tasks:'Task progress',documents:'Files',links:'Sources',chart:'Chart',image:'Image',gallery:'Gallery',map:'Map',video:'Video',audio:'Audio',json:'Data',table:'Table',app:'App',preview:'Preview',html:'Preview'};
+  return '<div class="out-card' + (kind === 'image' ? ' out-media-image' : '') + '" data-out-card="1" data-out-kind="'+outEsc(kind)+'"'+outVisualAttrs(presentation)+'>'
+    + '<div class="out-head"><div class="out-heading"><h3 class="out-title">' + outEsc(title || labels[kind] || kind) + '</h3></div>'
     + '<span class="out-sp"></span>'
-    + '<button type="button" class="out-btn" data-out-open="1" aria-label="' + outEsc('Expand ' + kind + (title ? ': ' + title : '')) + '">Expand</button>'
-    + '</div><div class="out-body">' + body + '</div></div>';
+    + '<button type="button" class="out-btn" data-out-open="1" aria-label="' + outEsc('Expand ' + kind + (title ? ': ' + title : '')) + '" title="Open full view"><span aria-hidden="true">&#8599;</span></button>'
+    + '</div><div class="out-body">' + body + outActionHtml(presentation && presentation.actions) + '</div></div>';
 }
 
 /* Build one output block. Returns null for unknown or unusable blocks so the
@@ -539,12 +551,28 @@ function outBlockHtml(kind, payload){
   if(!text) return null;
   var data = outJson(text), input = data == null ? text : data;
   var title = data && typeof data === 'object' && !Array.isArray(data) ? data.title || data.name : null;
+  if(kind === 'ui' || kind === 'result'){
+    var adaptive = outAdaptiveHtml(data);
+    return adaptive ? outCard('ui', title || 'At a glance', adaptive, outAdaptivePresentation(data)) : null;
+  }
+  if(kind === 'email' || kind === 'inbox'){
+    var email = outEmailHtml(data);
+    return email ? outCard('email', title || 'Your email digest', email, data) : null;
+  }
+  if(kind === 'brief'){
+    var brief = outBriefHtml(data);
+    return brief ? outCard('brief', title || 'The essentials', brief, data) : null;
+  }
+  if(kind === 'tasks'){
+    var tasks = outTasksHtml(data);
+    return tasks ? outCard('tasks', title || 'Your checklist', tasks, data) : null;
+  }
   if(kind === 'chart'){
     var spec = outJson(text);
     var body = spec ? outChartSvg(spec) : null;
     if(!body) body = outTableHtml(text);
     if(!body) return null;
-    return outCard('chart', spec && spec.title, '<div class="out-chart">' + body + '</div>');
+    return outCard('chart', spec && spec.title, '<div class="out-chart">' + body + '</div>', spec);
   }
   if(kind === 'table' || kind === 'sortable'){
     var t = outTableHtml(text);
@@ -552,35 +580,35 @@ function outBlockHtml(kind, payload){
   }
   if(kind === 'preview' || kind === 'app' || kind === 'html'){
     var p = outPreviewFrame(input, { title: kind === 'app' ? 'Mini-app preview' : 'Preview' });
-    return p ? outCard(kind, title, p) : null;
+    return p ? outCard(kind, title, p, data) : null;
   }
   if(kind === 'video'){
     var v = outVideoEmbed(input);
-    return v ? outCard('video', title, v) : null;
+    return v ? outCard('video', title, v, data) : null;
   }
   if(kind === 'audio'){
     var audio = outAudioEmbed(input);
-    return audio ? outCard('audio', title, audio) : null;
+    return audio ? outCard('audio', title, audio, data) : null;
   }
   if(kind === 'image' || kind === 'map-image' || kind === 'map_image'){
     var image = outImageHtml(input);
-    return image ? outCard(kind === 'image' ? 'image' : 'map', title, image) : null;
+    return image ? outCard(kind === 'image' ? 'image' : 'map', title, image, data) : null;
   }
   if(kind === 'docs' || kind === 'files' || kind === 'file'){
-    var d = outDocsHtml(input);
-    return d ? outCard('documents', title, d) : null;
+    var d = outDocsHtml(data && Array.isArray(data.items) ? data.items : input);
+    return d ? outCard('documents', title, d, data) : null;
   }
   if(kind === 'links' || kind === 'link'){
-    var links = outLinksHtml(input);
-    return links ? outCard('links', title, links) : null;
+    var links = outLinksHtml(data && Array.isArray(data.items) ? data.items : input);
+    return links ? outCard('links', title, links, data) : null;
   }
   if(kind === 'gallery' || kind === 'images'){
-    var gal = outGalleryHtml(input);
-    return gal ? outCard('gallery', title, gal) : null;
+    var gal = outGalleryHtml(data && Array.isArray(data.items) ? data.items : input);
+    return gal ? outCard('gallery', title, gal, data) : null;
   }
   if(kind === 'map'){
     var m = outMapHtml(input);
-    return m ? outCard('map', title, m) : null;
+    return m ? outCard('map', title, m, data) : null;
   }
   if(kind === 'json'){
     var j = outJson(text);
@@ -646,6 +674,8 @@ function outClosePanel(){
   ov.hidden = true;
   var b = ov.querySelector('.out-ov-body');
   while(b && b.firstChild){ b.removeChild(b.firstChild); }
+  var source=ov._outCard;
+  if(source&&source.isConnected){var opener=source.querySelector('[data-out-open]');if(opener)opener.focus();}
 }
 function outDownloadPanel(){
   var ov = document.getElementById('out-overlay');

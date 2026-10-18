@@ -1,8 +1,8 @@
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ComposioConnections, ComposioKeyStore } from '../src/connections/composio.js';
+import { ComposioConnections, ComposioExecutionUncertainError, ComposioKeyStore } from '../src/connections/composio.js';
 import { executeCoworkTool, type CoworkToolScope } from '../src/cowork/tools.js';
 import { CoworkStore } from '../src/cowork/store.js';
 import { GituServer } from '../src/server/server.js';
@@ -27,15 +27,17 @@ afterEach(() => {
   if (previous === undefined) delete process.env['AGENT_GITU_HOME'];
   else process.env['AGENT_GITU_HOME'] = previous;
 });
-function fixture() {
+function fixture(owner = () => 'owner-uuid') {
   process.env['AGENT_GITU_HOME'] = mkdtempSync(path.join(tmpdir(), 'gitu-composio-'));
+  mkdirSync(path.join(process.env['AGENT_GITU_HOME']!, 'Settings'), { recursive: true });
   const keys = new MemoryKeys();
   keys.value = 'fixture-key';
   const execute = vi.fn(async (): Promise<Record<string, unknown>> => ({ data: { done: true } }));
   const toolkits = vi.fn(async () => ({ items: [{ slug: 'gmail', name: 'Gmail', connection: { connectedAccount: { status: 'ACTIVE', id: 'own' } } }], cursor: 'next' }));
   const authorize = vi.fn(async () => ({ redirectUrl: 'https://connect.composio.dev/link', id: 'own' }));
   const create = vi.fn(async () => ({ sessionId: 'test-session', toolkits, authorize }));
-  const list = vi.fn(async () => ({
+  const use = vi.fn(async () => ({ sessionId: 'saved-session', toolkits, authorize }));
+  const list = vi.fn(async (): Promise<{ items: { id: string; toolkit: { slug: string }; status: string; isDisabled: boolean; data?: Record<string, unknown> }[]; nextCursor: string | null }> => ({
     items: [{ id: 'own', toolkit: { slug: 'gmail' }, status: 'ACTIVE', isDisabled: false, data: { accessToken: 'never-expose-me' } }],
     nextCursor: null,
   }));
@@ -43,21 +45,152 @@ function fixture() {
   const raw = vi.fn(async () => [{ slug: 'GMAIL_SEND', name: 'Send mail', description: 'Send', inputParameters: {}, toolkit: { slug: 'gmail' } }]);
   const withOptions = vi.fn(() => ({ toolRouter: { session: { execute } } }));
   const client = {
-    sessions: { create, use: create },
+    sessions: { create, use },
     connectedAccounts: { list, revoke },
     tools: { getRawComposioTools: raw },
     toolkits: { get: vi.fn(async () => ({})) },
     getClient: () => ({ withOptions }),
   } as unknown as Client;
   const apps = new ComposioConnections(
-    () => 'owner-uuid',
+    owner,
     keys,
     () => client,
   );
-  return { apps, keys, create, list, revoke, raw, execute, authorize, toolkits, withOptions };
+  return { apps, keys, create, use, list, revoke, raw, execute, authorize, toolkits, withOptions };
 }
 
 describe('Composio connections', () => {
+  it.each(['{interrupted', 'null', '{"owner":"owner-uuid","sessionId":42}'])('recovers an invalid saved session: %s', async (saved) => {
+    const f = fixture();
+    writeFileSync(path.join(process.env['AGENT_GITU_HOME']!, 'Settings', 'composio-session.json'), saved);
+    expect((await f.apps.catalog()).services[0]?.slug).toBe('gmail');
+    expect(f.create).toHaveBeenCalledOnce();
+    expect(f.use).not.toHaveBeenCalled();
+    expect(JSON.parse(readFileSync(path.join(process.env['AGENT_GITU_HOME']!, 'Settings', 'composio-session.json'), 'utf8')).sessionId).toBe('test-session');
+  });
+
+  it('reuses a saved session, replaces a confirmed deleted one, and preserves auth failures', async () => {
+    const f = fixture(), file = path.join(process.env['AGENT_GITU_HOME']!, 'Settings', 'composio-session.json');
+    writeFileSync(file, JSON.stringify({ owner: 'owner-uuid', sessionId: 'old-session' }));
+    f.use.mockRejectedValueOnce(Object.assign(new Error('Deleted'), { status: 404 }));
+    await f.apps.catalog();
+    expect(f.use).toHaveBeenCalledWith('old-session', undefined, { signal: expect.any(AbortSignal) });
+    expect(f.create).toHaveBeenCalledOnce();
+    const restored = new ComposioConnections(() => 'owner-uuid', f.keys, () => ({ sessions: { create: f.create, use: f.use } }) as unknown as Client);
+    await restored.catalog();
+    expect(f.use).toHaveBeenCalledTimes(2);
+    expect(f.create).toHaveBeenCalledOnce();
+    const unauthorized = new ComposioConnections(() => 'owner-uuid', f.keys, () => ({ sessions: { create: f.create, use: f.use } }) as unknown as Client);
+    f.use.mockRejectedValueOnce(Object.assign(new Error('Not authorized'), { status: 401 }));
+    await expect(unauthorized.catalog()).rejects.toThrow('Not authorized');
+    expect(f.create).toHaveBeenCalledOnce();
+  });
+
+  it('scopes the cached sign-in session to the current owner', async () => {
+    let owner = 'owner-uuid';
+    const f = fixture(() => owner);
+    await f.apps.catalog();
+    owner = 'different-owner';
+    await f.apps.catalog();
+    expect(f.create).toHaveBeenCalledTimes(2);
+    expect(f.create).toHaveBeenLastCalledWith('different-owner', { manageConnections: false }, { signal: expect.any(AbortSignal) });
+  });
+
+  it('does not let an old pending session overwrite a changed API key', async () => {
+    const f = fixture();
+    let finish!: (session: Awaited<ReturnType<typeof f.create>>) => void;
+    f.create.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const old = f.apps.catalog();
+    const rejected = expect(old).rejects.toThrow('setup changed');
+    await f.apps.configure('new-provider-key');
+    await f.apps.catalog();
+    finish({ sessionId: 'stale-project-session', toolkits: f.toolkits, authorize: f.authorize });
+    await rejected;
+    expect(JSON.parse(readFileSync(path.join(process.env['AGENT_GITU_HOME']!, 'Settings', 'composio-session.json'), 'utf8')).sessionId).toBe('test-session');
+    await f.apps.catalog();
+    expect(f.create).toHaveBeenCalledTimes(2);
+  });
+
+  it('blocks execution through a stale session if configuration changes before submission', async () => {
+    const f = fixture();
+    let finish!: (session: Awaited<ReturnType<typeof f.create>>) => void;
+    f.create.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const execution = f.apps.execute('gmail', 'GMAIL_SEND', {}, 'own');
+    const rejected = expect(execution).rejects.toThrow('No action was submitted');
+    await vi.waitFor(() => expect(f.create).toHaveBeenCalledOnce());
+    await f.apps.configure('replacement-key');
+    finish({ sessionId: 'old-project', toolkits: f.toolkits, authorize: f.authorize });
+    await rejected;
+    expect(f.execute).not.toHaveBeenCalled();
+    await f.apps.execute('gmail', 'GMAIL_SEND', {}, 'own');
+    expect(f.execute).toHaveBeenCalledOnce();
+    expect(f.create).toHaveBeenCalledTimes(2);
+  });
+
+  it('clears a deleted live catalog session so the next refresh can recover', async () => {
+    const f = fixture();
+    f.toolkits.mockRejectedValueOnce(Object.assign(new Error('Session missing'), { status: 404 }));
+    await expect(f.apps.catalog()).rejects.toThrow('Session missing');
+    f.use.mockRejectedValueOnce(Object.assign(new Error('Session missing'), { status: 404 }));
+    expect((await f.apps.catalog()).services[0]?.slug).toBe('gmail');
+    expect(f.create).toHaveBeenCalledTimes(2);
+    expect(f.toolkits).toHaveBeenCalledTimes(2);
+  });
+
+  it('paginates and deduplicates accounts, and rejects a repeated cursor', async () => {
+    const f = fixture();
+    const item = { id: 'one', toolkit: { slug: 'gmail' }, status: 'ACTIVE', isDisabled: false };
+    f.list.mockResolvedValueOnce({ items: [item], nextCursor: 'page-two' }).mockResolvedValueOnce({ items: [item, { ...item, id: 'two' }], nextCursor: null });
+    expect((await f.apps.accounts()).map(account => account.id)).toEqual(['one', 'two']);
+    expect(f.list).toHaveBeenNthCalledWith(2, { cursor: 'page-two', userIds: ['owner-uuid'], accountType: 'PRIVATE', limit: 100 }, { signal: expect.any(AbortSignal) });
+    f.list.mockResolvedValue({ items: [], nextCursor: 'stuck-cursor' });
+    await expect(f.apps.accounts()).rejects.toThrow('incomplete');
+    expect(f.list).toHaveBeenCalledTimes(4);
+  });
+
+  it('filters discovered tools to the requested toolkit and exact slug', async () => {
+    const f = fixture();
+    f.raw.mockResolvedValue([
+      { slug: 'GMAIL_SEND', name: 'Send', description: '', inputParameters: {}, toolkit: { slug: 'gmail' } },
+      { slug: 'GMAIL_READ', name: 'Read', description: '', inputParameters: {}, toolkit: { slug: 'gmail' } },
+      { slug: 'SLACK_SEND', name: 'Send', description: '', inputParameters: {}, toolkit: { slug: 'slack' } },
+    ]);
+    expect((await f.apps.tools('gmail', 'send')).map(tool => tool.slug)).toEqual(['GMAIL_SEND', 'GMAIL_READ']);
+    expect((await f.apps.tools('gmail', undefined, 'GMAIL_SEND')).map(tool => tool.slug)).toEqual(['GMAIL_SEND']);
+  });
+
+  it.each(['https://user:password@connect.composio.dev/link', 'https://connect.composio.dev:8443/link'])('rejects unsupported sign-in URLs before assigning an account: %s', async url => {
+    const f = fixture();
+    f.authorize.mockResolvedValue({ redirectUrl: url, id: 'own' });
+    await expect(f.apps.connect('gmail')).rejects.toThrow('invalid connection link');
+  });
+
+  it('shares one execution session across concurrent calls and never retries uncertain execution', async () => {
+    const f = fixture();
+    await Promise.all([f.apps.execute('gmail', 'GMAIL_SEND', { text: 'one' }, 'own'), f.apps.execute('gmail', 'GMAIL_SEND', { text: 'two' }, 'own')]);
+    expect(f.create).toHaveBeenCalledOnce();
+    expect(f.raw).toHaveBeenCalledOnce();
+    f.execute.mockRejectedValueOnce(new Error('Socket disconnected after submission'));
+    await expect(f.apps.execute('gmail', 'GMAIL_SEND', { text: 'uncertain' }, 'own')).rejects.toBeInstanceOf(ComposioExecutionUncertainError);
+    expect(f.execute).toHaveBeenCalledTimes(3);
+  });
+
+  it('redacts credentials for direct execution consumers while retaining pagination', async () => {
+    const f = fixture();
+    f.execute.mockResolvedValueOnce({ data: { accessToken: 'private', result: 'useful', nextPageToken: 'continue-here' }, error: null });
+    expect(await f.apps.execute('gmail', 'GMAIL_SEND', {}, 'own')).toEqual({ data: { accessToken: '<redacted>', result: 'useful', nextPageToken: 'continue-here' }, error: null });
+  });
+
+  it('invalidates a missing execution session without replaying the action', async () => {
+    const f = fixture();
+    f.execute.mockRejectedValueOnce(Object.assign(new Error('Session missing'), { status: 404 }));
+    await expect(f.apps.execute('gmail', 'GMAIL_SEND', {}, 'own')).rejects.toThrow('Session missing');
+    expect(f.execute).toHaveBeenCalledOnce();
+    await f.apps.execute('gmail', 'GMAIL_SEND', {}, 'own');
+    expect(f.create).toHaveBeenCalledTimes(2);
+    expect(f.execute).toHaveBeenCalledTimes(2);
+  });
+
   it('encrypts hosted keys, restores them after restart, and rejects changed ciphertext or encryption keys', () => {
     fixture();
     vi.stubEnv('COMPOSIO_API_KEY', '');
@@ -180,16 +313,17 @@ describe('Composio connections', () => {
 
   it('keeps large app results inspectable, preserves pagination and reports the actual input error', async () => {
     const f = fixture();
+    f.raw.mockResolvedValue([{ slug: 'GMAIL_FETCH', name: 'Fetch mail', description: 'Fetch', inputParameters: {}, toolkit: { slug: 'gmail' } }]);
     const store = new CoworkStore();
     const agent = store.saveAgent({ name: 'Reader', systemPrompt: 'Read.', allowWrites: true, allowConfig: true });
     store.assignAppAccount(agent.id, 'gmail', 'own');
     const conv = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
-    const request = store.addRequest({ conversationId: conv.id, agentId: agent.id, kind: 'recommendation', title: 'Read', detail: 'Allow this action for the test.', appAction: { service: 'gmail', accountId: 'own', tool: 'GMAIL_SEND', args: {} } });
+    const request = store.addRequest({ conversationId: conv.id, agentId: agent.id, kind: 'recommendation', title: 'Read', detail: 'Allow this action for the test.', appAction: { service: 'gmail', accountId: 'own', tool: 'GMAIL_FETCH', args: {} } });
     store.allowAppActionForRequest(request.id);
     const scope = { store, agent, conversationId: conv.id } as CoworkToolScope;
     const ctx = { connectedApps: f.apps } as ToolContext;
     const perms = { allowWrites: true, allowConfig: true, allowShell: false, chief: false, browser: false };
-    const params = { action: 'execute', service: 'gmail', tool: 'GMAIL_SEND', args: {} };
+    const params = { action: 'execute', service: 'gmail', tool: 'GMAIL_FETCH', args: {} };
     f.execute.mockResolvedValueOnce({ data: { body: 'x'.repeat(20_000) + 'END-OF-MESSAGE', nextPageToken: 'next-page', accessToken: 'secret' } });
     const result = await executeCoworkTool(ctx, 'connected_apps', params, perms, scope);
     expect(result.ok).toBe(true);
@@ -198,12 +332,20 @@ describe('Composio connections', () => {
     expect(connectionResponses().inspect({ responseId, path: '/data/body', offset: 20_000 }).data).toBe('END-OF-MESSAGE');
     expect(connectionResponses().inspect({ responseId, path: '/data/nextPageToken' }).data).toBe('next-page');
     expect(connectionResponses().inspect({ responseId, path: '/data/accessToken' }).data).toBe('<redacted>');
-    f.execute.mockRejectedValueOnce(new Error('Invalid input: missing required query; authorization=secret'));
+    f.execute.mockRejectedValueOnce(Object.assign(new Error('Invalid input: missing required query; authorization=secret'), { status: 400 }));
     const failed = await executeCoworkTool(ctx, 'connected_apps', params, perms, scope);
     expect(failed.ok).toBe(false);
     expect(failed.output).toContain('missing required query');
     expect(failed.output).not.toContain('authorization=secret');
     expect(failed.output).not.toContain('Check its status');
+    f.execute.mockResolvedValueOnce({ data: { text: 'Keep this result', accessToken: 'small-secret', nested: { password: 'also-secret' }, nextPageToken: 'next-page' } });
+    const small = await executeCoworkTool(ctx, 'connected_apps', params, perms, scope);
+    expect(JSON.parse(small.output).data).toEqual({ text: 'Keep this result', accessToken: '<redacted>', nested: { password: '<redacted>' }, nextPageToken: 'next-page' });
+    f.execute.mockRejectedValueOnce(new Error('Socket disconnected'));
+    const uncertain = await executeCoworkTool(ctx, 'connected_apps', params, perms, scope);
+    expect(uncertain.ok).toBe(false);
+    expect(uncertain.output).toContain('may already have run');
+    expect(uncertain.output).not.toContain('Correct invalid inputs');
   });
 
   it('requires a human review and prevents altered arguments, wrong agents, and approval replay', async () => {
@@ -242,6 +384,7 @@ describe('Composio connections', () => {
 
   it('persists Always allow for one teammate, tool and account and restores review after revocation', async () => {
     const f = fixture();
+    f.raw.mockResolvedValue([{ slug: 'GMAIL_FETCH', name: 'Fetch mail', description: 'Fetch', inputParameters: {}, toolkit: { slug: 'gmail' } }]);
     const store = new CoworkStore();
     const agent = store.saveAgent({ name: 'Writer', systemPrompt: 'Write.', allowWrites: true, allowConfig: true });
     store.assignAppAccount(agent.id, 'gmail', 'own');
@@ -249,7 +392,7 @@ describe('Composio connections', () => {
     const scope = { store, agent, conversationId: conv.id } as CoworkToolScope;
     const ctx = { connectedApps: f.apps } as ToolContext;
     const perms = { allowWrites: true, allowConfig: true, allowShell: false, chief: false, browser: false };
-    const params = { action: 'execute', service: 'gmail', tool: 'GMAIL_SEND', args: { to: 'first@example.com', text: 'A full message. '.repeat(200) } };
+    const params = { action: 'execute', service: 'gmail', tool: 'GMAIL_FETCH', args: { query: 'first@example.com', text: 'A full message. '.repeat(200) } };
     await executeCoworkTool(ctx, 'connected_apps', { ...params, alwaysAllow: true }, perms, scope);
     expect(f.execute).not.toHaveBeenCalled(); // A model flag cannot grant permission.
     const card = store.requests(conv.id)[0]!;
@@ -264,9 +407,9 @@ describe('Composio connections', () => {
     await executeCoworkTool(ctx, 'connected_apps', { ...params, args: { to: 'second@example.com' } }, perms, resumed);
     expect(f.execute).toHaveBeenCalledTimes(2);
     for (const change of [{ accountId: 'other' }, { service: 'slack' }, { tool: 'GMAIL_DELETE' }]) {
-      expect(reloaded.appActionAllowed(agent.id, { service: 'gmail', accountId: 'own', tool: 'GMAIL_SEND', ...change })).toBe(false);
+      expect(reloaded.appActionAllowed(agent.id, { service: 'gmail', accountId: 'own', tool: 'GMAIL_FETCH', ...change })).toBe(false);
     }
-    expect(reloaded.appActionAllowed('other-agent', { service: 'gmail', accountId: 'own', tool: 'GMAIL_SEND' })).toBe(false);
+    expect(reloaded.appActionAllowed('other-agent', { service: 'gmail', accountId: 'own', tool: 'GMAIL_FETCH' })).toBe(false);
     await executeCoworkTool(ctx, 'connected_apps', params, { ...perms, allowWrites: false }, resumed);
     await executeCoworkTool(ctx, 'connected_apps', params, perms, { ...resumed, isSubAgent: true });
     await executeCoworkTool(ctx, 'connected_apps', { ...params, tool: 'GMAIL_DELETE' }, perms, resumed);
@@ -275,7 +418,7 @@ describe('Composio connections', () => {
     expect(new CoworkStore().appPermissions()).toEqual([]);
     await executeCoworkTool(ctx, 'connected_apps', params, perms, resumed);
     expect(f.execute).toHaveBeenCalledTimes(2);
-    expect(reloaded.openRequests(conv.id).some(request => request.appAction?.tool === 'GMAIL_SEND')).toBe(true);
+    expect(reloaded.openRequests(conv.id).some(request => request.appAction?.tool === 'GMAIL_FETCH')).toBe(true);
   });
 
   it('grants Always allow through the user card and exposes a revoke control through the API', async () => {
@@ -286,7 +429,7 @@ describe('Composio connections', () => {
     const agent = store.saveAgent({ name: 'Writer', systemPrompt: 'Write.' });
     store.assignAppAccount(agent.id, 'gmail', 'own');
     const conv = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
-    const card = store.addRequest({ conversationId: conv.id, agentId: agent.id, kind: 'recommendation', title: 'Run GMAIL_SEND', detail: 'Review this gmail action:\n' + JSON.stringify({ service: 'gmail', accountId: 'own', tool: 'GMAIL_SEND', args: { to: 'first@example.com' } }) });
+    const card = store.addRequest({ conversationId: conv.id, agentId: agent.id, kind: 'recommendation', title: 'Run GMAIL_FETCH', detail: 'Review this gmail action:\n' + JSON.stringify({ service: 'gmail', accountId: 'own', tool: 'GMAIL_FETCH', args: { query: 'first@example.com' } }) });
     const ordinary = store.addRequest({ conversationId: conv.id, agentId: agent.id, kind: 'recommendation', title: 'Try larger images', detail: 'A regular recommendation.' });
     const base = 'http://127.0.0.1:' + await server.start();
     try {
@@ -299,7 +442,7 @@ describe('Composio connections', () => {
       expect(result.request).toMatchObject({ status: 'accepted', response: 'Always allowed' });
       const permissions = store.appPermissions();
       expect(permissions).toHaveLength(1);
-      expect(permissions[0]).toMatchObject({ agentId: agent.id, service: 'gmail', accountId: 'own', tool: 'GMAIL_SEND' });
+      expect(permissions[0]).toMatchObject({ agentId: agent.id, service: 'gmail', accountId: 'own', tool: 'GMAIL_FETCH' });
       const connections = await fetch(`${base}/api/connected-apps`).then(response => response.json());
       expect(connections.appPermissions[0]).toMatchObject({ id: permissions[0]!.id, agentName: 'Writer' });
       expect(await fetch(`${base}/api/connected-apps/permissions/${permissions[0]!.id}`, { method: 'DELETE' }).then(response => response.status)).toBe(200);

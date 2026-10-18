@@ -1,6 +1,6 @@
 import { createProject, loadWorkspaceSettings } from '../workspace/home.js';
 import { WIDGET_APP_TOOL_GUIDE } from './widget-app.js';
-import { connectionResponses } from '../connections/response-data.js';
+import { connectionResponses, redactConnectionData } from '../connections/response-data.js';
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { parseDelegationParams } from './delegation.js';
 import path from 'node:path';
@@ -46,7 +46,8 @@ import { parseSshUrl, SshConnectionRegistry } from '../connections/ssh-connectio
 import { ConnectionRegistry } from '../connections/connections.js';
 import { createHash } from 'node:crypto';
 import type { ConnectedAppsProvider } from '../connections/provider.js';
-import { isNativeMailRead, isNativeMailTool } from '../connections/provider.js';
+import { ComposioExecutionUncertainError } from '../connections/composio.js';
+import { isNativeMailRead, isNativeMailTool, requiresMessageReview } from '../connections/provider.js';
 import { coworkToolSchema } from './tool-schemas.js';
 
 /**
@@ -303,7 +304,7 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
   },
   {
     name: 'connected_apps',
-    doc: 'Use only accounts assigned to YOU. params: {"action":"list"} | {"action":"discover","query":"app or capability","cursor":"optional next-page cursor"} | {"action":"recommend","service":"gmail","reason":"why this app helps your role or current task"} | {"action":"tools","service":"gmail","query":"unread count"} | {"action":"tools","service":"gmail","tool":"EXACT_TOOL_SLUG"} | {"action":"execute","service":"gmail","tool":"EXACT_TOOL_SLUG","args":{},"accountId":"optional ID from YOUR list","approvalId":"optional"}. Search tools by the capability needed or retrieve one exact tool schema before execution. Without query or tool, tools returns a compact catalog. Large execution results are saved with responseId; use inspect_connection_response for their complete data instead of repeating the network call. Recommend posts a Connect card for user sign-in. Execution asks for one-use review unless Always allow is saved for you, this tool and account. Stop at a pending review. Never request provider keys or user IDs. The mail service connects any mailbox over IMAP/SMTP.',
+    doc: 'Use only accounts assigned to YOU. params: {"action":"list"} | {"action":"discover","query":"app or capability","cursor":"optional next-page cursor"} | {"action":"recommend","service":"gmail","reason":"why this app helps your role or current task"} | {"action":"tools","service":"gmail","query":"unread count"} | {"action":"tools","service":"gmail","tool":"EXACT_TOOL_SLUG"} | {"action":"execute","service":"gmail","tool":"EXACT_TOOL_SLUG","args":{},"accountId":"optional ID from YOUR list","approvalId":"optional"}. Search tools by the capability needed or retrieve one exact tool schema before execution. Without query or tool, tools returns a compact catalog. Large execution results are saved with responseId; use inspect_connection_response for their complete data instead of repeating the network call. Recommend posts a Connect card for user sign-in. Execution asks for editable one-use review unless Always allow is saved for you, this tool and account; email send/draft content is reviewed each time. Stop at a pending review. After acceptance repeat the ORIGINAL proposal with approvalId; the host applies user edits and the send/save-draft choice. Never request provider keys or user IDs. The mail service connects any mailbox over IMAP/SMTP; mail_save_draft saves unsent mail to Drafts, mail_send saves a Sent copy after SMTP acceptance. Inspect result warnings before claiming success.',
     gate: undefined,
   },
   {
@@ -1265,12 +1266,15 @@ function nextTeammateAvatar(roster: CoworkAgent[]): CoworkAvatar {
   return { shape, color };
 }
 
-const appApprovals = new WeakMap<ConnectedAppsProvider, Map<string, { signature: string; expires: number }>>();
+// Company account providers are scoped proxies that can be recreated between turns.
+// Keep approvals with the owning conversation store so a valid review survives that.
+const appApprovals = new WeakMap<CoworkStore, Map<string, { signature: string; expires: number }>>();
 function connectedAppOutput(value: unknown): string {
-  const output = JSON.stringify(value ?? null);
+  const safe = redactConnectionData(value ?? null);
+  const output = JSON.stringify(safe);
   if (output.length <= 7_500) return output;
   const responses = connectionResponses();
-  const responseId = responses.put(value);
+  const responseId = responses.put(safe);
   return JSON.stringify(responses.inspect({ responseId }));
 }
 async function connectedAppTool(apps: ConnectedAppsProvider | undefined, params: Record<string, unknown>, perms: CoworkToolPerms, scope?: CoworkToolScope): Promise<ToolResult> {
@@ -1335,17 +1339,18 @@ async function connectedAppTool(apps: ConnectedAppsProvider | undefined, params:
     const accountId = String(params['accountId'] ?? (accounts.length === 1 ? accounts[0]!.id : ''));
     if (!accounts.some((account) => account.id === accountId))
       return { ok: false, output: 'This account is not assigned to you or is inactive. Recommend the app, or choose an active accountId from your connected_apps list.' };
-    const detail = JSON.stringify({ service, accountId, tool, args });
-    if (scope.agent.companyId || scope.store.appActionAllowed(scope.agent.id, { service, accountId, tool })) {
+    const detail = JSON.stringify({ service, accountId, tool, args }, (_key, value: unknown) => value && typeof value === 'object' && !Array.isArray(value)
+      ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))) : value);
+    if (!params['approvalId'] && !requiresMessageReview(service, tool) && (scope.agent.companyId || scope.store.appActionAllowed(scope.agent.id, { service, accountId, tool }))) {
       return { ok: true, output: connectedAppOutput(await apps.execute(service, tool, args as Record<string, unknown>, accountId)) };
     }
     const signature = createHash('sha256')
       .update(scope.conversationId + ':' + scope.agent.id + ':' + detail)
       .digest('hex');
-    let pending = appApprovals.get(apps);
+    let pending = appApprovals.get(scope.store);
     if (!pending) {
       pending = new Map();
-      appApprovals.set(apps, pending);
+      appApprovals.set(scope.store, pending);
     }
     for (const [id, approval] of pending) if (approval.expires <= Date.now()) pending.delete(id);
     const approvalId = String(params['approvalId'] ?? '');
@@ -1354,8 +1359,12 @@ async function connectedAppTool(apps: ConnectedAppsProvider | undefined, params:
     if (approved?.signature === signature && request?.status === 'accepted' && request.conversationId === scope.conversationId && request.agentId === scope.agent.id) {
       // Consume before awaiting the network: concurrent calls cannot replay it.
       pending.delete(approvalId);
-      return { ok: true, output: connectedAppOutput(await apps.execute(service, tool, args as Record<string, unknown>, accountId)) };
+      const reviewed = request.reviewedAction;
+      const reviewedTool = reviewed?.tool ?? tool;
+      if (reviewed && (reviewed.service !== service || reviewed.accountId !== accountId || (reviewedTool !== tool && !(service === 'mail' && tool === 'mail_send' && reviewedTool === 'mail_save_draft')))) return { ok: false, output: 'Invalid reviewed action. Request a fresh review.' };
+      return { ok: true, output: connectedAppOutput(await apps.execute(service, reviewedTool, reviewed?.args ?? args as Record<string, unknown>, accountId)) };
     }
+    if (approvalId) return { ok: false, output: 'This review is expired, already used, not accepted, or does not match the original proposal. No action was submitted. Do not automatically retry a send; check its previous result first.' };
     const existing = [...pending].find(([id, value]) => value.signature === signature && scope.store.getRequest(id)?.status === 'open');
     if (existing) return { ok: true, output: `Waiting for review ${existing[0]}. Stop and wait for the user.` };
     if (pending.size >= 100) return { ok: false, output: 'Too many actions are waiting for review.' };
@@ -1364,12 +1373,13 @@ async function connectedAppTool(apps: ConnectedAppsProvider | undefined, params:
       agentId: scope.agent.id,
       kind: 'recommendation',
       title: `Run ${tool}`,
-      detail: `Review this ${service} action:\n${detail}\n\nAccept to allow this exact action once. The approval expires in 15 minutes.`,
+      detail: `Review this ${service} action:\n${detail}\n\nEdit the fields, then accept to allow your reviewed version once. The approval expires in 15 minutes.`,
       appAction: { service, accountId, tool, args: args as Record<string, unknown> },
     });
     pending.set(card.id, { signature, expires: Date.now() + 15 * 60 * 1000 });
-    return { ok: true, output: `Review ${card.id} posted. Stop and wait for the user. If accepted, repeat the exact action with approvalId: ${card.id}.` };
+    return { ok: true, output: `Review ${card.id} posted. The user can edit its fields. Stop and wait for the user. If accepted, repeat the original proposed action with approvalId: ${card.id}; the host applies the user's edits and send/draft choice. Never send separately or bypass this review.` };
   } catch (error) {
+    if (error instanceof ComposioExecutionUncertainError) return { ok: false, output: error.message };
     const detail = String(error instanceof Error ? error.message : error)
       .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
       .replace(/((?:api[_-]?key|access[_-]?token|password|authorization)["']?\s*[:=]\s*["']?)[^\s,"'}]+/gi, '$1[redacted]')

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ComputerBroker, createComputerBrokerServer } from '../src/cowork/computer-broker.js';
-import { computerCreateArgs, computerExec, type ComputerExec } from '../src/cowork/computer.js';
+import { COWORK_COMPUTER_IMAGE, computerCreateArgs, computerExec, type ComputerExec } from '../src/cowork/computer.js';
 
 const owner = 'test-workspace-owner';
 const name = 'gitu-cowork-' + 'a'.repeat(24);
@@ -48,7 +48,7 @@ describe('private desktop broker', () => {
     expect(args).toContain('dev.agentgitu.broker=' + owner);
     expect(args).toContain('--cap-drop');
     expect(args.join(' ')).not.toMatch(/type=bind|--privileged|--publish|docker.sock/);
-    expect(args.at(-1)).toBe('agent-gitu-cowork:8');
+    expect(args.at(-1)).toBe(COWORK_COMPUTER_IMAGE);
     for (const modified of [
       [...computerCreateArgs(name), '--privileged'],
       ['create', '--name', name, 'alpine'],
@@ -65,7 +65,7 @@ describe('private desktop broker', () => {
       ['exec', '--user', 'root', name, 'node', '-e', 'evil'],
       ['exec', '-i', name, 'sh', '-c', 'evil'],
       ['image', 'inspect', 'alpine'],
-      ['build', '-t', 'agent-gitu-cowork:8', '/tmp/untrusted'],
+      ['build', '-t', COWORK_COMPUTER_IMAGE, '/tmp/untrusted'],
       ['cp', '/etc/passwd', name + ':/computer/server.cjs'],
       ['volume', 'rm', 'production-data'],
       ['run', '--privileged', 'alpine'],

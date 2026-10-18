@@ -10,7 +10,7 @@ import {dockerBinary,validateComputerChunk,type ComputerBinary} from './file-tra
 import { QuotaVolumes } from './quota-volumes.js';
 import { gituHomeRoot } from '../workspace/home.js';
 
-export const COWORK_COMPUTER_IMAGE = 'agent-gitu-cowork:8';
+export const COWORK_COMPUTER_IMAGE = 'agent-gitu-cowork:9';
 const IMAGE = COWORK_COMPUTER_IMAGE;
 const ASSETS = fileURLToPath(new URL('../../assets/cowork-computer/', import.meta.url));
 // A 20 MB binary attachment becomes about 27 MB when carried as base64 JSON.

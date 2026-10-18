@@ -2,13 +2,13 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { expect, it, vi } from 'vitest';
-import { CoworkComputer, type ComputerExec } from '../src/cowork/computer.js';
+import { COWORK_COMPUTER_IMAGE, CoworkComputer, type ComputerExec } from '../src/cowork/computer.js';
 
 it('persists human control, blocks agent input, and wakes without restarting open apps', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'gitu-handoff-'));
   let state = 'created';
   const exec = vi.fn<ComputerExec>(async (args, input) => {
-    if (args.includes('{{.Config.Image}}')) return 'agent-gitu-cowork:8';
+    if (args.includes('{{.Config.Image}}')) return COWORK_COMPUTER_IMAGE;
     if (args.includes('{{.State.Status}}')) return state;
     if (args[0] === 'start' || args[0] === 'unpause') state = 'running';
     if (args[0] === 'pause') state = 'paused';

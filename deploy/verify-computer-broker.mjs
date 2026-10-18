@@ -11,12 +11,15 @@ console.log('Checking desktop broker and image ' + COWORK_COMPUTER_IMAGE);
 await computerExec(['info', '--format', '{{.ServerVersion}}']);
 try {
   await computer.start();
+  console.log('Test desktop started. Checking shell and screen.');
   const user = await computer.execute('run_command', { command: 'id -u', timeoutMs: 10_000 });
   if (!user.ok || user.output.trim() !== '1001') throw new Error('Desktop worker is not running as its unprivileged agent user.');
   const screen = await computer.desktopScreenshot();
   if (!screen.ok || !screen.image?.startsWith('data:image/png;base64,')) throw new Error('Desktop screenshot failed.');
+  console.log('Unprivileged shell and desktop screenshot verified. Checking browser.');
   const browser = await computer.execute('browse', { action: 'state' });
   if (!browser.ok) throw new Error('Desktop browser failed: ' + browser.output);
+  console.log('Browser verified. Checking authenticated desktop stream.');
   const stream = connectDesktopStream(computer.name);
   try {
     await new Promise((resolve, reject) => {

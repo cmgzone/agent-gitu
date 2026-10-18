@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync, writeSync,createReadStream,rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { request } from 'undici';
 import type { ToolResult } from '../types.js';
 import { commandTimeout, deadline } from '../tools/command-timeout.js';
 import {dockerBinary,validateComputerChunk,type ComputerBinary} from './file-transport.js';
@@ -75,17 +76,21 @@ export const computerExec: ComputerExec = async (args, input, signal, timeoutMs 
   const timeout = new AbortController();
   const cancel = deadline(timeoutMs, () => timeout.abort(new Error('Virtual computer operation timed out.')));
   try {
-    const response = await fetch(new URL('/execute', url), {
+    const response = await request(new URL('/execute', url), {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
       body: JSON.stringify({ args, input, timeoutMs }),
       signal: signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal,
-      redirect: 'error',
+      // Fetch imposes a separate five-minute response-header timeout. A first
+      // desktop image build or a long command can legitimately take longer;
+      // the operation deadline and caller cancellation above own that budget.
+      headersTimeout: 0,
+      bodyTimeout: 0,
     });
-    const text = await response.text();
+    const text = await response.body.text();
     if (text.length > MAX_COMPUTER_MESSAGE_BYTES) throw new Error('Virtual computer transfer exceeded its size limit.');
     const result = JSON.parse(text) as { output?: string; error?: string };
-    if (!response.ok) throw new Error(result.error ?? `Private desktop runtime returned ${response.status}.`);
+    if (response.statusCode < 200 || response.statusCode >= 300) throw new Error(result.error ?? `Private desktop runtime returned ${response.statusCode}.`);
     return String(result.output ?? '');
   } finally {
     cancel();

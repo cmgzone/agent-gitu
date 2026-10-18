@@ -66,6 +66,8 @@ broker, or temporarily use it as its Coolify post-deployment command. It starts
 a separate test desktop, verifies the worker user, screenshot, browser and
 authenticated stream, then stops that test desktop. The first run may build the
 desktop image. This leaves existing teammates and their saved files untouched.
+Broker HTTP requests follow the operation's deadline, including the fifteen-minute
+first image build, rather than Fetch's separate five-minute header timeout.
 
 The broker is a privileged control service because it uses the Docker socket;
 keep it private and trusted. Its API accepts only the bundled desktop image,

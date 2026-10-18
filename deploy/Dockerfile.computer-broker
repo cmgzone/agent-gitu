@@ -16,6 +16,7 @@ COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-buildx /usr/
 RUN docker buildx version
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/node_modules/ws ./node_modules/ws
+COPY --from=build /app/node_modules/undici ./node_modules/undici
 COPY package.json ./
 COPY assets/cowork-computer ./assets/cowork-computer
 COPY deploy/verify-computer-broker.mjs ./deploy/verify-computer-broker.mjs

@@ -16,7 +16,11 @@ COPY --from=build /app/package.json /app/package-lock.json ./
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/node_modules ./node_modules
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-RUN npx playwright install --with-deps chromium && chmod -R a+rX /ms-playwright
+# Playwright refreshes APT lists while installing browser dependencies. Remove
+# them in this layer so they are not exported and unpacked on every deployment.
+RUN npx playwright install --with-deps chromium \
+    && chmod -R a+rX /ms-playwright \
+    && rm -rf /var/lib/apt/lists/*
 COPY assets ./assets
 COPY voice-worker/agent.mjs voice-worker/package.json voice-worker/package-lock.json voice-worker/Dockerfile ./voice-worker/
 COPY deploy/nginx.conf /etc/nginx/nginx.conf

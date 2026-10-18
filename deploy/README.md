@@ -38,6 +38,40 @@ This deployment serves the web workspace. Electron's native browser and
 desktop-only controls need the desktop app. The separate Expo mobile web
 bundle is not built into this server image.
 
+## Deployment fails with "no space left on device"
+
+If compilation succeeds but Docker fails while exporting or unpacking the image
+under `/var/lib/containerd`, the deployment server has exhausted storage or
+inodes. A subsequent failure writing Coolify's `docker-compose.yaml` confirms
+that the host also cannot save deployment configuration. Fix host capacity
+before retrying the deployment.
+
+Run these checks on the deployment server over SSH:
+
+```sh
+df -h / /var/lib/containerd /data/coolify
+df -i / /var/lib/containerd /data/coolify
+docker system df -v
+```
+
+When no builds are running, reclaim unused build cache older than 24 hours:
+
+```sh
+docker builder prune --all --filter 'until=24h'
+```
+
+Review the confirmation before proceeding. This removes build cache; future
+builds may take longer. It does not remove application containers or volumes.
+See [Docker's builder prune reference](https://docs.docker.com/reference/cli/docker/builder/prune/).
+If this frees too little space, expand the full filesystem or inspect other host
+storage consumers. Do not delete files directly from `/var/lib/containerd` or
+`/var/lib/docker`, or prune persistent volumes containing application data.
+
+Check free space again, leaving room for both the image layers and their
+unpacked contents, then redeploy in Coolify. The Dockerfile removes APT package
+lists after installing Playwright dependencies to reduce each new image's size;
+this cannot recover space already consumed by old images or build cache.
+
 ## Private desktops on a VPS
 
 Deploy a separate private application using `deploy/Dockerfile.computer-broker`

@@ -1,5 +1,7 @@
 import path from 'node:path';
 import { tmpdir } from 'node:os';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { COWORK_COMPUTER_IMAGE, CoworkComputer, computerExec } from '../dist/cowork/computer.js';
 import { connectDesktopStream } from '../dist/cowork/desktop-stream.js';
 
@@ -13,8 +15,8 @@ try {
   await computer.start();
   console.log('Test desktop started. Checking shell and screen.');
   const user = await computer.execute('run_command', { command: 'id -u', timeoutMs: 10_000 });
-  if (!user.ok || user.output.trim() !== '1001') throw new Error('Desktop worker is not running as its unprivileged agent user.');
-  const screen = await computer.desktopScreenshot();
+  if (!user.ok || user.output.trim() !== '1001') throw new Error('Desktop worker check failed: ' + user.output);
+  const screen = await computer.execute('desktop_screenshot', {});
   if (!screen.ok || !screen.image?.startsWith('data:image/png;base64,')) throw new Error('Desktop screenshot failed.');
   console.log('Unprivileged shell and desktop screenshot verified. Checking browser.');
   const browser = await computer.execute('browse', { action: 'state' });
@@ -40,6 +42,14 @@ try {
     stream.destroy();
   }
   console.log(JSON.stringify({ image: COWORK_COMPUTER_IMAGE, workerUser: 1001, screenshot: true, browser: true, authenticatedStream: true }));
+} catch (error) {
+  // Only this dedicated fixture's service log is read; no teammate output or
+  // private environment values enter deployment logs.
+  try {
+    const logs = await promisify(execFile)('docker', ['logs', '--tail', '40', computer.name], { timeout: 10_000 });
+    console.error('Test desktop diagnostics:', (logs.stdout + logs.stderr).slice(-8_000));
+  } catch { /* Keep the original verification failure. */ }
+  throw error;
 } finally {
   await computer.stop();
 }

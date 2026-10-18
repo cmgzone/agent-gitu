@@ -16,7 +16,7 @@ import type { FetchMessageObject, ImapFlowOptions, ListResponse, MessageEnvelope
 import { simpleParser } from 'mailparser';
 import type { AddressObject } from 'mailparser';
 import nodemailer from 'nodemailer';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { ensureGituHome } from '../workspace/home.js';
@@ -230,6 +230,8 @@ function htmlToText(html: string): string {
  * Legacy plaintext records migrate together with their recovery copies.
  */
 export class MailSecretStore {
+  private snapshot?: { file: string; raw: string; records: MailboxRecord[] };
+  private opening?: { file: string; raw: string; promise: Promise<MailboxRecord[] | undefined> };
   constructor(private readonly platform = process.platform) {}
   private get file(): string {
     return path.join(ensureGituHome().settings, this.platform === 'win32' ? 'mail-accounts.dpapi' : 'mail-accounts.json');
@@ -244,20 +246,59 @@ export class MailSecretStore {
     if (!/^[a-f0-9]{64}$/i.test(key)) throw new Error('Set AGENT_GITU_SECRETS_KEY to a 32-byte hexadecimal server encryption key.');
     return Buffer.from(key, 'hex');
   }
-  private crypt(value: string, decrypt: boolean): string {
+  private cryptScript(decrypt: boolean): string {
     if (this.platform !== 'win32') throw new Error('Windows key storage is unavailable.');
-    const script = `Add-Type -AssemblyName System.Security; $value = [Console]::In.ReadToEnd(); ${
+    return `Add-Type -AssemblyName System.Security; $value = [Console]::In.ReadToEnd(); ${
       decrypt
         ? '$bytes = [Convert]::FromBase64String($value); $result = [Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser); [Console]::Out.Write([Text.Encoding]::UTF8.GetString($result))'
         : '$bytes = [Text.Encoding]::UTF8.GetBytes($value); $result = [Security.Cryptography.ProtectedData]::Protect($bytes, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser); [Console]::Out.Write([Convert]::ToBase64String($result))'
     }`;
-    return execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+  }
+  private crypt(value: string, decrypt: boolean): string {
+    return execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', this.cryptScript(decrypt)], {
       input: value,
       encoding: 'utf8',
       windowsHide: true,
       timeout: 15000,
       stdio: ['pipe', 'pipe', 'pipe'],
     }).trim();
+  }
+  private cryptAsync(value: string, decrypt: boolean): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const child = execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', this.cryptScript(decrypt)], {
+        encoding: 'utf8', windowsHide: true, timeout: 15000, maxBuffer: 4 * 1024 * 1024,
+      }, (error, stdout) => {
+        // Child-process errors can contain stdout/stderr, including decrypted
+        // data. Expose only a fixed message at this credentials boundary.
+        if (error) reject(new Error('Could not open the Windows mailbox credential store.'));
+        else resolve(stdout.trim());
+      });
+      child.stdin?.on('error', () => {});
+      child.stdin?.end(value);
+    });
+  }
+  /** Inbox reconciliation and account lists must never wait synchronously for
+   * PowerShell. Reuse only an exact encrypted snapshot; external edits/removals
+   * invalidate it, and concurrent readers share one DPAPI operation. */
+  async readAsync(): Promise<MailboxRecord[] | undefined> {
+    if (this.platform !== 'win32') return this.read();
+    const file = this.file;
+    const raw = readCredentialFile(file, value => value);
+    if (raw === undefined) { this.snapshot = undefined; return undefined; }
+    if (this.snapshot?.file === file && this.snapshot.raw === raw) return structuredClone(this.snapshot.records);
+    if (this.opening?.file === file && this.opening.raw === raw) return structuredClone(await this.opening.promise);
+    const promise = this.cryptAsync(raw, true).then(async text => {
+      // A save, disconnect or data-home switch may have happened while DPAPI
+      // was running. Never restore credentials from that superseded read.
+      if (this.file !== file || readCredentialFile(file, value => value) !== raw) return this.readAsync();
+      const parsed: unknown = JSON.parse(text);
+      const records = Array.isArray(parsed) ? parsed as MailboxRecord[] : [];
+      this.snapshot = { file, raw, records: structuredClone(records) };
+      return records;
+    });
+    this.opening = { file, raw, promise };
+    try { return structuredClone(await promise); }
+    finally { if (this.opening?.promise === promise) this.opening = undefined; }
   }
   private encrypted(value: string): string {
     const key = this.serverKey();
@@ -269,8 +310,10 @@ export class MailSecretStore {
     return JSON.stringify({ version: 1, iv: iv.toString('hex'), tag: encrypt.getAuthTag().toString('hex'), ciphertext: ciphertext.toString('base64') });
   }
   read(): MailboxRecord[] | undefined {
-    const raw = readCredentialFile(this.file, (value) => { if (this.platform !== 'win32') JSON.parse(value); return value; });
-    if (raw === undefined) return undefined;
+    const file = this.file;
+    const raw = readCredentialFile(file, (value) => { if (this.platform !== 'win32') JSON.parse(value); return value; });
+    if (raw === undefined) { this.snapshot = undefined; return undefined; }
+    if (this.platform === 'win32' && this.snapshot?.file === file && this.snapshot.raw === raw) return structuredClone(this.snapshot.records);
     let text: string;
     if (this.platform === 'win32') {
       text = this.crypt(raw, true);
@@ -295,7 +338,9 @@ export class MailSecretStore {
       updateCredentialJson(this.file, value => value, current => Array.isArray(current) ? JSON.parse(this.encrypted(JSON.stringify(current))) : undefined,
         previous => Array.isArray(JSON.parse(previous)) ? this.encrypted(previous) : previous);
     }
-    return Array.isArray(parsed) ? (parsed as MailboxRecord[]) : [];
+    const records = Array.isArray(parsed) ? (parsed as MailboxRecord[]) : [];
+    if (this.platform === 'win32') this.snapshot = { file, raw, records: structuredClone(records) };
+    return records;
   }
   save(records: MailboxRecord[]): void {
     const value = JSON.stringify(records);
@@ -380,7 +425,7 @@ export class MailConnections {
   }
 
   async accounts(): Promise<MailAccount[]> {
-    return this.load().map((account) => ({
+    return ((await this.secrets.readAsync()) ?? []).map((account) => ({
       id: account.id,
       toolkit: 'mail' as const,
       status: 'ACTIVE' as const,

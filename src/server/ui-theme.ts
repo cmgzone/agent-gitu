@@ -3,6 +3,7 @@ export const UI_THEME_CSS = String.raw`
   :root {
     color-scheme: dark;
     --cw-chat-surface:var(--bg);
+    --chat-cloud-light:rgba(142,170,205,.12); --chat-cloud-shade:rgba(46,72,105,.2);
     --bg: #111111; --card: #1b1b1b; --card2: #161616; --sidebar: #161616;
     --border: #2c2c2c; --border2: #414141; --line: #303030;
     --text: #e8e8e8; --muted: #a3a3a3; --faint: #898989;
@@ -18,6 +19,7 @@ export const UI_THEME_CSS = String.raw`
   :root[data-theme="light"] {
     color-scheme: light;
     --cw-chat-surface:radial-gradient(ellipse at 18% 70%,#cee9f8 0%,transparent 48%),radial-gradient(ellipse at 75% 15%,#b0cdea 0%,transparent 50%),linear-gradient(145deg,#86add1,#b5d2e8 58%,#adb8c4);
+    --chat-cloud-light:rgba(255,255,255,.68); --chat-cloud-shade:rgba(75,111,148,.18);
     --bg: #fafaf9; --card: #ffffff; --card2: #f3f3f1; --sidebar: #f2f2f0;
     --border: #dededb; --border2: #c7c7c2; --line: #d8d8d4;
     --text: #242422; --muted: #62625e; --faint: #6c6c67;

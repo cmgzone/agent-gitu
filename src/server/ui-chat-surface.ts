@@ -1,12 +1,29 @@
 /** Shared conversational surfaces for Home, the main agent, and Cowork. */
 export const CHAT_SURFACE_CSS = String.raw`
   :root {
+    --chat-column-width:620px;
     --chat-assistant-surface:color-mix(in srgb,var(--card) 94%,transparent);
     --chat-user-surface:linear-gradient(145deg,rgba(255,255,255,.2),rgba(255,255,255,.04)),color-mix(in srgb,var(--card) 22%,transparent);
     --chat-user-shadow:inset 0 1px 0 rgba(255,255,255,.32),0 10px 28px -16px rgba(18,44,70,.24);
     --chat-composer-surface:color-mix(in srgb,var(--card) 76%,transparent);
     --chat-composer-shadow:0 12px 36px -12px rgba(0,0,0,.2);
   }
+  :root[data-theme="light"] {
+    --chat-assistant-surface:rgba(246,250,255,.86);
+  }
+  /* Cloud banks stay behind the interface. Only their transforms animate;
+     the feathered gradients and blur are fixed, with no canvas/render loop. */
+  #cw { isolation:isolate; }
+  #cw::before,#cw::after { content:''; position:absolute; inset:-16%; z-index:-1; pointer-events:none; filter:blur(28px); background-repeat:no-repeat; }
+  #cw::before { background-image:radial-gradient(ellipse 42% 18% at 25% 23%,var(--chat-cloud-light),transparent 76%),radial-gradient(ellipse 36% 22% at 77% 58%,var(--chat-cloud-light),transparent 78%),radial-gradient(ellipse 50% 16% at 22% 92%,var(--chat-cloud-light),transparent 75%); animation:chat-cloud-drift 48s ease-in-out infinite alternate; }
+  #cw::after { background-image:radial-gradient(ellipse 44% 19% at 68% 20%,var(--chat-cloud-shade),transparent 78%),radial-gradient(ellipse 35% 24% at 30% 69%,var(--chat-cloud-shade),transparent 80%); animation:chat-cloud-drift 67s ease-in-out -26s infinite alternate-reverse; }
+  @keyframes chat-cloud-drift { from { transform:translate3d(-3%,-2%,0) scale(1); } to { transform:translate3d(5%,3%,0) scale(1.06); } }
+  /* Messages soften as they pass behind the floating navigation/composer.
+     These layers never intercept selection, scrolling or control clicks. */
+  #cw .cw-chat::before,#cw .cw-chat::after { content:''; position:absolute; left:0; right:0; z-index:1; pointer-events:none; background:color-mix(in srgb,var(--bg) 7%,transparent); backdrop-filter:blur(7px); -webkit-backdrop-filter:blur(7px); }
+  #cw .cw-chat::before { top:0; height:88px; mask-image:linear-gradient(#000 25%,transparent); -webkit-mask-image:linear-gradient(#000 25%,transparent); }
+  #cw .cw-chat::after { bottom:0; height:calc(var(--cw-composer-height,148px) + 32px); mask-image:linear-gradient(transparent,#000 62%); -webkit-mask-image:linear-gradient(transparent,#000 62%); }
+  @media(prefers-reduced-motion:reduce) { #cw::before,#cw::after { animation:none; } }
   :is(#cw,.home-sky,.run-chat) .cw-top-nav { background:color-mix(in srgb,var(--card) 54%,transparent); border:1px solid rgba(255,255,255,.25); box-shadow:inset 0 1px 0 rgba(255,255,255,.25),0 8px 26px -18px rgba(18,44,70,.3); backdrop-filter:blur(20px) saturate(1.15); -webkit-backdrop-filter:blur(20px) saturate(1.15); }
   :is(#cw,.home-sky,.run-chat) .cw-top-nav button { color:var(--muted); transition:background-color .18s ease,color .18s ease,transform .18s cubic-bezier(.16,1,.3,1); }
   :is(#cw,.home-sky,.run-chat) .cw-top-nav button:hover { background:color-mix(in srgb,var(--card) 35%,transparent)!important; color:var(--text); }

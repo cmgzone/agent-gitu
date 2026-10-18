@@ -128,7 +128,7 @@ export const COWORK_CSS = String.raw`
   .cw-quick-agent:hover,.cw-quick-agent:focus-visible { opacity:1; filter:none; }
   .cw-quick-agent:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
   .cw-quick-agent:disabled { cursor:wait; opacity:.25; }
-  .cw .cw-chat.has-teammate-switcher .cw-msgs { padding-right:max(76px,calc((100% - 760px)/2)); }
+  .cw .cw-chat.has-teammate-switcher .cw-msgs { padding-right:max(76px,calc((100% - var(--chat-column-width,620px))/2)); }
   @media(max-width:720px) { .cw-teammate-switcher { right:6px; }.cw .cw-chat.has-teammate-switcher .cw-msgs { padding-right:68px; } }
   @media(prefers-reduced-motion:reduce) { .cw-quick-agent { transition:none; } }
   .cw-composer-wrap { flex-shrink: 0; }

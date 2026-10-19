@@ -5,6 +5,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY tsconfig.json ./
 COPY src ./src
+COPY scripts/build-ui-assets.mjs ./scripts/build-ui-assets.mjs
 RUN npm run build && npm prune --omit=dev --no-audit --no-fund
 
 FROM node:22-bookworm-slim

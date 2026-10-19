@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Gitu</title>
+<link rel="icon" type="image/svg+xml" href="/brand/agent-gitu-mark.svg">
+<script id="themeBootstrap">/* GITU_BINDING_UI_THEME_BOOTSTRAP */</script>
+  <style><!-- GITU_ASSET:styles/base.css --><!-- GITU_ASSET:styles/timeline.css --><!-- GITU_ASSET:styles/reports.css --><!-- GITU_ASSET:styles/controls.css --></style>
+</head>
+<body>
+/* GITU_BINDING_ONBOARDING_HTML */
+<div class="shell">
+  <aside class="sb" id="sidebar" aria-label="Workspace navigation">
+    <div class="head">
+      <span class="name"><img class="brand-mark" src="/brand/agent-gitu-mark.svg" alt=""><span>AGENT GITU</span></span>
+      <span class="spacer"></span>
+      <button class="iconbtn" id="sbCowork" title="Cowork mode — your agent team" aria-label="Open Cowork mode"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></button>
+      <button class="iconbtn" id="gearBtn" title="settings" aria-label="Open settings">&#9881;</button>
+      <button class="iconbtn" id="sbCompanies" data-company-nav title="Companies" aria-label="Open Companies">▦</button>
+      <button class="iconbtn" id="sbCollapse" title="collapse sidebar" aria-label="Collapse sidebar">&#171;</button>
+    </div>
+    <div class="scroll" id="sbScroll"></div>
+    <div class="bulkbar" id="bulkBar" hidden>
+      <span id="bulkCount">0 selected</span>
+      <button class="btn red" id="bulkDel">Delete</button>
+      <button class="btn ghost" id="bulkDone">Done</button>
+    </div>
+    <div class="foot">
+      <button type="button" class="chip project-chip" id="projChip">…</button>
+    </div>
+  </aside>
+  <button type="button" class="mobile-backdrop" id="mobileBackdrop" aria-label="Close navigation"></button>
+  <div class="vresize" id="sbResize"></div>
+  <aside class="run-side" id="toolPanel" aria-label="Tool panel" hidden><div class="side-panel-head"><span id="toolPanelTitle">Task details</span><button type="button" class="close" id="toolPanelClose" aria-label="Close tool panel">&times;</button></div><div class="side-body" id="sideBody"></div></aside>
+  <div class="main">
+    <button type="button" class="mobile-nav-btn" id="mobileNav" aria-label="Open navigation" title="Navigation" aria-expanded="false"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+    <div class="topbar" id="topbar" style="display:none"></div>
+    <div class="view" id="view"></div>
+  </div>
+</div>
+<div class="settings" id="settings" hidden>
+  <aside class="setnav" id="setnav"></aside>
+  <div class="setbody" id="setbody"></div>
+</div>
+<div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+<div class="modal" id="browseModal" hidden>
+  <div class="box">
+    <div class="bar"><span style="font-weight:600;font-size:13px" id="browseTitle">Choose a project folder</span><span class="crumb" id="browseCrumb"></span></div>
+    <div class="list" id="browseList"></div>
+    <div class="foot"><span class="chip ok" id="browseProjChip" style="display:none">project detected</span><span style="flex:1"></span><button class="btn ghost" id="browseCancel">Cancel</button><button class="btn dark" id="browseUse">Use this folder</button></div>
+  </div>
+</div>
+<script>
+(function () {<!-- GITU_ASSET:scripts/bootstrap.js --><!-- GITU_ASSET:scripts/sidebar.js --><!-- GITU_ASSET:scripts/models.js --><!-- GITU_ASSET:scripts/attachments.js --><!-- GITU_ASSET:scripts/runs.js --><!-- GITU_ASSET:scripts/messages.js --><!-- GITU_ASSET:scripts/narration.js --><!-- GITU_ASSET:scripts/activity.js --><!-- GITU_ASSET:scripts/tool-rows.js --><!-- GITU_ASSET:scripts/policy.js --><!-- GITU_ASSET:scripts/events.js --><!-- GITU_ASSET:scripts/run-state.js --><!-- GITU_ASSET:scripts/reviews.js --><!-- GITU_ASSET:scripts/reports.js --><!-- GITU_ASSET:scripts/tool-panels.js --><!-- GITU_ASSET:scripts/settings.js --><!-- GITU_ASSET:scripts/folder-picker.js --><!-- GITU_ASSET:scripts/boot.js -->
+})();
+</script>
+<div id="mascotWrap" style="position:fixed;right:14px;bottom:12px;z-index:45;pointer-events:none;width:240px;height:170px">
+  <canvas id="mascotCanvas" aria-hidden="true" style="width:240px;height:170px;image-rendering:pixelated"></canvas>
+  <div id="mascotName" style="position:absolute;bottom:6px;left:50%;transform:translateX(-50%);font-family:var(--mono);font-weight:700;font-size:11px;color:#fff;background:var(--card);border:1px solid #8f80ff;border-radius:6px;padding:2px 8px;white-space:nowrap;opacity:0;transition:opacity .4s">Agent Gitu</div>
+</div>
+<script type="module"><!-- GITU_ASSET:scripts/mascot.js --></script>
+</body>
+</html>

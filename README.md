@@ -336,6 +336,19 @@ a production encryption key in CI.
 
 ### Layout
 
+The server's connection routes live in `src/server/routes/`. The UI document
+is composed by `src/server/ui.ts` from HTML, CSS, and ordered browser-script
+assets under `src/server/ui-assets/`, alongside the existing domain UI modules.
+`npm run build` embeds those assets into `dist/server/ui-assets.js`; installed
+CLI, desktop, and Docker builds do not need the source tree. Development and
+tests read the source assets directly. Both paths normalize line endings so
+Windows and Linux checkouts produce the same document structure.
+
+The browser scripts currently retain their shared legacy scope. Splitting
+the remaining large event/settings handlers and the server's Cowork/run
+subsystems into smaller interfaces remains follow-up work; keep each change
+separate from behavior changes and preserve its existing regression tests.
+
 ```
 src/
   agent/      orchestrator + system/state prompts (strict JSON protocol)

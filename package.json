@@ -23,7 +23,7 @@
     "mobile:build:web": "npm --prefix apps/mobile run build:web",
     "mobile:build:android": "npm --prefix apps/mobile run build:android",
     "mobile:build:ios": "npm --prefix apps/mobile run build:ios",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/build-ui-assets.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "generate:brand-icons": "electron scripts/generate-brand-icons.cjs",
     "test": "npm run test:full",

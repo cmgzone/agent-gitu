@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import './config/bootstrap.js';
 import { createInterface } from 'node:readline';
 import { Gitu } from './agent/gitu.js';
 import { SubAgentRunner } from './agent/subagent.js';
@@ -380,7 +381,7 @@ async function main(): Promise<void> {
     }
 
     case 'ui': {
-      const portRaw = flags.get('port');
+      const portRaw = flags.get('port') ?? process.env['PORT'];
       const port = typeof portRaw === 'string' ? Number(portRaw) : 8321;
       // Integer 0..65535 for both server commands: fractions previously passed
       // this check and crashed in Node's listen(), and 0 (ephemeral, resolved
@@ -409,7 +410,7 @@ async function main(): Promise<void> {
     // loop, sessions) with no UI attached — the "always on" mode for agents
     // that live on a machine, not in a tab.
     case 'serve': {
-      const portRaw = flags.get('port');
+      const portRaw = flags.get('port') ?? process.env['PORT'];
       const port = typeof portRaw === 'string' ? Number(portRaw) : 8321;
       if (!Number.isInteger(port) || port < 0 || port > 65535 || (portRaw !== undefined && !/^\d+$/.test(String(portRaw)))) throw new Error('Invalid --port');
       const host = typeof flags.get('host') === 'string' ? String(flags.get('host')) : undefined;

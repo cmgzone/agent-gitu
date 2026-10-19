@@ -144,6 +144,7 @@
     "marked": "^18.0.14",
     "nodemailer": "^7.0.13",
     "pdf-lib": "^1.17.1",
+    "pino": "^10.4.0",
     "playwright": "^1.64.0",
     "pptxgenjs": "^4.0.1",
     "rxjs": "7.8.1",

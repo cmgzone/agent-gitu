@@ -1,4 +1,6 @@
 import http from 'node:http';
+import { logger, errorMetadata } from './logger.js';
+import { healthRoute } from './routes/health.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { CompanyStore, effectiveFileLimit, type Company, type CompanyJob } from '../company/store.js';
 import { CompanyCoordinator } from '../company/coordinator.js';
@@ -984,14 +986,14 @@ export class GituServer {
         // paths or untrusted header values. Limit repeated reconnect messages.
         if (Date.now() - lastDesktopRejection >= 30_000) {
           lastDesktopRejection = Date.now();
-          console.warn('[desktop-stream]', JSON.stringify({
+          logger.warn({
             status: code,
             authenticated: this.appAuth.authenticated(req),
             originProvided: Boolean(req.headers.origin),
             sameOrigin: this.isSameOrigin(req),
             secure: this.appAuth.secure(req),
             trustedHost: typeof req.headers.host === 'string' && this.isTrustedHost(req.headers.host),
-          }));
+          }, 'Desktop stream rejected');
         }
         socket.end(`HTTP/1.1 ${code} Rejected\r\nConnection: close\r\n\r\n`);
       };
@@ -1392,7 +1394,7 @@ export class GituServer {
   private selectedFileLimit(companyId=this.companyScope.getStore()?.id): number|null { return effectiveFileLimit(this.companies().workspaceFileLimit(),companyId?this.companies().get(companyId)?.maxFileBytes:undefined); }
   private ensureCompanyCoordinator(): void {
     if(this.companyCoordinator)return;
-    const coordinator=new CompanyCoordinator(this.companies(),job=>this.executeCompanyJob(job),()=>console.error('[company] Work failed. Review the company transcript.'),()=>{for(const run of this.companyQuestionRuns.values())run.abort.abort();for(const c of this.companies().companies())this.companyScope.run({id:c.id,version:c.directionVersion},()=>{for(const conv of this.cowork().listConversations())this.coworkRuns.get(conv.id)?.abort.abort(new Error('Company scheduler ownership lost.'));});},recovering=>{if(recovering)for(const company of this.companies().companies())this.companyCalendar(company.id).recover();this.prepareCompanyManagement();this.companyMeetings().prepare(recovering);for(const meetingId of this.companyMeetingTurns.keys())this.checkCompanyMeetingTurn(meetingId);});
+    const coordinator=new CompanyCoordinator(this.companies(),job=>this.executeCompanyJob(job),()=>logger.error({ subsystem: 'company' }, 'Company work failed; review the company transcript'),()=>{for(const run of this.companyQuestionRuns.values())run.abort.abort();for(const c of this.companies().companies())this.companyScope.run({id:c.id,version:c.directionVersion},()=>{for(const conv of this.cowork().listConversations())this.coworkRuns.get(conv.id)?.abort.abort(new Error('Company scheduler ownership lost.'));});},recovering=>{if(recovering)for(const company of this.companies().companies())this.companyCalendar(company.id).recover();this.prepareCompanyManagement();this.companyMeetings().prepare(recovering);for(const meetingId of this.companyMeetingTurns.keys())this.checkCompanyMeetingTurn(meetingId);});
     coordinator.start();this.companyCoordinator=coordinator;
   }
   private async executeCompanyJob(job:CompanyJob):Promise<void>{
@@ -1521,7 +1523,7 @@ export class GituServer {
       try {
         const nameById = new Map(this.cowork().listAgents().map((a) => [a.id, a.name]));
         const migrated = this.coworkMemoryStore.migrateLegacyFactFiles(nameById);
-        if (migrated > 0) console.error(`[hermes] cowork: migrated ${migrated} legacy memory fact(s) into the shared memory store`);
+        if (migrated > 0) logger.info({ subsystem: 'cowork', migrated }, 'Migrated legacy memory facts');
       } catch {
         /* best-effort migration */
       }
@@ -2358,7 +2360,7 @@ export class GituServer {
           for(const mail of this.cowork().dueInbox()){const store=this.cowork(),agent=store.getAgent(mail.toAgentId);if(!agent){store.markInboxDelivered([mail.id]);continue;}const conversation=store.listConversations().find(conv=>conv.kind==='dm'&&conv.memberIds.length===1&&conv.memberIds[0]===agent.id)??store.saveConversation({kind:'dm',memberIds:[agent.id]});this.companies().enqueue(company.id,'wake',{conversationId:conversation.id,agentId:agent.id,note:mail.text,inboxId:mail.id},'inbox:'+mail.id);}
         });
       } catch (err) {
-        console.error(`[hermes] cowork schedule tick failed: ${(err as Error).message}`);
+        logger.error({ subsystem: 'cowork-schedules', ...errorMetadata(err) }, 'Schedule tick failed');
       }
     }, 20_000);
     this.startCoworkLearning();
@@ -2430,10 +2432,10 @@ export class GituServer {
         });
       }
       const msg = `[cowork learn] consolidate: merged ${result.merged.length}, superseded ${result.supersededIds.length}, flagged ${result.flagged.length}, archived ${pruned.archived + decayed.length}, indexed ${shared.length} memory(ies)`;
-      console.error(msg);
+      logger.info({ subsystem: 'cowork-memory', merged: result.merged.length, superseded: result.supersededIds.length, flagged: result.flagged.length, archived: pruned.archived + decayed.length, indexed: shared.length }, 'Consolidated memory');
       return msg;
     } catch (err) {
-      console.error(`[hermes] cowork consolidate failed: ${(err as Error).message}`);
+      logger.error({ subsystem: 'cowork-memory', ...errorMetadata(err) }, 'Memory consolidation failed');
       return 'consolidate failed';
     }
   }
@@ -2499,10 +2501,10 @@ export class GituServer {
       }
       index.setCursor(`distill:${target.conv.id}`, String(target.fresh.at(-1)!.seq));
       const msg = `[cowork learn] distilled ${recorded} candidate(s) from ${target.conv.title} (${target.fresh.length} messages)`;
-      console.error(msg);
+      logger.info({ subsystem: 'cowork-memory', recorded, conversationId: target.conv.id, messages: target.fresh.length }, 'Distilled memory candidates');
       return msg;
     } catch (err) {
-      console.error(`[hermes] cowork distill failed: ${(err as Error).message}`);
+      logger.error({ subsystem: 'cowork-memory', ...errorMetadata(err) }, 'Memory distillation failed');
       return 'distill failed';
     }
   }
@@ -2807,7 +2809,7 @@ export class GituServer {
       } catch (err) {
         const current = this.coworkRuns.get(conversation.id);
         if (current) current.telegramError = (err as Error).message;
-        console.error(`[hermes] cowork discord card (${conversation.id}): ${(err as Error).message}`);
+        logger.error({ subsystem: 'discord', conversationId: conversation.id, ...errorMetadata(err) }, 'Could not send request card');
       }
     }
   }
@@ -2853,7 +2855,7 @@ export class GituServer {
         }
         return 'That request is not linked to this chat.';
       },
-      onError: (message) => console.error(`[hermes] cowork telegram (${conv.id}): ${message}`),
+      onError: () => logger.error({ subsystem: 'telegram', conversationId: conv.id }, 'Telegram connection failed'),
     });
     this.coworkPollers.set(tg.token, poller);
     poller.start();
@@ -2902,7 +2904,7 @@ export class GituServer {
         if (!linked?.discord?.enabled) return;
         await this.handleCoworkDiscordText(linked.id, from, text);
       },
-      onError: (message) => console.error(`[hermes] cowork discord (${conv.id}): ${message}`),
+      onError: () => logger.error({ subsystem: 'discord', conversationId: conv.id }, 'Discord connection failed'),
     });
     this.coworkDiscords.set(conv.id, gateway);
     gateway.start();
@@ -2918,7 +2920,7 @@ export class GituServer {
     } catch (err) {
       const current = this.coworkRuns.get(conversationId);
       if (current) current.telegramError = (err as Error).message;
-      console.error(`[hermes] cowork discord send (${conversationId}): ${(err as Error).message}`);
+      logger.error({ subsystem: 'discord', conversationId, ...errorMetadata(err) }, 'Could not send conversation message');
     }
   }
 
@@ -3043,7 +3045,7 @@ export class GituServer {
     this.coworkRuns.set(conversationId, { busy: true, abort, queue: [trigger] });
     this.publishCowork(conversationId);
     void this.executeCoworkTurn(conversationId, abort)
-      .catch((err: Error) => console.error(`[hermes] cowork turn crashed (${conversationId}): ${err.message}`))
+      .catch((err: Error) => logger.error({ subsystem: 'cowork', conversationId, ...errorMetadata(err) }, 'Conversation turn failed'))
       .finally(() => {
         const current = this.coworkRuns.get(conversationId);
         if (current?.abort === abort) {
@@ -3498,7 +3500,7 @@ export class GituServer {
         store.updateMission(missionId, { nextWakeAt: new Date(Date.now() + (abort.signal.aborted ? 120_000 : 60_000)).toISOString() });
       }
       if (currentMission?.status !== 'cancelled') {
-        console.error(`[hermes] mission session failed (${missionId}): ${(err as Error).message}`);
+        logger.error({ subsystem: 'cowork-missions', missionId, ...errorMetadata(err) }, 'Mission session failed');
       }
       await finishStream(currentMission?.status === 'cancelled'
         ? 'Mission cancelled.'
@@ -3598,7 +3600,7 @@ export class GituServer {
     this.coworkRuns.set(conversationId, { busy: true, working: agent.name, abort, queue: [trigger], forceAgentId: agentId });
     this.publishCowork(conversationId);
     void this.executeCoworkTurn(conversationId, abort)
-      .catch((err: Error) => console.error(`[hermes] cowork wake crashed (${conversationId}): ${err.message}`))
+      .catch((err: Error) => logger.error({ subsystem: 'cowork', conversationId, ...errorMetadata(err) }, 'Conversation wake failed'))
       .finally(() => {
         const current = this.coworkRuns.get(conversationId);
         if (current?.abort === abort) {
@@ -3621,7 +3623,7 @@ export class GituServer {
     for (const mission of store.missions()) {
       if (mission.status !== 'running') continue;
       if (!mission.nextWakeAt || Date.parse(mission.nextWakeAt) > now) continue;
-      void this.executeMissionSession(mission.id).catch((err: Error) => console.error(`[hermes] mission session crashed (${mission.id}): ${err.message}`));
+      void this.executeMissionSession(mission.id).catch((err: Error) => logger.error({ subsystem: 'cowork-missions', missionId: mission.id, ...errorMetadata(err) }, 'Mission session crashed'));
     }
     // 2. Due agent follow-ups wake their author.
     for (const followUp of store.dueFollowUps(now)) {
@@ -4803,7 +4805,7 @@ export class GituServer {
   private pipeFile(res: http.ServerResponse, filePath: string): void {
     const stream = createReadStream(filePath);
     stream.on('error', (err) => {
-      console.error(`[hermes] file stream failed (${filePath}): ${(err as Error).message}`);
+      logger.error({ subsystem: 'files', ...errorMetadata(err) }, 'File stream failed');
       res.end();
     });
     stream.pipe(res);
@@ -5338,7 +5340,7 @@ export class GituServer {
       const rawCode = typeof failure.cause?.code === 'string' ? failure.cause.code : typeof failure.code === 'string' ? failure.code : failure.details?.kind ?? failure.name ?? 'UNKNOWN';
       const code = /^[a-zA-Z0-9_]{1,64}$/.test(rawCode) ? rawCode : 'UNKNOWN';
       // Log stack locations, never a provider message that may include credentials.
-      console.error('[voice] Request failed:', path.replace(/\/calls\/[^/]+/, '/calls/[call]'), code, failure.stack?.split('\n').slice(1, 4).join('\n') ?? '');
+      logger.error({ subsystem: 'voice', route: path.replace(/\/calls\/[^/]+/, '/calls/[call]'), code }, 'Voice request failed');
       this.sendJson(res, 502, { error: 'Could not complete the voice reply (' + code + '). Check the agent’s model connection and retry.' });
     }
   }
@@ -5347,6 +5349,8 @@ export class GituServer {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const path = url.pathname;
     const method = req.method ?? 'GET';
+
+    if (healthRoute(req, res, path)) return;
 
     if (path === '/auth' && method === 'GET') {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'DENY', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'" });

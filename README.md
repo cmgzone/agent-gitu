@@ -202,6 +202,35 @@ Remote first-owner registration requires HTTPS and a private
 `AGENT_GITU_REGISTRATION_TOKEN` of at least 32 characters. The code is accepted
 only before the owner account exists; it cannot replace an account or sign in.
 
+### Environment
+
+For a fresh clone, copy [`.env.example`](.env.example), enable only the
+features you need, and replace their placeholders before starting:
+
+```bash
+npm ci
+cp .env.example .env
+# Edit .env; uncomment the credentials for your chosen provider/features.
+npm run build
+npm start -- ui
+```
+
+On PowerShell use `Copy-Item .env.example .env`. The CLI loads `.env` from
+the current directory before initializing providers; environment values already
+set by your shell or deployment take precedence. `PORT` controls the UI/server
+port unless `--port` is supplied. Keep `.env` out of Git; it is already ignored.
+For deployments, configure variables in your host's secret manager rather than
+copying a development `.env` into an image. On non-Windows servers, generate
+`AGENT_GITU_SECRETS_KEY` with
+`node -p "require('node:crypto').randomBytes(32).toString('hex')"` and retain it
+with your encrypted data backups. The optional LiveKit, Composio, and private
+desktop settings are documented individually in the example.
+
+The public `GET /healthz` liveness probe returns `{status:"ok", uptime}` even
+while the app is locked; it includes no account or configuration data. It checks
+the HTTP process, not external model/mail provider availability. Server logs are
+JSON on stderr, with severity controlled by `LOG_LEVEL` (default `info`).
+
 Environment for `run`:
 
 ```
@@ -285,6 +314,25 @@ release/CI contract. Completion reports include an evidence-based quality score,
 token cost per verified criterion, and wasted-call rate. Real-model evaluation
 outputs are local by default; summarize a reviewed results JSON instead of
 committing raw provider responses or logs.
+
+### Maintenance
+
+Enable the Renovate GitHub App for this repository to activate
+[`.github/renovate.json`](.github/renovate.json). Dependency PRs are scheduled
+for Monday before 07:00 Africa/Nairobi, limited to five open PRs and two new PRs
+per hour. Development patch/minor updates are grouped; major updates require
+separate review. Updates are not automatically merged.
+
+Keep route/UI extractions in focused PRs with their existing behavior tests.
+Run `npm run lint`, `npm run typecheck`, and `npm run test:fast` after each
+extraction before merging the next one. Invite a second contributor to review
+the source and test changes; publish version tags only for tested releases that
+match the package version. Release automation remains gated on the existing
+platform and container jobs.
+
+Container CI uses the repository secret `CI_AGENT_GITU_SECRETS_KEY` when set.
+Fork PRs generate a masked, random key for their disposable test data. Never use
+a production encryption key in CI.
 
 ### Layout
 

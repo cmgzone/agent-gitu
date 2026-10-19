@@ -7,7 +7,7 @@ import { canonicalJson, excerpt, sha256, summarizeParams } from '../util.js';
 import { isBackgroundRead } from './proactive-apps.js';
 import { coworkToolDocs, coworkNativeTools, executeCoworkTool, parseToolCalls, stripToolMarkers, SUBAGENT_BLOCKED_TOOLS, type CoworkToolPerms, type CoworkToolScope } from './tools.js';
 import { coworkTranscript, prepareCoworkContextInBackground, renderCoworkTaskContext } from './context.js';
-import { appAwareness, connectionReply } from './app-awareness.js';
+import { appAwareness, connectionQuestion, connectionReply } from './app-awareness.js';
 import type { ConnectedAppsProvider } from '../connections/provider.js';
 import type { BudgetAccount } from '../coding/budget.js';
 import type { CoworkSubAgentBridge, CoworkSubAgentRunner, SubAgentChildRunner, SubAgentToolScope, SubAgentTrailEntry } from './subagents.js';
@@ -554,7 +554,8 @@ async function agentTurn(input: {
     return input.deps.withAgent(input.agent, () => agentTurn({ ...input, deps: { ...input.deps, withAgent: undefined } }));
   }
   const { agent, conversation, members, history, deps, append, threadId } = input;
-  const awareness = deps.store && deps.connectedApps ? await appAwareness(deps.connectedApps, deps.store, agent.id) : undefined;
+  const statusQuestion = history.at(-1)?.role === 'user' && connectionQuestion(history.at(-1)!.text, history);
+  const awareness = deps.store && deps.connectedApps ? await appAwareness(deps.connectedApps, deps.store, agent.id, statusQuestion ? 15_000 : 1200) : undefined;
   if (awareness && deps.store && history.at(-1)?.role === 'user') {
     const answer = await connectionReply({ text: history.at(-1)!.text, history, apps: deps.connectedApps, store: deps.store, agentId: agent.id, conversationId: conversation.id, awareness });
     if (answer) {

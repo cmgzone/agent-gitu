@@ -7,6 +7,8 @@ import { ensureGituHome } from '../workspace/home.js';
 import { SecretVault } from './secret-vault.js';
 import { readCredentialFile, readCredentialJson, writeCredentialFile } from '../llm/credential-file.js';
 import { redactConnectionData } from './response-data.js';
+import type { ConnectedAppTool } from './provider.js';
+import { searchAppTools } from './tool-search.js';
 
 export interface ConnectedApp {
   id: string;
@@ -109,6 +111,7 @@ export class ComposioConnections {
   private sessionOwner?: string;
   private generation = 0;
   private executionSessions = new Map<string, ReturnType<Client['sessions']['create']>>();
+  private toolCatalogs = new Map<string, { at: number; pending: Promise<ConnectedAppTool[]> }>();
   constructor(
     private readonly owner: () => string,
     private readonly keys = new ComposioKeyStore(),
@@ -174,6 +177,7 @@ export class ComposioConnections {
     this.sdk = sdk;
     this.session = undefined;
     this.executionSessions.clear();
+    this.toolCatalogs.clear();
     const file = path.join(ensureGituHome().settings, 'composio-session.json');
     // A session belongs to the provider project; key changes create a fresh one.
     writeCredentialFile(file, JSON.stringify({ owner: '', sessionId: '' }));
@@ -228,11 +232,44 @@ export class ComposioConnections {
     await this.client().connectedAccounts.revoke(id);
     this.executionSessions.clear();
   }
-  async tools(slug: string, query?: string, tool?: string) {
+  private catalogTools(slug: string): Promise<ConnectedAppTool[]> {
+    const cached = this.toolCatalogs.get(slug);
+    if (cached && Date.now() - cached.at < 60_000) return cached.pending;
+    const sdk = this.client(), signal = AbortSignal.timeout(15_000);
+    const pending = (async () => {
+      const tools = new Map<string, ConnectedAppTool>(), cursors = new Set<string>();
+      let cursor: string | undefined;
+      do {
+        signal.throwIfAborted();
+        const page = await sdk.getClient().tools.list({ toolkit_slug: slug, toolkit_versions: 'latest', limit: 100, cursor }, { signal });
+        for (const item of page.items) {
+          if (item.toolkit?.slug !== slug) continue;
+          const inputParameters = typeof item.input_parameters === 'string' ? JSON.parse(item.input_parameters) as unknown : item.input_parameters;
+          tools.set(item.slug, { slug: item.slug, name: item.name, description: item.description, inputParameters });
+        }
+        cursor = page.next_cursor ?? undefined;
+        if (cursor && cursors.has(cursor)) throw new Error('The service tool catalog is incomplete. Retry discovery before choosing an action.');
+        if (cursor) cursors.add(cursor);
+      } while (cursor);
+      return [...tools.values()];
+    })().catch(error => {
+      if (this.toolCatalogs.get(slug)?.pending === pending) this.toolCatalogs.delete(slug);
+      throw error;
+    });
+    this.toolCatalogs.set(slug, { at: Date.now(), pending });
+    return pending;
+  }
+  async tools(slug: string, query?: string, tool?: string): Promise<ConnectedAppTool[]> {
+    const owner = this.owner(), generation = this.generation;
     if (!(await this.accounts()).some((account) => account.toolkit === slug && account.status === 'ACTIVE' && !account.disabled))
       throw new Error('Connect this service in Cowork → Connections first.');
+    if (!tool) {
+      const tools = await this.catalogTools(slug);
+      if (owner !== this.owner() || generation !== this.generation) throw new Error('Connection setup changed. Refresh and try again.');
+      return query?.trim() ? searchAppTools(tools, query) : tools;
+    }
     const tools = await this.client().tools.getRawComposioTools(
-      tool ? { tools: [tool] } : { toolkits: [slug], ...(query ? { search: query.slice(0, 200), limit: 5 } : { limit: 100 }) },
+      { tools: [tool] },
       undefined,
       { signal: AbortSignal.timeout(15_000) },
     );

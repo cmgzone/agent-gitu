@@ -43,20 +43,21 @@ function fixture(owner = () => 'owner-uuid') {
   }));
   const revoke = vi.fn(async () => ({}));
   const raw = vi.fn(async () => [{ slug: 'GMAIL_SEND', name: 'Send mail', description: 'Send', inputParameters: {}, toolkit: { slug: 'gmail' } }]);
+  const catalog = vi.fn(async () => ({ items: (await raw()).map(tool => ({ ...tool, input_parameters: tool.inputParameters })), next_cursor: null as string | null }));
   const withOptions = vi.fn(() => ({ toolRouter: { session: { execute } } }));
   const client = {
     sessions: { create, use },
     connectedAccounts: { list, revoke },
     tools: { getRawComposioTools: raw },
     toolkits: { get: vi.fn(async () => ({})) },
-    getClient: () => ({ withOptions }),
+    getClient: () => ({ withOptions, tools: { list: catalog } }),
   } as unknown as Client;
   const apps = new ComposioConnections(
     owner,
     keys,
     () => client,
   );
-  return { apps, keys, create, use, list, revoke, raw, execute, authorize, toolkits, withOptions };
+  return { apps, keys, create, use, list, revoke, raw, catalog, execute, authorize, toolkits, withOptions };
 }
 
 describe('Composio connections', () => {
@@ -155,8 +156,29 @@ describe('Composio connections', () => {
       { slug: 'GMAIL_READ', name: 'Read', description: '', inputParameters: {}, toolkit: { slug: 'gmail' } },
       { slug: 'SLACK_SEND', name: 'Send', description: '', inputParameters: {}, toolkit: { slug: 'slack' } },
     ]);
-    expect((await f.apps.tools('gmail', 'send')).map(tool => tool.slug)).toEqual(['GMAIL_SEND', 'GMAIL_READ']);
+    expect((await f.apps.tools('gmail', 'send')).map(tool => tool.slug)).toEqual(['GMAIL_SEND']);
     expect((await f.apps.tools('gmail', undefined, 'GMAIL_SEND')).map(tool => tool.slug)).toEqual(['GMAIL_SEND']);
+  });
+
+  it('finds inbox tools beyond a truncated search and paginates the full catalog', async () => {
+    const f = fixture();
+    const item = (slug: string, name: string) => ({ slug, name, description: '', inputParameters: {}, toolkit: { slug: 'gmail' }, input_parameters: {} });
+    f.catalog.mockResolvedValueOnce({ items: [item('GMAIL_GET_PROFILE', 'Get profile'), item('GMAIL_LIST_LABELS', 'List labels')], next_cursor: 'page-2' });
+    f.catalog.mockResolvedValueOnce({ items: [item('GMAIL_FETCH_EMAILS', 'Fetch emails')], next_cursor: null });
+    expect((await f.apps.tools('gmail', 'read emails'))[0]?.slug).toBe('GMAIL_FETCH_EMAILS');
+    expect(f.catalog).toHaveBeenNthCalledWith(2, { toolkit_slug: 'gmail', toolkit_versions: 'latest', limit: 100, cursor: 'page-2' }, { signal: expect.any(AbortSignal) });
+    expect((await f.apps.tools('gmail')).map(tool => tool.slug)).toHaveLength(3);
+    expect(f.catalog).toHaveBeenCalledTimes(2);
+    expect(f.execute).not.toHaveBeenCalled();
+  });
+
+  it('rejects repeated tool cursors and retries a failed catalog without retaining partial results', async () => {
+    const f = fixture();
+    f.catalog.mockResolvedValue({ items: [], next_cursor: 'repeat' });
+    await expect(f.apps.tools('gmail', 'read')).rejects.toThrow('catalog is incomplete');
+    f.catalog.mockResolvedValue({ items: [], next_cursor: null });
+    expect(await f.apps.tools('gmail')).toEqual([]);
+    expect(f.catalog).toHaveBeenCalledTimes(3);
   });
 
   it.each(['https://user:password@connect.composio.dev/link', 'https://connect.composio.dev:8443/link'])('rejects unsupported sign-in URLs before assigning an account: %s', async url => {
@@ -306,7 +328,7 @@ describe('Composio connections', () => {
     const schema = await executeCoworkTool(ctx, 'connected_apps', { action: 'tools', service: 'gmail', query: 'send mail' }, perms, scope);
     expect(JSON.parse(schema.output)[0].inputParameters.required).toEqual(['to']);
     expect(JSON.parse(schema.output)[0].description).toHaveLength(25_000);
-    expect(f.raw).toHaveBeenLastCalledWith({ toolkits: ['gmail'], search: 'send mail', limit: 5 }, undefined, { signal: expect.any(AbortSignal) });
+    expect(f.catalog).toHaveBeenLastCalledWith({ toolkit_slug: 'gmail', toolkit_versions: 'latest', limit: 100, cursor: undefined }, { signal: expect.any(AbortSignal) });
     await f.apps.tools('gmail', undefined, 'GMAIL_SEND');
     expect(f.raw).toHaveBeenLastCalledWith({ tools: ['GMAIL_SEND'] }, undefined, { signal: expect.any(AbortSignal) });
   });

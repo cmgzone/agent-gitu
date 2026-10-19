@@ -20,6 +20,36 @@ function fixture() {
   return { store, agent, conversation, apps };
 }
 describe('Immediate teammate app awareness', () => {
+  it('shares pending refreshes and retains status arriving after the quick-context deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture(); f.store.assignAppAccount(f.agent.id, 'googledrive', 'own');
+      let finish!: (accounts: Awaited<ReturnType<ConnectedAppsProvider['accounts']>>) => void;
+      vi.mocked(f.apps.accounts).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+      const first = appAwareness(f.apps, f.store, f.agent.id), second = appAwareness(f.apps, f.store, f.agent.id);
+      await vi.advanceTimersByTimeAsync(1201);
+      expect((await first).verified).toBe(false); expect((await second).verified).toBe(false);
+      finish([{ id: 'own', toolkit: 'googledrive', status: 'ACTIVE', disabled: false }]);
+      await vi.advanceTimersByTimeAsync(0);
+      const recovered = await appAwareness(f.apps, f.store, f.agent.id);
+      expect(recovered.verified).toBe(true); expect(recovered.accounts[0]?.status).toBe('ACTIVE');
+      expect(f.apps.accounts).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
+  it('waits for a healthy slower provider when the user asks an access question', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture(); f.store.assignAppAccount(f.agent.id, 'googledrive', 'own');
+      vi.mocked(f.apps.accounts).mockImplementation(() => new Promise(resolve => setTimeout(() => resolve([{ id: 'own', toolkit: 'googledrive', status: 'ACTIVE', disabled: false }]), 4000)));
+      const complete = vi.fn();
+      const trigger = f.store.appendMessage(f.conversation.id, { role: 'user', via: 'web', text: 'Can you access my Google Drive?' });
+      const pending = runConversationTurn({ conversation: f.conversation, trigger, history: [trigger], deps: { store: f.store, agents: [f.agent], connectedApps: f.apps, resolveLlm: () => ({ complete } as unknown as LlmClient), toolContext: vi.fn() }, append: message => f.store.appendMessage(f.conversation.id, message) });
+      await vi.advanceTimersByTimeAsync(4001);
+      const result = await pending;
+      expect(result.messages.at(-1)?.text).toContain('Google Drive is connected');
+      expect(complete).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
   it('answers the email question and posts Connect without a model or account lookup', async () => {
     const f = fixture(), complete = vi.fn();
     const trigger = f.store.appendMessage(f.conversation.id, { role: 'user', via: 'web', text: 'Are you connected to my email?' });

@@ -206,12 +206,19 @@ describe('audit persistence (review hardening #1)', () => {
     expect(reopened.stats().auditEvents).toBeGreaterThanOrEqual(3);
   });
 
-  it('retention caps the audit ring at 500 events', () => {
-    const store = freshStore('retention');
+  it('retains the full audit history beyond 500 events across restarts', () => {
+    const file = path.join(mkdtempSync(path.join(tmpdir(), 'hermes-audit-retention-')), 'memory.json');
+    const store = new MemoryStore(file);
+    const ids: string[] = [];
     for (let i = 0; i < 505; i++) {
-      store.add({ type: 'fact', claim: `unique fact number ${i} for retention`, scope: 'proj' });
+      ids.push(store.add({ type: 'fact', claim: `unique fact number ${i} for retention`, scope: 'proj' }).entry.id);
     }
-    expect(store.stats().auditEvents).toBe(500);
+    expect(store.stats().auditEvents).toBe(505);
+    const reopened = new MemoryStore(file);
+    expect(reopened.stats().auditEvents).toBe(505);
+    for (const id of [ids[0]!, ids[504]!]) {
+      expect(reopened.explain(id).audit).toEqual(expect.arrayContaining([expect.objectContaining({ memoryId: id, event: 'created' })]));
+    }
   });
 });
 

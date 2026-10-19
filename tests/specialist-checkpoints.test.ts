@@ -241,7 +241,13 @@ describe('durable specialist checkpoint recovery', () => {
     ]);
     await new Hermes({ cwd: dir, llm: main, mode: 'fast', effort: 'low', subagents: specialists, onEvent: (event) => events.push(event) }).run('recover a paused specialist');
 
-    expect(events.some((event) => event.includes('0/1 new specialist slots used; 1 resume(s) reused'))).toBe(true);
-    expect(events.some((event) => event.includes('1/1 new specialist slots used'))).toBe(true);
+    // Effort estimates no longer impose a specialist ceiling. Count logical
+    // allocations without assuming a particular estimated or maximum budget.
+    const allocations = events.filter(event => event.includes('new specialist slots used'));
+    expect(allocations).toHaveLength(2);
+    expect(allocations[0]).toMatch(/\(0\/\d+ new specialist slots used; 1 resume\(s\) reused\)/);
+    expect(allocations[1]).toMatch(/\(1\/\d+ new specialist slots used\)/);
+    const recovered = new SpecialistCheckpointStore(dir).get(failed.resumableJobId!);
+    expect(recovered).toMatchObject({ logicalJobId: failed.resumableJobId, executionAttempt: 2, stopReason: 'completed' });
   }, 30_000);
 });

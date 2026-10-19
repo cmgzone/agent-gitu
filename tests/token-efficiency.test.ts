@@ -16,7 +16,7 @@ import { TaskLedger } from '../src/ledger/task-ledger.js';
 import type { BrowserBridge, BrowserScreenshot } from '../src/browser/browser.js';
 import { ScriptedMockLlm, type LlmMessage } from '../src/llm/llm.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
-import { MAX_READ_OUTPUT_CHARS, toolBrowse, toolReadFile, type ToolContext } from '../src/tools/tools.js';
+import { toolBrowse, toolReadFile, type ToolContext } from '../src/tools/tools.js';
 
 function makeProject(name: string): string {
   const dir = mkdtempSync(path.join(tmpdir(), `hermes-tokeff-${name}-`));
@@ -38,20 +38,19 @@ function findEvidenceId(messages: { role: string; content: unknown }[]): string 
   return 'ev-missing';
 }
 
-describe('read_file output cap', () => {
+describe('read_file output selection', () => {
   function ctx(dir: string): ToolContext {
     return { guard: ProjectGuard.detect(dir), cwd: dir };
   }
 
-  it('caps large read_file output by characters, not just lines', () => {
+  it('returns the complete file unless the caller requests a cap', () => {
     const dir = makeProject('readcap');
     const big = Array.from({ length: 600 }, (_x, i) => `const line${i} = "${'x'.repeat(90)}";`).join('\n');
     writeFileSync(path.join(dir, 'src', 'big.ts'), big);
     const result = toolReadFile(ctx(dir), { path: 'src/big.ts' });
     expect(result.ok).toBe(true);
-    expect(result.output.length).toBeLessThanOrEqual(MAX_READ_OUTPUT_CHARS + 200);
-    expect(result.output).toContain('output capped');
-    expect(result.output).toContain('1: ');
+    expect(result.output).toBe(big.split('\n').map((line, i) => `${i + 1}: ${line}`).join('\n'));
+    expect(result.output).not.toContain('output capped');
   });
 
   it('leaves small files untouched', () => {
@@ -195,7 +194,7 @@ describe('execution ledger survives compaction', () => {
     expect(state).toContain('NEXT: step-1');
   });
 
-  it('bounds a large live state while retaining a pointer to the complete request', () => {
+  it('preserves complete user intent while compacting the working plan and file list', () => {
     const dir = makeProject('bounded-state');
     const guard = ProjectGuard.detect(dir);
     const ledger = TaskLedger.create({ repoRoot: path.resolve(dir), goal: `Build the product:\n${'requirement\n'.repeat(2_000)}`, project: guard.lock, mode: 'standard' });
@@ -204,8 +203,8 @@ describe('execution ledger survives compaction', () => {
     ledger.data.filesChanged = Array.from({ length: 65 }, (_x, i) => `src/component-${i}.tsx`);
     const state = buildStateMessage(ledger);
 
-    expect(state.length).toBeLessThan(20_000);
-    expect(state).toContain(`.hermes/tasks/${ledger.data.taskId}.json`);
+    expect(state).toContain(`CURRENT USER INTENT:\n${ledger.data.goal}`);
+    expect(TaskLedger.load(dir, ledger.data.taskId)?.data.goal).toBe(ledger.data.goal);
     expect(state).toContain('criterion 0:');
     expect(state).toContain('(+45 earlier)');
     expect(state).toContain('(+15 more queued)');

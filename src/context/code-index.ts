@@ -368,14 +368,16 @@ export class CodeIndex {
         }),
     );
     refreshQueue = work.catch(() => undefined);
-    this.pendingRefresh = work.then(stats => {
-      this.lastRefreshStats = stats;
-      this.refreshedWatchVersion = watchVersion;
-      if (!this.closed) this.watchedFiles = new Map(this.fileList().map(file => [file.path, file]));
-      return stats;
-    }).finally(() => {
-      this.pendingRefresh = undefined;
-    });
+    this.pendingRefresh = work
+      .then((stats) => {
+        this.lastRefreshStats = stats;
+        this.refreshedWatchVersion = watchVersion;
+        if (!this.closed) this.watchedFiles = new Map(this.fileList().map((file) => [file.path, file]));
+        return stats;
+      })
+      .finally(() => {
+        this.pendingRefresh = undefined;
+      });
     return this.pendingRefresh;
   }
 
@@ -386,10 +388,10 @@ export class CodeIndex {
 
   async ensureFreshAsync(root: string, ignores: Iterable<string>): Promise<RefreshStats> {
     const ignorePaths = [...ignores];
-    const sameIgnores = ignorePaths.length === this.ignores.size && ignorePaths.every(name => this.ignores.has(name));
+    const sameIgnores = ignorePaths.length === this.ignores.size && ignorePaths.every((name) => this.ignores.has(name));
     if (!this.watcher || path.resolve(root) !== this.root || !sameIgnores) return this.refreshAsync(root, ignorePaths, true);
     // Let queued filesystem notifications invalidate the snapshot before reuse.
-    await new Promise<void>(resolve => setImmediate(resolve));
+    await new Promise<void>((resolve) => setImmediate(resolve));
     await this.checkUnidentifiedChanges();
     while (!this.isFresh()) {
       if (this.pendingRefresh) await this.pendingRefresh;
@@ -411,11 +413,22 @@ export class CodeIndex {
         const current = new Map<string, { size: number; mtimeMs: number }>();
         const walk = async (dir: string): Promise<void> => {
           let entries;
-          try { entries = await readdir(dir, { withFileTypes: true }); } catch { return; }
+          try {
+            entries = await readdir(dir, { withFileTypes: true });
+          } catch {
+            return;
+          }
           for (const entry of entries) {
             const name = entry.name;
-            if (this.ignores.has(name) || name === '.git' || name === '.hermes' || isGeneratedIndexDirectory(name) ||
-              (name.startsWith('.') && name !== '.github' && !isContextConfigDotfile(name)) || entry.isSymbolicLink()) continue;
+            if (
+              this.ignores.has(name) ||
+              name === '.git' ||
+              name === '.hermes' ||
+              isGeneratedIndexDirectory(name) ||
+              (name.startsWith('.') && name !== '.github' && !isContextConfigDotfile(name)) ||
+              entry.isSymbolicLink()
+            )
+              continue;
             const full = path.join(dir, name);
             if (entry.isDirectory()) await walk(full);
             else if (entry.isFile()) {
@@ -425,17 +438,25 @@ export class CodeIndex {
               try {
                 const info = await lstat(full);
                 if (info.isFile() && !info.isSymbolicLink()) current.set(relative, { size: info.size, mtimeMs: info.mtimeMs });
-              } catch { /* a disappearing source is detected by the map comparison */ }
+              } catch {
+                /* a disappearing source is detected by the map comparison */
+              }
             }
           }
         };
         await walk(this.root);
-        if (current.size !== this.watchedFiles.size || [...current].some(([name, info]) => {
-          const previous = this.watchedFiles.get(name);
-          return !previous || previous.size !== info.size || previous.mtimeMs !== info.mtimeMs;
-        })) this.watchVersion++;
+        if (
+          current.size !== this.watchedFiles.size ||
+          [...current].some(([name, info]) => {
+            const previous = this.watchedFiles.get(name);
+            return !previous || previous.size !== info.size || previous.mtimeMs !== info.mtimeMs;
+          })
+        )
+          this.watchVersion++;
       }
-    })().finally(() => { this.pendingMetadataCheck = undefined; });
+    })().finally(() => {
+      this.pendingMetadataCheck = undefined;
+    });
     return this.pendingMetadataCheck;
   }
 
@@ -628,9 +649,21 @@ export class CodeIndex {
       this.watcher = watch(this.root, { recursive: true }, (_event, filename) => {
         // Task ledgers and generated output change constantly during a run;
         // they are excluded from indexing and must not trigger source scans.
-        if (filename && filename.toString().split(/[\\/]/).some(name =>
-          this.ignores.has(name) || name === '.git' || name === '.hermes' || isGeneratedIndexDirectory(name) ||
-          (name.startsWith('.') && name !== '.github' && !isContextConfigDotfile(name)))) return;
+        if (
+          filename &&
+          filename
+            .toString()
+            .split(/[\\/]/)
+            .some(
+              (name) =>
+                this.ignores.has(name) ||
+                name === '.git' ||
+                name === '.hermes' ||
+                isGeneratedIndexDirectory(name) ||
+                (name.startsWith('.') && name !== '.github' && !isContextConfigDotfile(name)),
+            )
+        )
+          return;
         if (!filename) {
           this.unidentifiedChange = true;
           this.scheduleRefresh(debounceMs);

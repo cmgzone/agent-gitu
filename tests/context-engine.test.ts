@@ -124,13 +124,13 @@ describe('ContextEngine', () => {
       await engine.buildPackHybrid('fix the sprocket feature');
       const refresh = vi.spyOn(index, 'refreshAsync');
       writeFileSync(path.join(dir, '.hermes', 'task.json'), '{"status":"running"}');
-      await new Promise(resolve => setTimeout(resolve, 50));
+      await new Promise((resolve) => setTimeout(resolve, 50));
       await engine.buildPackHybrid('continue fixing the sprocket feature');
       await engine.buildPackHybrid('explain the sprocket feature');
       expect(refresh).not.toHaveBeenCalled();
 
       writeFileSync(path.join(dir, 'src', 'main.ts'), 'export const feature = "updatedsprocket";');
-      await new Promise(resolve => setTimeout(resolve, 50));
+      await new Promise((resolve) => setTimeout(resolve, 50));
       const { pack } = await engine.buildPackHybrid('fix updatedsprocket');
       expect(refresh).toHaveBeenCalledTimes(1);
       expect(index.contentMatches(['updatedsprocket']).has('src/main.ts')).toBe(true);

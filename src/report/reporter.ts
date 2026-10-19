@@ -64,7 +64,10 @@ export class Reporter {
     const latestAtFinal = new Map<string, string>();
     if (finalWorkspaceFingerprint) {
       for (const e of phaseEvidence) {
-        if (evidenceMatchesWorkspace(e, finalWorkspaceFingerprint) && (!e.command || latestVerificationEvidence({ evidence: phaseEvidence }, e.command, finalWorkspaceFingerprint)?.id === e.id)) {
+        if (
+          evidenceMatchesWorkspace(e, finalWorkspaceFingerprint) &&
+          (!e.command || latestVerificationEvidence({ evidence: phaseEvidence }, e.command, finalWorkspaceFingerprint)?.id === e.id)
+        ) {
           latestAtFinal.set(e.command || `${e.kind}:${e.label}`, e.id);
         }
       }

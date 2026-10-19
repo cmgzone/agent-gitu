@@ -477,7 +477,7 @@ describe('restart and retention recovery', () => {
     expect(restarted.appendMessage(conversation.id, { role: 'agent', via: 'agent', text: 'main' }).seq).toBeGreaterThan(removed.seq);
   });
 
-  it('protects evicted identities and reports eviction as a removal', () => {
+  it('retains messages beyond the former history cap and deduplicates replayed identities', () => {
     const { file, store, conversation } = fixture();
     const first = store.appendMessage(conversation.id, { id: 'evicted', role: 'agent', via: 'agent', text: 'old' });
     // Seed a full retained transcript without 2,000 filesystem writes.
@@ -487,9 +487,13 @@ describe('restart and retention recovery', () => {
     const full = new CoworkStore(file);
     const next = full.appendMessage(conversation.id, { role: 'agent', via: 'agent', text: 'new' });
     expect(next.seq).toBe(2001);
-    expect(full.messages(conversation.id)).toHaveLength(2000);
+    expect(full.messages(conversation.id)).toHaveLength(2001);
     const restarted = new CoworkStore(file);
-    expect(restarted.messageChanges(conversation.id, 2000, 2000).removed).toEqual([first.id]);
-    expect(() => restarted.appendMessage(conversation.id, first)).toThrow(/deleted/);
+    expect(restarted.messages(conversation.id)).toHaveLength(2001);
+    expect(restarted.getMessage(conversation.id, first.id)).toMatchObject({ text: 'old', seq: 1 });
+    expect(restarted.messageChanges(conversation.id, 2000, 2000).removed).toEqual([]);
+    expect(restarted.appendMessage(conversation.id, first)).toMatchObject({ id: first.id, seq: 1 });
+    expect(restarted.messages(conversation.id)).toHaveLength(2001);
+    expect(restarted.messageChangeCursor(conversation.id)).toBe(next.changeSeq);
   });
 });

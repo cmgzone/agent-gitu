@@ -155,7 +155,17 @@ describe('UI — responsive task shell and trustworthy controls', () => {
   it('supports generic files and durable download cards', () => {
     expect(UI_HTML).toContain('id="attachInput" multiple hidden');
     expect(UI_HTML).not.toContain('accept="image/*"');
-    expect(UI_HTML).toContain('var MAX_PENDING_FILES = 8;');
+    const pending: unknown[] = [];
+    const context = createContext({
+      pendingFor: () => pending, renderThumbs: () => {},
+      attachBinary: (file: unknown, queue: unknown[]) => queue.push(file),
+    });
+    const start = UI_HTML.indexOf('  function onAttachFiles(');
+    const end = UI_HTML.indexOf('  function autonomyBody(', start);
+    new Script(UI_HTML.slice(start, end)).runInContext(context);
+    const files = Array.from({ length: 12 }, (_, i) => ({ name: `attachment-${i}.txt` }));
+    context.onAttachFiles(files);
+    expect(pending).toEqual(files);
     expect(UI_HTML).toContain('function sessionFileCard(meta)');
     expect(UI_HTML).toContain("if (text.indexOf('file ') === 0)");
     expect(UI_HTML).toContain("download.textContent = 'Download'");

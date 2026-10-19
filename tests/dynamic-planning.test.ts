@@ -198,7 +198,7 @@ describe('completed-task follow-ups', () => {
 // ── Design records ───────────────────────────────────────────────────────
 
 describe('plan design', () => {
-  it('persists bounded sections (frontend/backend/integration caps)', () => {
+  it('persists complete design sections beyond the old preview limits', () => {
     const { ledger } = makeLedger('designcaps');
     ledger.setPlanDesign({
       frontend: 'f'.repeat(1500),
@@ -206,9 +206,10 @@ describe('plan design', () => {
       integration: 'i'.repeat(900),
     });
     const d = ledger.data.planDesign!;
-    expect(d.frontend?.length).toBe(1200);
-    expect(d.backend?.length).toBe(1200);
-    expect(d.integration?.length).toBe(800);
+    expect(d.frontend).toBe('f'.repeat(1500));
+    expect(d.backend).toBe('b'.repeat(1500));
+    expect(d.integration).toBe('i'.repeat(900));
+    expect(TaskLedger.load(ledger.data.project.repoRoot, ledger.data.taskId)?.data.planDesign).toEqual(d);
   });
 
   it('keeps only the sections provided (frontend-only task)', () => {
@@ -239,7 +240,7 @@ describe('plan design', () => {
 // ── Plan limits & todos ──────────────────────────────────────────────────
 
 describe('plan limits and todos', () => {
-  it('caps plans at 30 steps and todos at 8 per step, bounding field lengths', () => {
+  it('retains every plan step, todo and verification without truncation', () => {
     const { ledger } = makeLedger('limits');
     ledger.setPlan(
       Array.from({ length: 35 }, (_x, i) => ({
@@ -248,12 +249,13 @@ describe('plan limits and todos', () => {
         subtasks: Array.from({ length: 10 }, (_y, j) => `todo ${j} ${'T'.repeat(200)}`),
       })),
     );
-    expect(ledger.data.plan).toHaveLength(30);
-    const step = ledger.data.plan[0]!;
-    expect(step.description.length).toBeLessThanOrEqual(220);
-    expect(step.verification.length).toBeLessThanOrEqual(180);
-    expect(step.subtasks).toHaveLength(8);
-    expect(step.subtasks![0]!.text.length).toBeLessThanOrEqual(140);
+    expect(ledger.data.plan).toHaveLength(35);
+    for (const [i, step] of ledger.data.plan.entries()) {
+      expect(step.description).toBe(`d${i} ${'D'.repeat(300)}`);
+      expect(step.verification).toBe('V'.repeat(300));
+      expect(step.subtasks?.map(todo => todo.text)).toEqual(Array.from({ length: 10 }, (_, j) => `todo ${j} ${'T'.repeat(200)}`));
+    }
+    expect(TaskLedger.load(ledger.data.project.repoRoot, ledger.data.taskId)?.data.plan).toEqual(ledger.data.plan);
   });
 
   it('cascades todo completion into step completion', () => {

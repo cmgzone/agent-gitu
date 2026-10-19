@@ -82,8 +82,7 @@ export class MemoryStore {
   private entries: MemoryEntry[] = [];
   private baseline = new Map<string, MemoryEntry>();
   private diskText?: string;
-  /** Structured audit ring — PERSISTED to a sibling file so the provenance
-   *  trail survives restarts (review hardening #1). Retention: last 500. */
+  /** Full audit history persisted to a sibling file so provenance survives restarts. */
   private readonly auditFile: string;
   private audit: MemoryAuditEvent[] = [];
   /** Observability counters (per-store, per-run when fresh). */

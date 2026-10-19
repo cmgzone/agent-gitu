@@ -175,7 +175,7 @@ describe('Company meetings through the existing durable queue', () => {
     await expect(llm.complete([])).rejects.toThrow('speaking permission');
     expect(call).toHaveBeenCalledTimes(1);
   });
-  it('requires pricing for finite meetings, holds uncertain costs and caps attempts separately from chat', () => {
+  it('retains uncertain costs and permits further attempts within the meeting budget and speaking lease', () => {
     const f = fixture();
     f.runtime.prepare();
     const lease = f.room.read({ kind: 'director' }, f.meeting.id).lease!;
@@ -185,8 +185,13 @@ describe('Company meetings through the existing durable queue', () => {
     f.store.recordUsage(uncertain, { companyId: f.company.id, ...identity, outcome: 'failed' });
     expect(f.store.meetingAccounting(f.company.id, f.meeting.id)).toMatchObject({ reservedUsd: 0.1, unknownCalls: 1 });
     for (let i = 0; i < 5; i++) f.store.reserve(f.company.id, 0, identity);
-    expect(() => f.store.reserve(f.company.id, 0, identity)).toThrow('attempt limit');
+    expect(() => f.store.reserve(f.company.id, 0, identity)).not.toThrow();
+    expect(f.store.usage(f.company.id).filter(call => call.meetingTurnId === lease.id)).toHaveLength(7);
+    expect(() => f.store.reserve(f.company.id, 0.91, identity)).toThrow('Meeting budget');
+    expect(f.store.meetingAccounting(f.company.id, f.meeting.id)).toMatchObject({ reservedUsd: 0.1, unknownCalls: 7 });
     expect(() => f.store.reserve(f.company.id, 0, { agentId: f.ceo.id, provider: 'fixture', model: 'fixture' })).not.toThrow();
+    f.room.revokeFloor({ kind: 'director' }, f.meeting.id, 'Stop speaking');
+    expect(() => f.store.reserve(f.company.id, 0, identity)).toThrow('speaking permission');
   });
   it('admits meetings only under the same scheduler ownership lease as other jobs', async () => {
     const f = fixture(),

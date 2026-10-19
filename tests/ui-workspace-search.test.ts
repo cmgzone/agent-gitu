@@ -211,7 +211,7 @@ describe('Full-page workspace search', () => {
     const script = UI_HTML.split('<script>')[1]!.split('</script>')[0]!;
     const stream = {}, userBubble = vi.fn((text: string) => ({ text })), appendLive = vi.fn();
     const context = createContext({ S: { sessions: { run: { nodes: {} } } }, $: () => stream,
-      updateApproach: vi.fn(), toolActivityBoundary: () => false, mascotPulse: vi.fn(),
+      syncWorkingActivity: vi.fn(), updateApproach: vi.fn(), toolActivityBoundary: () => false, mascotPulse: vi.fn(),
       settlePendingUserMessage: () => false, retireAbubble: vi.fn(), closeThought: vi.fn(),
       userBubble, appendLive, stickScroll: vi.fn(), document: { createElement: vi.fn() } });
     new Script(script.slice(script.indexOf('  function appendEvent('), script.indexOf('  function composerTodoItems('))).runInContext(context);

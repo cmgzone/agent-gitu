@@ -40,12 +40,13 @@ describe('dynamic widget apps', () => {
     restored.archiveWidget(second.id,true);
     expect(restored.widgets(other.id)[0]?.data['html']).toBe('<p>Weather</p>');
   });
-  it('bounds app and state sizes, strips dangerous state keys, and validates named capabilities', () => {
+  it('preserves large app payloads while stripping dangerous keys and validating named capabilities', () => {
     expect(widgetState(JSON.parse('{"__proto__":{"polluted":true},"count":1}'))).toEqual({count:1});
-    expect(() => widgetState({text:'x'.repeat(128001)})).toThrow('128 KB');
-    expect(() => sanitizeWidgetApp({html:'x'.repeat(512001)})).toThrow('512 KB');
+    expect(widgetState({text:'x'.repeat(128001)})).toEqual({text:'x'.repeat(128001)});
+    expect(sanitizeWidgetApp({html:'x'.repeat(512001)})['html']).toBe('x'.repeat(512001));
+    expect(() => widgetState([])).toThrow('must be an object');
     const app = sanitizeWidgetApp({html:'<p>App</p>',sources:[{name:'feed',url:'https://example.com/feed',refreshMs:1},{name:'bad',url:'javascript:run()'}],actions:[{name:'update',label:'Update',prompt:'Update my report'},{name:'bad name',prompt:'bad'}]});
-    expect(app['sources']).toEqual([{name:'feed',url:'https://example.com/feed',refreshMs:5000}]);
+    expect(app['sources']).toEqual([{name:'feed',url:'https://example.com/feed',refreshMs:1}]);
     expect(app['actions']).toEqual([{name:'update',label:'Update',prompt:'Update my report'}]);
   });
   it('injects the state/live-data SDK before app scripts and enforces opaque isolation', () => {

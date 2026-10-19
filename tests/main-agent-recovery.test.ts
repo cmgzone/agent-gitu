@@ -183,9 +183,9 @@ describe('main agent automatic recovery', () => {
     // extension windows (with a change-of-approach nudge each time) and only
     // then is reported as stuck — a bound, never a silent loop.
     const paused = await waitSession(base, runId, s => s.status === 'failed', 60000);
-    expect(paused.error).toContain("Exhausted the task's effort budget");
-    expect(paused.error).toContain('extension(s) granted');
-    expect(paused.error).toContain('Retry with effort=high');
+    expect(paused.error).toContain('Recovery stopped after 4 extension(s) without new verifiable progress');
+    expect(paused.error).toContain('Work and evidence are saved');
+    expect(paused.error).toContain('continuation needs a different concrete approach');
     expect(paused.modelRecovery).toBeUndefined();
     expect(paused.report?.status).not.toBe('complete');
   }, 60000);

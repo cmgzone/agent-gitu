@@ -1,7 +1,8 @@
 import { runInNewContext } from 'node:vm';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { UI_HTML } from '../src/server/ui.js';
 import { UI_MODEL_CATALOG_JS } from '../src/server/ui-model-catalog.js';
+import { COMPANY_JS } from '../src/server/ui-companies.js';
 
 const provider = (ids: string[]) => ({
   id: 'test-provider', label: 'Test', usable: true, defaultModel: 'configured-default',
@@ -82,5 +83,28 @@ describe('model catalog loading and provider filtering', () => {
     expect(UI_HTML).toContain("catalogSelectOptions(undefined, sel)");
     expect(UI_HTML).toContain('catalogSelectOptions(pid, d.model, query)');
     expect(() => new Function(UI_HTML.split('<script>')[1]!.split('</script>')[0]!)).not.toThrow();
+  });
+
+  it('shares an in-flight catalog request with the Company lead picker', async () => {
+    let resolve!: (value: unknown) => void;
+    const api = vi.fn(() => new Promise(r => { resolve = r; }));
+    const { context, helpers } = harness(api);
+    const fields = {
+      '#companyLeadProvider': { value: '', innerHTML: '' },
+      '#companyLeadModel': { value: '', innerHTML: '', disabled: true },
+      '#companyLeadCatalogStatus': { textContent: '' },
+    };
+    const body = { isConnected: true, querySelector: (selector: keyof typeof fields) => fields[selector] };
+    const start = COMPANY_JS.indexOf('  function companyLeadPicker(');
+    const end = COMPANY_JS.indexOf('  async function companyWizard(', start);
+    const picker = runInNewContext('var Companies = { id: "company" };\n' + COMPANY_JS.slice(start, end) + '\ncompanyLeadPicker;', context);
+    const pending = helpers.loadModelCatalog();
+    picker(body, 'test-provider', 'new');
+    expect(api).toHaveBeenCalledExactlyOnceWith('/api/models');
+    resolve({ providers: [provider(['new'])] });
+    await pending;
+    expect(fields['#companyLeadProvider'].value).toBe('test-provider');
+    expect(fields['#companyLeadModel']).toMatchObject({ value: 'new', disabled: false });
+    expect(fields['#companyLeadCatalogStatus'].textContent).toBe('');
   });
 });

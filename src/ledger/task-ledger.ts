@@ -27,12 +27,12 @@ import type {
 } from '../types.js';
 import type { SkillIdentity } from '../skills/skills.js';
 
-/** Raw step spec accepted by setPlan/appendPlan; bounded on ingest. */
+/** Raw step spec accepted by setPlan/appendPlan without truncating user requirements. */
 export interface PlanStepInput {
   description: string;
   verification: string;
   area?: PlanArea;
-  /** Raw todo texts for this step (≤8 kept, each ≤140 chars). */
+  /** Complete todo texts for this step. */
   subtasks?: string[];
 }
 

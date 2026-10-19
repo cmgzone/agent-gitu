@@ -1,5 +1,5 @@
 import { createContext, Script } from 'node:vm';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { UI_HTML } from '../src/server/ui.js';
 import { REASONING_STREAM_JS } from '../src/server/ui-activity.js';
 
@@ -7,7 +7,7 @@ describe('main chat reasoning stream', () => {
   function renderer() {
     const sink = { textContent: '', hidden: true, scrollHeight: 200, scrollTop: 180, clientHeight: 20 };
     const sessions = { run: { nodes: {} as Record<string, unknown> } };
-    const context = createContext({ S: { sessions }, $: (id: string) => id === 'workingReasoning' ? sink : {}, setWorking: () => {}, stickScroll: () => {} });
+    const context = createContext({ S: { sessions }, $: (id: string) => id === 'workingReasoning' ? sink : {}, syncWorkingActivity: vi.fn(), setWorking: () => {}, stickScroll: () => {} });
     const start = UI_HTML.indexOf('  function appendEvent(runId, ev) {');
     const end = UI_HTML.indexOf('\n  }', start);
     new Script(REASONING_STREAM_JS + '\n' + UI_HTML.slice(start, end + 4)).runInContext(context);
@@ -23,6 +23,7 @@ describe('main chat reasoning stream', () => {
     u.append(2, 'activity reasoning-delta "Reviewing <img src=x>"');
     expect(u.sink.textContent).toBe('Reviewing <img src=x> evidence.');
     expect(u.sink.hidden).toBe(false);
+    expect(u.context.syncWorkingActivity).toHaveBeenCalledTimes(3);
     u.append(4, 'activity reasoning-reset');
     expect(u.sink.textContent).toBe('');
     expect(u.sink.hidden).toBe(true);

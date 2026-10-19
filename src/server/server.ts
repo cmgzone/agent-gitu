@@ -1,3 +1,4 @@
+import { connectedAppsRoutes } from './routes/connected-apps.js';
 import http from 'node:http';
 import { logger, errorMetadata } from './logger.js';
 import { healthRoute } from './routes/health.js';
@@ -39,7 +40,7 @@ import { AppAuth } from './app-auth.js';
 import { authPage } from './ui-auth.js';
 import { modelIcon } from './model-icons.js';
 import { ComposioConnections } from '../connections/composio.js';
-import { MAIL_PROVIDERS, MailConnections } from '../connections/mail.js';
+import { MailConnections } from '../connections/mail.js';
 import { InboxArrivalJournal, MailInboxMonitor, type InboxArrival } from '../connections/mail-inbox-monitor.js';
 import { ConnectionsHub, MAIL_SERVICE_SLUG, isNativeMailRead } from '../connections/provider.js';
 import { COMPANION_DIR, companionAsset } from './mobile-companion.js';
@@ -5447,162 +5448,15 @@ export class GituServer {
     }
 
     if (path.startsWith('/api/connected-apps')) {
-      if (!this.isSameOrigin(req)) { this.sendJson(res, 403, { error: 'cross-origin request rejected' }); return; }
-      res.setHeader('Cache-Control', 'no-store');
-      try {
-        if (path === '/api/connected-apps' && method === 'GET') {
-          const store = this.cowork(), agentId = url.searchParams.get('agentId') ?? '';
-          if (agentId && !store.getAgent(agentId)) { this.sendJson(res, 404, { error: 'Teammate not found.' }); return; }
-          const appPermissions = store.appPermissions().filter(permission => !agentId || permission.agentId === agentId).map(permission => ({ ...permission, agentName: store.getAgent(permission.agentId)?.name ?? 'Teammate' }));
-          const agents = store.listAgents().map(agent => ({ id: agent.id, name: agent.name }));
-          // Mailboxes are provider-neutral, so they are reported separately: the
-          // page can connect any mailbox before an OAuth provider key exists.
-          let mailboxes: Awaited<ReturnType<MailConnections['accounts']>> = [], mailUnavailable = false;
-          try { mailboxes = await this.mailConnections.accounts(); }
-          catch { mailUnavailable = true; }
-          const mailboxAssigned = (accountId: string) => Boolean(agentId) && store.appAccountAssigned(agentId, MAIL_SERVICE_SLUG, accountId);
-          const mail = {
-            accounts: mailboxes.filter(account => mailboxAssigned(account.id)),
-            available: mailboxes.filter(account => !mailboxAssigned(account.id)),
-            providers: MAIL_PROVIDERS,
-            keyStorage: this.mailConnections.setup.keyStorage,
-            watching: this.mailInboxMonitor?.statuses() ?? {},
-          };
-          if (!agentId) { const availableAccounts = url.searchParams.get('available') === 'true' ? (await this.appHub.accounts()).filter(account => account.status === 'ACTIVE' && !account.disabled) : []; this.sendJson(res, 200, { configured: this.connectedApps.configured, ...this.connectedApps.setup, agents, agentId, accounts: [], availableAccounts, services: [], appPermissions, mail, accountStatusIncomplete: mailUnavailable || this.appHub.accountStatusIncomplete }); return; }
-          const allAccounts = await this.appHub.accounts();
-          const accountStatusIncomplete = mailUnavailable || this.appHub.accountStatusIncomplete;
-          if (accountStatusIncomplete) for (const saved of store.appConnections(agentId)) {
-            if (!allAccounts.some(account => account.id === saved.accountId)) allAccounts.push({ id: saved.accountId, toolkit: saved.service, status: 'UNKNOWN', disabled: true });
-          }
-          const accounts = allAccounts.filter(account => store.appAccountAssigned(agentId, account.toolkit, account.id));
-          const availableAccounts = allAccounts.filter(account => !store.appAccountAssigned(agentId, account.toolkit, account.id) && account.status === 'ACTIVE' && !account.disabled);
-          const connectedToolkits = new Set([...accounts.filter(account => account.status === 'ACTIVE' && !account.disabled).map(account => account.toolkit), ...mail.accounts.map(account => account.toolkit)]);
-          const requests = store.listConversations().flatMap(conversation => store.requests(conversation.id)).filter(request => request.agentId === agentId && request.appConnection);
-          for (const request of requests) {
-            if (request.status !== 'open' || !connectedToolkits.has(request.appConnection!.service)) continue;
-            store.resolveRequest(request.id, 'accepted', 'Connected');
-            this.publishCowork(request.conversationId);
-            if (request.appConnection?.resumeWork) {
-              const instruction = `${request.appConnection.name} is now connected specifically for you. Continue the user's pending task that needed this app; use connected_apps list to select your active account. If no pending task needs it, acknowledge the connection briefly.`;
-              if (!this.dispatchAgentWake(request.conversationId, request.agentId, instruction)) store.addFollowUp({ conversationId: request.conversationId, agentId: request.agentId, note: instruction, dueAt: new Date().toISOString() });
-            }
-          }
-          let catalog: Awaited<ReturnType<ComposioConnections['catalog']>> = { services: [] }, catalogUnavailable = false;
-          if (url.searchParams.get('statusOnly') !== 'true' && this.connectedApps.configured) {
-            try { catalog = await this.connectedApps.catalog(url.searchParams.get('search') ?? '', url.searchParams.get('cursor') ?? undefined); }
-            catch { catalogUnavailable = true; }
-          }
-          // Provider catalog status is global; derive each card from this teammate's assignments.
-          const services = catalog.services.map(service => {
-            const account = accounts.find(account => account.toolkit === service.slug && account.status === 'ACTIVE' && !account.disabled) ?? accounts.find(account => account.toolkit === service.slug);
-            return { ...service, status: account?.status, accountId: account?.id };
-          });
-          this.sendJson(res, 200, { configured: this.connectedApps.configured, ...this.connectedApps.setup, ...catalog, services, agents, agentId, accounts, availableAccounts, appPermissions, requests, mail, accountStatusIncomplete, catalogUnavailable }); return;
-        }
-        const permissionMatch = path.match(/^\/api\/connected-apps\/permissions\/([\w-]+)$/);
-        if (permissionMatch && method === 'DELETE') {
-          const removed = this.cowork().revokeAppPermission(permissionMatch[1]!);
-          this.sendJson(res, removed ? 200 : 404, removed ? { ok: true } : { error: 'App permission not found.' }); return;
-        }
-        if (path === '/api/connected-apps/configure' && method === 'POST') {
-          if (!AppAuth.local(req) && (!this.appAuth.secure(req) || !this.appAuth.authenticated(req))) { this.sendJson(res, 403, { error: 'Integration setup requires an authenticated HTTPS session.' }); return; }
-          const body = await this.readBody(req);
-          await this.connectedApps.configure(String(body['apiKey'] ?? ''));
-          this.sendJson(res, 200, { ok: true }); return;
-        }
-        if (path === '/api/connected-apps/mail/detect' && method === 'GET') {
-          // The browser cannot resolve SRV records or read another host's
-          // autoconfig document, so server discovery for self-hosted mail hosts
-          // (Mailcow and friends) runs here. It only suggests endpoints: nothing
-          // is authenticated or stored, and no credential is ever involved.
-          try {
-            const address = url.searchParams.get('address') ?? '';
-            this.sendJson(res, 200, { address, ...(await this.mailConnections.detect({ address, fresh: url.searchParams.get('fresh') === 'true' })) }); return;
-          } catch (error) {
-            this.sendJson(res, 400, { error: error instanceof Error ? error.message : 'Enter a valid email address.' }); return;
-          }
-        }
-        if (path === '/api/connected-apps/mail' && method === 'POST') {
-          if (!AppAuth.local(req) && (!this.appAuth.secure(req) || !this.appAuth.authenticated(req))) { this.sendJson(res, 403, { error: 'Mailbox setup requires an authenticated HTTPS session.' }); return; }
-          const body = await this.readBody(req);
-          const store = this.cowork(), agentId = String(body['agentId'] ?? '');
-          if (!store.getAgent(agentId)) { this.sendJson(res, 400, { error: 'Choose a teammate for this mailbox.' }); return; }
-          try {
-            const result = await this.mailConnections.connect(body);
-            store.assignAppAccount(agentId, MAIL_SERVICE_SLUG, result.account.id);
-            this.sendJson(res, 200, result); return;
-          } catch (error) {
-            // These messages are written for the user and never include the password.
-            this.sendJson(res, 400, { error: error instanceof Error ? error.message : 'Could not connect this mailbox.' }); return;
-          }
-        }
-        if (path === '/api/connected-apps/mail/remove' && method === 'POST') {
-          const body = await this.readBody(req);
-          const accountId = String(body['accountId'] ?? '');
-          const store = this.cowork();
-          store.revokeAppAccountPermissions(accountId);
-          try { await this.mailConnections.remove(accountId); this.sendJson(res, 200, { ok: true }); return; }
-          catch (error) { this.sendJson(res, 400, { error: error instanceof Error ? error.message : 'Could not remove this mailbox.' }); return; }
-        }
-        if (path === '/api/connected-apps/mail/rediscover' && method === 'POST') {
-          if (!AppAuth.local(req) && (!this.appAuth.secure(req) || !this.appAuth.authenticated(req))) { this.sendJson(res, 403, { error: 'Mailbox setup requires an authenticated HTTPS session.' }); return; }
-          const body = await this.readBody(req);
-          try {
-            const result = await this.mailConnections.rediscover(String(body['accountId'] ?? ''));
-            void this.mailInboxMonitor?.refresh();
-            this.sendJson(res, 200, result); return;
-          } catch (error) { this.sendJson(res, 400, { error: error instanceof Error ? error.message : 'Could not verify published mail settings.' }); return; }
-        }
-        if (path === '/api/connected-apps/mail/watch' && method === 'POST') {
-          const body = await this.readBody(req);
-          if (typeof body['enabled'] !== 'boolean') { this.sendJson(res, 400, { error: 'enabled must be a boolean' }); return; }
-          try {
-            this.mailConnections.setInboxWatch(String(body['accountId'] ?? ''), body['enabled']);
-            void this.mailInboxMonitor?.refresh();
-            this.sendJson(res, 200, { ok: true }); return;
-          } catch { this.sendJson(res, 400, { error: 'Choose a connected mailbox.' }); return; }
-        }
-        if (path === '/api/connected-apps/connect' && method === 'POST') {
-          const body = await this.readBody(req);
-          const store = this.cowork(), agentId = String(body['agentId'] ?? ''), service = String(body['service'] ?? '');
-          if (!store.getAgent(agentId)) { this.sendJson(res, 400, { error: 'Choose a teammate for this connection.' }); return; }
-          const request = body['requestId'] ? store.getRequest(String(body['requestId'])) : undefined;
-          if (body['requestId'] && (!request?.appConnection || request.agentId !== agentId || request.appConnection.service !== service || request.status === 'dismissed')) { this.sendJson(res, 400, { error: 'This app recommendation belongs to another teammate or service.' }); return; }
-          if (!this.connectedApps.configured) { this.sendJson(res, 400, { code: 'COMPOSIO_SETUP_REQUIRED', error: 'Set up Composio in Connections, then click Connect for this app.' }); return; }
-          let link: { url: string; accountId: string };
-          try { link = await this.connectedApps.connect(service); }
-          catch (error) {
-            // Never expose SDK errors: they may contain credentials or request data.
-            const status = error && typeof error === 'object' ? Number((error as { status?: unknown }).status) : 0;
-            const detail = status === 401 || status === 403
-              ? 'Composio denied sign-in. Check that your Composio key allows session management and tool execution, then retry in Connections.'
-              : 'Composio could not create a sign-in link for this app. Check its authentication setup in Composio and retry from Connections.';
-            this.sendJson(res, 502, { code: 'APP_SIGN_IN_FAILED', error: detail }); return;
-          }
-          store.assignAppAccount(agentId, service, link.accountId);
-          this.sendJson(res, 200, link); return;
-        }
-        if (path === '/api/connected-apps/assign' && method === 'POST') {
-          const body = await this.readBody(req);
-          const store = this.cowork(), agentId = String(body['agentId'] ?? ''), accountId = String(body['accountId'] ?? '');
-          if (!store.getAgent(agentId)) { this.sendJson(res, 400, { error: 'Choose a teammate for this connection.' }); return; }
-          const account = (await this.appHub.accounts()).find(account => account.id === accountId && account.status === 'ACTIVE' && !account.disabled);
-          if (!account) { this.sendJson(res, 400, { error: 'Choose an active account belonging to you.' }); return; }
-          store.assignAppAccount(agentId, account.toolkit, account.id);
-          this.sendJson(res, 200, { ok: true }); return;
-        }
-        if (path === '/api/connected-apps/disconnect' && method === 'POST') {
-          const body = await this.readBody(req);
-          const store = this.cowork(), agentId = String(body['agentId'] ?? '');
-          if (!store.getAgent(agentId)) { this.sendJson(res, 400, { error: 'Choose a teammate for this connection.' }); return; }
-          // Removing one teammate's access must preserve another teammate's account.
-          store.unassignAppAccount(agentId, String(body['accountId'] ?? ''));
-          this.sendJson(res, 200, { ok: true }); return;
-        }
-        this.sendJson(res, 404, { error: 'Connection route not found.' }); return;
-      } catch {
-        this.sendJson(res, 502, { error: 'Could not reach or authorize the service. Check your Composio setup and try again.' }); return;
-      }
+      await connectedAppsRoutes(req, res, url, method, {
+        isSameOrigin: request => this.isSameOrigin(request), appAuth: this.appAuth,
+        cowork: () => this.cowork(), appHub: this.appHub, connectedApps: this.connectedApps,
+        mailConnections: this.mailConnections, mailInboxMonitor: this.mailInboxMonitor,
+        readBody: request => this.readBody(request), sendJson: (response, status, data) => this.sendJson(response, status, data),
+        publishCowork: conversationId => this.publishCowork(conversationId),
+        dispatchAgentWake: (conversationId, agentId, instruction) => this.dispatchAgentWake(conversationId, agentId, instruction),
+      });
+      return;
     }
 
     // API surface is protected for ALL methods (GET included — read endpoints

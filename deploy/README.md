@@ -10,6 +10,14 @@ Mount a dedicated persistent volume at `/data`. It holds the account password
 hash, projects, SQLite state, chats, and settings. Keep the same volume on
 redeployments. The agent runs as the unprivileged `node` user.
 
+During a rolling update, the new container can share `/data` with the previous
+container while it passes `/healthz`. Its company scheduler stays in standby
+without recovering or executing the old container's jobs. It retries every five
+seconds and takes over after the old scheduler releases its lease, or after the
+60-second lease expires following a crash. Keep health checks enabled; `curl`
+is included in the image. Do not delete the scheduler lock or reset the data
+volume to resolve a deployment failure.
+
 Connection credentials and profile metadata use atomic saves with protected
 `.bak` files in `/data/Settings`. Back up this directory as private data.
 Unreadable files recover from the last good backup; if both copies are damaged,

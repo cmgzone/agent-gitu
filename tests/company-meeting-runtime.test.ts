@@ -204,10 +204,10 @@ describe('Company meetings through the existing durable queue', () => {
         preparation,
       );
     f.store.acquireScheduler('another-process');
-    expect(() => coordinator.start()).toThrow('Another company scheduler');
+    expect(() => coordinator.start()).not.toThrow();
     expect(preparation).not.toHaveBeenCalled();
     f.store.releaseScheduler('another-process');
-    coordinator.start();
+    coordinator.tick();
     expect(preparation).toHaveBeenCalledWith(true);
     coordinator.stop();
     await coordinator.drain();

@@ -59,7 +59,7 @@ export const COWORK_CSS = String.raw`
   .cw-desktop-handoff b { margin-right: 10px; }
   .cw-desktop-dialog [data-control] { background: #7660ba; border-color: #a993e1; }
   .cw-desktop-dialog .box:fullscreen { width: 100vw; height: 100dvh; max-height: none; border-radius: 0; }
-  @media(max-width:720px) { .cw-desktop-status { flex-basis: 100%; } .cw-desktop-dialog .chip { display: none; } }
+  @media(max-width:720px),(pointer:coarse) { .cw-desktop-dialog { padding:0;align-items:stretch; }.cw-desktop-dialog .box { width:100%;height:var(--desktop-visible-height,100dvh);max-height:var(--desktop-visible-height,100dvh);max-width:none;margin:0;border:0;border-radius:0; }.cw-desktop-dialog .bar { padding:6px max(8px,env(safe-area-inset-right)) 6px max(8px,env(safe-area-inset-left));gap:6px; }.cw-desktop-dialog .bar b { min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px; }.cw-desktop-dialog .btn { min-height:44px;min-width:44px;font-size:13px;touch-action:manipulation; }.cw-desktop-toolbar { flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;padding:6px 8px max(6px,env(safe-area-inset-bottom)); }.cw-desktop-toolbar::-webkit-scrollbar{display:none}.cw-desktop-toolbar > * { flex:none;white-space:nowrap; }.cw-desktop-dialog [data-control] { order:-1;position:sticky;left:0;z-index:1;background:var(--text);color:var(--bg); }.cw-desktop-status { min-width:0;max-width:180px;overflow:hidden;text-overflow:ellipsis; }.cw-desktop-dialog .chip { display:none; }.cw-desktop-handoff { font-size:12px;padding:6px 10px;max-height:64px;overflow:auto; } }
   .cw-message-refs { margin-top: 6px; overflow-wrap: anywhere; }
   .cw-references > span { max-width: 280px; }
 
@@ -3425,6 +3425,10 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     var status = modal.querySelector('[data-status]'), start = modal.querySelector('[data-start]'), stop = modal.querySelector('[data-stop]');
     var controller = new AbortController(), timer = null, closed = false, pending = false, queuedAction = null, host = agent.useHostComputer, userControl = false, controlPending = false, controlRevision = 0, lastComputer = null, streamState = 'Connecting to live desktop…';
     var endpoint = '/api/cowork/agents/' + encodeURIComponent(agentId) + '/computer';
+    function sizeDesktop() {
+      var height = window.visualViewport?.height || window.innerHeight;
+      if (height > 0) modal.style.setProperty('--desktop-visible-height', Math.round(height) + 'px');
+    }
     function disconnect() {
       screen.hidden = true; screen.removeAttribute('src'); streamState = 'Connecting to live desktop…';
     }
@@ -3433,6 +3437,8 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       closed = true; clearTimeout(timer); controller.abort(); disconnect(); modal.remove();
       document.removeEventListener('keydown', keydown);
       window.removeEventListener('message', desktopMessage);
+      window.removeEventListener('resize', sizeDesktop);
+      window.visualViewport?.removeEventListener('resize', sizeDesktop);
       if (cw.closeDesktop === close) cw.closeDesktop = null;
       if (cw.desktopSession?.agentId === agentId) cw.desktopSession = null;
       cwRenderComputerActivity();
@@ -3455,6 +3461,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       controlPending = true; controlRevision++;
       modal.querySelector('[data-control]').disabled = true;
       status.textContent = action === 'take-control' ? 'Giving you control…' : 'Returning control to the agent…';
+      if (action === 'return-control') screen.contentWindow?.postMessage({ type: 'gitu-desktop-control', action: 'privacy' }, window.location.origin);
       try {
         var d = await api(endpoint, { method: 'POST', signal: controller.signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: action }) });
         if (closed) return false;
@@ -3539,6 +3546,9 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     };
     document.addEventListener('keydown', keydown);
     window.addEventListener('message', desktopMessage);
+    window.addEventListener('resize', sizeDesktop);
+    window.visualViewport?.addEventListener('resize', sizeDesktop);
+    sizeDesktop();
     var cached = (cw.computers || []).find(function (computer) { return computer.agentId === agentId; });
     if (cached?.state === 'running' && !agent.useHostComputer) update(cached);
     refresh(); modal.querySelector('[data-close]').focus();

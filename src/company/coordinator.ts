@@ -20,10 +20,9 @@ export class CompanyCoordinator {
   start(): void {
     if (this.timer) return;
     this.stopped = false;
-    if (!this.store.acquireScheduler(this.owner)) throw new Error('Another company scheduler is using this data directory.');
-    this.leaseHeld = true;
-    this.store.recover();
-    this.prepare(true);
+    // Rolling deployments temporarily share a data volume with the old
+    // container. Serve HTTP in standby; only the lease owner may recover or
+    // admit work. Retry until the old process drains or its lease expires.
     this.tick();
     this.timer = setInterval(() => this.tick(), 5000);
     this.timer.unref();
@@ -42,11 +41,17 @@ export class CompanyCoordinator {
     if (this.stopped) return;
     try {
       if (!this.store.acquireScheduler(this.owner)) {
+        if (!this.leaseHeld) return;
         this.leaseHeld = false;
         this.stop();
         this.onLeaseLost();
         this.onError(new Error('Company scheduler ownership was lost. Work has been interrupted.'));
         return;
+      }
+      if (!this.leaseHeld) {
+        this.store.recover();
+        this.prepare(true);
+        this.leaseHeld = true;
       }
       const companies = this.store.companies().filter((c) => c.state === 'running');
       this.prepare(false);

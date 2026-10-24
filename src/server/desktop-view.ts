@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import path from 'node:path';
+import { DESKTOP_TOUCH_CSS, DESKTOP_TOUCH_HTML, DESKTOP_TOUCH_JS } from './desktop-touch.js';
 
 function resolveDesktopAssets(): string {
   // @novnc/novnc only exports its bare specifier ('./core/rfb.js'), so './package.json'
@@ -23,12 +24,15 @@ export function desktopAsset(relative: string): string | undefined {
 
 export function desktopView(agentId: string,companyId?:string,chromeProfile=false): string {
   const endpoint = JSON.stringify(chromeProfile?'/api/chrome-profile/vnc':(companyId?'/api/companies/'+encodeURIComponent(companyId):'/api')+'/cowork/agents/' + encodeURIComponent(agentId) + '/computer/vnc');
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Shared desktop</title><style>html,body,#screen{width:100%;height:100%;margin:0;overflow:hidden;background:#151821}#message{position:fixed;inset:0;display:grid;place-items:center;color:#c3c6d1;font:14px system-ui;pointer-events:none}#message[hidden]{display:none}</style></head><body><div id="screen"></div><div id="message">Connecting to live desktop…</div><script type="module">
+  const inputEndpoint = JSON.stringify(chromeProfile?'/api/chrome-profile':(companyId?'/api/companies/'+encodeURIComponent(companyId):'/api')+'/cowork/agents/' + encodeURIComponent(agentId) + '/computer');
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Shared desktop</title><style>html,body,#screen{width:100%;height:100%;margin:0;overflow:hidden;background:#151821}#message{position:fixed;inset:0;display:grid;place-items:center;color:#c3c6d1;font:14px system-ui;pointer-events:none}#message[hidden]{display:none}${DESKTOP_TOUCH_CSS}</style></head><body><div id="screen"></div><div id="message">Connecting to live desktop…</div>${DESKTOP_TOUCH_HTML}<script type="module">
 import RFB from '/api/desktop-assets/core/rfb.js';
 let rfb, activeSocket, timer, frames, monitorTimer, closed=false;
 const message=document.getElementById('message'),screen=document.getElementById('screen');
 const options=new URLSearchParams(location.search),diagnostic=options.has('diagnostic');
 const preview=options.get('preview')==='1';
+const humanInputEndpoint=${inputEndpoint};
+${DESKTOP_TOUCH_JS}
 // Leave update scheduling to noVNC. A timed stream of extra requests can
 // keep legacy servers processing input instead of drawing the next frame.
 const pipeline=diagnostic&&options.get('pipeline')==='1';
@@ -45,7 +49,8 @@ if(diagnostic){
 function status(state){parent.postMessage({type:'gitu-desktop',state},location.origin);}
 function stopFrames(){clearInterval(frames);frames=undefined;}
 addEventListener('message',event=>{
-  if(!preview&&event.origin===location.origin&&event.source===parent&&event.data?.type==='gitu-desktop-control'&&event.data.action==='viewport'&&!closed){if(rfb){rfb.scaleViewport=event.data.scale!==false;rfb.clipViewport=event.data.scale===false;rfb.dragViewport=event.data.pan===true&&event.data.scale===false;}return;}
+  if(!preview&&event.origin===location.origin&&event.source===parent&&event.data?.type==='gitu-desktop-control'&&event.data.action==='privacy'&&!closed){touchControls?.privateEnd();return;}
+  if(!preview&&event.origin===location.origin&&event.source===parent&&event.data?.type==='gitu-desktop-control'&&event.data.action==='viewport'&&!closed){if(touchControls)touchControls.viewport(event.data.scale!==false,event.data.pan===true);else if(rfb){rfb.scaleViewport=event.data.scale!==false;rfb.clipViewport=event.data.scale===false;rfb.dragViewport=event.data.pan===true&&event.data.scale===false;}return;}
   if(preview||event.origin!==location.origin||event.source!==parent||event.data?.type!=='gitu-desktop-control'||event.data.action!=='focus'||closed)return;
   // A modifier held by the previous controller must not affect the next user's typing.
   for(const [keysym,code] of [[0xffe1,'ShiftLeft'],[0xffe2,'ShiftRight'],[0xffe3,'ControlLeft'],[0xffe4,'ControlRight'],[0xffe9,'AltLeft'],[0xffea,'AltRight'],[0xffeb,'MetaLeft'],[0xffec,'MetaRight']])rfb?.sendKey(keysym,code,false);
@@ -64,7 +69,7 @@ function connect(){
   rfb.scaleViewport=true; rfb.resizeSession=false; rfb.viewOnly=preview;
   rfb.qualityLevel=6; rfb.compressionLevel=2;
   rfb.addEventListener('connect',()=>{
-    message.hidden=true;status('Live · Shared desktop');if(!preview)rfb.focus();
+    message.hidden=true;status('Live · Shared desktop');touchControls?.connected();if(!preview&&!touchControls?.typing)rfb.focus();
     // LibVNCServer has no ContinuousUpdates extension. Keep incremental
     // requests ready so every redraw does not wait another network round trip.
     // These ten-byte requests send pixels only when the desktop changes.
@@ -77,10 +82,10 @@ function connect(){
       requests++;
     },40);
   });
-  rfb.addEventListener('disconnect',()=>{stopFrames();if(closed)return;message.hidden=false;message.textContent='Reconnecting to desktop…';status('Reconnecting…');timer=setTimeout(connect,2000);});
+  rfb.addEventListener('disconnect',()=>{stopFrames();touchControls?.disconnected();if(closed)return;message.hidden=false;message.textContent='Reconnecting to desktop…';status('Reconnecting…');timer=setTimeout(connect,2000);});
   rfb.addEventListener('securityfailure',()=>{message.hidden=false;message.textContent='Desktop access was rejected.';status(message.textContent);});
 }
-addEventListener('pagehide',()=>{closed=true;clearTimeout(timer);clearInterval(monitorTimer);stopFrames();rfb?.disconnect();});
+addEventListener('pagehide',()=>{closed=true;touchControls?.close();clearTimeout(timer);clearInterval(monitorTimer);stopFrames();rfb?.disconnect();});
 connect();
 </script></body></html>`;
 }

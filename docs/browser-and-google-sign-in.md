@@ -18,6 +18,14 @@ Teammates receive computer identity metadata so they can distinguish the install
 
 The Chrome view includes private typing controls for mobile. Use **Zoom** for larger desktop controls, **Pan** to move around the enlarged desktop, and turn Pan off to click. **Fit** returns to the whole desktop. **Back to agent browser** keeps Chrome open; **Stop** releases the running computer while retaining its profile. Existing owner authentication, HTTPS/WSS or SSH transport, and logout/session-expiry revocation protect the viewer.
 
+### Use the computer from a touchscreen
+
+Phone and tablet viewers show a touch toolbar with **Zoom**, **Pan**, **Keyboard** and **Help**. Tap to click, hold to right-click, drag an item with one finger, and drag with two fingers to scroll. Zoom switches to the desktop's full resolution with Pan enabled so a one-finger movement moves your view. Turn Pan off to click or drag items, or press Fit to see the whole desktop again. These controls adjust the viewer without resizing or restarting the remote desktop.
+
+Tap a field in the desktop, then **Keyboard** to use the phone keyboard. This takes private control and pauses the agent before enabling Send. Text is masked, supports phone composition/IME input, and clears after sending; it goes through authenticated owner input controls rather than chat, model history or clipboard synchronization. Tab, Enter, Backspace, Escape and Address shortcuts are included. Control changes, disconnects, backgrounding and closing the viewer clear private drafts. Closing Keyboard leaves you in private control until you explicitly return it.
+
+The regular desktop dialog fills the mobile viewport, keeps its control button reachable, and adjusts when the phone keyboard changes the available height. Chrome's teammate/chat choices collapse on touchscreens to leave room for the desktop. The same viewer serves local Docker, SSH and hosted computers, including Android's installed app; no APK rebuild is required for these server UI changes.
+
 ## Work across the installation computer and SSH server
 
 A personal teammate with shell access can combine both computers in one task. Its ordinary file tools and `run_command` stay on the assigned computer; `ssh_exec` takes the exact saved connection ID and runs on that server. `computer_status` and the turn instructions list available saved SSH targets without exposing credentials or opening connections. SSH results identify the server used. Remote files can be inspected or changed through authorized SSH commands; this does not silently move local files, change the default computer, or transfer sign-ins. Coding remains Main Agent Gitu's responsibility and deployment follows the existing owner instructions. Company agents cannot use the owner's personal SSH credentials.

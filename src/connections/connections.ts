@@ -1852,17 +1852,30 @@ export class ConnectionRegistry {
     if (!usable.length) throw new ConnectionInvocationError('not-run','Configure a documented authenticated API GET endpoint to verify this connection. Homepage, health and rejected routes cannot verify credentials. Correct the test with update_connection and validationOperationId; reuse the saved key.','CONFIG_INVALID');
     let result: ConnectionInvocationResult | undefined;
     let operation: ConnectionOperation | undefined;
+    let rejectedAuthentication: ConnectionInvocationError | undefined;
     const attempts=usable.slice(0,3);
     for (const candidate of attempts) {
       try { result = await this.invoke(profile.id,candidate.id); operation = candidate; break; }
       catch (error) {
-        // A real 401 on the corrected registered route must not send the next
-        // private key form back to the old, missing route.
-        if(error instanceof ConnectionInvocationError && error.authEvident)this.rememberValidationTest(profile,candidate,validationToken);
-        if (!(error instanceof ConnectionInvocationError) || error.state !== 'CONNECTED_MISSING_OPERATION') throw error;
-        // A missing route is a configuration error. Try a different already
-        // registered GET; never invent endpoints or retry a write or a 401.
-        if (candidate === attempts.at(-1)) throw error;
+        if (!(error instanceof ConnectionInvocationError)) throw error;
+        if (error.state === 'AUTH_INVALID' && error.outcome === 'sent-rejected') {
+          // Verification endpoints can reject a token type that resource APIs
+          // accept (for example, Cloudflare account tokens on the user API).
+          // Try a different registered authenticated GET, never the same route.
+          rejectedAuthentication ??= error;
+          if (candidate !== attempts.at(-1)) {
+            this.recordAuth(id, 'unknown', 'One API route rejected authentication; checking another registered authenticated read before requesting a replacement key.', validationToken);
+            continue;
+          }
+        }
+        if (error.authEvident) this.rememberValidationTest(profile,candidate,validationToken);
+        if (error.state !== 'CONNECTED_MISSING_OPERATION' || candidate === attempts.at(-1)) {
+          if (error.state === 'CONNECTED_MISSING_OPERATION' && rejectedAuthentication) {
+            this.recordAuth(id, 'invalid', rejectedAuthentication.message, validationToken);
+            throw rejectedAuthentication;
+          }
+          throw error;
+        }
       }
     }
     if (!result || !operation) throw new Error('No registered API test succeeded.');

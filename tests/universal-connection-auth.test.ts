@@ -45,12 +45,55 @@ it('repairs a rejected test with an existing corrected GET without requesting an
  expect(loadStoredKeys()['GITU_CONNECTION_ACCOUNT']).toBe(f.draft.token);
 });
 
-it('skips previously rejected paths across aliases and never falls back after a 401',async()=>{
+it('skips previously rejected paths across aliases and retains a definitive 401 when no alternative exists',async()=>{
  const f=fixture();const missing={...f.draft.operations[0]!,path:'/wrong'};f.registry.save({...f.draft,operations:[missing,{...missing,id:'wrong-alias'},f.draft.operations[1]!]});
  f.registry.recordRejectedOperation('account',{operationId:'another-name',method:'GET',path:'/wrong',capability:'account.read',status:404});
  const network=vi.spyOn(globalThis,'fetch').mockResolvedValue(new Response('{}',{status:401}));
  await expect(f.registry.validate('account')).rejects.toMatchObject({state:'AUTH_INVALID'});expect(network).toHaveBeenCalledOnce();expect(String(network.mock.calls[0]?.[0])).toBe('https://api.example.test/api/me');
  expect(f.registry.get('account')?.operations.find(op=>op.id==='validate')?.path).toBe('/api/me');
+});
+
+it.each(['cloudflare','custom-api'])('repairs a token-type verification mismatch using a registered resource read for %s',async provider=>{
+ const f=fixture(provider);
+ f.registry.save({...f.draft,operations:[{...f.draft.operations[0]!,path:'/client/v4/user/tokens/verify'},{...f.draft.operations[1]!,path:'/client/v4/zones'}]});
+ const network=vi.spyOn(globalThis,'fetch').mockImplementation(async(url,options)=>{
+  expect(new Headers(options?.headers).get('authorization')).toBe('Bearer '+f.draft.token);
+  return new Response(String(url).endsWith('/zones')?'{"success":true,"result":[{"name":"example.test"}]}':'{"errors":[{"message":"Invalid API Token"}]}',{status:String(url).endsWith('/zones')?200:401});
+ });
+ expect((await f.registry.validate('account')).status).toBe(200);
+ expect(f.registry.authStateOf('account').status).toBe('valid');
+ expect(new ConnectionRegistry().get('account')?.operations.find(o=>o.id==='validate')?.path).toBe('/client/v4/zones');
+ expect(loadStoredKeys()['GITU_CONNECTION_ACCOUNT']).toBe(f.draft.token);
+ network.mockClear();
+ expect((await new ConnectionRegistry().validate('account')).status).toBe(200);
+ expect(network).toHaveBeenCalledOnce();
+});
+
+it('bounds authentication recovery to distinct registered reads and never invokes writes',async()=>{
+ const f=fixture();
+ f.registry.save({...f.draft,operations:[{...f.draft.operations[0]!,path:'/verify'},...Array.from({length:4},(_,i)=>({...f.draft.operations[1]!,id:'read-'+i,path:'/resource/'+i})),{id:'write',label:'Write',capability:'account.read',method:'POST',path:'/items',risk:'reversible-write'}]});
+ const network=vi.spyOn(globalThis,'fetch').mockImplementation(async()=>new Response('{}',{status:401}));
+ await expect(f.registry.validate('account')).rejects.toMatchObject({state:'AUTH_INVALID',authEvident:true});
+ expect(network).toHaveBeenCalledTimes(3);
+ expect(new Set(network.mock.calls.map(call=>String(call[0]))).size).toBe(3);
+ expect(network.mock.calls.every(call=>call[1]?.method==='GET')).toBe(true);
+ expect(f.registry.authStateOf('account').status).toBe('invalid');
+});
+
+it.each([403,404,503])('keeps recovery evidence separate when an alternative resource returns HTTP %s',async status=>{
+ const f=fixture();
+ f.registry.save({...f.draft,operations:[{...f.draft.operations[0]!,path:'/verify'},f.draft.operations[1]!]});
+ vi.spyOn(globalThis,'fetch').mockImplementation(async url=>new Response('{}',{status:String(url).endsWith('/verify')?401:status}));
+ await expect(f.registry.validate('account')).rejects.toMatchObject({state:status===403?'CONNECTED_INSUFFICIENT_SCOPE':status===404?'AUTH_INVALID':'PROVIDER_UNREACHABLE'});
+ expect(f.registry.authStateOf('account').status).toBe(status===403?'valid':status===404?'invalid':'unknown');
+});
+
+it('does not probe alternative APIs after an explicit expired or revoked credential response',async()=>{
+ const f=fixture();
+ f.registry.save({...f.draft,operations:[{...f.draft.operations[0]!,path:'/verify'},f.draft.operations[1]!]});
+ const network=vi.spyOn(globalThis,'fetch').mockImplementation(async()=>new Response('{"message":"Token revoked"}',{status:401}));
+ await expect(f.registry.validate('account')).rejects.toMatchObject({state:'AUTH_EXPIRED'});
+ expect(network).toHaveBeenCalledOnce();
 });
 
 it('retries one transient connection failure for a safe GET and never replays a write',async()=>{

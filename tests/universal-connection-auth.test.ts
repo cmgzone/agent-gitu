@@ -50,6 +50,17 @@ it('skips previously rejected paths across aliases and never falls back after a 
  f.registry.recordRejectedOperation('account',{operationId:'another-name',method:'GET',path:'/wrong',capability:'account.read',status:404});
  const network=vi.spyOn(globalThis,'fetch').mockResolvedValue(new Response('{}',{status:401}));
  await expect(f.registry.validate('account')).rejects.toMatchObject({state:'AUTH_INVALID'});expect(network).toHaveBeenCalledOnce();expect(String(network.mock.calls[0]?.[0])).toBe('https://api.example.test/api/me');
+ expect(f.registry.get('account')?.operations.find(op=>op.id==='validate')?.path).toBe('/api/me');
+});
+
+it('retries one transient connection failure for a safe GET and never replays a write',async()=>{
+ const f=fixture();const error=Object.assign(new TypeError('fetch failed'),{cause:{code:'UND_ERR_CONNECT_TIMEOUT'}});
+ const network=vi.spyOn(globalThis,'fetch').mockRejectedValueOnce(error).mockResolvedValueOnce(new Response('{}',{status:200}));
+ expect((await f.registry.invokeRead('account','me')).ok).toBe(true);expect(network).toHaveBeenCalledTimes(2);
+ const operation={id:'write',label:'Create item',capability:'account.read',method:'POST' as const,path:'/items',risk:'reversible-write' as const};
+ f.registry.save({...f.registry.get('account')!,operations:[...f.registry.get('account')!.operations,operation]});
+ network.mockReset().mockRejectedValue(error);
+ await expect(f.registry.invoke('account','write',{})).rejects.toMatchObject({state:'PROVIDER_UNREACHABLE',outcome:'sent-unknown'});expect(network).toHaveBeenCalledOnce();
 });
 
 it('coalesces stale authentication checks and does not repeatedly retry a freshly rejected key', async () => {

@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { EnvHttpProxyAgent } from 'undici';
 import { loadStoredKeys, removeStoredKey, setStoredKey } from '../llm/keys.js';
 import { readCredentialJson, updateCredentialJson } from '../llm/credential-file.js';
 import type { PrerequisiteProvider, ProviderCapabilityResult, ProviderRecoveryInput, ProviderRecoveryResult } from '../recovery/prerequisites.js';
@@ -9,6 +10,12 @@ import { ensureGituHome } from '../workspace/home.js';
 import { readConnectionResponse } from './response-data.js';
 import { searchApi, SearchApiError } from './web-search.js';
 import { catalogCapabilityDeclared, catalogOperation, catalogOperationFor, catalogProvider } from './catalog.js';
+const connectionDispatcher = new EnvHttpProxyAgent({connect:{timeout:30_000}});
+/** Use the configured proxy and connection timeout for API calls and their documentation. */
+export function fetchWithApiTransport(url:string|URL,options:RequestInit):Promise<Response> {
+  // Node and packaged Undici ship separate types for the same dispatch contract.
+  return fetch(url,{...options,dispatcher:connectionDispatcher} as unknown as RequestInit);
+}
 import {
   UniversalDiscoveryEngine,
   DiscoveryFactCache,
@@ -1186,23 +1193,31 @@ export class ConnectionRegistry {
       throw new ConnectionInvocationError('not-run', 'Saved connection needs its credential added again.', 'AUTH_INVALID', true);
     }
 
-    let response: Response;
-    try {
-      response = await fetch(url, {
+    let response: Response | undefined;
+    const attempts = operation.method === 'GET' && operation.risk === 'read' ? 2 : 1;
+    for (let attempt=0;attempt<attempts;attempt++) {
+      try {
+        const options: RequestInit = {
         method: operation.method,
         headers: { ...extraHeaders, accept: 'application/json', ...connectionAuthHeaders(profile, token), ...(encoded ? { 'content-type': 'application/json' } : {}) },
         ...(encoded ? { body: encoded } : {}),
         redirect: 'error',
-        signal: AbortSignal.timeout(15_000),
-      });
-    } catch {
+        signal: AbortSignal.timeout(45_000),
+        };
+        response = await fetchWithApiTransport(url,options);break;
+      } catch (error) {
+        const code=(error as {cause?:{code?:string}})?.cause?.code;
+        const current=this.get(id);
+        if (attempt+1<attempts && ['UND_ERR_CONNECT_TIMEOUT','ECONNRESET','EAI_AGAIN','ETIMEDOUT'].includes(code??'') && current?.baseUrl===profile.baseUrl && JSON.stringify(current.auth)===JSON.stringify(profile.auth) && loadStoredKeys()[keyRef(id)]?.trim()===token) continue;
       this.updateValidation(profile.id, 'failed', token);
       throw new ConnectionInvocationError(
         'sent-unknown',
         'Connection request did not complete (network, timeout, or redirect). The provider may or may not have received it — verify provider state before any retry.',
         'PROVIDER_UNREACHABLE',
       );
+      }
     }
+    if (!response) throw new ConnectionInvocationError('sent-unknown','Connection request did not complete.','PROVIDER_UNREACHABLE');
 
     if (!response.ok) {
       this.updateValidation(profile.id, 'failed', token);
@@ -1807,6 +1822,17 @@ export class ConnectionRegistry {
     };
   }
 
+  private rememberValidationTest(profile:ConnectionProfile,operation:ConnectionOperation,validationToken:string|undefined):void {
+    if(operation.id==='validate')return;
+    this.withProfile(profile.id,current=>{
+      if(loadStoredKeys()[keyRef(profile.id)]?.trim()!==validationToken||current.baseUrl!==profile.baseUrl||JSON.stringify(current.auth)!==JSON.stringify(profile.auth))return;
+      const initial=profile.operations.find(op=>op.id==='validate'),currentTest=current.operations.find(op=>op.id==='validate');
+      if(JSON.stringify(initial)!==JSON.stringify(currentTest))return;
+      current.operations=[...current.operations.filter(op=>op.id!=='validate'),{...operation,id:'validate',label:'Test connection'}];
+    });
+    try{const current=this.get(profile.id);if(current)this.syncGlobalSkill(current);}catch{/* The request outcome is already known. */}
+  }
+
   async validate(id: string): Promise<ConnectionInvocationResult> {
     const profile = this.get(id);
     const validationToken = loadStoredKeys()[keyRef(id)]?.trim();
@@ -1830,6 +1856,9 @@ export class ConnectionRegistry {
     for (const candidate of attempts) {
       try { result = await this.invoke(profile.id,candidate.id); operation = candidate; break; }
       catch (error) {
+        // A real 401 on the corrected registered route must not send the next
+        // private key form back to the old, missing route.
+        if(error instanceof ConnectionInvocationError && error.authEvident)this.rememberValidationTest(profile,candidate,validationToken);
         if (!(error instanceof ConnectionInvocationError) || error.state !== 'CONNECTED_MISSING_OPERATION') throw error;
         // A missing route is a configuration error. Try a different already
         // registered GET; never invent endpoints or retry a write or a 401.
@@ -1842,16 +1871,7 @@ export class ConnectionRegistry {
       this.updateValidation(id, 'failed', validationToken);
       throw new ConnectionInvocationError('sent-rejected', 'Validation returned a web/login page. Configure an authenticated API GET endpoint; the credential has not been verified.', 'CONFIG_INVALID');
     }
-    if (operation.id !== 'validate') {
-      const verified = operation;
-      this.withProfile(id,current => {
-        if (loadStoredKeys()[keyRef(id)]?.trim() !== validationToken || current.baseUrl !== profile.baseUrl || JSON.stringify(current.auth) !== JSON.stringify(profile.auth)) return;
-        const initial = profile.operations.find(op => op.id === 'validate'), currentTest = current.operations.find(op => op.id === 'validate');
-        if (JSON.stringify(initial) !== JSON.stringify(currentTest)) return;
-        current.operations = [...current.operations.filter(op => op.id !== 'validate'),{...verified,id:'validate',label:'Test connection'}];
-      });
-      try { const current = this.get(id); if (current) this.syncGlobalSkill(current); } catch { /* verification already succeeded */ }
-    }
+    this.rememberValidationTest(profile,operation,validationToken);
     return result;
   }
 

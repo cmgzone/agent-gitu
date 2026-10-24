@@ -12,7 +12,7 @@ import type { CriterionSpec, MemoryRetrievalContext, SpecialistHandoff, ToolResu
 import { errorSignature, excerpt, sha256 } from '../util.js';
 import { normalizeUrl, type BrowserBridge } from '../browser/browser.js';
 import { collectBrowserEvidence, collectViewportEvidence, formatBrowserEvidence, formatResponsiveEvidence, resolveViewports } from '../browser/evidence.js';
-import { ConnectionRegistry, normalizeConnectionDocumentationUrl, type ConnectionOperation } from '../connections/connections.js';
+import { ConnectionRegistry, normalizeConnectionDocumentationUrl, fetchWithApiTransport, type ConnectionOperation } from '../connections/connections.js';
 import { connectionResponses, type ConnectionResponseQuery } from '../connections/response-data.js';
 import type { ConnectedAppsProvider } from '../connections/provider.js';
 import { commandTimeout, commandWaitMs, deadline, pollWaitMs } from './command-timeout.js';
@@ -2180,7 +2180,7 @@ export async function toolWebFetch(ctx: ToolContext, params: Record<string, unkn
   const maxBodyBytes = Infinity;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error(`timed out after ${timeoutMs}ms`)), timeoutMs);
-  return fetch(url, { headers: { 'user-agent': 'hermes-agent/0.1' }, redirect: 'follow', signal: controller.signal })
+  return fetchWithApiTransport(url, { headers: { 'user-agent': 'hermes-agent/0.1' }, redirect: 'follow', signal: controller.signal })
     .then(async (res) => {
       if (!res.ok) return fail(`web_fetch: HTTP ${res.status} for ${url}`);
       const type = res.headers.get('content-type') ?? '';

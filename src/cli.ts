@@ -602,6 +602,7 @@ async function main(): Promise<void> {
       }
       console.log('Open this secure Codex sign-in link in a browser:');
       console.log(`  ${started.authUrl}`);
+      if (started.userCode) console.log(`Enter this one-time code on that page: ${started.userCode}`);
       console.log('\nWaiting up to five minutes for sign-in to complete…');
       const completed = started.loginId ? await waitForCodexSubscriptionLogin(started.loginId) : false;
       if (!completed) {

@@ -348,6 +348,7 @@ describe('HermesServer', () => {
         alreadySignedIn: false,
         authUrl: 'https://chatgpt.com/auth/example',
         loginId: 'login-test',
+        userCode: 'TEST-1234',
       }),
     });
     servers.push(server);
@@ -366,7 +367,7 @@ describe('HermesServer', () => {
 
     const login = await fetch(`${base}/api/chatgpt/login`, { method: 'POST' });
     expect(login.status).toBe(202);
-    await expect(login.json()).resolves.toMatchObject({ url: 'https://chatgpt.com/auth/example', loginId: 'login-test' });
+    await expect(login.json()).resolves.toMatchObject({ url: 'https://chatgpt.com/auth/example', loginId: 'login-test', userCode: 'TEST-1234' });
   });
 
   it('runs a task end-to-end over HTTP with live state', async () => {

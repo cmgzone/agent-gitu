@@ -10,6 +10,13 @@ Mount a dedicated persistent volume at `/data`. It holds the account password
 hash, projects, SQLite state, chats, and settings. Keep the same volume on
 redeployments. The agent runs as the unprivileged `node` user.
 
+Codex subscription sign-in uses the persistent `CODEX_HOME=/data/.codex` folder.
+Keep this directory private and retain it with the volume: Codex stores and
+refreshes its own OAuth credentials there. Hosted sign-in displays an OpenAI
+device authorization link and one-time code; complete it in your own browser.
+No localhost callback or API key is required. If device authorization is disabled,
+enable device code login in your ChatGPT security or workspace settings.
+
 During a rolling update, the new container can share `/data` with the previous
 container while it passes `/healthz`. Its company scheduler stays in standby
 without recovering or executing the old container's jobs. It retries every five

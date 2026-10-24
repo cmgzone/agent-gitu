@@ -110,7 +110,7 @@ import { fetchWidgetSource, widgetAppDocument, WIDGET_APP_CSP, widgetState } fro
 import { readOnboarding, saveOnboarding } from './onboarding.js';
 import { evaluateChiefAuthority, type ChiefAuthorityPolicy, type ChiefResolverContext } from '../cowork/chief-resolver.js';
 import type { ToolContext } from '../tools/tools.js';
-import { codexSubscriptionInfo, startCodexSubscriptionLogin, type CodexLoginStart, type CodexSubscriptionInfo } from '../llm/codex-subscription.js';
+import { codexSubscriptionInfo, codexSubscriptionLoginPending, startCodexSubscriptionLogin, type CodexLoginStart, type CodexSubscriptionInfo } from '../llm/codex-subscription.js';
 import { ProviderError, allProviderSpecs, fetchModelCatalog, freeModelFallback, modelCapabilityTier, modelMetadataFor, peekModelCatalog, providerKey, resolveImageSupport, resolveLlm, usageCostUsd } from '../llm/providers.js';
 import { resolveModelCatalog } from '../llm/resolved-model-catalog.js';
 import { resolveEmbedder } from '../llm/providers.js';
@@ -7342,7 +7342,7 @@ export class GituServer {
 
     if (method === 'GET' && path === '/api/chatgpt/auth') {
       const subscription = await (this.config.codexSubscriptionInfo ?? codexSubscriptionInfo)();
-      this.sendJson(res, 200, { ...subscription, loggedIn: subscription.signedIn, loginPending: false });
+      this.sendJson(res, 200, { ...subscription, loggedIn: subscription.signedIn, loginPending: codexSubscriptionLoginPending() });
       return;
     }
 

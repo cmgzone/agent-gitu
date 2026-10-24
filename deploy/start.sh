@@ -6,6 +6,11 @@ if [[ ! "${AGENT_GITU_PUBLIC_ORIGIN:-}" =~ ^https://[^/]+$ ]]; then
 fi
 mkdir -p "$AGENT_GITU_HOME/Workspace"
 chown node:node "$AGENT_GITU_HOME" "$AGENT_GITU_HOME/Workspace"
+# Codex owns its OAuth cache and refreshes it here across container replacements.
+export CODEX_HOME="${CODEX_HOME:-$AGENT_GITU_HOME/.codex}"
+mkdir -p "$CODEX_HOME"
+chown node:node "$CODEX_HOME"
+chmod 700 "$CODEX_HOME"
 # Earlier root-run deployment checks created this state directory as root.
 # Repair only desktop control files, leaving all other persisted data intact.
 mkdir -p "$AGENT_GITU_HOME/Cowork/computer-control"

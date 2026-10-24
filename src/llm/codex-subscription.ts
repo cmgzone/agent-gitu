@@ -63,13 +63,16 @@ export interface CodexLoginStart {
   alreadySignedIn: boolean;
   authUrl?: string;
   loginId?: string;
+  userCode?: string;
 }
 
 let infoCache: { expiresAt: number; value: CodexSubscriptionInfo } | undefined;
+let loginStart: Promise<CodexLoginStart> | undefined;
 let activeLogin: {
   app: AppServerConnection;
   loginId: string;
   authUrl: string;
+  userCode?: string;
   completion: Promise<boolean>;
   settle: (completed: boolean) => void;
   timeout: NodeJS.Timeout;
@@ -340,22 +343,38 @@ export async function codexSubscriptionInfo(refresh = false): Promise<CodexSubsc
   }
 }
 
-/** Begin Codex's supported browser OAuth flow. Tokens stay in Codex's own store. */
+export function codexSubscriptionLoginPending(): boolean {
+  return Boolean(activeLogin);
+}
+
+/** Hosted apps use device authorization; desktops retain the local browser flow. */
 export async function startCodexSubscriptionLogin(): Promise<CodexLoginStart> {
+  if (loginStart) return loginStart;
+  const work = beginCodexSubscriptionLogin();
+  loginStart = work;
+  try { return await work; }
+  finally { if (loginStart === work) loginStart = undefined; }
+}
+
+async function beginCodexSubscriptionLogin(): Promise<CodexLoginStart> {
+  if (activeLogin) return { alreadySignedIn: false, authUrl: activeLogin.authUrl, loginId: activeLogin.loginId, ...(activeLogin.userCode ? { userCode: activeLogin.userCode } : {}) };
   const current = await codexSubscriptionInfo(true);
   if (current.signedIn) return { alreadySignedIn: true };
-  if (activeLogin) return { alreadySignedIn: false, authUrl: activeLogin.authUrl, loginId: activeLogin.loginId };
 
   const app = await AppServerConnection.connect();
   try {
-    const started = await app.request('account/login/start', {
+    const hosted = Boolean(process.env['AGENT_GITU_PUBLIC_ORIGIN']);
+    const started = await app.request('account/login/start', hosted ? { type: 'chatgptDeviceCode' } : {
       type: 'chatgpt',
       useHostedLoginSuccessPage: true,
       appBrand: 'chatgpt',
     });
-    const authUrl = typeof started['authUrl'] === 'string' ? started['authUrl'] : undefined;
+    const authUrl = hosted
+      ? (typeof started['verificationUrl'] === 'string' ? started['verificationUrl'] : undefined)
+      : (typeof started['authUrl'] === 'string' ? started['authUrl'] : undefined);
+    const userCode = hosted && typeof started['userCode'] === 'string' ? started['userCode'] : undefined;
     const loginId = typeof started['loginId'] === 'string' ? started['loginId'] : undefined;
-    if (!authUrl || !loginId) throw new Error('Codex did not return a ChatGPT sign-in link.');
+    if (!authUrl || !loginId || (hosted && !userCode)) throw new Error('Codex did not return complete ChatGPT sign-in instructions.');
     let settle: (completed: boolean) => void = () => {};
     const completion = new Promise<boolean>((resolve) => { settle = resolve; });
     const timeout = setTimeout(() => {
@@ -365,7 +384,7 @@ export async function startCodexSubscriptionLogin(): Promise<CodexLoginStart> {
       pending.app.close();
       pending.settle(false);
     }, LOGIN_TIMEOUT_MS);
-    activeLogin = { app, authUrl, loginId, completion, settle, timeout };
+    activeLogin = { app, authUrl, loginId, ...(userCode ? { userCode } : {}), completion, settle, timeout };
     const unsubscribe = app.onNotification((method, params) => {
       if (method !== 'account/login/completed' || params['loginId'] !== loginId) return;
       unsubscribe();
@@ -375,10 +394,10 @@ export async function startCodexSubscriptionLogin(): Promise<CodexLoginStart> {
       app.close();
       if (completed) {
         clearTimeout(completed.timeout);
-        completed.settle(true);
+        completed.settle(params['success'] === true);
       }
     });
-    return { alreadySignedIn: false, authUrl, loginId };
+    return { alreadySignedIn: false, authUrl, loginId, ...(userCode ? { userCode } : {}) };
   } catch (err) {
     app.close();
     throw err;

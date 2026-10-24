@@ -131,7 +131,11 @@ export const ONBOARDING_JS = String.raw`
       setupOperation(async function () {
         var result = await api('/api/chatgpt/login', { method: 'POST' });
         if (result.url) window.open(result.url, '_blank', 'noopener');
-        setupMessage('Complete sign-in in your browser, then choose Check sign-in.');
+        setupMessage(result.userCode ? 'Enter code ' + result.userCode + ' on the OpenAI sign-in page, then choose Check sign-in.' : 'Complete sign-in in your browser, then choose Check sign-in.');
+        if (result.url) {
+          var link = document.createElement('a'); link.href = result.url; link.target = '_blank'; link.rel = 'noopener'; link.textContent = ' Open sign-in page';
+          $('setupMessage').appendChild(link);
+        }
       });
     };
     root.querySelectorAll('[name=setupMode]').forEach(function (input) { input.onchange = function () { setupState.mode = input.value; $('setupNext').textContent = 'Open ' + (input.value === 'cowork' ? 'Cowork' : 'Coding'); }; });

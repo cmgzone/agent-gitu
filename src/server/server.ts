@@ -2688,6 +2688,34 @@ export class GituServer {
     return mainRepositories([...selected,...runs,...listProjects().map(project=>project.path)],selected,this.companies().companies().map(company=>this.companies().workspace(company.id)));
   }
 
+  private coworkComputerContext(agent: CoworkAgent, conversationId?: string): string {
+    const host = agent.useHostComputer;
+    const assigned = {
+      mode: host ? 'installation-host' : agent.cloudConnectionId ? 'remote-linux-desktop' : 'private-linux-desktop',
+      platform: host ? process.platform : 'linux',
+      cloudConnectionId: host ? undefined : agent.cloudConnectionId,
+      desktopToolsSupported: !host,
+      browser: host ? 'host-agent-browser' : 'private-agent-browser',
+      regularDesktopBrowser: host ? undefined : 'Use desktop_screenshot/desktop_input on this assigned desktop after the owner returns control; browse uses a separate agent profile.',
+    };
+    // The owner's Chrome profile is a different security principal. Share
+    // identity/state metadata with personal teammates, never its page or keys.
+    const knownProfile = this.chromeProfile ?? this.config.chromeProfile;
+    const profile = agent.companyId ? undefined : (knownProfile ?? (this.appAuth.configured ? this.ownerChromeProfile() : undefined))?.snapshot();
+    const ownerChrome = profile ? {
+      kind: 'owner-private-chrome',
+      location: profile.locations.find(location => location.id === profile.locationId)?.label,
+      lastObservedState: knownProfile && profile.state !== 'stopped' ? profile.state : 'not checked',
+      agentAccess: profile.handoff?.agentId === agent.id && profile.handoff.conversationId === conversationId,
+      sharedWith: profile.handoff?.agentName,
+      websiteLogin: 'not inspected; separate profile',
+    } : undefined;
+    const sshComputers = !agent.companyId && agent.allowShell ? this.cloudServers().filter(server => server.id !== 'hosted' && server.hasCredential).map(server => ({ connectionId: server.id, label: server.label, tool: 'ssh_exec' })) : undefined;
+    return 'CURRENT COMPUTER AND BROWSER IDENTITY (cached runtime metadata):\n' + JSON.stringify({ assigned, ownerChrome, sshComputers }) +
+      '\nCROSS-COMPUTER TASKS: You can use your assigned computer and authorized saved SSH servers within the SAME task. run_command and file tools use the assigned computer above; ssh_exec with an exact connectionId uses that SSH server and its normal SSH filesystem, not the private desktop container. Inspect SSH identity/paths before changes. Read or edit remote files through authorized SSH commands; exchange only files the user requested, never transfer browser profiles or credentials. The tool results identify the SSH target. Do not change your saved computer assignment to alternate between these tools. On a hosted Gitu installation, the installation host is the hosted server, not the user’s phone or disconnected PC. Preserve the user’s requested read/write scope and existing coding/deployment ownership. A saved SSH connection does not grant access to private Chrome; that still requires the explicit handoff to this chat.' +
+      '\nUse these identities when answering browser/computer questions. A connected host browser is not evidence of access to a VPS desktop. A running browser does not prove website sign-in. If ownerChrome.agentAccess is true, the owner handed the EXISTING Chrome desktop to THIS chat: use desktop_screenshot and desktop_input to inspect and operate that same window; browse still uses a different profile. Files and shell stay on your assigned computer. Stop for private sign-in or verification and ask the owner to take private control, then return it. If agentAccess is false, acknowledge that their login belongs to that separate session; do not claim they are logged out or ask them to repeat sign-in in the wrong browser. Ask them to use Return to teammate in that Chrome view, choosing this chat. Never use shell commands, profile files or debugging ports to bypass private control. Browser sign-in is separate from API/app connections: stay on the current browser request instead of checking an unrelated API.';
+  }
+
   private coworkToolContext(agent: CoworkAgent): ToolContext {
     let context = this.coworkTools.get(this.coworkRuntimeKey(agent.id,agent.companyId));
     if (!context) {
@@ -2705,6 +2733,8 @@ export class GituServer {
         connections: agent.companyId?this.companyConnections(agent.companyId):this.connections,
         connectedApps: this.appHub,
         browser: this.browserImpl(agent.id),
+        computerContext: conversationId => this.coworkComputerContext({ ...agent, ...this.cowork().getAgent(agent.id), companyId: agent.companyId }, conversationId),
+        sharedBrowserTool: agent.companyId ? undefined : async (tool, params, signal, conversationId) => (this.chromeProfile ?? this.config.chromeProfile)?.agentExecute(agent.id, tool, params, signal, conversationId),
       };
       this.coworkTools.set(this.coworkRuntimeKey(agent.id,agent.companyId), context);
     }
@@ -6235,6 +6265,7 @@ export class GituServer {
         return;
       }
       if (path === '/api/auth/logout' && method === 'POST') {
+        if(this.appAuth.authenticated(req))(this.chromeProfile ?? this.config.chromeProfile)?.takeControl();
         this.appAuth.logout(req, res); this.sendJson(res, 200, { ok: true }); return;
       }
       this.sendJson(res, 404, { error: 'Authentication route not found.' }); return;
@@ -6252,7 +6283,10 @@ export class GituServer {
       if(!this.isSameOrigin(req)){this.sendJson(res,403,{error:'cross-origin request rejected'});return;}
       try {
         const profile=this.ownerChromeProfile();
-        if(method==='GET'&&path==='/api/chrome-profile'){this.sendJson(res,200,await profile.refresh());return;}
+        if(method==='GET'&&path==='/api/chrome-profile'){
+          const store=this.cowork(),agents=store.listAgents().filter(agent=>!agent.companyId&&agent.allowShell).map(agent=>({id:agent.id,name:agent.name,chiefOfStaff:agent.chiefOfStaff,conversations:store.listConversations().filter(conv=>conv.kind==='dm'&&conv.memberIds.length===1&&conv.memberIds[0]===agent.id).sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt)).map(conv=>({id:conv.id,title:conv.title}))}));
+          this.sendJson(res,200,{...await profile.refresh(),handoffAgents:agents});return;
+        }
         if(method==='GET'&&(path.endsWith('/view')||path.endsWith('/screen'))){
           if(path.endsWith('/screen')&&profile.snapshot().state!=='running'){this.sendJson(res,409,{error:'Start Chrome before opening its screen.'});return;}
           const html=path.endsWith('/screen')?desktopView('',undefined,true):chromeProfileView(url.searchParams.get('returnTo')??undefined);
@@ -6263,6 +6297,20 @@ export class GituServer {
           const body=await this.readBody(req);
           if(body['action']==='start')profile.start(body['locationId']);
           else if(body['action']==='stop')await profile.stop();
+          else if(body['action']==='take-control')profile.takeControl();
+          else if(body['action']==='share'){
+            const store=this.cowork(),agent=store.getAgent(String(body['agentId']??'')),conversation=store.getConversation(String(body['conversationId']??''));
+            if(!agent||agent.companyId||!agent.allowShell||!conversation||conversation.kind!=='dm'||conversation.memberIds.length!==1||conversation.memberIds[0]!==agent.id)throw new Error('Choose a personal teammate with desktop permission and its direct chat.');
+            const previous=profile.snapshot().handoff;
+            profile.shareWithAgent(agent.id,agent.name,conversation.id,()=>{
+              const currentAgent=store.getAgent(agent.id),currentChat=store.getConversation(conversation.id);
+              return this.appAuth.authenticated(req)&&!!currentAgent?.allowShell&&!currentAgent.companyId&&currentChat?.kind==='dm'&&currentChat.memberIds.length===1&&currentChat.memberIds[0]===agent.id;
+            });
+            if(previous?.agentId!==agent.id||previous.conversationId!==conversation.id){
+              const note='CHROME DESKTOP HANDOFF from the owner to this chat. The existing Chrome session on the selected server is now shared with you. Call computer_status, then desktop_screenshot to inspect the current window; use desktop_input for that same browser. Do not open a different browse profile or ask for another login. Continue only the browser work the user already requested here. If the owner took control back, wait quietly for another handoff. Sign-in and verification steps stay private to the owner.';
+              if(!this.dispatchAgentWake(conversation.id,agent.id,note,'web'))store.addFollowUp({agentId:agent.id,conversationId:conversation.id,note,dueAt:nowIso()});
+            }
+          }
           else if(body['action']==='input'){if(!body['input']||typeof body['input']!=='object'||Array.isArray(body['input']))throw new Error('Chrome keyboard input is required.');await profile.input(body['input'] as Record<string,unknown>);}
           else throw new Error('Unknown Chrome profile action.');
           this.sendJson(res,202,profile.snapshot());return;

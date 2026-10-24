@@ -6,9 +6,13 @@ import { PassThrough } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ChromeProfileSession, type ChromeProfileTarget } from '../src/browser/chrome-profile.js';
 import type { ComputerStatus } from '../src/cowork/computer.js';
+import type { ToolResult } from '../src/types.js';
 
 const roots: string[] = [];
-afterEach(() => {
+const profiles: ChromeProfileSession[] = [];
+afterEach(async () => {
+  for (const profile of profiles.splice(0)) await profile.stop();
+  vi.useRealTimers();
   roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true }));
 });
 function fixture() {
@@ -33,13 +37,66 @@ function fixture() {
     }),
     refreshStatus: vi.fn(async () => computer.status()),
     desktopInput: vi.fn(async () => ({ ok: true, output: 'Opened.' })),
+    execute: vi.fn(async (_tool: string, _params: Record<string, unknown>, _signal?: AbortSignal): Promise<ToolResult> => ({ ok: true, output: 'Existing Chrome desktop observed.' })),
   };
   const factory = vi.fn(() => computer),
     resolve = vi.fn((id: string) => ({ ...target, id }));
   const profile = new ChromeProfileSession(root, 'owner-id', () => locations, resolve, factory);
+  profiles.push(profile);
   return { root, profile, computer, factory, resolve, target, socket, locations };
 }
 describe('private owner Chrome profiles', () => {
+  it('lends the existing desktop only to the chosen teammate and chat through GUI tools', async () => {
+    const f=fixture();f.profile.start('hosted');await vi.waitFor(()=>expect(f.profile.snapshot().state).toBe('running'));
+    expect(await f.profile.agentExecute('pa','desktop_screenshot',{},undefined,'chat')).toBeUndefined();
+    f.profile.shareWithAgent('pa','P.A','chat',()=>true);
+    expect(f.profile.snapshot()).toMatchObject({control:'agent',handoff:{agentId:'pa',conversationId:'chat'}});
+    expect(f.computer.setControl).toHaveBeenLastCalledWith('shared');
+    expect(await f.profile.agentExecute('other','desktop_screenshot',{},undefined,'chat')).toBeUndefined();
+    expect(await f.profile.agentExecute('pa','desktop_screenshot',{},undefined,'other-chat')).toBeUndefined();
+    expect(f.computer.execute).not.toHaveBeenCalled();
+    expect((await f.profile.agentExecute('pa','desktop_screenshot',{},undefined,'chat'))?.ok).toBe(true);
+    expect(f.computer.execute).toHaveBeenCalledWith('desktop_screenshot',{},expect.any(AbortSignal));
+    expect((await f.profile.agentExecute('pa','run_command',{command:'cat profile'},undefined,'chat'))?.ok).toBe(false);
+    expect((await f.profile.agentExecute('pa','desktop_input',{action:'launch',app:'terminal'},undefined,'chat'))?.ok).toBe(false);
+    expect((await f.profile.agentExecute('pa','desktop_input',{action:'launch',app:'browser'},undefined,'chat'))?.ok).toBe(false);
+    expect(f.computer.execute).toHaveBeenCalledTimes(1);
+    await expect(f.profile.input({action:'type',text:'private'})).rejects.toThrow('Take private control');
+    expect(readFileSync(path.join(f.root,'location.json'),'utf8')).not.toContain('"pa"');
+    f.profile.takeControl();expect(f.profile.snapshot().handoff).toBeUndefined();
+    expect(await f.profile.agentExecute('pa','desktop_input',{action:'click',x:10,y:10},undefined,'chat')).toBeUndefined();
+    await f.profile.input({action:'type',text:'private'});
+  });
+
+  it('aborts an in-flight observation and discards it when the owner takes control', async () => {
+    const f=fixture();f.profile.start('hosted');await vi.waitFor(()=>expect(f.profile.snapshot().state).toBe('running'));
+    f.profile.shareWithAgent('pa','P.A','chat',()=>true);
+    let finish!:(result:ToolResult)=>void;
+    f.computer.execute.mockImplementationOnce(async()=>new Promise<ToolResult>(resolve=>{finish=resolve;}));
+    const observation=f.profile.agentExecute('pa','desktop_screenshot',{},undefined,'chat');
+    const signal=f.computer.execute.mock.calls[0]![2]!;
+    f.profile.takeControl();expect(signal.aborted).toBe(true);
+    finish({ok:true,output:'Private page after control changed'});
+    const result=await observation;expect(result?.ok).toBe(false);expect(result?.output).not.toContain('Private page');
+  });
+
+  it('revokes an expired owner session without giving another teammate the profile', async () => {
+    const f=fixture();f.profile.start('hosted');await vi.waitFor(()=>expect(f.profile.snapshot().state).toBe('running'));
+    let authorized=true;vi.useFakeTimers();f.profile.shareWithAgent('pa','P.A','chat',()=>authorized);
+    authorized=false;await vi.advanceTimersByTimeAsync(1000);
+    expect(f.profile.snapshot()).toMatchObject({control:'user'});expect(f.profile.snapshot().handoff).toBeUndefined();
+    expect(await f.profile.agentExecute('pa','desktop_screenshot',{},undefined,'chat')).toBeUndefined();
+    expect(f.computer.execute).not.toHaveBeenCalled();
+  });
+
+  it('does not re-grant desktop access after a restart', async () => {
+    const f=fixture();f.profile.start('hosted');await vi.waitFor(()=>expect(f.profile.snapshot().state).toBe('running'));
+    f.profile.shareWithAgent('pa','P.A','chat',()=>true);await f.profile.stop();
+    const restored=new ChromeProfileSession(f.root,'owner-id',()=>f.locations,f.resolve,f.factory);profiles.push(restored);
+    await restored.refresh();expect(restored.snapshot().control).toBe('user');expect(restored.snapshot().handoff).toBeUndefined();
+    expect(await restored.agentExecute('pa','desktop_screenshot',{},undefined,'chat')).toBeUndefined();
+  });
+
   it('does not provision on read; launches regular Google Chrome in a separate persistent scope', async () => {
     const f = fixture();
     expect((await f.profile.refresh()).state).toBe('stopped');

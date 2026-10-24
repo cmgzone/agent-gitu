@@ -7,6 +7,9 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { ChromeProfileSession } from '../src/browser/chrome-profile.js';
 import { GituServer } from '../src/server/server.js';
 import type { ComputerStatus } from '../src/cowork/computer.js';
+import type { CoworkStore, CoworkAgent } from '../src/cowork/store.js';
+import type { ToolContext } from '../src/tools/tools.js';
+import { executeCoworkTool } from '../src/cowork/tools.js';
 
 afterEach(() => vi.unstubAllEnvs());
 it('protects owner Chrome HTTP/streams, supports hosted transport, and revokes the stream on logout', async () => {
@@ -26,6 +29,7 @@ it('protects owner Chrome HTTP/streams, supports hosted transport, and revokes t
     }),
     refreshStatus: vi.fn(async () => computer.status()),
     desktopInput: vi.fn(async () => ({ ok: true, output: 'Opened.' })),
+    execute: vi.fn(async () => ({ ok: true, output: 'Existing Chrome desktop.' })),
   };
   const target = { id: 'hosted', label: 'Hosted server', execute: vi.fn(), stream: vi.fn(async () => stream) };
   const profile = new ChromeProfileSession(
@@ -36,6 +40,13 @@ it('protects owner Chrome HTTP/streams, supports hosted transport, and revokes t
     () => computer,
   );
   const server = new GituServer({ cwd: home, port: 0, autoInstallLsp: false, chromeProfile: profile });
+  const service = server as unknown as { cowork(): CoworkStore; coworkToolContext(agent: CoworkAgent): ToolContext; dispatchAgentWake(...args: unknown[]): boolean };
+  const store = service.cowork();
+  const agent = store.saveAgent({ name: 'P.A', systemPrompt: 'Help with the browser.', allowShell: true, useHostComputer: true });
+  const other = store.saveAgent({ name: 'Other', systemPrompt: 'Help.', allowShell: true, useHostComputer: true });
+  const chat = store.saveConversation({ kind: 'dm', memberIds: [agent.id], title: 'Existing website task' });
+  const otherChat = store.saveConversation({ kind: 'dm', memberIds: [other.id] });
+  const wake = vi.spyOn(service, 'dispatchAgentWake').mockReturnValue(true);
   let socket: WebSocket | undefined;
   try {
     const base = 'http://127.0.0.1:' + (await server.start()),
@@ -90,8 +101,40 @@ it('protects owner Chrome HTTP/streams, supports hosted transport, and revokes t
     expect(target.stream).toHaveBeenCalledWith(computer.name, expect.any(AbortSignal));
     expect((await post('/api/chrome-profile', { action: 'input', input: { action: 'type', text: 'private' } }, cookie)).status).toBe(202);
     expect(computer.desktopInput).toHaveBeenLastCalledWith({ action: 'type', text: 'private' });
+    const share = { action: 'share', agentId: agent.id, conversationId: chat.id };
+    expect((await post('/api/chrome-profile', share)).status).toBe(401);
+    expect((await post('/api/chrome-profile', share, cookie, 'https://attacker.example')).status).toBe(403);
+    expect((await post('/api/chrome-profile', { ...share, conversationId: otherChat.id }, cookie)).status).toBe(400);
+    expect(profile.snapshot().handoff).toBeUndefined();
+    expect((await post('/api/chrome-profile', share, cookie)).status).toBe(202);
+    expect(wake).toHaveBeenCalledOnce();
+    expect(wake).toHaveBeenCalledWith(chat.id, agent.id, expect.stringContaining('existing Chrome session'), 'web');
+    expect((await post('/api/chrome-profile', share, cookie)).status).toBe(202);
+    expect(wake).toHaveBeenCalledOnce();
+    const ctx = service.coworkToolContext(agent), perms = { allowShell: true, allowWrites: false, allowConfig: false, chief: false, browser: true };
+    const scope = { store, agent, conversationId: chat.id };
+    expect((await executeCoworkTool(ctx, 'computer_status', {}, perms, scope)).output).toContain('owner-shared-chrome');
+    expect((await executeCoworkTool(ctx, 'desktop_screenshot', {}, perms, scope)).ok).toBe(true);
+    expect(computer.execute).toHaveBeenCalledOnce();
+    for (const blockedScope of [{ ...scope, conversationId: otherChat.id }, { ...scope, isSubAgent: true }, { ...scope, agent: { ...agent, companyId: 'company-fixture' } }]) {
+      expect((await executeCoworkTool(ctx, 'desktop_screenshot', {}, perms, blockedScope)).ok).toBe(false);
+    }
+    expect((await executeCoworkTool(ctx, 'desktop_screenshot', {}, { ...perms, browser: false }, scope)).ok).toBe(false);
+    expect((await executeCoworkTool(ctx, 'desktop_input', { action: 'click', x: 1, y: 1 }, { ...perms, allowShell: false }, scope)).ok).toBe(false);
+    expect(computer.execute).toHaveBeenCalledOnce();
+    expect((await post('/api/chrome-profile', { action: 'input', input: { action: 'type', text: 'private' } }, cookie)).status).toBe(400);
+    expect((await post('/api/chrome-profile', { action: 'take-control' }, cookie)).status).toBe(202);
+    expect(profile.snapshot().handoff).toBeUndefined();
+    expect((await executeCoworkTool(ctx, 'desktop_screenshot', {}, perms, scope)).ok).toBe(false);
+    expect((await post('/api/chrome-profile', share, cookie)).status).toBe(202);
+    store.saveAgent({ ...agent, allowShell: false });
+    expect(profile.snapshot().handoff).toBeUndefined();
+    expect((await post('/api/chrome-profile', share, cookie)).status).toBe(400);
+    store.saveAgent(agent);
+    expect((await post('/api/chrome-profile', share, cookie)).status).toBe(202);
     const closed = new Promise<void>((resolve) => socket!.once('close', () => resolve()));
     expect((await post('/api/auth/logout', {}, cookie)).status).toBe(200);
+    expect(profile.snapshot().handoff).toBeUndefined();
     await closed;
     expect((await fetch(base + '/api/chrome-profile/screen', { headers: { cookie } })).status).toBe(401);
   } finally {

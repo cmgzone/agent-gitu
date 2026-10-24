@@ -56,6 +56,10 @@ export interface ToolContext {
   connections?: ConnectionRegistry;
   connectedApps?: ConnectedAppsProvider;
   browser?: BrowserBridge;
+  /** Safe runtime identity only; never page contents, cookies or profile access. */
+  computerContext?: (conversationId?: string) => string;
+  /** Optional owner-authorized GUI handoff; undefined keeps the assigned desktop. */
+  sharedBrowserTool?: (tool: string, params: Record<string, unknown>, signal?: AbortSignal, conversationId?: string) => Promise<ToolResult | undefined>;
   lsp?: LspManager;
   delegate?: DelegateFn;
   delegateBackground?: BackgroundDelegateFn;

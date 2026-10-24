@@ -204,7 +204,7 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
     doc: 'Invoke an owner-granted, registered API operation. params: {"connectionId":"saved-id","operationId":"registered-operation","body":{},"query":{}}. Includes wallet actions when the granted API exposes them. Personal deployments run here rather than through gitu_task. External writes follow the owner’s saved access setting and company policy.',
     gate: 'writes',
   },
-  { name: 'computer_status', doc: 'Inspect your private virtual computer and its setup status. params: {}', gate: undefined },
+  { name: 'computer_status', doc: 'Identify your assigned host/private/cloud computer and browser. A connected host browser does not prove access to a VPS or the owner’s separate Chrome login. params: {}', gate: undefined },
   {
     name: 'computer_handoff',
     doc: 'Give the user control of your private desktop and pause your task for a human step. params: {"reason":"Please sign in using the regular Browser, then return control."}. Use this for manual login, verification, approval or a step the user must perform. Never include passwords, codes or secrets in the reason. The user can operate the desktop and choose Return to agent when done. Do not keep interacting while waiting.',
@@ -212,12 +212,12 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
   },
   {
     name: 'desktop_screenshot',
-    doc: 'See your full Linux desktop, including app windows, menus and dialogs. params: {}. Inspect the screen before choosing coordinates.',
+    doc: 'See your assigned Linux desktop, or the existing owner Chrome window explicitly handed to this chat. params: {}. Inspect the screen before choosing coordinates.',
     gate: 'browser',
   },
   {
     name: 'desktop_input',
-    doc: 'Control your private Linux desktop. params: {"action":"click","x":100,"y":200,"button":1} | {"action":"double_click","x":100,"y":200} | {"action":"drag","x":10,"y":20,"endX":300,"endY":200} | {"action":"type","text":"hello"} | {"action":"key","key":"ctrl+l"} | {"action":"scroll","x":500,"y":400,"delta":3} | {"action":"launch","app":"browser|agent_browser|files|terminal"}. Coordinates use the 1280x800 desktop. Requires shell permission because desktop apps include terminals. Use browse for structured browser operations.',
+    doc: 'Control your assigned Linux desktop, or the existing Chrome window explicitly handed to this chat. params: {"action":"click","x":100,"y":200,"button":1} | {"action":"double_click","x":100,"y":200} | {"action":"drag","x":10,"y":20,"endX":300,"endY":200} | {"action":"type","text":"hello"} | {"action":"key","key":"ctrl+l"} | {"action":"scroll","x":500,"y":400,"delta":3} | {"action":"launch","app":"browser|agent_browser|files|terminal"}. Coordinates use the 1280x800 desktop. Requires shell permission because desktop apps include terminals. During an owner Chrome handoff stay in that browser; browse uses a separate profile. Wait for the owner to handle passwords and verification privately.',
     gate: 'shell',
   },
   { name: 'computer_process', doc: 'Inspect or stop a background process on your computer. params: {"action":"status","id":"..."} | {"action":"stop","id":"..."}', gate: 'shell' },
@@ -313,7 +313,7 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
   },
   {
     name: 'ssh_exec',
-    doc: 'Run one authorized command through a saved SSH connection. Never include a password in params. params: {"connectionId":"ssh-...","command":"hostname"}. Respect the user\'s requested read-only scope; remote changes need explicit authorization.',
+    doc: 'Run one authorized command on a saved SSH server, including reading or editing remote files. Use alongside run_command/file tools on your assigned computer in the SAME task; no computer reassignment is needed. Select the exact saved connectionId from computer_status or list_connections. SSH targets the server filesystem, not a private desktop container or signed-in Chrome session. Never include a password in params. params: {"connectionId":"ssh-...","command":"hostname"}. Respect the user\'s requested read-only scope; remote changes need authorization. Coding work still goes through gitu_task.',
     gate: 'shell',
   },
   { name: 'update_connection', doc: 'Update saved connection metadata and remember its documented read AND write operations for future tasks without executing them. params: {"connectionId":"...","label":"optional","documentationUrl":"official docs","discoverCapabilities":true,"operations":[{"id":"deploy","label":"Deploy","capability":"deployments.write","method":"POST","path":"/deploy","risk":"reversible-write"}]}. Catalog discovery retains every supported capability. Credentials and endpoint changes use the secure form.', gate: 'config' },
@@ -565,7 +565,7 @@ async function executeAuthorizedCoworkTool(ctx: ToolContext, tool: string, param
         || /(?:^|[/\\])(?:package\.json|tsconfig[^/\\]*\.json|Dockerfile|Cargo\.toml|go\.mod)$/i.test(target);
       const command = String(params['command'] ?? '');
       const codeCommand = /\b(?:npm|pnpm|yarn|bun|npx|tsc|vitest|jest|pytest|cargo|gradle|mvn)\b|\bgit\s+(?:commit|apply|checkout|switch|merge|cherry-pick|reset)\b|\bgo\s+(?:build|test|run)\b/i.test(command);
-      if ((['write_file', 'apply_edit'].includes(tool) && codeFile) || (tool === 'run_command' && codeCommand && !isDeploymentAction(tool, params) && !['status', 'stop'].includes(String(params['action'])))) {
+      if ((['write_file', 'apply_edit'].includes(tool) && codeFile) || (['run_command', 'ssh_exec'].includes(tool) && codeCommand && !isDeploymentAction(tool === 'ssh_exec' ? 'run_command' : tool, params) && !['status', 'stop'].includes(String(params['action'])))) {
         return { ok: false, output: 'Main Agent Gitu owns repository coding. Call gitu_task with the full task brief and project location; its visible task returns implementation and verification results to you for reporting.' };
       }
     }
@@ -604,18 +604,22 @@ async function executeAuthorizedCoworkTool(ctx: ToolContext, tool: string, param
     if (tool === 'run_command' && (String(params['action'] ?? 'run') === 'status' || String(params['action'] ?? 'run') === 'stop')) {
       return await dispatchHost();
     }
+    if (scope && !scope.isSubAgent && !scope.agent.companyId && ['computer_status', 'desktop_screenshot', 'desktop_input'].includes(tool)) {
+      const shared = await ctx.sharedBrowserTool?.(tool, params, scope.signal, scope.conversationId);
+      if (shared) return shared;
+    }
     if (scope?.agent.companyId && scope.agent.useHostComputer && ctx.companyHostComputer?.() !== true && COMPUTER_ROUTED_TOOLS.includes(tool))
       return { ok: false, output: 'Use my computer is not granted to this company. Enable it in Company Resources or use the private computer.' };
     if (scope?.agent.useHostComputer && tool === 'computer_status') {
       return {
         ok: true,
-        output: `My computer mode. Workspace: ${ctx.cwd}. Docker is not required. Browser: ${ctx.browser?.available() ? 'connected' : 'not connected; open the desktop app'}.`,
+        output: `My computer mode (installation host). Workspace: ${ctx.cwd}. Docker is not required. Host agent browser: ${ctx.browser?.available() ? 'connected' : 'not connected'}. This does not establish access to a remote Linux desktop or its signed-in Chrome profile.\n${ctx.computerContext?.(scope.conversationId) ?? ''}`,
       };
     }
     if (scope?.agent.useHostComputer && tool === 'computer_process')
       return { ok: false, output: 'Background process control requires the private computer. In My computer mode use a bounded run_command instead.' };
     if (scope?.agent.useHostComputer && ['desktop_screenshot', 'desktop_input'].includes(tool))
-      return { ok: false, output: 'Desktop screen and input require this teammate’s private computer.' };
+      return { ok: false, output: 'Desktop screen and input require this teammate’s private computer or an explicit Chrome handoff to this chat. The owner’s private Chrome login is not shared with this host browser.\n' + (ctx.computerContext?.(scope.conversationId) ?? '') };
     if (scope?.agent.useHostComputer && COMPUTER_ROUTED_TOOLS.includes(tool) && !COMPUTER_ONLY_TOOLS.includes(tool)) {
       ctx.onComputerLocation?.('host');
       params = toHostPaths(params);
@@ -914,9 +918,12 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
         return await connectedAppTool(ctx.connectedApps, params, perms, scope);
       case 'ssh_exec': {
         if (!perms.allowShell) return blocked(tool);
+        if (scope?.agent.companyId) return { ok: false, output: 'Personal SSH connections are not assigned to this company. Use its assigned private computer or company connections.' };
         try {
-          const result = await new SshConnectionRegistry().execute(String(params['connectionId'] ?? ''), String(params['command'] ?? ''));
-          return { ok: result.exitCode === 0, output: `Exit code: ${result.exitCode ?? 'unknown'}\n${result.stdout}${result.stderr ? `\nSTDERR:\n${result.stderr}` : ''}` };
+          const registry = new SshConnectionRegistry(), connectionId = String(params['connectionId'] ?? ''), target = registry.list().find(server => server.id === connectionId && server.hasCredential);
+          if (!target) return { ok: false, output: 'Choose a saved SSH connection with a credential from computer_status or list_connections. No command was run.' };
+          const result = await registry.execute(connectionId, String(params['command'] ?? ''));
+          return { ok: result.exitCode === 0, output: `SSH computer: ${target.label} (${target.id}). Server filesystem; assigned computer unchanged.\nExit code: ${result.exitCode ?? 'unknown'}\n${result.stdout}${result.stderr ? `\nSTDERR:\n${result.stderr}` : ''}` };
         } catch (error) {
           return { ok: false, output: `ssh_exec failed: ${(error as Error).message}` };
         }

@@ -97,8 +97,9 @@ function startupFixture() {
     static getAllWindows() { return windows; }
   }
   const require = createRequire(import.meta.url);
+  const desktopRequire = createRequire(new URL('../desktop/main.cjs', import.meta.url));
   const context = createContext({
-    require: (id: string) => id === 'electron' ? { app, crashReporter, BrowserWindow: FakeWindow, shell: {}, nativeTheme: { shouldUseDarkColors: false } } : id === 'node:fs' ? { appendFileSync: vi.fn() } : id === './app-sign-in.cjs' ? require('../desktop/app-sign-in.cjs') : require(id),
+    require: (id: string) => id === 'electron' ? { app, crashReporter, BrowserWindow: FakeWindow, shell: {}, nativeTheme: { shouldUseDarkColors: false } } : id === 'node:fs' ? { appendFileSync: vi.fn() } : id.startsWith('./') ? desktopRequire(id) : require(id),
     __dirname: path.resolve('desktop'), process: { env: {}, on: vi.fn() }, console,
     setTimeout: vi.fn(), clearTimeout: vi.fn(), URL,
   });

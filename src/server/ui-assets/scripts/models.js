@@ -74,6 +74,7 @@
   }
 
   function openHome() {
+    homeCaptureDrafts();
     var transition=captureChatTransition();if(S.active==='home')transition=null;
     document.body.classList.remove('cowork');
     S.active = 'home';
@@ -85,29 +86,28 @@
     renderSidebar();
     renderTopbar();
     var effProj = effectiveProjectPath();
+    homeActivateDraft(effProj);
     var name = effectiveProjectName();
     var keyless = S.modelsLoaded && !hasAnyProviderKey();
     $('view').innerHTML =
-      '<div class="home home-sky">' + cwPageNavHtml('home',cwProfileAgent()) +
-      '<button class="home-settings-trigger" id="homeSettings" aria-label="Open settings" title="Settings">'+icon('gear')+'</button>' +
+      '<div class="home home-sky">' + homeNavigationHtml(cwProfileAgent()) + '<main class="home-main">' +
       '<header class="home-brand">' +
-      '<div class="home-brand-lockup">' + /* GITU_VALUE_HOME_CHARACTER_JSON */ null + '<h1><span>Agent</span><span><span class="home-brand-name">Gitu</span><i class="home-brand-spark" aria-hidden="true"></i></span></h1></div>' +
-      '<p class="home-brand-copy">A little spark. A working idea. Let’s build it.</p></header>' +
+      '<div class="home-brand-lockup">' + /* GITU_VALUE_HOME_CHARACTER_JSON */ null + '<div><h1>What shall we build?</h1><p class="home-brand-copy">Choose a project and describe your task.</p></div></div></header>' +
       (keyless
         ? '<button class="setup-card" id="keylessCta" style="cursor:pointer;width:100%;text-align:left;display:block;margin:0 auto 8px;max-width:760px">' +
           '<h3 style="margin:0 0 4px">Connect a model provider</h3>' +
           '<div class="meta-line">Choose a provider and add a key to start your first task.</div><span class="setup-action">Open provider settings →</span></button>'
       : '') +
-      '<div class="home-composer-wrap"><div class="composer-topline"><button type="button" class="composer-workspace" id="homeProj" aria-label="Project '+esc(name)+'" title="Choose project">'+icon('folder')+'<span>'+esc(name)+'</span></button></div>' +
-      '<div class="composer"><textarea id="goal" rows="1" placeholder="Ask Agent Gitu to complete a task…"></textarea>' +
+      '<div class="home-composer-wrap"><div class="composer-topline"><span class="home-project-label">Project</span><button type="button" class="composer-workspace" id="homeProj" aria-label="Project '+esc(name)+'" title="Choose project">'+icon('folder')+'<span>'+esc(name)+'</span></button></div>' +
+      '<div class="composer"><textarea id="goal" aria-label="Describe your task" rows="2" placeholder="What would you like to build or fix?"></textarea>' +
       '<div class="thumbs" id="thumbs" hidden></div>' +
       '<div class="composer-bar">' + controlsHtml() + '<button class="send" id="send" title="Start task" aria-label="Start task"' + (S.modelsLoaded && hasAnyProviderKey() ? '' : ' disabled') + '>&#8593;</button></div></div></div>' +
-      '<section class="home-projects" aria-labelledby="homeProjectsTitle"><div class="home-project-heading"><h2 id="homeProjectsTitle">Projects</h2><div class="home-project-actions"><button class="btn" id="homeNewProject">'+cwIcon('plus')+'New project</button></div></div><div id="homeProjectCards"><p role="status">Loading projects…</p></div></section></div>';
-    $('cwHomeBtn').onclick=function(){$('goal').focus();};$('cwCurrentChat').onclick=function(){cwEnterWorkspace('chat',cwEnsure().selectedAgentId);};$('cwInfoBtn').onclick=function(){var agent=cwProfileAgent()||cwEnsure().agents[0];cwEnterWorkspace(agent?'profile':'new',agent&&agent.id);};$('homeNewProject').onclick=newProject;$('homeSettings').onclick=function(){openSettings('overview');};$('cwPageSearch').onclick=function(){wsOpen('main');};homeLoadProjects();homeLoadProfile();
+      '</main></div>';
+    $('cwHomeBtn').onclick=function(){$('goal').focus();};$('cwCurrentChat').onclick=function(){cwEnterWorkspace('chat',cwEnsure().selectedAgentId);};$('cwInfoBtn').onclick=function(){homeCloseNavigation();var agent=cwProfileAgent()||cwEnsure().agents[0];cwEnterWorkspace(agent?'profile':'new',agent&&agent.id);};$('homeSettings').onclick=function(){homeCloseNavigation();openSettings('overview');};$('cwPageSearch').onclick=function(){homeCloseNavigation();wsOpen('main');};homeBindNavigation();homeLoadProjects();homeLoadProfile();
     var ta = $('goal');
     ta.value = S.draft;
-    ta.addEventListener('input', function () { S.draft = ta.value; persist(); ta.style.height = 'auto'; ta.style.height = Math.min(180, ta.scrollHeight) + 'px'; });
-    ta.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); startRun(); } });
+    ta.addEventListener('input', function () { homeSaveDraft(ta.value); ta.style.height = 'auto'; ta.style.height = Math.min(180, ta.scrollHeight) + 'px'; });
+    ta.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); startRun(); } });
     bindControls();
     bindPaste('goal');
     $('send').onclick = startRun;
@@ -368,6 +368,7 @@
         '<button type="button" id="menuAgent" data-hp="agent" role="menuitemradio" aria-checked="true"><span class="ico">' + icon('bolt') + '</span>Agent mode<span class="check">✓</span></button>' +
         '<button type="button" id="menuPlan" data-hp="plan" role="menuitemradio" aria-checked="false"><span class="ico">' + icon('layers') + '</span>Plan mode<span class="check">✓</span></button>' +
         '<button type="button" data-hp="attach" role="menuitem"><span class="ico">' + icon('file') + '</span>Choose files</button>' +
+        '<p class="home-attachment-policy" data-file-policy-label role="status">Maximum file size: Loading…</p>' +
         '<button type="button" data-hp="folder" role="menuitem"><span class="ico">' + icon('folder') + '</span>' + (S.active === 'home' ? 'Choose project folder' : 'Tag reference folder') + '</button>' +
         '<button type="button" data-hp="schedule" role="menuitem"><span class="ico">' + icon('clock') + '</span>Schedule a run</button>' +
       '</div>' +

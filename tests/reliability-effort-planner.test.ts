@@ -293,7 +293,7 @@ describe('Hermes — adaptive effort & risk integration', () => {
       () => JSON.stringify({ action: { type: 'delegate', tasks: [{ agent: 'explore', task: 'a' }, { agent: 'explore', task: 'b' }] } }),
       () => JSON.stringify({ action: { type: 'request_block', reason: 'after delegate cap' } }),
     ]);
-    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', subagents: runner as any, onEvent: (e) => events.push(e) });
+    const hermes = new Hermes({ autonomy: { persistent: false }, cwd: dir, llm, mode: 'fast', subagents: runner as any, onEvent: (e) => events.push(e) });
     const { ledger } = await hermes.run('fix typos low effort cap');
 
     expect(ledger.data.effortPlan!.maxSpecialists).toBe(1);
@@ -356,7 +356,7 @@ describe('Hermes — adaptive effort & risk integration', () => {
           : JSON.stringify({ action: { type: 'request_block', reason: 'inspection wrapped up' } }),
     ]);
 
-    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', effort: 'low', browser: bridge as never, supportsImages: false, onEvent: (e) => events.push(e) });
+    const hermes = new Hermes({ autonomy: { persistent: false }, cwd: dir, llm, mode: 'fast', effort: 'low', browser: bridge as never, supportsImages: false, onEvent: (e) => events.push(e) });
     const { report, ledger } = await hermes.run('inspect pages');
 
     expect(events.some((e) => e.includes('budget extended by'))).toBe(true);

@@ -136,6 +136,8 @@ export function ensureGituHome(): GituHome {
 }
 
 export interface WorkspaceSettings {
+  /** Owner-selected coding approval mode, shared by desktop, mobile and Cowork. */
+  codingAccess?: 'ask' | 'full';
   projectsPath?: string;
   /** Ordered model fallbacks as 'provider::model' entries, tried top-down when
    *  a run fails on billing (HTTP 401 / no credits). User-configured — never
@@ -256,6 +258,7 @@ export function loadWorkspaceSettings(): WorkspaceSettings {
   const autonomy = sanitizeAutonomy(data['autonomy']);
   return {
     projectsPath,
+    ...(data['codingAccess'] === 'ask' || data['codingAccess'] === 'full' ? { codingAccess: data['codingAccess'] } : {}),
     ...(fallbackModels ? { fallbackModels } : {}),
     ...(customProviders ? { customProviders } : {}),
     ...(coworkLearning ? { coworkLearning } : {}),
@@ -265,6 +268,10 @@ export function loadWorkspaceSettings(): WorkspaceSettings {
 
 export function updateWorkspaceSettings(patch: Partial<WorkspaceSettings>): WorkspaceSettings {
   const merged: WorkspaceSettings = { ...loadWorkspaceSettings() };
+  if ('codingAccess' in patch) {
+    if (patch.codingAccess !== 'ask' && patch.codingAccess !== 'full') throw Error('Choose ask or full coding access.');
+    merged.codingAccess = patch.codingAccess;
+  }
   if ('projectsPath' in patch) merged.projectsPath = patch.projectsPath;
   if ('fallbackModels' in patch) {
     const fallback = sanitizeFallbackModels(patch.fallbackModels ?? []);

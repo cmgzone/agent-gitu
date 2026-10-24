@@ -2,6 +2,7 @@ import { OpenAiCompatClient, type LlmClient } from './llm.js';
 import { CodexSubscriptionClient, codexExecutable, subscriptionModelContextWindow } from './codex-subscription.js';
 import { CodexNativeRuntime } from './codex-native.js';
 import { mergedEnv } from './keys.js';
+import { readRuntimeSelection } from '../workspace/runtime-selection.js';
 import { createEmbedder, type Embedder } from '../context/embeddings.js';
 import { loadWorkspaceSettings, type CustomProviderProfile } from '../workspace/home.js';
 
@@ -193,7 +194,7 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     // "requires a newer version of Codex"). Keep this generation-accurate and
     // free of models the service has retired.
     defaultModel: 'gpt-6-astra',
-    models: ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5'],
+    models: ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'],
     effortLevels: ['low', 'medium', 'high', 'max'],
     maxEffort: 'distinct',
     auth: 'chatgpt-subscription',
@@ -860,6 +861,10 @@ function build(
 }
 
 export function resolveLlm(opts: ResolveOptions = {}): ResolvedLlm {
+  if (!opts.env && !opts.provider && !opts.model) {
+    const selected=readRuntimeSelection();
+    if(selected.provider&&selected.model)return resolveLlm({...opts,provider:selected.provider,model:selected.model});
+  }
   const env = opts.env ?? mergedEnv();
 
   if (opts.provider) {
@@ -915,6 +920,7 @@ export function resolveLlm(opts: ResolveOptions = {}): ResolvedLlm {
   }
 
   for (const spec of Object.values(allProviderSpecs())) {
+    if(spec.id==='alibaba')continue; // Available only when explicitly selected, never inferred from a stored key.
     const keyEnvVar = spec.keyEnvVars.find((v) => env[v]);
     if (keyEnvVar) {
       return build(spec.id, spec, env[keyEnvVar]!, keyEnvVar, opts, env);

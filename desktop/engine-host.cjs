@@ -49,7 +49,10 @@ async function startEngine() {
     const { ensureHermesHome } = await import(pathToFileURL(path.join(dist, 'workspace', 'home.js')).href);
     const home = ensureHermesHome();
     state.message = 'Preparing your workspace…';
-    const config = { cwd: process.env.HERMES_CWD || home.workspace, port: Number(process.env.HERMES_UI_PORT || 8321), browser: control.browser };
+    const phoneAccess = require('./phone-access.cjs').preparePhoneAccess(home.settings);
+    // The server owns the browser so phones and hosted clients see exactly the
+    // same page. It keeps a dedicated profile, separate from Gitu's app login.
+    const config = { cwd: process.env.HERMES_CWD || home.workspace, port: Number(process.env.HERMES_UI_PORT || 8321), ...phoneAccess };
     runtime = new HermesServer(config);
     try { state.port = await runtime.start(); } catch (error) {
       if (error.code !== 'EADDRINUSE') throw error;

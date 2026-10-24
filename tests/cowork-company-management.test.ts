@@ -17,12 +17,12 @@ function fixture() {
   const scopes = new Map<string, CoworkStore>(); let active: string | undefined;
   const start = vi.fn();
   const deps: CompanyApiDeps = {
-    store, body: async () => ({}), send: () => {}, legacyAgent: id => legacy.getAgent(id),
+    store, body: async () => ({}), send: () => {}, legacyAgent: id => legacy.getAgent(id), roster: () => legacy,
     scoped: (company, work) => {
       const before = active; active = company.id;
       try { const value = work(); if (value instanceof Promise) return value.finally(() => { active = before; }) as typeof value; active = before; return value; } catch (error) { active = before; throw error; }
     },
-    cowork: () => { if (!active) throw new Error('Company scope missing'); let cowork = scopes.get(active); if (!cowork) { cowork = new CoworkStore(path.join(root, active + '.json'), undefined, { companyId: active }); scopes.set(active, cowork); } return cowork; },
+    cowork: () => { if (!active) throw new Error('Company scope missing'); let cowork = scopes.get(active); if (!cowork) { cowork = new CoworkStore(path.join(root, active + '.json'), undefined, { companyId: active, sharedRoster: legacy }); scopes.set(active, cowork); } return cowork; },
     routeCowork: async () => false, start, pause: () => {},
     activity: () => [{ agentId: 'active-lead', agentName: 'Lead', phase: 'working', tool: 'connected_apps' }],
   };
@@ -30,7 +30,7 @@ function fixture() {
 }
 
 describe('Cowork company management', () => {
-  it('creates one durable draft with an isolated lead and requires owner setup before running', async () => {
+  it('creates one durable workspace linked to its Cowork lead and requires owner setup before running', async () => {
     const f = fixture();
     try {
       const args = { action: 'create', name: 'Research studio', purpose: 'Prepare verified customer research' };
@@ -38,7 +38,7 @@ describe('Cowork company management', () => {
       expect(second.companyLink?.id).toBe(first.companyLink?.id);
       const company = f.store.get(first.companyLink!.id)!;
       expect(company).toMatchObject({ state: 'draft', budgetChosen: false, fileLimitChosen: false, allowHostComputer: false, access: 'supervised', accountIds: [], connectionIds: [] });
-      expect(company.leadId).not.toBe(f.agent.id);
+      expect(company.leadId).toBe(f.agent.id);
       expect(f.scopes.get(company.id)?.getAgent(company.leadId!)?.companyId).toBe(company.id);
       expect(f.legacy.listAgents()).toHaveLength(1);
       expect(f.store.usage(company.id)).toHaveLength(0);
@@ -55,7 +55,8 @@ describe('Cowork company management', () => {
       await expect(manageCoworkCompanies(f.deps, f.agent.id, f.conversation.id, { action: 'create', name: 'Studio', purpose: 'Research', allowHostComputer: true })).rejects.toThrow('cannot grant');
       await expect(manageCoworkCompanies(f.deps, f.agent.id, f.conversation.id, { action: 'start', id: 'company' })).rejects.toThrow('belong to the owner');
       f.legacy.saveAgent({ ...f.agent, allowConfig: false });
-      await expect(manageCoworkCompanies(f.deps, f.agent.id, f.conversation.id, { action: 'list' })).rejects.toThrow('permission');
+      expect((await manageCoworkCompanies(f.deps, f.agent.id, f.conversation.id, { action: 'list' })).ok).toBe(true);
+      await expect(manageCoworkCompanies(f.deps, f.agent.id, f.conversation.id, { action: 'create', name: 'Studio', purpose: 'Research' })).rejects.toThrow('permission');
       expect(f.store.companies()).toHaveLength(0);
     } finally { f.close(); }
   });
@@ -71,20 +72,20 @@ describe('Cowork company management', () => {
       expect(status.state).toBe('running'); expect(status.jobs[0].state).toBe('queued'); expect(status.activity[0].tool).toBe('connected_apps');
     } finally { f.close(); }
   });
-  it('advertises creation only to authorized Cowork teammates and blocks company agents and helpers', async () => {
+  it('advertises shared company knowledge to Cowork teammates in every workspace and blocks helpers', async () => {
     const f = fixture();
     try {
       expect(coworkNativeTools(f.agent, false).some(t => t.name === 'company_manage')).toBe(true);
-      expect(coworkNativeTools({ ...f.agent, companyId: 'company' }, false).some(t => t.name === 'company_manage')).toBe(false);
-      expect(coworkNativeTools({ ...f.agent, allowWrites: false }, false).some(t => t.name === 'company_manage')).toBe(false);
+      expect(coworkNativeTools({ ...f.agent, companyId: 'company' }, false).some(t => t.name === 'company_manage')).toBe(true);
+      expect(coworkNativeTools({ ...f.agent, allowWrites: false }, false).some(t => t.name === 'company_manage')).toBe(true);
       const callback = vi.fn().mockResolvedValue({ ok: true, output: 'created' });
       const context = { cwd: f.root, companyManagement: callback } as ToolContext;
       const scope = { store: f.legacy, agent: f.agent, conversationId: f.conversation.id } as CoworkToolScope;
       const perms = { allowShell: false, allowWrites: true, allowConfig: true, chief: false, browser: false };
       const ok = await executeCoworkTool(context, 'company_manage', { action: 'list' }, perms, scope); expect(ok.ok).toBe(true);
       expect((await executeCoworkTool(context, 'company_manage', { action: 'list' }, perms, { ...scope, isSubAgent: true })).ok).toBe(false);
-      expect((await executeCoworkTool(context, 'company_manage', { action: 'list' }, perms, { ...scope, agent: { ...f.agent, companyId: 'company' } })).ok).toBe(false);
-      expect(callback).toHaveBeenCalledTimes(1);
+      expect((await executeCoworkTool(context, 'company_manage', { action: 'list' }, perms, { ...scope, agent: { ...f.agent, companyId: 'company' } })).ok).toBe(true);
+      expect(callback).toHaveBeenCalledTimes(2);
     } finally { f.close(); }
   });
 });

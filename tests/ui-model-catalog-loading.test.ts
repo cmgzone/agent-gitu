@@ -85,26 +85,11 @@ describe('model catalog loading and provider filtering', () => {
     expect(() => new Function(UI_HTML.split('<script>')[1]!.split('</script>')[0]!)).not.toThrow();
   });
 
-  it('shares an in-flight catalog request with the Company lead picker', async () => {
-    let resolve!: (value: unknown) => void;
-    const api = vi.fn(() => new Promise(r => { resolve = r; }));
-    const { context, helpers } = harness(api);
-    const fields = {
-      '#companyLeadProvider': { value: '', innerHTML: '' },
-      '#companyLeadModel': { value: '', innerHTML: '', disabled: true },
-      '#companyLeadCatalogStatus': { textContent: '' },
-    };
-    const body = { isConnected: true, querySelector: (selector: keyof typeof fields) => fields[selector] };
-    const start = COMPANY_JS.indexOf('  function companyLeadPicker(');
-    const end = COMPANY_JS.indexOf('  async function companyWizard(', start);
-    const picker = runInNewContext('var Companies = { id: "company" };\n' + COMPANY_JS.slice(start, end) + '\ncompanyLeadPicker;', context);
-    const pending = helpers.loadModelCatalog();
-    picker(body, 'test-provider', 'new');
-    expect(api).toHaveBeenCalledExactlyOnceWith('/api/models');
-    resolve({ providers: [provider(['new'])] });
-    await pending;
-    expect(fields['#companyLeadProvider'].value).toBe('test-provider');
-    expect(fields['#companyLeadModel']).toMatchObject({ value: 'new', disabled: false });
-    expect(fields['#companyLeadCatalogStatus'].textContent).toBe('');
+  it('reuses Cowork profiles for Company leads without a second provider and model picker', () => {
+    expect(COMPANY_JS).toContain("api('/api/cowork/agents')");
+    expect(COMPANY_JS).toContain('Choose your Cowork lead');
+    expect(COMPANY_JS).not.toContain('function companyLeadPicker(');
+    expect(COMPANY_JS).not.toContain('id="companyLeadProvider"');
+    expect(COMPANY_JS).not.toContain('id="companyLeadModel"');
   });
 });

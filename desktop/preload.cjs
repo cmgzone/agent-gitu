@@ -1,7 +1,10 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('gituDesktop', {
+  openProjectFolder: (folderPath) => ipcRenderer.invoke('gitu:open-project-folder', folderPath),
   openAppSignIn: (url) => ipcRenderer.invoke('gitu:open-app-sign-in', url),
+  phoneAccess: () => ipcRenderer.invoke('gitu:phone-access'),
+  allowPhoneAccess: () => ipcRenderer.invoke('gitu:allow-phone-access'),
 });
 
 // The main process validates the sender for both appearance and sign-in.

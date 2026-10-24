@@ -26,7 +26,7 @@ export const WORKSPACE_SEARCH_CSS = String.raw`
   body:has(.run-chat) .sb { display:none!important; }
   .workspace-search { position:fixed; inset:0; z-index:70; overflow:auto; color:var(--text); background:var(--cw-chat-surface); overscroll-behavior:contain; }
   .workspace-search::before { content:''; position:fixed; inset:0; pointer-events:none; background:radial-gradient(ellipse at 50% 25%,color-mix(in srgb,var(--run) 18%,transparent),transparent 55%); }
-  .workspace-search-close,.settings-close { position:absolute; top:20px; right:24px; width:42px; height:42px; display:grid; place-items:center; border-radius:50%; color:var(--muted); padding:0; }
+  .workspace-search-close,.settings-close { position:absolute; z-index:2; top:20px; right:24px; width:42px; height:42px; display:grid; place-items:center; border-radius:50%; color:var(--muted); padding:0; }
   .workspace-search-close svg,.settings-close svg { width:21px; height:21px; }
   .workspace-search-main { position:relative; width:min(780px,100%); margin:0 auto; padding:clamp(110px,20vh,180px) 24px 56px; }
   .ws-context { color:var(--muted); font-size:11px; letter-spacing:.1em; text-transform:uppercase; margin:0 12px 12px; }

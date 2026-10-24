@@ -9,6 +9,18 @@ export async function companyBoardroomApi(req: IncomingMessage, res: ServerRespo
   if (suffix !== '/boardroom' && !suffix.startsWith('/boardroom/')) return false;
   const room = deps.boardroom?.(company.id)??new CompanyBoardroom(new CompanyOrganization(deps.store, company.id, deps.cowork())),
     actor = { kind: 'director' as const };
+  if (suffix === '/boardroom/requests' && method === 'GET') {
+    deps.send(res, 200, { requests: room.requests(actor) });
+    return true;
+  }
+  const requestReview = suffix.match(/^\/boardroom\/requests\/([\w-]+)\/review$/);
+  if (requestReview && method === 'POST') {
+    const input = await deps.body(req);
+    const request = room.reviewRequest(actor, requestReview[1]!, Number(input['revision']), input['approved'] as boolean, String(input['reason'] ?? ''));
+    deps.start();
+    deps.send(res, 200, { request });
+    return true;
+  }
   if (suffix === '/boardroom') {
     if (method === 'GET') {
       const params = new URL(req.url || '/', 'http://localhost').searchParams,

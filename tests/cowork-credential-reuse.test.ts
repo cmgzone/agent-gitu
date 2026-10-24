@@ -35,9 +35,37 @@ function setup() {
     return executeCoworkTool(ctx, 'request_credential', { prompt: 'Connect Coolify', provider: 'coolify', ...params },
       { allowShell: false, allowWrites: false, allowConfig: false, chief: false, browser: false }, scope);
   }
-  return { root, registry, store, conversation, save, request };
+  return { root, registry, store, conversation, scope, ctx, save, request };
 }
 describe('Cowork saved credential reuse', () => {
+  it('distinguishes an unreachable API from a provider-rejected credential in fresh checks', async () => {
+    const s = setup(); s.save();
+    const perms = { allowShell: false, allowWrites: false, allowConfig: false, chief: false, browser: false };
+    globalThis.fetch = (async () => { throw new TypeError('Network unavailable'); }) as typeof fetch;
+    const unavailable = await executeCoworkTool(s.ctx, 'connection_test', { connectionId: 'coolify' }, perms, s.scope);
+    expect(unavailable.ok).toBe(false);
+    expect(JSON.parse(unavailable.output)).toMatchObject({ status: 'PROVIDER_UNREACHABLE', credentialRejected: false });
+    globalThis.fetch = (async () => new Response('{}', { status: 401 })) as typeof fetch;
+    const rejected = await executeCoworkTool(s.ctx, 'connection_test', { connectionId: 'coolify' }, perms, s.scope);
+    expect(rejected.ok).toBe(false);
+    expect(JSON.parse(rejected.output)).toMatchObject({ status: 'AUTH_INVALID', credentialRejected: true });
+    expect(s.store.requests(s.conversation.id)).toEqual([]);
+  });
+  it('freshly tests a saved API and clears that teammate’s obsolete cards across chats without touching another teammate’s requests', async () => {
+    const s = setup(); s.save();
+    const another = s.store.saveConversation({ kind: 'dm', memberIds: [s.scope.agent.id] });
+    const otherAgent = s.store.saveAgent({ name: 'Other', systemPrompt: 'Help.' });
+    const otherChat = s.store.saveConversation({ kind: 'dm', memberIds: [otherAgent.id] });
+    const cards = [s.conversation, another, otherChat].map(conv => s.store.addRequest({ conversationId: conv.id, agentId: conv.memberIds[0]!, kind: 'credential', title: 'Reconnect', detail: 'Old failure', credential: { providerHint: 'coolify', connectionId: 'coolify' } }));
+    globalThis.fetch = (async () => new Response('{}', { status: 401 })) as typeof fetch;
+    await expect(s.registry.validate('coolify')).rejects.toThrow('HTTP 401');
+    globalThis.fetch = (async () => new Response('{}', { status: 200 })) as typeof fetch;
+    const result = await executeCoworkTool(s.ctx, 'connection_test', { connectionId: 'coolify' }, { allowShell: false, allowWrites: false, allowConfig: false, chief: false, browser: false }, s.scope);
+    expect(result.ok).toBe(true);
+    expect(result.output).toContain('CONNECTED');
+    expect(result.output).not.toContain('private-fixture-token');
+    expect(cards.map(card => s.store.getRequest(card.id)?.status)).toEqual(['provided', 'provided', 'open']);
+  });
   it.each([undefined, 'valid', 'unknown'] as const)('reuses a saved key with auth %s without posting a credential card', async (auth) => {
     const s = setup();
     s.save();
@@ -69,6 +97,17 @@ describe('Cowork saved credential reuse', () => {
     await expect(s.registry.invokeRead('production', 'list-apps')).rejects.toThrow('HTTP 401');
     expect((await s.request({ connectionId: 'production' })).ok).toBe(true);
     expect(s.store.requests(s.conversation.id)[0]?.credential).toMatchObject({ connectionId: 'production', baseUrl: 'https://coolify.example.test', validationPath: '/apps' });
+  });
+
+  it('clears the requesting teammate’s obsolete reconnect card after the saved key verifies', async () => {
+    const s = setup(); s.save();
+    const card = s.store.addRequest({ conversationId: s.conversation.id, agentId: s.conversation.memberIds[0]!, kind: 'credential', title: 'Reconnect', detail: 'Old failure', credential: { providerHint: 'coolify', connectionId: 'coolify' } });
+    const profile = s.registry.get('coolify')!;
+    writeFileSync(path.join(s.root, 'Settings/connections.json'), JSON.stringify({ connections: [{ ...profile, authState: { status: 'invalid', checkedAt: '2000-01-01T00:00:00.000Z' } }] }));
+    globalThis.fetch = (async () => new Response('{"account":"fixture"}', { status: 200 })) as typeof fetch;
+    expect((await s.request()).output).toContain('already has a credential');
+    expect(s.store.getRequest(card.id)?.status).toBe('provided');
+    expect(s.store.requests(s.conversation.id)).toHaveLength(1);
   });
 
   it('posts a reconnect card when the credential is actually missing, and a new card for a different server', async () => {

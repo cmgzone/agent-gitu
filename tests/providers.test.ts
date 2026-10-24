@@ -168,8 +168,9 @@ describe('resolveLlm', () => {
     expect(() => resolveLlm({ provider: 'skynet', env: {} })).toThrow(/Unknown provider/);
   });
 
-  it('auto-detects alibaba when only its key is present', () => {
-    const resolved = resolveLlm({ env: { HERMES_ALIBABA_API_KEY: 'sk-x' } });
+  it('requires an explicit Alibaba choice even when its key is present', () => {
+    expect(() => resolveLlm({ env: { HERMES_ALIBABA_API_KEY: 'sk-x' } })).toThrow('No LLM configured');
+    const resolved = resolveLlm({ provider: 'alibaba', env: { HERMES_ALIBABA_API_KEY: 'sk-x' } });
     expect(resolved.providerId).toBe('alibaba');
     expect(resolved.keyEnvVar).toBe('HERMES_ALIBABA_API_KEY');
   });

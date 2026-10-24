@@ -2,6 +2,7 @@ import { createContext, Script } from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
 import { parseAction } from '../src/agent/action-parser.js';
 import { UI_HTML } from '../src/server/ui.js';
+import { CHAT_QUESTION_JS } from '../src/server/ui-chat-questions.js';
 
 function card(questions: unknown[]) {
   const submit = { disabled: false, onclick: undefined as undefined | (() => void) };
@@ -16,7 +17,8 @@ function card(questions: unknown[]) {
     pendingQuestionsFor: () => ({ id: 'style-request', questions }), stickScroll: vi.fn(), api, toast: vi.fn(),
     esc: (value: string) => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;'),
   });
-  new Script(UI_HTML.slice(UI_HTML.indexOf('  function renderQuestions('), UI_HTML.indexOf('  function renderPlanReview('))).runInContext(context);
+  const placement = UI_HTML.slice(UI_HTML.indexOf('  function placeDecisionCards('), UI_HTML.indexOf('  function renderApprovals('));
+  new Script(CHAT_QUESTION_JS + placement + UI_HTML.slice(UI_HTML.indexOf('  function renderQuestions('), UI_HTML.indexOf('  function renderPlanReview('))).runInContext(context);
   context.renderQuestions('run', {});
   const choose = (index: number) => div.onclick?.({ target: { closest: (selector: string) => selector === '.opt' ? ({ getAttribute: (name: string) => name === 'data-q' ? '0' : String(index), classList: { add: vi.fn() } }) : null } });
   return { div, api, choose, submit };

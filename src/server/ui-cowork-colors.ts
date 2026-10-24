@@ -1,7 +1,12 @@
 export const COWORK_COLORS_CSS = String.raw`
+  body.cowork[data-character-color] #cw .cw-row.me .cw-bubble { background:var(--cw-message-color)!important; color:var(--cw-user-ink,#111)!important; border-color:var(--cw-message-color)!important; }
+  body.cowork[data-character-color] #cw .cw-row.me .cw-bubble :is(p,li,span,strong,a,.cw-meta) { color:inherit; }
+
   .cw-chat[data-character-color] { background:color-mix(in srgb,var(--character-color) 4%,var(--bg)); }
   .cw-info[data-character-color] { background:color-mix(in srgb,var(--character-color) 2%,var(--bg)); }
   .cw-chat[data-character-color] .cw-bubble a { color:var(--accent); }
+  body.cowork[data-character-color] :is(.cw-widget-toggle,.cw-computer-toggle,.cw-gallery-toggle,.cw-info-toggle,.cw-jump-latest,.cw-profile-close,.workspace-search-trigger,.cw-attach,.voice-phone:not([aria-pressed=true]),.cw-panel-card-icon,.cw-widget-link-icon,.cw-widget-close,.cw-widget-dismiss,.cw-widget-new) svg,
+  body.cowork[data-character-color] :is(.cw-computer-inline header>svg,.cw-gallery-empty>svg,.cw-clean-status svg,.cw-media-lightbox header button svg,.cw-media-lightbox header a svg,.cw-media-lightbox footer button svg,.cw-widget-options) { color:var(--cw-control-color)!important; }
   .cw-character-color { display:flex; align-items:center; flex-wrap:wrap; gap:10px; margin-top:14px; }
   .cw-character-color label { margin:0; letter-spacing:0; text-transform:none; color:var(--muted); font-size:12px; }
   .cw-character-color input[type=color] { width:32px; height:32px; padding:2px; border-radius:50%; cursor:pointer; }
@@ -21,9 +26,23 @@ export const COWORK_COLORS_JS = String.raw`
   function cwCharacterFilter(avatar,shape){var color=cwCharacterColor(avatar),base=CW_DOT_COLORS[shape];if(color===base)return '';var rgb=cwColorRgb(color),source=cwColorRgb(base),high=Math.max.apply(Math,rgb),low=Math.min.apply(Math,rgb),sourceHigh=Math.max.apply(Math,source),sourceLow=Math.min.apply(Math,source),saturation=high?(high-low)/high:0,sourceSaturation=(sourceHigh-sourceLow)/sourceHigh;return 'hue-rotate('+Math.round(cwColorHue(color)-cwColorHue(base))+'deg) saturate('+Math.min(2,saturation/sourceSaturation).toFixed(2)+') brightness('+Math.max(.25,Math.min(1.8,high/sourceHigh)).toFixed(2)+')';}
   function cwColorLuminance(rgb){return rgb.map(function(channel){var n=channel/255;return n<=.04045?n/12.92:Math.pow((n+.055)/1.055,2.4);}).reduce(function(sum,n,index){return sum+n*[.2126,.7152,.0722][index];},0);}
   function cwReadableAccent(color,light){var rgb=cwColorRgb(color),background=cwColorLuminance(light?[250,250,249]:[17,17,17]),target=light?0:255;for(var i=0;i<25;i++){var luminance=cwColorLuminance(rgb),contrast=(Math.max(luminance,background)+.05)/(Math.min(luminance,background)+.05);if(contrast>=4.5)break;rgb=rgb.map(function(channel){return Math.round(channel*.88+target*.12);});}return '#'+rgb.map(function(channel){return channel.toString(16).padStart(2,'0');}).join('');}
+  function cwThemeElement(node,agent) {
+    if(!node||!node.style||!node.setAttribute)return;
+    if(!agent){node.removeAttribute('data-character-color');node.style.removeProperty('--cw-control-color');node.style.removeProperty('--cw-message-color');node.style.removeProperty('--cw-user-ink');return;}
+    var color=cwCharacterColor(agent.avatar),light=document.documentElement&&document.documentElement.getAttribute('data-theme')==='light',accent=cwReadableAccent(color,light);
+    node.setAttribute('data-character-color',color);
+    node.style.setProperty('--cw-control-color',accent);node.style.setProperty('--cw-message-color',color);node.style.setProperty('--cw-user-ink',cwColorLuminance(cwColorRgb(color))>.179?'#000000':'#ffffff');
+  }
   function cwApplyCharacterTheme() {
     var chat=$('cwChat'),panel=$('cwInfoPanel');if(!chat&&!panel)return;
-    var conv=cwActiveConv(),agent=conv&&conv.kind==='dm'?cwConvMembers(conv)[0]:null,light=document.documentElement&&document.documentElement.getAttribute('data-theme')==='light';
-    [chat,panel].forEach(function(node){if(!node)return;if(!agent){node.removeAttribute('data-character-color');['--character-color','--accent','--selected'].forEach(function(key){node.style.removeProperty(key);});return;}var color=cwCharacterColor(agent.avatar);node.setAttribute('data-character-color',color);node.style.setProperty('--character-color',color);node.style.setProperty('--accent',cwReadableAccent(color,light));node.style.setProperty('--selected','color-mix(in srgb,'+color+' 12%,var(--card))');});
+    var cw=cwEnsure(),conv=cwActiveConv(),members=conv?cwConvMembers(conv):[],agent;
+    if(cw.profileOpen||cw.connectionsOpen)agent=cwAgentById(cw.profileOpen?cw.profileAgentId:cw.connectionsAgentId);
+    else agent=members.find(function(member){return member.id===cw.selectedAgentId;})||members.find(function(member){return member.id===(conv&&conv.chiefId);})||members[0];
+    // Body-level custom tokens reach popovers/dialogs appended outside the chat.
+    // They do not override the global theme when Cowork is closed.
+    [document.body,$('cw'),chat,panel].forEach(function(node){cwThemeElement(node,agent);});
+    // Retain the existing direct-chat theme separately from icon colouring.
+    var chatAgent=conv&&conv.kind==='dm'?members[0]:null,light=document.documentElement&&document.documentElement.getAttribute('data-theme')==='light';
+    [chat,panel].forEach(function(node){if(!node)return;if(!chatAgent){node.removeAttribute('data-character-color');['--character-color','--accent','--selected'].forEach(function(key){node.style.removeProperty(key);});return;}var color=cwCharacterColor(chatAgent.avatar);node.setAttribute('data-character-color',color);node.style.setProperty('--character-color',color);node.style.setProperty('--cw-user-ink',cwColorLuminance(cwColorRgb(color))>.179?'#000000':'#ffffff');node.style.setProperty('--accent',cwReadableAccent(color,light));node.style.setProperty('--selected','color-mix(in srgb,'+color+' 12%,var(--card))');});
   }
 `;

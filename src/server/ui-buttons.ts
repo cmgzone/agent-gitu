@@ -1,14 +1,14 @@
 // One action treatment across chat, settings, onboarding and authentication.
 // Selection surfaces retain their state; controls have no resting card chrome.
 export const UI_BUTTON_CSS = String.raw`
-  :is(button, a.btn):not(.mobile-backdrop):not(.cw-panel-backdrop):not(.toggle):not([role="switch"]):not(.cw-colors button):not(.cw-profile-tool) {
+  :is(button, a.btn):not(.mobile-backdrop):not(.cw-panel-backdrop):not(.toggle):not([role="switch"]):not(.cw-colors button):not(.cw-profile-tool):not(.chat-question-choice) {
     border: 0 !important;
     background: transparent !important;
     box-shadow: none !important;
     transition: color .16s ease, background-color .16s ease, transform .12s ease, opacity .16s ease;
     -webkit-tap-highlight-color: transparent;
   }
-  :is(button, a.btn):not(.mobile-backdrop):not(.cw-panel-backdrop):not(.toggle):not([role="switch"]):not(.cw-colors button):not(:disabled):hover {
+  :is(button, a.btn):not(.mobile-backdrop):not(.cw-panel-backdrop):not(.toggle):not([role="switch"]):not(.cw-colors button):not(.chat-question-choice):not(:disabled):hover {
     background: color-mix(in srgb, var(--accent) 9%, transparent) !important;
   }
   :is(button, a.btn):not(.mobile-backdrop):not(.cw-panel-backdrop):not(.toggle):not([role="switch"]):not(:disabled):active { transform: translateY(1px) scale(.97); }
@@ -78,7 +78,7 @@ export const UI_BUTTON_JS = String.raw`
     return paths[name] ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' + paths[name] + '</svg>' : icon(name);
   }
   function decorateActionButton(button) {
-    if (button.matches('.mobile-backdrop,.cw-panel-backdrop,.cw-widget-backdrop,.toggle,[role="switch"],.cw-colors button,.cw-learn')) return;
+    if (button.matches('.mobile-backdrop,.cw-panel-backdrop,.cw-widget-backdrop,.toggle,[role="switch"],.cw-colors button,.cw-learn,.home-project-open,.home-project-chat')) return;
     var existing = button.querySelector('svg,img,input');
     if (existing) {
       if (existing.tagName.toLowerCase() === 'svg') { existing.setAttribute('aria-hidden', 'true'); existing.setAttribute('focusable', 'false'); }

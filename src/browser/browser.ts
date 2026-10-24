@@ -6,6 +6,7 @@ export interface BrowserState {
   canForward: boolean;
   loading: boolean;
   driving?: boolean;
+  control?: 'agent' | 'user';
 }
 
 export interface BrowserScreenshot {
@@ -32,6 +33,10 @@ export interface BrowserBridge {
   click(x: number, y: number): Promise<BrowserState>;
   type(text: string): Promise<BrowserState>;
   screenshot(): Promise<BrowserScreenshot>;
+  /** Owner-only viewing and input; never expose these methods as agent tools. */
+  ownerScreenshot?(): Promise<BrowserScreenshot>;
+  setControl?(control: 'agent' | 'user'): void | Promise<void>;
+  human?(action: string, args: Record<string, unknown>): Promise<BrowserState>;
   focus?(): Promise<BrowserState>;
   clickSelector?(selector: string): Promise<BrowserState>;
   hover?(x: number, y: number): Promise<BrowserState>;

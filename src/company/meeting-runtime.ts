@@ -123,11 +123,11 @@ export class CompanyMeetingRuntime {
       if (tool === 'company_organization' && (!args['action'] || args['action'] === 'read')) return undefined;
       if (tool === 'company_handbook' && (!args['action'] || ['list', 'read', 'propose'].includes(String(args['action'])))) return undefined;
       if (tool === 'company_onboarding' && ['list', 'read'].includes(String(args['action']))) return undefined;
-      if(tool==='company_workflow'&&['list','read','save','validate','simulate','run'].includes(String(args['action'])))return undefined;
+      if(tool==='company_workflow'&&['list','read','create','propose','save','validate','simulate','run'].includes(String(args['action'])))return undefined;
       if (
         tool === 'company_boardroom' &&
         (!args['meetingId'] || args['meetingId'] === meetingId) &&
-        !['create', 'start', 'grant', 'finish', 'interrupt', 'assign', 'cancel'].includes(String(args['action']))
+        !['create', 'review_request', 'start', 'grant', 'finish', 'interrupt', 'assign', 'cancel'].includes(String(args['action']))
       )
         return undefined;
       throw new Error('This is a meeting discussion. Propose work or a decision here; execute work through an authorized mission after the discussion.');

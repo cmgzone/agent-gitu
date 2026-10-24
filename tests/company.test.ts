@@ -218,7 +218,7 @@ describe('Companies', () => {
   it('classifies exact native mailbox reads separately from sends and mailbox mutations', async () => {
     const store = fixture(), company = running(store);
     const policy = companyPolicy(store, company.id, 'lead', 0);
-    for (const tool of ['mail_list', 'mail_search', 'mail_read', 'mail_folders']) {
+    for (const tool of ['mail_check', 'mail_list', 'mail_search', 'mail_read', 'mail_folders']) {
       expect(await policy.authorize('connected_apps', { action: 'execute', service: 'mail', tool })).toBeUndefined();
     }
     expect(store.actions(company.id)).toHaveLength(0);
@@ -257,7 +257,7 @@ describe('Companies', () => {
     s.setRuntimeSettings({ computers: 1 });
     s.reserveComputer(a.id, 'lead');
     s.computerState(a.id, 'lead', 'unavailable');
-    expect(() => s.reserveComputer(b.id, 'lead')).toThrow('another company');
+    expect(() => s.reserveComputer(b.id, 'lead')).toThrow('concurrency');
     expect(() => s.reserveComputer(a.id, 'lead', 'different-server')).toThrow('previous private computer');
     expect(() => s.reserveComputer(b.id, 'other')).toThrow('concurrency');
     s.computerState(a.id, 'lead', 'stopped');
@@ -284,6 +284,8 @@ describe('Companies', () => {
   });
   it('parses new UI modules', () => {
     expect(() => new Script(COMPANY_JS)).not.toThrow();
+    expect(COMPANY_JS).toContain('/cowork/computers/stream');
+    expect(COMPANY_JS).toContain('frame.remove()');
     expect(() => new Script(FILE_UPLOAD_JS)).not.toThrow();
     expect(() => new Script(COMPANY_CONNECTIONS_JS)).not.toThrow();
     expect(() => new Script(COMPANY_WALLETS_JS)).not.toThrow();

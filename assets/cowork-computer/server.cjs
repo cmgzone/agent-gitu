@@ -63,6 +63,7 @@ async function desktopInput(p) {
   let args;
   switch (p.action) {
     case 'launch': {
+      if (p.app === 'browser' && p.requireGoogleChrome === true && !fs.existsSync('/usr/bin/google-chrome-stable')) throw new Error('Google Chrome profile sign-in needs an AMD64 computer server with Google Chrome installed. Chromium on ARM64 cannot provide Chrome account sync.');
       const apps = { browser: ['node', '/computer/open-browser.cjs'], agent_browser: ['node', '/computer/open-agent-browser.cjs'], files: ['thunar', '/workspace'], terminal: ['xfce4-terminal', '--working-directory=/workspace'] };
       const app = Object.hasOwn(apps, p.app) ? apps[p.app] : undefined;
       if (!app) throw new Error('Unknown desktop app.');
@@ -318,15 +319,15 @@ async function execute({ id, tool, params: p = {} }) {
       return { ok: true, output: fs.readFileSync(target).toString('base64') };
     }
     case 'file_transfer_info': {
-      const target=file(),info=fs.statSync(target);
+      const target=safePath(p.path,shareRoots),info=fs.statSync(target);
       if(!info.isFile())throw new Error('Only regular files can be transferred.');
       return {ok:true,output:JSON.stringify({size:info.size,mtime:info.mtimeMs})};
     }
     case 'file_transfer_checksum': {
-      const hash=require('node:crypto').createHash('sha256');for await(const chunk of fs.createReadStream(file()))hash.update(chunk);return{ok:true,output:hash.digest('hex')};
+      const hash=require('node:crypto').createHash('sha256');for await(const chunk of fs.createReadStream(safePath(p.path,shareRoots)))hash.update(chunk);return{ok:true,output:hash.digest('hex')};
     }
     case 'file_transfer_read': {
-      const target=file(),offset=Number(p.offset),length=Math.min(5*1024*1024,Number(p.length));
+      const target=safePath(p.path,shareRoots),offset=Number(p.offset),length=Math.min(5*1024*1024,Number(p.length));
       if(!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(length)||length<1)throw new Error('Invalid transfer range.');
       const fd=fs.openSync(target,'r');try{const buffer=Buffer.alloc(length),count=fs.readSync(fd,buffer,0,length,offset);return {ok:true,output:buffer.subarray(0,count).toString('base64')};}finally{fs.closeSync(fd);}
     }

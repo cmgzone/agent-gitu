@@ -199,6 +199,7 @@ describe('whole-app authentication', () => {
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
     const headers: Record<string, string> = {};
     const response = {
+      getHeader: (key: string) => headers[key],
       setHeader: (key: string, value: string) => {
         headers[key] = value;
       },
@@ -211,6 +212,7 @@ describe('whole-app authentication', () => {
     vi.advanceTimersByTime(8 * 60 * 60 * 1000);
     expect(auth.authenticated(req)).toBe(false);
     expect(stream.destroy).toHaveBeenCalledOnce();
+    delete headers['Set-Cookie']; // The next HTTP response has its own headers.
     auth.issue(request(), response);
     const locked = request(headers['Set-Cookie']);
     const other = { once: vi.fn(), destroy: vi.fn() } as unknown as ServerResponse;

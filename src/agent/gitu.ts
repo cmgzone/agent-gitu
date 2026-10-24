@@ -165,6 +165,8 @@ import {
 } from './action-parser.js';
 
 export interface GituConfig {
+  /** Host-owned deployment authority, checked live rather than supplied by a teammate brief. */
+  deploymentAllowed?: () => boolean;
   cwd: string;
   llm: LlmClient;
   /** Host-owned folders the user tagged in this run; readable, never writable. */
@@ -655,7 +657,7 @@ export class Gitu {
       this.config.connections,
       // The agent-facing memory tool: reads are scoped to this project, so
       // specialist-private memories stay invisible to the main agent.
-      { memory, memoryContext: { projectId: guard.lock.name }, signal: () => this.abortController?.signal, onCodingEvent: this.config.onCodingEvent },
+      { memory, memoryContext: { projectId: guard.lock.name }, signal: () => this.abortController?.signal, onCodingEvent: this.config.onCodingEvent, deploymentAllowed: this.config.deploymentAllowed },
     );
     // The server owns and reuses its index. A direct Gitu run owns the index
     // it creates, so it must close it even when the run exits early or fails.
@@ -1250,7 +1252,7 @@ export class Gitu {
       // satisfied criteria, completed steps, changed files) and only stalls when
       // turns are being spent without any of those moving.
       const effortMaxTurns = effortPlan?.maxTurns ?? Number.MAX_SAFE_INTEGER;
-      let effortMaxSpecialists = Number.MAX_SAFE_INTEGER;
+      let effortMaxSpecialists = autonomy.persistent ? Number.MAX_SAFE_INTEGER : (effortPlan?.maxSpecialists ?? Number.MAX_SAFE_INTEGER);
       const BUDGET_EXTENSIONS_MAX = 4;
       // A user-set ceiling outranks everything below; without one, persistent
       // autonomy extends the estimate for as long as the work keeps moving.
@@ -3366,6 +3368,7 @@ export class Gitu {
                     return false;
                   }
                   completionAction.risks = [...(completionAction.risks ?? []), `User accepted unresolved strict-risk quality-review warning: ${summary}`];
+                  this.emit('review   unresolved strict-risk quality-review warning explicitly accepted by user');
                 } else {
                   completionAction.risks = [...(completionAction.risks ?? []), `Unresolved final quality-review warning accepted after ${qualityReviewRejections} revision round(s): ${summary}`];
                 }
@@ -3820,6 +3823,12 @@ export class Gitu {
                 ledger.addBlocker(blocked);
                 exitReason = 'blocked';
                 observe(`Recovery exhausted before block:\n${blocked}`);
+                break;
+              }
+              if (!autonomy.persistent) {
+                ledger.addBlocker(action.reason);
+                exitReason = 'blocked';
+                observe(`Block recorded: ${action.reason}`);
                 break;
               }
               const blockKey = action.reason.trim().toLowerCase();

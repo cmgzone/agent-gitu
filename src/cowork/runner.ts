@@ -10,6 +10,7 @@ import { coworkTranscript, prepareCoworkContextInBackground, renderCoworkTaskCon
 import { appAwareness, connectionQuestion, connectionReply } from './app-awareness.js';
 import type { ConnectedAppsProvider } from '../connections/provider.js';
 import type { BudgetAccount } from '../coding/budget.js';
+import { readRuntimeSelection } from '../workspace/runtime-selection.js';
 import type { CoworkSubAgentBridge, CoworkSubAgentRunner, SubAgentChildRunner, SubAgentToolScope, SubAgentTrailEntry } from './subagents.js';
 import { buildSubAgentEvidenceReport } from './subagents.js';
 import type { SubAgentInstance } from './store.js';
@@ -245,6 +246,11 @@ function systemPrompt(agent: CoworkAgent, conversation: CoworkConversation, memb
   const parts: string[] = [
     `You are "${agent.name}"${agent.tagline ? ` — ${agent.tagline}` : ''}, a teammate in Agent Gitu's cowork mode.`,
     `Your personality and operating instructions:\n${agent.systemPrompt}`,
+    ...(agent.chiefOfStaff?[`APP CONTROL: use app_manage to change the user's selected model, project and app preferences, inspect or stop tasks, and queue internal messages. It can list_agents/delete_agent {agentId}, list_companies/delete_company {companyId}, delete_task {runId}, and delete_conversation {conversationId}. Delete only the exact items the user requested. Company deletion retains project files and a recovery snapshot. Report successful tool receipts; never claim a setting cannot be changed before checking this tool. Security grants, credentials and approvals retain their dedicated controls.`]:[]),
+    'CODING CONCURRENCY: A chat gitu_task handoff returns a running task handle immediately. Tell the user coding is in progress, finish your current chat turn and remain available for other tasks. Do not wait or repeatedly poll. The user can talk to Main Agent Gitu directly; its updates inform you without requiring you to relay or repeat the request. A host-recorded result or failure will wake you. On failure diagnose and use gitu_task {retryOf:runId,goal:"concrete repair"} for at most two bounded attempts. Escalate missing access/credentials/approval, a repeated identical failure or an unfixable blocker to the user. Keep the user-selected model and do not restart stopped or completed work.',
+    `CODING OWNERSHIP: Main Agent Gitu is responsible for every repository coding task. Use gitu_task with the user's full brief, repository location, constraints and acceptance checks for code changes, debugging, builds and tests. It creates a visible task in the main Code workspace and returns the outcome to you. Coordinate and report that verified result to the user. Do not implement code with write_file, shell, desktop input or a separately spawned helper, including when delegation is blocked. Keep non-coding work moving; report a concrete coding blocker honestly.`,
+    'DEPLOYMENT OWNERSHIP: P.A coordinates and executes deployments with connection_execute, connected_apps, SSH or documented deployment commands using the saved connections. Delegate only implementation, debugging, builds and tests to Main Agent Gitu. After its verified result returns, handle deployment yourself when requested. A coding handoff does not authorize Main Agent to deploy. For API setup use update_connection with discoverCapabilities:true, or persist newly documented operations, retaining both read and write capabilities for later tasks. Never invent MCP aliases for saved API connections.',
+    'API AUTHENTICATION: Use connection_test with the exact saved connectionId for a fresh authenticated API check before asking to replace a key after an authentication error. Its current result supersedes older 401 messages and reconnect requests. A timeout, homepage, missing route or missing permission does not establish an invalid credential. API-key headers are configured in the secure connection settings; never put a key in a tool argument, chat, URL or shell command. REST API access and MCP server configuration are separate: a saved REST connection does not create an MCP server, and an unauthenticated web_fetch to /mcp cannot test its saved credential.',
     agentProfileInstructions(agent),
     agent.companyId ? (deps?.toolContext?.(agent)?.companyOrganizationContext?.() ?? '') : '',
     TASK_EFFICIENCY_GUIDANCE,
@@ -479,7 +485,7 @@ function currentMembers(conversation: CoworkConversation, deps: CoworkRunnerDeps
  * Every durable agent is depth 1 in v1 (chief included), so a spawned worker
  * lands at depth 2 and cannot re-spawn.
  */
-function subAgentBridgeFor(agent: CoworkAgent, conversationId: string, missionId: string | undefined, deps: CoworkRunnerDeps, threadId?: string): CoworkSubAgentBridge | undefined {
+export function subAgentBridgeFor(agent: CoworkAgent, conversationId: string, missionId: string | undefined, deps: CoworkRunnerDeps, threadId?: string): CoworkSubAgentBridge | undefined {
   if (!deps.subAgents || !deps.store) return undefined;
   const account = deps.budgetFor?.({ conversationId, ...(missionId ? { missionId } : {}), agentId: agent.id });
   const scope: SubAgentToolScope = {
@@ -1451,6 +1457,10 @@ export function createSubAgentChildRunner(deps: CoworkRunnerDeps): SubAgentChild
       chiefOfStaff: false,
       createdAt: instance.createdAt,
     };
+    if(instance.role==='Agent Gitu coding'){
+      const selected=readRuntimeSelection();
+      if(selected.provider&&selected.model){childAgent.provider=selected.provider;childAgent.model=selected.model;}
+    }
     const metered = Boolean(deps.subAgentLlm);
     let budgetStopped = false;
     const llm = resilientLlm(
@@ -1470,7 +1480,9 @@ export function createSubAgentChildRunner(deps: CoworkRunnerDeps): SubAgentChild
             conversationId: instance.conversationId,
             ...(instance.threadId ? { threadId: instance.threadId } : {}),
             ...(instance.missionId ? { missionId: instance.missionId } : {}),
-            computerFor: deps.computerFor,
+            computerFor: instance.role === 'Agent Gitu coding' && deps.computerFor
+              ? () => deps.computerFor!(parentAgent.id, parentAgent)
+              : deps.computerFor,
             signal,
             taggedFolders,
             artifactIds,

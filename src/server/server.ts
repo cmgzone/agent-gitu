@@ -1,9 +1,10 @@
+import { createHash } from 'node:crypto';
 import { connectedAppsRoutes } from './routes/connected-apps.js';
 import http from 'node:http';
 import { logger, errorMetadata } from './logger.js';
 import { healthRoute } from './routes/health.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { CompanyStore, effectiveFileLimit, type Company, type CompanyJob } from '../company/store.js';
+import { CompanyStore, canonicalAction, effectiveFileLimit, type Company, type CompanyJob } from '../company/store.js';
 import { CompanyCoordinator } from '../company/coordinator.js';
 import { CompanyOrganization } from '../company/organization.js';
 import { CompanyBoardroom } from '../company/boardroom.js';
@@ -13,13 +14,14 @@ import { executeHandbookTool } from '../company/handbook-api.js';
 import { CompanyWorkflows } from '../company/workflows.js';
 import { executeWorkflowTool } from '../company/workflow-api.js';
 import { CompanyCalendar } from '../company/calendar.js';
-import { coworkNativeTools } from '../cowork/tools.js';
+import { coworkNativeTools, executeCoworkTool } from '../cowork/tools.js';
 import { executeBoardroomTool } from '../company/boardroom-tool.js';
 import { CompanyMeetingRuntime, type MeetingTurnInput } from '../company/meeting-runtime.js';
 import { CompanyLlm } from '../company/llm.js';
 import { companyPricing, companyUsageCostUsd } from '../company/pricing.js';
 import { companyApi, type CompanyApiDeps } from '../company/api.js';
 import { manageCoworkCompanies } from '../company/cowork-management.js';
+import { syncCompanyOutcomes } from '../company/outcome-memory.js';
 import { companyPolicy } from '../company/policy.js';
 import { StorageRegistry } from '../storage/registry.js';
 import { storageApi } from '../storage/api.js';
@@ -29,14 +31,17 @@ import { companyMcpApi } from '../company/integrations.js';
 import { ServerBrowser, ServerBrowserUnavailableError, SERVER_BROWSER_SETUP } from '../browser/server-browser.js';
 import { CompanyWorkers } from '../company/workers.js';
 import { serverBrowserView } from '../browser/server-view.js';
+import { ChromeProfileSession } from '../browser/chrome-profile.js';
+import { chromeProfileView } from '../browser/chrome-profile-view.js';
 import { UploadStore, UPLOAD_CHUNK_BYTES } from '../files/uploads.js';
 import { readFilePrefix } from '../files/prefix.js';
 import { WebSocket, WebSocketServer } from 'ws';
-import { bridgeDesktop, connectDesktopStream } from '../cowork/desktop-stream.js';
+import { bridgeDesktop, connectDesktopStream, localDesktopStream } from '../cowork/desktop-stream.js';
 import { CloudComputerTransport } from '../cowork/cloud-computer.js';
 import { desktopAsset, desktopView } from './desktop-view.js';
 import { MobileAccess } from './mobile-access.js';
 import { AppAuth } from './app-auth.js';
+import { GoogleSignIn } from './google-sign-in.js';
 import { authPage } from './ui-auth.js';
 import { modelIcon } from './model-icons.js';
 import { ComposioConnections } from '../connections/composio.js';
@@ -53,6 +58,7 @@ import { Gitu } from '../agent/gitu.js';
 import { providerRecoveryDelay } from '../agent/task-recovery.js';
 import { createGitu, type GituFactoryDependencies } from '../coding/gitu-factory.js';
 import { GituSessionRuntime, type GituCodingSession } from '../coding/session-runtime.js';
+import { privateCodingSession } from '../coding/private-coding-session.js';
 import { resolveAutonomy, type AutonomyPolicy } from '../agent/autonomy.js';
 import { createBudgetAccount, type BudgetAccount } from '../coding/budget.js';
 import type { ChiefResolver } from '../coding/chief.js';
@@ -61,13 +67,20 @@ import { ChiefOfStaff, type ChiefAdvisor } from '../chief/chief.js';
 import { modelChiefAdvisor } from '../chief/advisor.js';
 import { resolveAuthorityPolicy, type AuthorityPolicy, type AuthorityPolicyPatch } from '../chief/authority.js';
 import { workspacePath } from '../coding/workspace.js';
+import { projectForCoding } from '../coding/project-selection.js';
+import { readRuntimeSelection, saveRuntimeSelection } from '../workspace/runtime-selection.js';
+import { workspaceCheckpoint } from '../checkpoint/workspace-checkpoints.js';
+import { codingPermissions, codingAutoApprove, saveCodingPermissions } from '../workspace/coding-permissions.js';
+import { deploymentIntent, isDeploymentAction, DEPLOYMENT_OWNERSHIP } from '../coding/deployment-authority.js';
 import { CoworkDelegation, type DelegationScope, type DelegationSessionInput } from '../cowork/delegation.js';
 import { CoworkSubAgents, CoworkSubAgentRunner } from '../cowork/subagents.js';
 import type { CodingEvent } from '../coding/events.js';
 import { classifyFollowUp, conversationIntent, isNonMutatingStatusQuestion } from '../agent/follow-up.js';
 import { CoworkLiveMailbox, type CoworkDelivery } from '../cowork/live-messages.js';
 import { appAwareness, connectionQuestion, connectionReply } from '../cowork/app-awareness.js';
-import { APP_REVIEW_INTERVAL_MS, reviewConnectedApps } from '../cowork/proactive-apps.js';
+import { appReviewDue, reviewConnectedApps } from '../cowork/proactive-apps.js';
+import { Proactivity, assistantBrief, localClock, inQuietHours, type AssistantFact } from '../cowork/proactivity.js';
+import { mainRepositories } from '../cowork/main-repositories.js';
 import { LspManager } from '../lsp/manager.js';
 import { CodeIndex } from '../context/code-index.js';
 import { SubAgentRunner } from '../agent/subagent.js';
@@ -83,12 +96,12 @@ import { LlmError, UsageTrackingClient, extractLastJsonObject } from '../llm/llm
 import { CoworkStore, MAX_ARTIFACT_BYTES, type CoworkBudgetData, type CoworkConversation, type CoworkMessage, type CoworkAgent, type CoworkWidgetKind, type CoworkMission, type CoworkRequest } from '../cowork/store.js';
 import { CoworkMemory } from '../cowork/memory.js';
 import type { AgentPersonality, AgentRole } from '../cowork/profile-config.js';
-import { runConversationTurn, runMissionSession, answerCoworkQuestion, reviewCoworkLearning, mentionNames, renderReferencedMessages, type CoworkProgress, type CoworkTriggerMedia } from '../cowork/runner.js';
+import { runConversationTurn, runMissionSession, answerCoworkQuestion, reviewCoworkLearning, mentionNames, renderReferencedMessages, subAgentBridgeFor, type CoworkProgress, type CoworkTriggerMedia } from '../cowork/runner.js';
 import { GituVoiceCalls, liveKitConfiguration, decideVoiceTurn, type VoiceCall, type VoiceTarget, type VoiceContext } from '../voice/livekit.js';
 import { LiveKitCloudWorker } from '../voice/cloud-worker.js';
 import { buildSystemPrompt } from '../agent/prompt.js';
 import { MemoryStore } from '../memory/memory-store.js';
-import { CoworkComputer, hostedComputerExec } from '../cowork/computer.js';
+import { CoworkComputer, hostedComputerExec, dockerExec } from '../cowork/computer.js';
 import { CoworkBrowserLease } from '../cowork/browser-lease.js';
 import { DiscordGateway, recentDiscordChannels, recentDiscordGuilds, sendDiscordMessage, sendDiscordRequestCard, parseDiscordRequestReply, type DiscordFetch, type DiscordWebSocketFactory } from '../cowork/discord.js';
 import { TelegramPoller, TelegramReplyStream, TelegramTypingIndicator, cleanTelegramText, parseTelegramRequestAction, recentTelegramChats, sendTelegramArtifact, sendTelegramMessage, sendTelegramRequestCard, telegramAgentMessage, type TelegramFetch } from '../cowork/telegram.js';
@@ -108,13 +121,13 @@ import { Reporter } from '../report/reporter.js';
 import { SkillStore } from '../skills/skills.js';
 import { PendingSkillStore } from '../skills/pending.js';
 import { CoworkRecall } from '../cowork/recall.js';
-import { ConnectionRegistry, normalizeConnectionOperation, normalizeConnectionOperationBody, type ConnectionOperationRisk, type ConnectionRequirement } from '../connections/connections.js';
+import { ConnectionRegistry, normalizeConnectionOperation, sameConnectionOperation, normalizeConnectionOperationBody, type ConnectionOperationRisk, type ConnectionRequirement } from '../connections/connections.js';
 import { probeSshHost, SshConnectionRegistry } from '../connections/ssh-connections.js';
 import { catalogCapabilityDeclared } from '../connections/catalog.js';
 import type { ApprovalHandler } from '../policy/policy.js';
 import { UniversalCapabilityRegistry } from '../connections/runtime/universal-registry.js';
 import type { ModelContextAttachment } from '../context/model-context.js';
-import type { CompletionReport, RiskTier } from '../types.js';
+import type { CompletionReport, RiskTier, ToolResult } from '../types.js';
 import { nowIso, sha256, shortId } from '../util.js';
 import { createProject, ensureGituHome, gituHomeRoot, isDriveRoot, listProjects, loadWorkspaceSettings, projectsDir, sanitizeCustomProviders, updateWorkspaceSettings } from '../workspace/home.js';
 import { UI_HTML } from './ui.js';
@@ -168,6 +181,7 @@ interface ConnectionWaiter extends PendingConnection {
 }
 
 export interface RunSessionView {
+  coworkTask?: import('./session-store.js').StoredSession['coworkTask'];
   runId: string;
   goal: string;
   status: 'running' | 'waiting_for_model' | 'stalled' | 'completed' | 'blocked' | 'failed' | 'aborted';
@@ -249,6 +263,7 @@ interface NativeEventFrame {
 type StreamFrame = SessionEvent | NativeEventFrame;
 
 interface RunSession {
+  coworkTask?: import('./session-store.js').StoredSession['coworkTask'];
   executionGeneration?: number;
   runId: string;
   goal: string;
@@ -294,7 +309,7 @@ interface RunSession {
   gitu?: InstanceType<typeof Gitu>;
   /** The runtime session that owns this run's gates. Set with `gitu` so it
    *  shares its staleness rules, and cleared when the run it belongs to ends. */
-  runtime?: GituCodingSession;
+  runtime?: CodingSession;
   /** LSP servers are kept alive for the whole session (across continuations). */
   lsp?: LspManager;
   report?: CompletionReport;
@@ -328,6 +343,7 @@ export interface GituServerConfig {
   /** Automatically bootstrap missing built-in language servers (enabled by default). */
   autoInstallLsp?: boolean;
   browser?: BrowserBridge;
+  chromeProfile?: ChromeProfileSession;
   telegramFetch?: TelegramFetch;
   /** Legacy mode is only for callers that supply models without the Cowork
    * completion-state protocol. Normal app turns require explicit state. */
@@ -464,6 +480,7 @@ export class GituServer {
   private readonly config: GituServerConfig;
   private readonly mobileAccess: MobileAccess;
   private readonly appAuth: AppAuth;
+  private readonly googleSignIn = new GoogleSignIn(undefined, nodePath.join(ensureGituHome().settings, 'google-sign-in.json'));
   private desktopSockets?: WebSocketServer;
   private readonly desktopAgents = new Map<WebSocket, string>();
   private readonly connectedApps: ComposioConnections;
@@ -490,7 +507,7 @@ export class GituServer {
   private companyStore?: CompanyStore;
   private companyCoordinator?: CompanyCoordinator;
   private companyCowork = new Map<string,CoworkStore>();
-  private companyMemories = new Map<string,CoworkMemory>();
+
   private companyHelpers = new Map<string,CoworkSubAgentRunner>();
   private companyRecalls = new Map<string,CoworkRecall>();
   private uploadStore?: UploadStore;
@@ -516,7 +533,7 @@ export class GituServer {
   private readonly coworkBrowserLease = new CoworkBrowserLease();
   private readonly coworkAgentLocks = new Map<string, Promise<void>>();
   /** Engineering delegation: `gitu_task` → a fresh Agent Gitu session. */
-  private delegationService?: CoworkDelegation;
+  private readonly delegationServices = new Map<string, CoworkDelegation>();
   /** Per-conversation pools of delegated spend, so siblings compete for money. */
   private readonly delegationPools = new Map<string, BudgetAccount>();
   /** Per-mission envelopes, allocated inside their conversation's pool. */
@@ -527,6 +544,8 @@ export class GituServer {
   private readonly delegatedSessionResources = new Map<string, () => void>();
   private readonly coworkSubscribers = new Map<string, Set<() => void>>();
   private readonly coworkStreams = new Set<http.ServerResponse>();
+  /** Live computer cards, keyed by personal/company scope. */
+  private readonly computerSubscribers = new Map<string, Set<() => void>>();
 
   private readonly browserSubs = new Set<(msg: Record<string, unknown>) => void>();
   private browserState: { available: boolean; url: string; title: string; canBack: boolean; canForward: boolean; loading: boolean } = {
@@ -540,7 +559,25 @@ export class GituServer {
   private readonly browserPending = new Map<string, { resolve: (v: Record<string, unknown>) => void; timer: NodeJS.Timeout }>();
 
   private serverBrowsers=new Map<string,ServerBrowser>();
-  private serverBrowser(agentId='workspace'):ServerBrowser{const companyId=this.companyScope.getStore()?.id,key=(companyId??'workspace')+':'+agentId;let browser=this.serverBrowsers.get(key);if(!browser){browser=new ServerBrowser(nodePath.join(companyId?this.companies().workspace(companyId):ensureGituHome().workspace,'browser-profiles',agentId));this.serverBrowsers.set(key,browser);}return browser;}
+  private chromeProfile?: ChromeProfileSession;
+  private ownerChromeProfile(): ChromeProfileSession {
+    if (this.config.chromeProfile) return this.config.chromeProfile;
+    if (!this.chromeProfile) this.chromeProfile = new ChromeProfileSession(nodePath.join(ensureGituHome().settings,'ChromeProfiles'),this.appAuth.userId,
+      () => {
+        const cloud=this.cloudServers().filter(server=>server.id!=='hosted'&&server.hasCredential).map(server=>({id:server.id,label:server.label}));
+        if(process.env['AGENT_GITU_COMPUTER_BROKER_URL'])return [{id:'hosted',label:'This hosted server'},...cloud];
+        const local={id:'local',label:'This computer · Docker'};
+        const docker=(process.env['PATH']??'').split(nodePath.delimiter).some(dir=>existsSync(nodePath.join(dir,process.platform==='win32'?'docker.exe':'docker')));
+        return docker?[local,...cloud]:[...cloud,local];
+      },
+      id => {
+        if(id==='local') return {id,label:'This computer',execute:dockerExec,stream:name=>localDesktopStream(name)};
+        if(id==='hosted') return {id,label:'This hosted server',execute:hostedComputerExec,stream:name=>{if(!process.env['AGENT_GITU_COMPUTER_BROKER_URL'])throw new Error('Hosted Chrome runtime unavailable.');return connectDesktopStream(name);}};
+        const cloud=this.cloudComputer(id);return {id,label:this.cloudServers().find(server=>server.id===id)?.label??'Cloud computer',execute:cloud.execute,stream:(name,signal)=>cloud.desktopStream(name,signal)};
+      });
+    return this.chromeProfile;
+  }
+  private serverBrowser(agentId='workspace'):ServerBrowser{const companyId=this.companyScope.getStore()?.id,key=(companyId??'workspace')+':'+agentId;let browser=this.serverBrowsers.get(key);if(!browser){browser=new ServerBrowser(nodePath.join(companyId?this.companies().workspace(companyId):ensureGituHome().workspace,'browser-profiles',agentId),{systemBrowser:true});this.serverBrowsers.set(key,browser);}return browser;}
   private browserImpl(agentId?:string): BrowserBridge {
     if(this.companyScope.getStore()||(!this.config.browser&&this.browserSubs.size===0))return this.serverBrowser(agentId);
     if (this.config.browser) return this.config.browser;
@@ -728,8 +765,12 @@ export class GituServer {
 
   constructor(config: GituServerConfig) {
     this.config = config;
+    for (const connection of this.connections.list()) if (connection.hasCredential) {
+      try { this.connections.rememberCapabilities(connection.id); }
+      catch (error) { logger.warn({ subsystem: 'connections', connectionId: connection.id, ...errorMetadata(error) }, 'Could not refresh documented connection capabilities'); }
+    }
     this.mobileAccess = new MobileAccess(config.accessKey ?? process.env['AGENT_GITU_ACCESS_KEY']);
-    this.appAuth = new AppAuth(nodePath.join(ensureGituHome().settings, 'app-password.json'), config.passwordRequired !== false, process.env['AGENT_GITU_TRUST_LOCAL_PROXY'] === '1', process.env['AGENT_GITU_REGISTRATION_TOKEN']);
+    this.appAuth = new AppAuth(nodePath.join(ensureGituHome().settings, 'app-password.json'), config.passwordRequired !== false, process.env['AGENT_GITU_TRUST_LOCAL_PROXY'] === '1', process.env['AGENT_GITU_REGISTRATION_TOKEN'], this.mobileAccess.enabled && process.env['AGENT_GITU_ALLOW_LAN_LOGIN'] === '1');
     this.connectedApps = config.connectedApps ?? new ComposioConnections(() => this.appAuth.userId);
     this.mailConnections = config.mailConnections ?? new MailConnections();
     this.appHub = new ConnectionsHub(this.connectedApps, this.mailConnections);
@@ -746,7 +787,7 @@ export class GituServer {
     }
   }
 
-  private resolveTaskRoot(taskId: string, queryPath?: string | null): string | undefined {
+  private resolveTaskRoot(taskId: string, queryPath?: string | null, startupRoots?: Map<string, string | undefined>): string | undefined {
     const candidates: (string | undefined)[] = [queryPath ?? undefined];
     for (const s of this.sessions.values()) {
       if (s.taskId === taskId) candidates.push(s.projectPath);
@@ -754,9 +795,17 @@ export class GituServer {
     candidates.push(this.config.cwd);
     for (const c of candidates) {
       if (!c) continue;
+      if (startupRoots?.has(c)) {
+        const root = startupRoots.get(c);
+        if (root) return root;
+        continue;
+      }
       try {
-        return ProjectGuard.detect(c).lock.repoRoot;
+        const root = ProjectGuard.detect(c).lock.repoRoot;
+        startupRoots?.set(c, root);
+        return root;
       } catch {
+        startupRoots?.set(c, undefined);
         /* try next candidate */
       }
     }
@@ -900,6 +949,8 @@ export class GituServer {
     }
   }
 
+  private coworkCodingActivitySignatures = new Map<string, string>();
+
   private persistSession(s: RunSession): void {
     // A deleted (or superseded) session must never be written back: the run's
     // unwind path (pushEvent → recordEvent, usage tracking) would otherwise
@@ -907,6 +958,7 @@ export class GituServer {
     if (s.runId === undefined || this.sessions.get(s.runId) !== s) return;
     this.db().upsertSession({
       runId: s.runId,
+      coworkTask: s.coworkTask,
       taskId: s.taskId,
       goal: s.goal,
       project: s.project,
@@ -930,6 +982,13 @@ export class GituServer {
       usage: s.usage,
       modelRecovery: s.modelRecovery,
     });
+    if (s.coworkTask) {
+      const signature = JSON.stringify([s.status, s.goal, s.approvals.size, Boolean(s.planReview), Boolean(s.questions)]);
+      if (this.coworkCodingActivitySignatures.get(s.runId) !== signature) {
+        this.coworkCodingActivitySignatures.set(s.runId, signature);
+        this.publishCowork(s.coworkTask.conversationId);
+      }
+    }
   }
 
   /**
@@ -1002,6 +1061,16 @@ export class GituServer {
       // Browsers always supply Origin on a WebSocket handshake. Reject missing
       // Origin as well, so a cross-site socket cannot bypass the JSON CSRF gate.
       if (!req.headers.origin || !this.isSameOrigin(req)) { reject(403); return; }
+      if (req.url === '/api/chrome-profile/vnc') {
+        if (!this.appAuth.authenticated(req)) { reject(401); return; }
+        const profile=this.ownerChromeProfile();
+        if(profile.snapshot().state!=='running'){reject(409);return;}
+        desktopSockets.handleUpgrade(req,socket,head,client=>{
+          this.appAuth.track(req,socket);
+          const opening=new AbortController();client.once('close',()=>opening.abort());
+          void profile.stream(opening.signal).then(desktop=>{if(client.readyState!==WebSocket.OPEN){desktop.destroy();return;}bridgeDesktop(client,desktop);}).catch(()=>client.close(1011,'Chrome profile unavailable'));
+        });return;
+      }
       const match = req.url?.match(/^\/api(?:\/companies\/([\w-]+))?\/cowork\/agents\/([\w-]+)\/computer\/vnc$/);
       if (!match) { reject(404); return; }
       const company=match[1]?this.companies().get(match[1]):undefined;
@@ -1013,7 +1082,7 @@ export class GituServer {
       if (agent.useHostComputer || computer.status().state !== 'running') { reject(409); return; }
       desktopSockets.handleUpgrade(req, socket, head, (client) => {
         this.appAuth.track(req, socket);
-        this.desktopAgents.set(client, agent.id);
+        this.desktopAgents.set(client, this.coworkRuntimeKey(agent.id,company?.id));
         client.once('close', () => this.desktopAgents.delete(client));
         const opening = new AbortController();
         client.once('close', () => opening.abort());
@@ -1048,6 +1117,10 @@ export class GituServer {
     }
     await this.reconcileCompanyComputers();
     this.startCoworkLifecycle();
+    // Historical tasks often share a project. Detect it once during recovery:
+    // each detection runs synchronous Git commands and otherwise blocks health
+    // checks for minutes on a large registry. Normal requests detect afresh.
+    const startupRoots = new Map<string, string | undefined>();
     for (const entry of this.loadRegistry()) {
       const existing = this.sessions.get(entry.runId);
       if (existing) {
@@ -1067,7 +1140,7 @@ export class GituServer {
       let worktreePath = entry.worktreePath;
       let pausedForDiscussion = false;
       if (entry.taskId && (!mode || !report || !finishedAt || !branch)) {
-        const root = this.resolveTaskRoot(entry.taskId, entry.projectPath);
+        const root = this.resolveTaskRoot(entry.taskId, entry.projectPath, startupRoots);
         const ledger = root ? TaskLedger.load(root, entry.taskId) : undefined;
         pausedForDiscussion = Boolean(ledger?.data.blockers.includes('Paused for discussion with the user.'));
         mode ??= ledger?.data.mode;
@@ -1078,6 +1151,7 @@ export class GituServer {
       }
       const session: RunSession = {
         runId: entry.runId,
+        coworkTask: entry.coworkTask,
         goal: entry.goal,
         status,
         startedAt: entry.startedAt,
@@ -1137,6 +1211,8 @@ export class GituServer {
     await this.voiceWorker.close();
     await this.voiceCalls.close();
     this.appAuth.close();
+    this.googleSignIn.close();
+    await (this.chromeProfile??this.config.chromeProfile)?.stop().catch(()=>{});
     for (const socket of this.desktopSockets?.clients ?? []) socket.terminate();
     this.desktopSockets?.close();
     this.stopping = true;
@@ -1152,12 +1228,13 @@ export class GituServer {
     this.persistBudgets();
     for(const c of this.companies().companies())this.companyScope.run({id:c.id,version:c.directionVersion},()=>this.persistBudgets());
     this.scheduler?.stop();
+    await this.waitForCodingCheckpoints([...this.sessions.keys()]).catch(() => undefined);
     await this.stopCoworkLifecycle();
     await companyCoordinator?.drain();
     await Promise.allSettled([...this.serverBrowsers.values()].map(browser=>browser.close()));this.serverBrowsers.clear();
     for(const recall of this.companyRecalls.values())recall.close();this.companyRecalls.clear();
     for(const manager of this.companyMcpManagers.values())manager.killAll();this.companyMcpManagers.clear();
-    this.companyCowork.clear();this.companyMemories.clear();this.companyHelpers.clear();this.coworkTools.clear();this.storageRegistry=undefined;
+    this.companyCowork.clear();this.companyHelpers.clear();this.coworkTools.clear();this.storageRegistry=undefined;
     this.companyStore?.close();this.companyStore=undefined;
     this.uploadStore?.close();this.uploadStore=undefined;
     for (const idx of this.indexWatchers.values()) {
@@ -1206,6 +1283,7 @@ export class GituServer {
    * waiter lives, and where the resulting prose line goes.
    */
   private buildConnectionHandlers(input: {
+    deploymentAllowed?: () => boolean;
     approvalHandler: ApprovalHandler;
     /** Owner of the pending secure-setup waiter. */
     slot: { connection?: ConnectionWaiter };
@@ -1230,6 +1308,7 @@ export class GituServer {
       if (!profile || !view?.hasCredential) throw new Error('Saved connection is unavailable or needs its credential configured again.');
       const op = normalizeConnectionOperation(proposal.operation);
       if (!op) throw new Error('The proposed provider operation is malformed.');
+      if (input.deploymentAllowed?.() === false && isDeploymentAction('connection_operation', {}, op.id + ' ' + op.capability + ' ' + op.path)) throw Error(DEPLOYMENT_OWNERSHIP);
       // Safe GET/read operations NEVER enter the approval channel: they
       // resolve through the capability resolver (register-if-missing under
       // the existing credential) and execute immediately, like a
@@ -1256,7 +1335,7 @@ export class GituServer {
       }
       const documentedCapability = !capabilityDeclared;
       const existing = this.connections.operation(profile.id, op.id);
-      if (existing && JSON.stringify(existing) !== JSON.stringify(op)) {
+      if (existing && !sameConnectionOperation(existing, op)) {
         throw new Error(`Operation id "${op.id}" is already registered with different details. Choose a new documented id; do not retarget an existing operation.`);
       }
       const body = proposal.body === undefined ? undefined : normalizeConnectionOperationBody(proposal.body);
@@ -1281,7 +1360,7 @@ export class GituServer {
       // Registration happens only after approval. It makes the immutable
       // documented operation discoverable in future tasks, but every write
       // still returns through this approval path before invocation.
-      const registered = this.connections.registerApprovedOperation(profile.id, op, documentedCapability);
+      const registered = this.connections.registerApprovedOperation(profile.id, existing ?? op, documentedCapability);
       const result = await this.connections.invoke(profile.id, registered.id, body);
       return { message: result.message, ...(result.data !== undefined ? { data: result.data } : {}) };
     };
@@ -1380,7 +1459,14 @@ export class GituServer {
     const companyId=this.companyScope.getStore()?.id;
     if(companyId){
       let store=this.companyCowork.get(companyId);
-      if(!store){store=new CoworkStore(nodePath.join(this.companies().root,companyId,'cowork.json'),()=>{for(const id of this.coworkSubscribers.keys())this.publishCowork(id);},{companyId,persistence:this.companies().snapshot(companyId),missionSessions:()=>this.companies().get(companyId)?.missionSessions??12,maxFileBytes:()=>this.selectedFileLimit(companyId)});this.companyCowork.set(companyId,store);}
+      if(!store){store=new CoworkStore(nodePath.join(this.companies().root,companyId,'cowork.json'),()=>{for(const id of this.coworkSubscribers.keys())this.publishCowork(id);},{companyId,sharedRoster:this.companyScope.exit(()=>this.cowork()),persistence:this.companies().snapshot(companyId),missionSessions:()=>this.companies().get(companyId)?.missionSessions??12,maxFileBytes:()=>this.selectedFileLimit(companyId)});this.companyCowork.set(companyId,store);
+        const company=this.companies().get(companyId)!;
+        const agents=store.listAgents();
+        if(!this.companies().read('cowork-company','memory-v1:'+companyId)){
+          this.companyScope.exit(()=>this.coworkMemory()).importCompany(this.companies().workspace(companyId),companyId,company.name,agents);
+          this.companies().saveResource('cowork-company','memory-v1:'+companyId,companyId,{migrated:true});
+        }
+      }
       return store;
     }
     if (!this.coworkStore) this.coworkStore = new CoworkStore(undefined, () => {
@@ -1419,15 +1505,16 @@ export class GituServer {
           signal.throwIfAborted();store.appendMessage(conversationId,{role:'agent',agentId:agent.id,agentName:agent.name,via:'agent',text:reply});
         });}finally{this.companyQuestionRuns.delete(job.id);}return;
       }
+      let wakeError:Error|undefined;
       if(job.kind==='wake'){
         const agentId=String(job.payload['agentId']);if(!this.cowork().getAgent(agentId))return;
         if(job.payload['mailAccountId']){
           const id=String(job.payload['mailAccountId']);
           if(!c.accountIds.includes(id)||!this.cowork().appAccountAssigned(agentId,'mail',id)||!(await this.mailConnections.accounts()).some(account=>account.id===id&&account.watchInbox))return;
         }
-        this.dispatchAgentWake(conversationId,agentId,String(job.payload['note']),'schedule',{triggerId:typeof job.payload['inboxEventId']==='string'?job.payload['inboxEventId']:undefined});
+        this.dispatchAgentWake(conversationId,agentId,String(job.payload['note']),'schedule',{triggerId:typeof job.payload['inboxEventId']==='string'?job.payload['inboxEventId']:undefined,onSettled:error=>{wakeError=error;}});
       }
-      else if(job.kind==='review')this.dispatchAgentWake(conversationId,c.leadId!,`Company review. Current owner direction (version ${c.directionVersion}): ${c.direction||c.purpose}. ${String(job.payload['event']??'')} Review work and blockers. Create or continue a bounded mission only when there is actionable work. Verify helper results. If nothing needs action, report waiting and finish this review; do not create busywork or an endless tool loop.`,'schedule');
+      else if(job.kind==='review')this.dispatchAgentWake(conversationId,c.leadId!,`Company review. Current owner direction (version ${c.directionVersion}): ${c.direction||c.purpose}. ${String(job.payload['event']??'')} Review work, blockers and pending coordination requests. Use company_boardroom requests to inspect employee requests; review useful requests with review_request, or create a bounded meeting when teammates need to discuss a concrete blocker or decision. Use company_workflow list/propose to save repeatable processes as drafts for director review. Reuse existing meetings and drafts. Create or continue a bounded mission only when there is actionable work. Verify helper results. If nothing needs action, report waiting and finish this review; do not create busywork or an endless tool loop.`,'schedule',{onSettled:error=>{wakeError=error;}});
       else this.dispatchCoworkMessage(conversationId,String(job.payload['text']??''),'web',undefined,job.payload['artifactIds'] as string[]|undefined,undefined,{id:'company-message-'+job.id,delivery:job.payload['delivery'] as CoworkDelivery});
       const jobDeadline=Date.now()+300000;
       while(this.coworkRuns.get(conversationId)?.busy){
@@ -1441,6 +1528,7 @@ export class GituServer {
         }
         await new Promise(resolve=>setTimeout(resolve,200));
       }
+      if(wakeError)throw wakeError;
       if(job.payload['followUpId'])this.cowork().takeFollowUp(String(job.payload['followUpId']));if(job.payload['inboxId'])this.cowork().markInboxDelivered([String(job.payload['inboxId'])]);
     });
   }
@@ -1500,6 +1588,13 @@ export class GituServer {
       progress: viewingActiveWork ? run?.progress ?? null : null,
       progresses: viewingActiveWork ? Object.values(run?.progresses ?? {}) : [],
       workHistory: store.workHistory(conversationId, threadId).map((entry, index) => coworkActivityView(entry, store.getAgent(entry.agentId)?.name ?? 'Teammate', index)),
+      // Only tasks owned by this conversation and account/company enter its
+      // live view. No commands, private reasoning, file paths or credentials.
+      codingTasks: [...this.sessions.values()]
+        .filter(task => task.coworkTask?.conversationId === conversationId && task.coworkTask.companyId === this.companyScope.getStore()?.id)
+        .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+        .map(task => ({ runId: task.runId, goal: task.goal.replace(/\s+/g, ' ').slice(0, 240), status: task.status, startedAt: task.startedAt,
+          needsAttention: task.status === 'running' && Boolean(task.approvals.size || task.planReview || task.questions) })),
       queued: run?.queue.length ?? 0,
       telegramError: run?.telegramError ?? null,
       missions: [...activeMissions, ...recentMissions].map((mission) => this.coworkMissionView(mission)),
@@ -1517,12 +1612,10 @@ export class GituServer {
   /** Shared MemoryStore facade: cowork agents use the SAME memory
    *  architecture as the main agent (typed, lifecycle, visibility-isolated). */
   private coworkMemory(): CoworkMemory {
-    const companyId=this.companyScope.getStore()?.id;
-    if(companyId){let memory=this.companyMemories.get(companyId);if(!memory){memory=CoworkMemory.forWorkspace(this.companies().workspace(companyId));this.companyMemories.set(companyId,memory);}return memory;}
     if (!this.coworkMemoryStore) {
-      this.coworkMemoryStore = CoworkMemory.forWorkspace();
+      this.coworkMemoryStore = CoworkMemory.forWorkspace(undefined,true);
       try {
-        const nameById = new Map(this.cowork().listAgents().map((a) => [a.id, a.name]));
+        const nameById = new Map(this.companyScope.exit(()=>this.cowork().listAgents()).map((a) => [a.id, a.name]));
         const migrated = this.coworkMemoryStore.migrateLegacyFactFiles(nameById);
         if (migrated > 0) logger.info({ subsystem: 'cowork', migrated }, 'Migrated legacy memory facts');
       } catch {
@@ -1551,22 +1644,53 @@ export class GituServer {
     const agent = this.cowork().getAgent(agentId) ?? selectedAgent;
     const cloudId = agent?.useHostComputer ? undefined : agent?.cloudConnectionId;
     const target = cloudId || 'private';
-    let computer = this.coworkComputers.get(agentId);
-    if (computer && this.coworkComputerTargets.get(agentId) !== target) {
+    let computer = this.coworkComputers.get(this.coworkRuntimeKey(agentId));
+    if (computer && this.coworkComputerTargets.get(this.coworkRuntimeKey(agentId)) !== target) {
       if (computer.status().state !== 'stopped') throw new Error('Stop the previous private computer before changing its server.');
-      this.coworkComputers.delete(agentId);
+      this.coworkComputers.delete(this.coworkRuntimeKey(agentId));
       computer = undefined;
     }
     if (!computer) {
       const root = agent?.companyId?nodePath.join(this.companies().root,agent.companyId):nodePath.join(ensureGituHome().root, 'Cowork');
-      const store=this.cowork(),transfer={beforeStart:agent?.companyId?()=>this.companies().reserveComputer(agent.companyId!,agentId,cloudId):undefined,onState:agent?.companyId?(state:string)=>this.companies().computerState(agent.companyId!,agentId,state):undefined,limits:agent?.companyId?()=>{const c=this.companies().get(agent.companyId!)!;return{cpu:c.cpu,memoryMb:c.memoryMb,diskMb:c.diskMb};}:undefined,maxFileBytes:()=>this.selectedFileLimit(agent?.companyId),resolveArtifact:(id:string,conversationId:string)=>{const artifact=store.getArtifact(id);return artifact?.conversationId===conversationId?store.artifactPath(id):undefined;}};
+      const store=this.cowork(),scopeKey=agent?.companyId?'company:'+agent.companyId:'personal',transfer={beforeStart:agent?.companyId?()=>this.companies().reserveComputer(agent.companyId!,agentId,cloudId):undefined,onState:(state:string)=>{if(agent?.companyId)this.companies().computerState(agent.companyId,agentId,state);this.publishComputers(scopeKey);},onControl:()=>this.publishComputers(scopeKey),limits:agent?.companyId?()=>{const c=this.companies().get(agent.companyId!)!;return{cpu:c.cpu,memoryMb:c.memoryMb,diskMb:c.diskMb};}:undefined,maxFileBytes:()=>this.selectedFileLimit(agent?.companyId),resolveArtifact:(id:string,conversationId:string)=>{const artifact=store.getArtifact(id);return artifact?.conversationId===conversationId?store.artifactPath(id):undefined;}};
       computer = cloudId && cloudId !== 'hosted'
         ? new CoworkComputer(agentId, nodePath.join(root, 'cloud', cloudId), this.cloudComputer(cloudId).execute, { key: 'ssh:' + cloudId, cloud: true,...transfer })
         : new CoworkComputer(agentId, root, cloudId === 'hosted' ? hostedComputerExec : undefined, { key: 'default', cloud: cloudId === 'hosted',...transfer });
-      this.coworkComputers.set(agentId, computer);
-      this.coworkComputerTargets.set(agentId, target);
+      this.coworkComputers.set(this.coworkRuntimeKey(agentId), computer);
+      this.coworkComputerTargets.set(this.coworkRuntimeKey(agentId), target);
     }
     return computer;
+  }
+
+  /** Scope shared by the card list and its push stream. */
+  private computerScopeKey(): string {
+    const company = this.companyScope.getStore();
+    return company ? 'company:' + company.id : 'personal';
+  }
+
+  /** Notify the live card streams for this scope. */
+  private publishComputers(scopeKey = this.computerScopeKey()): void {
+    const subscribers = this.computerSubscribers.get(scopeKey);
+    if (!subscribers) return;
+    for (const send of [...subscribers]) {
+      try { send(); } catch { subscribers.delete(send); }
+    }
+    if (!subscribers.size) this.computerSubscribers.delete(scopeKey);
+  }
+
+  /** In-memory status for every teammate visible in the current scope. */
+  private computerStatuses(): ReturnType<CoworkComputer['status']>[] {
+    return this.cowork().listAgents().map((agent) => {
+      const status = this.coworkComputer(agent.id).status();
+      return {
+        ...status,
+        useHostComputer: agent.useHostComputer,
+        ...(agent.companyId ? {
+          executionLocation: this.companies().read<{ executionLocation?: string }>('computer', agent.id, agent.companyId)?.executionLocation ?? 'private',
+          hostComputerAllowed: this.companies().get(agent.companyId)?.allowHostComputer === true,
+        } : {}),
+      };
+    });
   }
 
   private async reconcileCompanyComputers():Promise<void>{
@@ -1591,11 +1715,11 @@ export class GituServer {
   }
 
   private async resetCoworkComputer(agentId: string): Promise<void> {
-    for (const [socket, owner] of this.desktopAgents) if (owner === agentId) socket.close(1000, 'Computer selection changed');
-    const previous = this.coworkComputers.get(agentId);
+    for (const [socket, owner] of this.desktopAgents) if (owner === this.coworkRuntimeKey(agentId)) socket.close(1000, 'Computer selection changed');
+    const previous = this.coworkComputers.get(this.coworkRuntimeKey(agentId));
     await previous?.stop();
-    this.coworkComputers.delete(agentId);
-    this.coworkComputerTargets.delete(agentId);
+    this.coworkComputers.delete(this.coworkRuntimeKey(agentId));
+    this.coworkComputerTargets.delete(this.coworkRuntimeKey(agentId));
   }
 
   /** Host context is only for trusted skills/connections/MCP. File, shell and
@@ -1629,13 +1753,43 @@ export class GituServer {
   }
 
   private delegation(): CoworkDelegation {
-    this.delegationService ??= new CoworkDelegation({
-      workspaceFor: (scope) => {
+    const company = this.companyScope.getStore();
+    const key = company?.id ?? '';
+    const existing = this.delegationServices.get(key);
+    if (existing) return existing;
+    const scoped = <T>(work: () => T): T => company ? this.companyScope.run(company, work) : this.companyScope.exit(work);
+    const store = this.cowork();
+    const service = new CoworkDelegation({
+      workspaceFor: (scope, projectPath, goal) => {
         const agent = this.cowork().getAgent(scope.agent.id);
-        return { type: 'host', path: agent ? this.coworkToolContext(agent).cwd : ensureGituHome().workspace };
+        if (!agent) throw new Error('That teammate no longer exists.');
+        if (!agent.useHostComputer) {
+          const selected = nodePath.posix.resolve('/workspace', projectPath ?? '.');
+          if (selected !== '/workspace' && !selected.startsWith('/workspace/')) throw new Error('Private projects must stay inside /workspace.');
+          return { type: 'container', containerId: agent.id, path: selected };
+        }
+        const base = agent.companyId ? this.coworkToolContext(agent).cwd : this.projectRoot() ?? this.coworkToolContext(agent).cwd;
+        const preferred=!agent.companyId?readRuntimeSelection().projectPath:undefined;
+        const selected = realpathSync(projectPath?nodePath.resolve(base,projectPath):projectForCoding(base,goal??'',preferred));
+        const ownedWorktrees=[...this.sessions.values()].filter(task=>task.coworkTask?.agentId===agent.id&&task.coworkTask.conversationId===scope.conversationId&&!task.coworkTask.companyId).flatMap(task=>task.worktreePath?[task.worktreePath]:[]);
+        const roots = agent.companyId ? [this.companies().workspace(agent.companyId)] : [base,...(preferred?[preferred]:[]), ...ownedWorktrees,...(agent.id===this.proactivity().status().assistantId?this.mainAgentRepositories().map(repository=>repository.path):[]), ...(scope.taggedFolders ?? []), ...listProjects().map(project => project.path)];
+        if (!roots.some(root => { try {const relative = nodePath.relative(realpathSync(root), selected); return relative === '' || (relative !== '..' && !relative.startsWith('..' + nodePath.sep) && !nodePath.isAbsolute(relative));}catch{return false;} })) throw new Error('Choose this workspace, a saved project, or a folder attached to the conversation.');
+        return { type: 'host', path: selected };
       },
       budgetPool: (scope) => this.delegationBudgetFor(scope.missionId, scope.conversationId),
-      createSession: (input) => this.createDelegatedSession(input),
+      createSession: (input, scope) => {
+        const runtime = input.workspace.type === 'container' || company !== undefined
+          ? (()=>{const assignment=this.cowork().getAgent(scope.agent.id)!;let first=true;return privateCodingSession(input.goal, input.workspace, (signal,instruction) => {
+              const parent=this.cowork().getAgent(scope.agent.id);if(!parent)throw Error('The requesting teammate was removed.');
+              if(parent.useHostComputer!==assignment.useHostComputer||parent.cloudConnectionId!==assignment.cloudConnectionId)throw Error('The assigned computer changed. Start a new coding task on the selected computer.');
+              const bridge=first&&!scope.background&&parent.allowWrites===assignment.allowWrites&&parent.allowShell===assignment.allowShell?scope.subAgents:this.codingWorkerBridge(parent,scope.conversationId!,signal,scope.missionId);first=false;
+              if (!bridge) throw new Error('The private coding runtime is unavailable. Restore it before continuing this task.');
+              return bridge.run({ role: 'Agent Gitu coding', objective: (instruction??input.goal) + '\nProject: ' + input.workspace.path + '\nMain Agent Gitu owns this engineering task. Implement and verify it in the assigned workspace, keeping the company and computer permissions in force. Return concrete evidence and remaining blockers. Do not delegate further.', reason: 'Main-agent coding task', budget: input.budget ?? {}, maxRuntimeMinutes: input.runOptions.timeoutMinutes }, signal);
+            },readRuntimeSelection);})()
+          : this.createDelegatedSession(input);
+        this.trackCoworkCodingSession(runtime, input, scope);
+        return runtime;
+      },
       // A delegated gate is a real decision the user has to make, so it rides the
       // existing request-card surface as a question card. The card is the view;
       // the runtime still owns the request and its resolution.
@@ -1643,21 +1797,32 @@ export class GituServer {
         if (!scope.conversationId) throw new Error('Delegation requires a conversation.');
         return this.cowork().addRequest({ conversationId: scope.conversationId, agentId: scope.agent.id, kind: 'question', title, detail, options });
       },
-      closeRequest: (requestId) => {
-        if (this.cowork().getRequest(requestId)?.status === 'open') this.cowork().resolveRequest(requestId, 'dismissed');
+      closeRequest: (requestId,resolution) => {
+        if (store.getRequest(requestId)?.status === 'open') store.resolveRequest(requestId,resolution?.status??'dismissed',resolution?.answer);
       },
-      progress: ({ conversationId, agentId, text }) => this.publishDelegatedProgress(conversationId, agentId, text),
-      sessionSettled: (sessionId) => {
+      progress: ({ conversationId, agentId, text }) => scoped(() => this.publishDelegatedProgress(conversationId, agentId, text)),
+      sessionSettled: (sessionId) => scoped(() => {
         const release = this.delegatedSessionResources.get(sessionId);
         this.delegatedSessionResources.delete(sessionId);
         release?.();
         // A settled run is the natural place to write spend: it is where the
         // charges stop, and where a restart would otherwise lose them.
         this.persistBudgets();
-      },
-      onChange: (conversationId) => this.publishCowork(conversationId),
+      }),
+      backgroundSettled: (scope,sessionId,result) => scoped(() => {
+        const task=this.sessions.get(sessionId);
+        if(task&&!result.ok&&['running','waiting_for_model'].includes(task.status)) {
+          task.status='failed';task.error=result.output;task.finishedAt=nowIso();this.pushEvent(task,result.output);
+        }
+        this.notifyCodingOutcome(sessionId,result.output);
+      }),
+      retryCoding: (scope,params) => scoped(()=>this.retryCodingTask(scope,params)),
+      reviewCoding:(scope,params)=>scoped(()=>this.reviewCodingTask(scope,params)),
+      defaultReviewOf:scope=>this.codingReviewContext.get(scope.conversationId??''),
+      onChange: (conversationId) => scoped(() => this.publishCowork(conversationId)),
     });
-    return this.delegationService;
+    this.delegationServices.set(key, service);
+    return service;
   }
 
   /**
@@ -1965,7 +2130,7 @@ export class GituServer {
     const agent = this.cowork().getAgent(input.agentId);
     if (!agent) throw new Error('That teammate no longer exists.');
     if (!agent.useHostComputer) {
-      throw new Error('Engineering delegation requires a local project workspace. On the selected private or cloud computer, use the file, shell and browser tools directly for coding.');
+      throw new Error('This coding session requires its assigned private computer. Keep the task in the main coding queue until that runtime is available.');
     }
     const root = workspacePath(input.workspace);
     // Pricing is the host's to know — it owns the catalog and the credential — so
@@ -1973,8 +2138,8 @@ export class GituServer {
     // than guessing at provider prices. An injected client has no catalog
     // identity, so those sessions enforce turn ceilings only.
     const resolved = this.config.llm
-      ? { client: this.config.llm, providerId: agent.provider ?? '', model: agent.model ?? '' }
-      : resolveLlm({ provider: agent.provider, model: agent.model, workingDirectory: root });
+      ? { client: this.config.llm, providerId: readRuntimeSelection().provider??'', model: readRuntimeSelection().model??'' }
+      : resolveLlm({ workingDirectory: root });
     // The catalog is read per call rather than captured: it is warmed when the
     // delegation is wired up, so a price that arrives mid-run still applies, and
     // a session that runs before pricing is known is accounted as unpriced
@@ -2026,7 +2191,10 @@ export class GituServer {
           })
         : undefined;
     session = this.gituRuntime.createSession({
+      autoApprove: () => codingAutoApprove(),
       goal: input.goal,
+      provider: resolved.providerId,
+      model: resolved.model,
       workspace: input.workspace,
       agentId: input.agentId,
       requestedBy: input.requestedBy,
@@ -2056,13 +2224,14 @@ export class GituServer {
         // to answer it (that form is the workspace UI's), so it times out exactly
         // as it does when nobody answers the workspace run's own prompt.
         ...this.buildConnectionHandlers({
+          deploymentAllowed: () => this.codingDeploymentAllowed(session ? this.sessions.get(session.id) : undefined),
           approvalHandler: (gate) => (session ? session.gates.approvalHandler(gate) : Promise.resolve(false)),
           slot: {},
           emit,
         }),
       },
-      // No auto-approve and no auto-skipped review: a teammate cannot grant
-      // itself authority over the user's machine by delegating to an engineer.
+      // Coding authority comes from the owner's shared setting, never from
+      // a permission flag supplied by the delegating teammate.
       runOptions: ({ budget }) => {
         budgetRef.current = budget;
         return {
@@ -2074,13 +2243,77 @@ export class GituServer {
           mode: input.runOptions.mode,
           effort: input.runOptions.effort,
           index,
-          autoApprove: false,
+          deploymentAllowed: () => this.codingDeploymentAllowed(session ? this.sessions.get(session.id) : undefined),
+          autoApprove: codingAutoApprove(),
           requirePlanReview: true,
         };
       },
     });
     this.delegatedSessionResources.set(session.id, () => mcp.killAll());
     return session;
+  }
+
+  /** A Cowork handoff is a first-class main-agent task, with one runtime and gate authority. */
+  private trackCoworkCodingSession(runtime: CodingSession, input: DelegationSessionInput, scope: DelegationScope): void {
+    const companyId = this.companyScope.getStore()?.id;
+    const execution = input.workspace.type === 'container' ? 'private' : 'host';
+    const current = runtime.getState();
+    const task: RunSession = {
+      runId: runtime.id, goal: input.goal, status: 'running', startedAt: current.startedAt,
+      project: execution === 'private' ? `${scope.agent.name} · private computer` : nodePath.basename(input.workspace.path),
+      projectPath: execution === 'host' ? input.workspace.path : undefined,
+      mode: input.runOptions.mode, taggedFolders: [], writableFolders: [], events: [], nativeFrames: [],
+      provider: current.provider, model: current.model, requestedProvider:current.provider, requestedModel:current.model,
+      subscribers: new Set(), approvals: new Map(), files: [], runtime,
+      coworkTask: { agentId: scope.agent.id, agentName: scope.agent.name, conversationId: scope.conversationId!, execution,
+        ...(companyId ? { companyId } : {}), ...(scope.missionId ? { missionId: scope.missionId } : {}) },
+    };
+    this.sessions.set(runtime.id, task);
+    let hostFailure = false;
+    const run = runtime.run.bind(runtime);
+    runtime.run = async (...args) => {
+      hostFailure = false;
+      try { return await this.withCodingCheckpoint(task, input.workspace.path, () => run(...args)); }
+      catch (error) { hostFailure = true; if(task.status!=='aborted'){task.status = 'failed'; task.error = (error as Error).message; task.finishedAt = nowIso(); this.pushEvent(task, task.error);} throw error; }
+    };
+    const continueRun = runtime.continue.bind(runtime);
+    runtime.continue = async (...args) => hostFailure ? runtime.run(...args) : runtime.getState().status === 'running' ? continueRun(...args) : this.withCodingCheckpoint(task, input.workspace.path, () => continueRun(...args));
+    this.persistSession(task);
+    this.pushEvent(task, `user-msg ${input.goal}`);
+    this.pushEvent(task, `Main Agent Gitu accepted this coding task from ${scope.agent.name}. The result returns to that teammate for reporting.`);
+    const sync = (): void => {
+      if (this.sessions.get(runtime.id) !== task || task.status === 'aborted' || hostFailure) return;
+      const state = runtime.getState();
+      task.status = state.status;
+      task.taskId = state.taskId;
+      task.provider=state.provider??task.provider;task.model=state.model??task.model;
+      task.finishedAt = state.finishedAt;
+      task.report = state.report;
+      task.error = state.error;
+      task.usage = state.usage;
+      task.approvals.clear();
+      if (state.pendingApproval) task.approvals.set(state.pendingApproval.id, { ...state.pendingApproval, summary: state.pendingApproval.summary ?? '' });
+      task.planReview = state.pendingPlanReview;
+      task.questions = state.pendingQuestions;
+      this.persistSession(task);
+    };
+    const unsubscribe = runtime.subscribe(event => {
+      if (this.sessions.get(runtime.id) !== task || task.runtime !== runtime) return;
+      sync();
+      this.recordCodingChiefDecision(task,event);
+      if (event.source !== undefined) this.pushEvent(task, event.source, true, event);
+      else this.publishNativeEvent(task, event);
+    });
+    const release = this.delegatedSessionResources.get(runtime.id);
+    this.delegatedSessionResources.set(runtime.id, () => {
+      sync(); unsubscribe(); release?.();
+      if (task.runtime === runtime) task.runtime = undefined;
+      if (this.sessions.get(runtime.id) === task) this.pushEvent(task, `run finished: ${task.status}`);
+    });
+    if (scope.conversationId) {
+      scope.store.appendMessage(scope.conversationId, { role: 'system', via: 'agent', text: `Main Agent Gitu is handling the coding task from ${scope.agent.name}: [View task](#run=${runtime.id}).` });
+      this.publishCowork(scope.conversationId);
+    }
   }
 
   /** Liveness line from a delegated run, surfaced in the conversation's progress. */
@@ -2096,16 +2329,374 @@ export class GituServer {
     this.publishCowork(conversationId);
   }
 
-  private companyApiDependencies():CompanyApiDeps { return {store:this.companies(),calendar:id=>this.companyCalendar(id),workflows:id=>this.companyWorkflows(id),onboardingResources:(id,requirements)=>this.companyOnboardingResources(id,requirements),boardroom:id=>this.companyBoardroom(id),meetingChanged:id=>this.checkCompanyMeetingTurn(id),invalidateAgent:agentId=>{for(const conversation of this.cowork().listConversations())if(conversation.memberIds.includes(agentId))this.coworkRuns.get(conversation.id)?.abort.abort(new Error('Company authority changed. Recheck grants before continuing.'));},apps:{provider:this.connectedApps,mail:this.mailConnections,secure:req=>AppAuth.local(req)||(this.appAuth.secure(req)&&this.appAuth.authenticated(req)),accounts:()=>this.appHub.accounts(),configure:async(req,key)=>{if(!AppAuth.local(req)&&(!this.appAuth.secure(req)||!this.appAuth.authenticated(req)))throw new Error('Integration setup requires an authenticated HTTPS session.');await this.connectedApps.configure(key);}},activity:()=>this.cowork().listConversations().flatMap(conv=>{const run=this.coworkRuns.get(conv.id);if(!run)return[];const progress=run.progress;return[{agentId:progress?.agentId??conv.memberIds[0]??'',agentName:progress?.agentName??this.cowork().getAgent(conv.memberIds[0]??'')?.name??'Lead',phase:progress?.phase??'working',tool:progress?.tool,task:this.cowork().messages(conv.id).filter(m=>m.role==='user').at(-1)?.text.slice(0,1000)}];}),body:r=>this.readBody(r),send:(r,status,value)=>this.sendJson(r,status,value),scoped:(c,work)=>this.companyScope.run({id:c.id,version:c.directionVersion},work),cowork:()=>this.cowork(),legacyAgent:id=>(this.coworkStore??new CoworkStore()).getAgent(id),routeCowork:(r,s,p,m)=>this.coworkRoutes(r,s,p,m),start:()=>this.ensureCompanyCoordinator(),priced:async agent=>{await fetchModelCatalog().catch(()=>undefined);const resolved=resolveLlm({provider:agent.provider,model:agent.model,workingDirectory:this.coworkToolContext(agent).cwd});return companyPricing(modelMetadataFor(peekModelCatalog(),resolved.providerId,resolved.model))!==undefined;},attachments:(c,files)=>files.map(value=>{const id=String((value as {artifactId?:string}).artifactId??''),file=this.uploads().get(id,c.id+':company');if(!file||file.state!=='ready')throw new Error('Choose a completed upload from this company.');return this.cowork().addArtifactFile({id:file.id,conversationId:c.conversationId!,name:file.name,mime:file.mime,sourcePath:this.uploads().filePath(file)}).id;}),pause:async c=>{for(const run of this.companyQuestionRuns.values())if(run.companyId===c.id)run.abort.abort();this.companyScope.run({id:c.id,version:c.directionVersion},()=>{for(const conv of this.cowork().listConversations())this.coworkRuns.get(conv.id)?.abort.abort(new Error('Company paused or redirected.'));});await this.storageRegistry?.pauseCompany(c.id);}}; }
+  private companyApiDependencies():CompanyApiDeps { return {store:this.companies(),removeCompany:c=>this.deleteManagedCompany(c.id),syncKnowledge:c=>this.syncCompanyKnowledge(c),agentOperation:(c,id,tool,args,invocation)=>this.coworkCompanyOperation(c,id,tool,args,invocation),calendar:id=>this.companyCalendar(id),workflows:id=>this.companyWorkflows(id),onboardingResources:(id,requirements)=>this.companyOnboardingResources(id,requirements),boardroom:id=>this.companyBoardroom(id),meetingChanged:id=>this.checkCompanyMeetingTurn(id),removeMember:async agentId=>{const companyId=this.companyScope.getStore()!.id,record=this.companies().read<{heldSlot?:boolean;state:string}>('computer',agentId,companyId);if(record?.heldSlot??['starting','running','sleeping'].includes(record?.state??''))await this.resetCoworkComputer(agentId);else{this.coworkComputers.delete(this.coworkRuntimeKey(agentId));this.coworkComputerTargets.delete(this.coworkRuntimeKey(agentId));}this.coworkTools.delete(this.coworkRuntimeKey(agentId));},invalidateAgent:agentId=>{for(const conversation of this.cowork().listConversations())if(conversation.memberIds.includes(agentId))this.coworkRuns.get(conversation.id)?.abort.abort(new Error('Company authority changed. Recheck grants before continuing.'));},apps:{provider:this.connectedApps,mail:this.mailConnections,secure:req=>AppAuth.local(req)||(this.appAuth.secure(req)&&this.appAuth.authenticated(req)),accounts:()=>this.appHub.accounts(),configure:async(req,key)=>{if(!AppAuth.local(req)&&(!this.appAuth.secure(req)||!this.appAuth.authenticated(req)))throw new Error('Integration setup requires an authenticated HTTPS session.');await this.connectedApps.configure(key);}},activity:()=>this.cowork().listConversations().flatMap(conv=>{const run=this.coworkRuns.get(conv.id);if(!run)return[];const progress=run.progress;return[{agentId:progress?.agentId??conv.memberIds[0]??'',agentName:progress?.agentName??this.cowork().getAgent(conv.memberIds[0]??'')?.name??'Lead',phase:progress?.phase??'working',tool:progress?.tool,task:this.cowork().messages(conv.id).filter(m=>m.role==='user').at(-1)?.text.slice(0,1000)}];}),body:r=>this.readBody(r),send:(r,status,value)=>this.sendJson(r,status,value),scoped:(c,work)=>this.companyScope.run({id:c.id,version:c.directionVersion},work),cowork:()=>this.cowork(),legacyAgent:id=>this.companyScope.exit(()=>this.cowork().getAgent(id)),roster:()=>this.companyScope.exit(()=>this.cowork()),memory:()=>this.coworkMemory(),routeCowork:(r,s,p,m)=>this.coworkRoutes(r,s,p,m),start:()=>this.ensureCompanyCoordinator(),priced:async agent=>{await fetchModelCatalog().catch(()=>undefined);const resolved=resolveLlm({provider:agent.provider,model:agent.model,workingDirectory:this.coworkToolContext(agent).cwd});return companyPricing(modelMetadataFor(peekModelCatalog(),resolved.providerId,resolved.model))!==undefined;},attachments:(c,files)=>files.map(value=>{const id=String((value as {artifactId?:string}).artifactId??''),file=this.uploads().get(id,c.id+':company');if(!file||file.state!=='ready')throw new Error('Choose a completed upload from this company.');return this.cowork().addArtifactFile({id:file.id,conversationId:c.conversationId!,name:file.name,mime:file.mime,sourcePath:this.uploads().filePath(file)}).id;}),pause:async c=>{for(const run of this.companyQuestionRuns.values())if(run.companyId===c.id)run.abort.abort();this.companyScope.run({id:c.id,version:c.directionVersion},()=>{for(const conv of this.cowork().listConversations())this.coworkRuns.get(conv.id)?.abort.abort(new Error('Company paused or redirected.'));});await this.storageRegistry?.pauseCompany(c.id);}}; }
+
+  private coworkRuntimeKey(agentId:string,companyId=this.companyScope.getStore()?.id):string{return companyId?companyId+':'+agentId:agentId;}
+
+  private checkpointOperations?: Set<string>;
+  private checkpointRestores?: Set<string>;
+  private codingFollowupCards = new Map<string,{runId:string;gateId:string;kind:'approval'|'plan_review'|'questions'}>();
+
+  private recordCodingChiefDecision(session:RunSession,event:CodingEvent):void {
+    const source=session.coworkTask;if(!source||event.type!=='chief_decided'||event.action==='escalate')return;
+    const store=this.cowork();
+    const card=store.addRequest({conversationId:source.conversationId,agentId:source.agentId,kind:'question',title:source.agentName+' handled coding '+event.requestKind.replace(/_/g,' '),detail:event.detail,options:[]});
+    store.resolveRequest(card.id,event.action==='approve'?'approved':event.action==='answer'?'answered':'denied',event.action==='approve'?'Approved automatically by '+source.agentName+' under routine coding authority.':event.detail);
+    this.publishCowork(source.conversationId);
+  }
+
+  private codingDeploymentAllowed(session?: RunSession): boolean {
+    return session?.events.filter(event => event.text.startsWith('owner-deployment ')).at(-1)?.text === 'owner-deployment granted';
+  }
+
+  private recordOwnerDeployment(session: RunSession, text: string): void {
+    const decision = deploymentIntent(text);
+    if (decision !== undefined) this.pushEvent(session, 'owner-deployment ' + (decision ? 'granted' : 'revoked'));
+  }
+
+  private mirrorCodingFollowupGate(session:RunSession,kind:'approval'|'plan_review'|'questions',gateId:string,detail:string):void {
+    const source=session.coworkTask;if(!source)return;
+    const card=this.cowork().addRequest({conversationId:source.conversationId,agentId:source.agentId,kind:'question',title:kind==='questions'?'Coding needs an answer':kind==='plan_review'?'Review coding plan':'Approve coding action',detail,options:kind==='questions'?[]:['Approve','Deny']});
+    this.codingFollowupCards.set(card.id,{runId:session.runId,gateId,kind});this.publishCowork(source.conversationId);
+  }
+
+  private codingWorkerBridge(agent: CoworkAgent, conversationId: string, signal?: AbortSignal, missionId?: string) {
+    return subAgentBridgeFor(agent,conversationId,missionId,{
+      agents:this.cowork().listAgents(),store:this.cowork(),memory:this.coworkMemory(),recall:this.coworkRecallIndex(),
+      resolveLlm:current=>this.coworkLlm(current),toolContext:current=>this.coworkToolContext(current),computerFor:(id,current)=>this.coworkComputer(id,current),
+      hostComputerAllowed:current=>!!current.companyId&&this.companies().get(current.companyId)?.allowHostComputer===true,
+      browser:true,subAgents:this.subAgents(),subAgentLlm:(current,account,exhausted)=>this.coworkMissionLlm(current,account,exhausted),
+      budgetFor:({missionId,conversationId})=>this.delegationBudgetFor(missionId,conversationId),signal,
+      acquireHostBrowser:()=>this.coworkBrowserLease.acquire(signal),
+      releaseSubAgentComputer:async id=>{const computer=this.coworkComputers.get(this.coworkRuntimeKey(id));if(computer)await computer.stop().catch(()=>{});this.coworkTools.delete(this.coworkRuntimeKey(id));},
+    });
+  }
+
+  private noteDirectCodingMessage(session:RunSession,text:string,id?:string,artifactIds?:string[],acceptedRunId=session.runId):void {
+    const source=session.coworkTask;if(!source)return;
+    const store=this.cowork(),conversation=store.getConversation(source.conversationId);if(!conversation)return;
+    const note=store.appendMessage(conversation.id,{id,role:'system',via:'web',artifactIds,mentionedAgentIds:[source.agentId],text:'Owner messaged Main Agent Gitu directly on coding task '+session.runId+':\n'+text+'\n\nFor your awareness: the coding agent is handling this instruction directly. Do not delegate or execute it again.\nDirect coding task: [View task](#run='+acceptedRunId+').'});
+    const active=this.coworkRuns.get(conversation.id);if(active?.busy){active.live??=new CoworkLiveMailbox();active.live.add(note);}
+    this.publishCowork(conversation.id);
+  }
+
+  private codingOutcomeNotices = new Map<string,string>();
+  private notifyCodingOutcome(runId:string,detail?:string):void {
+    const task=this.sessions.get(runId),source=task?.coworkTask;if(!task||!source)return;
+    if(['running','waiting_for_model'].includes(task.status))return;
+    const notify=()=>{const store=this.cowork();if(!store.getAgent(source.agentId)||!store.getConversation(source.conversationId))return;
+      const outcome=JSON.stringify([task.status,task.finishedAt,task.error,task.report?.summary]);
+      if(this.codingOutcomeNotices.get(runId)===outcome)return;
+      const failed=['failed','stalled','blocked'].includes(task.status),attempts=source.recoveryAttempts??0;
+      const needsOwner=failed&&(attempts>=2||Boolean(source.previousFailure&&source.previousFailure===task.error)||/\b(?:401|402|403)\b|invalid.api.key|insufficient.(?:balance|quota)|billing|account.*(?:disabled|suspended)|permission denied|requires.*approval/i.test(task.error??''));
+      if(needsOwner&&!store.requests(source.conversationId).some(request=>request.status==='open'&&request.title==='Coding needs your help'&&request.detail.includes(runId)))store.addRequest({conversationId:source.conversationId,agentId:source.agentId,kind:'question',title:'Coding needs your help',detail:'Main Agent Gitu task '+runId+' needs your decision.\n'+(task.error??detail??'The repair could not be completed.')+'\nRecovery attempts: '+attempts+'. Work and checkpoints are preserved.',options:['Review task','Keep paused']});
+      const instruction=task.status==='aborted'?'The user stopped this coding task. Report it and do not resume it automatically.':needsOwner?'Escalate this coding blocker to the user now with the exact issue and the next decision. The user-action card is already saved. Do not start another recovery attempt.':failed
+        ?'Coding failed. Diagnose the recorded error and try a concrete repair with gitu_task {retryOf:"'+runId+'",goal:"specific diagnosis and repair instruction"}. At most two recovery attempts are allowed; '+attempts+' already used. Keep the user-selected model, project and permissions. Missing credentials, approvals, billing/access, a repeated identical failure, an unfixable problem or the retry limit must be escalated to the user with the blocker and the next decision. Do not claim success without a verified coding result.'
+        :'Report this verified coding result to the user. This is a completion notification; do not restart completed work. Remain available for other work.';
+      const text='Result from Main Agent Gitu task '+runId+' ('+task.status+'):\n'+(detail??task.report?.summary??task.error??'Task ended.')+'\n\n'+instruction;
+      const note=store.appendMessage(source.conversationId,{role:'system',via:'agent',text,mentionedAgentIds:[source.agentId]});
+      const mail=store.addInbox({fromAgentId:source.agentId,toAgentId:source.agentId,conversationId:source.conversationId,text});
+      this.codingOutcomeNotices.set(runId,outcome);
+      const active=this.coworkRuns.get(source.conversationId);
+      if(this.stopping){this.publishCowork(source.conversationId);return;}
+      if(source.companyId){
+        this.companies().enqueue(source.companyId,'wake',{conversationId:source.conversationId,agentId:source.agentId,note:text,inboxId:mail.id},'coding-result:'+mail.id);
+        this.ensureCompanyCoordinator();
+      }else if(active?.busy){active.live??=new CoworkLiveMailbox();active.live.add(note);}
+      else if(this.dispatchAgentWake(source.conversationId,source.agentId,text,'agent'))store.markInboxDelivered([mail.id]);
+      this.publishCowork(source.conversationId);};
+    if(source.companyId){const c=this.companies().get(source.companyId);if(c)this.companyScope.run({id:c.id,version:c.directionVersion},notify);}else this.companyScope.exit(notify);
+  }
+
+  private async retryCodingTask(scope:DelegationScope,params:Record<string,unknown>):Promise<ToolResult>{
+    try{
+      const task=this.sessions.get(String(params['retryOf']??'')),source=task?.coworkTask,companyId=this.companyScope.getStore()?.id;
+      if(!task||!source||source.agentId!==scope.agent.id||source.conversationId!==scope.conversationId||source.companyId!==companyId)throw Error('Coding recovery is limited to your own task in this workspace.');
+      if(task.status==='running'||task.status==='waiting_for_model')return{ok:true,output:'The coding task is already running or retrying. Remain available; its result will return automatically.'};
+      if(task.status==='aborted')throw Error('The user stopped this task. Ask the user before resuming it.');
+      if(task.status==='completed')throw Error('This task completed. Report its result rather than retrying it.');
+      if(source.recoveryRunId){const repair=this.sessions.get(source.recoveryRunId);if(repair)return{ok:true,output:JSON.stringify({runId:repair.runId,status:repair.status,message:'A recovery task already exists. Follow that task instead of starting a duplicate repair.'})};}
+      if((source.recoveryAttempts??0)>=2)throw Error('Two recovery attempts have been used. Escalate the blocker and next decision to the user.');
+      if(source.previousFailure&&source.previousFailure===task.error)throw Error('The same failure repeated after a repair. Escalate it to the user instead of repeating the attempt.');
+      if(/\b(?:401|402|403)\b|invalid.api.key|insufficient.(?:balance|quota)|billing|account.*(?:disabled|suspended)|permission denied|requires.*approval/i.test(task.error??''))throw Error('This failure requires the user’s credentials, access, billing or approval. Escalate it instead of retrying.');
+      const instruction=String(params['goal']??'').trim();if(!instruction)throw Error('Provide a concrete diagnosis and repair instruction.');
+      source.recoveryAttempts=(source.recoveryAttempts??0)+1;this.persistSession(task);
+      const parent=this.cowork().getAgent(source.agentId);if(!parent)throw Error('The requesting teammate was removed.');
+      const accepted=await this.delegation().start({...scope,missionId:source.missionId??scope.missionId,subAgents:this.codingWorkerBridge(parent,source.conversationId,undefined,source.missionId)},{goal:'Repair the failed coding task '+task.runId+': '+task.goal+'\nRecorded failure: '+task.error+'\nConcrete repair: '+instruction,projectPath:task.worktreePath??task.projectPath,mode:task.mode==='fast'?'fast':'agent'});
+      if(!accepted.ok)throw Error(accepted.output);
+      const data=JSON.parse(accepted.output) as {runId:string};const repair=this.sessions.get(data.runId);if(repair?.coworkTask){repair.coworkTask.recoveryAttempts=source.recoveryAttempts;repair.coworkTask.previousFailure=task.error;repair.coworkTask.reviewRootId=source.reviewRootId;this.persistSession(repair);}
+      source.recoveryRunId=data.runId;this.persistSession(task);
+      return{ok:true,output:JSON.stringify({...data,recoveryAttempt:source.recoveryAttempts})};
+    }catch(error){return{ok:false,output:(error as Error).message};}
+  }
+
+  private async messageScopedCodingAgent(session: RunSession, body: Record<string, unknown>) {
+    const source = session.coworkTask!;
+    const forward = async () => {
+      const store = this.cowork(), conversation = store.getConversation(source.conversationId), agent = store.getAgent(source.agentId);
+      if (!conversation || !agent || !conversation.memberIds.includes(agent.id)) throw Error('This task’s requesting teammate or conversation was removed. Open Cowork and choose where to continue.');
+      const rawFiles = [...(Array.isArray(body['files']) ? body['files'] : []), ...(Array.isArray(body['images']) ? body['images'] : [])] as Record<string, unknown>[];
+      const safeText = credentialChatInput(String(body['text'] ?? '').trim()).safeText || (rawFiles.length ? 'Please review the attached file or document.' : '');
+      if (!safeText) throw Error('Write a follow-up message or attach a file.');
+      const id = typeof body['id'] === 'string' && /^[\w-]{1,160}$/.test(body['id']) ? body['id'] : undefined;
+      const receipt = { ok: true, directToCoding: true, runId:session.runId, safeText, coworkTask: source };
+      if(id){const previous=store.getMessage(conversation.id,id);if(previous){const linked=[...previous.text.matchAll(/\nDirect coding task: \[View task\]\(#run=([\w-]+)\)\./g)].at(-1)?.[1];if(linked)receipt.runId=linked;return receipt;}}
+      const provider = typeof body['provider'] === 'string' ? body['provider'].trim() : '', model = typeof body['model'] === 'string' ? body['model'].trim() : '';
+      if (body['useSelectedModel'] === true && provider && model) {
+        resolveLlm({ provider, model, workingDirectory: session.projectPath ?? this.config.cwd });
+        saveRuntimeSelection({ provider, model });
+      }
+      const artifactIds: string[] = [];
+      for (const file of rawFiles.slice(0, MAX_SESSION_FILES_PER_MESSAGE)) {
+        if (typeof file['artifactId'] === 'string') {
+          const uploaded = this.uploads().get(file['artifactId'], 'coding');
+          if (!uploaded || uploaded.state !== 'ready') throw Error('Attachment is unavailable. Attach it again.');
+          artifactIds.push(store.addArtifactFile({ conversationId: conversation.id, name: uploaded.name, mime: uploaded.mime, sourcePath: this.uploads().filePath(uploaded) }).id);
+        } else {
+          const match = /^data:([^;,]*)(?:;[^,]*)?;base64,([a-z0-9+/=\r\n]+)$/i.exec(String(file['dataUrl'] ?? ''));
+          if (!match?.[2]) throw Error('Invalid attachment. Attach the file again.');
+          artifactIds.push(store.addArtifact({ conversationId: conversation.id, name: String(file['name'] ?? 'file'), mime: String(file['type'] ?? match[1] ?? ''), dataBase64: match[2] }).id);
+        }
+      }
+      const text = `Coding follow-up for Main Agent Gitu task ${session.runId}: ${session.goal.slice(0, 300)}\n${session.projectPath ? 'Project: ' + session.projectPath : 'Continue on the assigned private computer.'}\n\n${safeText}`;
+      const instruction=text+'\nAttachments available with receive_file: '+JSON.stringify(artifactIds.map(id=>({artifactId:id,name:store.getArtifact(id)?.name})));
+      if (session.runtime) {
+        const live=session.runtime.getState().status==='running';
+        const work=session.runtime.continue(instruction);
+        if(!live){session.status='running';session.finishedAt=undefined;session.error=undefined;session.report=undefined;void work.then(result=>{if(result.status!=='running')this.notifyCodingOutcome(session.runId);}).catch(error=>{session.status='failed';session.error=(error as Error).message;session.finishedAt=nowIso();this.pushEvent(session,session.error);this.notifyCodingOutcome(session.runId);});}
+        else await work;
+      } else {
+        const bridge=this.codingWorkerBridge(agent,conversation.id,undefined,source.missionId);
+        const accepted=await this.delegation().start({agent,store,conversationId:conversation.id,subAgents:bridge},{goal:instruction,projectPath:session.projectPath,mode:session.mode==='fast'?'fast':'agent'});
+        if(!accepted.ok)throw Error(accepted.output);
+        const task=JSON.parse(accepted.output) as {runId?:string};if(!task.runId)throw Error('The coding task could not be started.');receipt.runId=task.runId;
+      }
+      this.noteDirectCodingMessage(session,safeText,id,artifactIds,receipt.runId);
+      this.pushEvent(session, 'user-msg ' + safeText);
+      this.pushEvent(session, 'Direct coding instruction accepted. '+agent.name+' has been informed.');
+      this.publishCowork(conversation.id);
+      return receipt;
+    };
+    if (!source.companyId) return this.companyScope.exit(forward);
+    const company = this.companies().get(source.companyId);
+    if (!company) throw Error('This task’s company was removed.');
+    if (company.state !== 'running') throw Error('Resume this company before sending its coding follow-up.');
+    return this.companyScope.run({ id: company.id, version: company.directionVersion }, forward);
+  }
+
+  private async waitForCodingCheckpoints(ids: string[]): Promise<void> {
+    const until = Date.now() + 30000;
+    while (ids.some(id => this.checkpointOperations?.has(id))) {
+      if (Date.now() >= until) throw Error('Coding tasks are still saving checkpoints. Wait for them to finish before removing this workspace.');
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+  }
+
+  private checkpointWorkspaceKey(session: RunSession, root?: string): string {
+    return session.coworkTask?.execution === 'private' ? 'private:' + (session.coworkTask.companyId ?? '') + ':' + session.coworkTask.agentId : nodePath.resolve(root ?? session.worktreePath ?? session.projectPath ?? this.config.cwd).toLowerCase();
+  }
+
+  private checkpointWorkspacesOverlap(a: string, b: string): boolean {
+    if (a.startsWith('private:') || b.startsWith('private:')) return a === b;
+    return a === b || a.startsWith(b + nodePath.sep) || b.startsWith(a + nodePath.sep);
+  }
+
+  private async codingCheckpoint(session: RunSession, operation: 'create' | 'seal' | 'list' | 'restore', id?: string, root?: string) {
+    const options = { root: root ?? session.worktreePath ?? session.projectPath ?? this.config.cwd, storage: nodePath.join(ensureGituHome().sessions, 'coding-checkpoints'), key: session.runId, id, label: 'Before coding · ' + session.goal.slice(0, 100) };
+    if (session.coworkTask?.execution !== 'private') return workspaceCheckpoint(operation, options);
+    const source = session.coworkTask;
+    const work = async () => {
+      const agent = this.cowork().getAgent(source.agentId);
+      if (!agent) throw Error('Restore this task’s requesting teammate and private computer before managing checkpoints.');
+      const computer = this.coworkComputer(agent.id, agent);
+      const remote = { ...options, root: '/workspace', storage: '/workspace/.hermes/coding-checkpoints' };
+      const code = 'const __name=(fn)=>fn;const workspaceCheckpoint=' + workspaceCheckpoint.toString() + ';const result=await workspaceCheckpoint(' + JSON.stringify(operation) + ',' + JSON.stringify(remote) + ');if(result.checkpoints)result.checkpoints=result.checkpoints.slice(0,20);console.log(JSON.stringify(result));';
+      const command = 'node --input-type=module -e ' + "'" + code.replace(/'/g, "'\\''") + "'";
+      const result = await computer.execute('run_command', { command, timeoutMs: 120000 });
+      if (!result.ok) throw Error('Private checkpoint failed: ' + result.output.slice(0, 1000));
+      return JSON.parse(result.output.trim()) as Awaited<ReturnType<typeof workspaceCheckpoint>>;
+    };
+    if (!source.companyId) return this.companyScope.exit(work);
+    const company = this.companies().get(source.companyId);
+    if (!company) throw Error('The task’s company no longer exists.');
+    return this.companyScope.run({ id: company.id, version: company.directionVersion }, work);
+  }
+
+  private async withCodingCheckpoint<T>(session: RunSession, root: string, work: () => Promise<T>): Promise<T> {
+    if (session.mode === 'chat') return work();
+    const workspace = this.checkpointWorkspaceKey(session, root);
+    if ([...(this.checkpointRestores ?? [])].some(key => this.checkpointWorkspacesOverlap(key, workspace))) throw Error('This workspace is being rolled back. Wait for the restore to finish before coding.');
+    const busy = this.checkpointOperations ??= new Set();
+    if (busy.has(session.runId)) throw Error('This task already has a checkpoint operation in progress.');
+    busy.add(session.runId);
+    let id: string | undefined;
+    try {
+      const saved = await this.codingCheckpoint(session, 'create', undefined, root);
+      id = saved.checkpoint!.id;
+      this.pushEvent(session, 'checkpoint saved before coding · ' + id);
+      if (session.status === 'aborted' || this.stopping) throw Error('Coding task stopped before execution.');
+      return await work();
+    } finally {
+      try { if (id) { await this.codingCheckpoint(session, 'seal', id, root); this.pushEvent(session, 'checkpoint ready for rollback · ' + id); } }
+      catch (error) { this.pushEvent(session, 'Checkpoint finalization needs attention: ' + (error as Error).message); }
+      busy.delete(session.runId);
+    }
+  }
+
+  private async restoreCodingCheckpoint(session: RunSession, id: string) {
+    const workspace = this.checkpointWorkspaceKey(session), restoring = this.checkpointRestores ??= new Set();
+    if ([...restoring].some(key => this.checkpointWorkspacesOverlap(key, workspace))) throw Error('This workspace is already being restored.');
+    for (const task of this.sessions.values()) {
+      if ((['running', 'waiting_for_model'].includes(task.status) || this.checkpointOperations?.has(task.runId)) && this.checkpointWorkspacesOverlap(workspace, this.checkpointWorkspaceKey(task))) throw Error('Stop coding tasks in this workspace and wait for their checkpoints to finish before rollback.');
+    }
+    restoring.add(workspace);
+    try {
+      const restored = await this.codingCheckpoint(session, 'restore', id);
+      session.report = undefined; session.status = 'blocked'; session.modelRecovery = undefined;
+      this.cancelModelRecovery(session);
+      session.error = 'Checkpoint restored. Review the files or send instructions to continue coding.';
+      session.finishedAt = nowIso();
+      if (session.taskId && session.coworkTask?.execution !== 'private') {
+        const root = session.worktreePath ?? session.projectPath ?? this.config.cwd, ledger = TaskLedger.load(root, session.taskId);
+        if (ledger) {
+          ledger.completeActiveWorkPhase();
+          ledger.startWorkPhase({ kind: 'follow_up', goal: ledger.ensureTaskAuthority().currentGoal });
+          ledger.data.report = undefined; ledger.data.latestVerifiedDiff = undefined; ledger.data.completedAt = undefined; ledger.data.status = 'blocked';
+          ledger.addBlocker(session.error);
+        }
+      }
+      this.pushEvent(session, 'checkpoint restored · ' + id + ' · recovery ' + restored.recoveryId);
+      this.persistSession(session);
+      return restored;
+    } finally { restoring.delete(workspace); }
+  }
+
+  private async manageApp(params:Record<string,unknown>,actor:{agentId:string;conversationId?:string}):Promise<ToolResult>{
+    try{
+      const store=this.cowork(),chief=store.getAgent(actor.agentId),companyId=this.companyScope.getStore()?.id;
+      if(!chief?.chiefOfStaff)throw Error('App management requires a chief of staff.');
+      const action=String(params['action']??'read_settings');
+      const output=(value:unknown):ToolResult=>({ok:true,output:JSON.stringify(value)});
+      const owned=(task:RunSession)=>task.coworkTask?.companyId===companyId;
+      if(action==='read_settings')return output(companyId?{companyId,settings:this.companies().get(companyId)}:{selection:readRuntimeSelection(),settings:loadWorkspaceSettings(),appearance:readOnboarding()});
+      if(action==='list_repositories'){if(companyId)return output([{path:this.companies().workspace(companyId),name:this.companies().get(companyId)?.name}]);return output(this.mainAgentRepositories());}
+      if(action==='record_coding_review'){
+        if(companyId||chief.id!==this.proactivity().status().assistantId)throw Error('P.A records personal automatic coding reviews.');
+        const task=this.sessions.get(String(params['runId']??''));if(!task||task.status!=='completed'||!task.finishedAt)throw Error('Choose a completed coding task.');
+        const status=String(params['reviewStatus']??'');if(!['passed','issues','blocked'].includes(status))throw Error('Choose passed, issues or blocked.');
+        const review=this.proactivity().codingReview(task.runId,task.finishedAt);if(!review)throw Error('This task has no pending review.');
+        const work=store.workLog(actor.conversationId??this.proactivity().status().conversationId??'',chief.id).filter(entry=>entry.ok&&Date.parse(entry.ts)>=review.createdAt);
+        if(status!=='blocked'&&!work.some(entry=>['read_file','search_files'].includes(entry.tool)))throw Error('Inspect the actual code before recording a verified review.');
+        if(status==='passed'&&review.needsUi&&!work.some(entry=>/browse|desktop_screenshot|computer_screenshot/.test(entry.tool)&&/image|screenshot|png|jpeg|url/i.test(entry.output)))throw Error('UI evidence is required. Inspect the running preview or record blocked.');
+        const evidence=Array.isArray(params['evidence'])?params['evidence'].filter((value):value is string=>typeof value==='string'):[];
+        return output(this.proactivity().recordCodingReview(task.runId,task.finishedAt,status as 'passed'|'issues'|'blocked',String(params['text']??''),evidence));
+      }
+      if(action==='list_models')return output(await resolveModelCatalog({codexSubscriptionInfo:this.config.codexSubscriptionInfo}));
+      if(action==='list_tasks')return output([...this.sessions.values()].filter(owned).map(task=>this.sessionView(task)));
+      if(action==='list_conversations')return output(store.listConversations().map(conv=>({id:conv.id,title:conv.title,memberIds:conv.memberIds})));
+      if(action==='list_agents')return output(store.listAgents().map(agent=>({id:agent.id,name:agent.name,chief:agent.chiefOfStaff})));
+      if(action==='list_companies')return output(this.companies().companies().filter(company=>!companyId||company.id===companyId).map(company=>({id:company.id,name:company.name,state:company.state})));
+      if(action==='delete_agent')return output({removed:await this.removeManagedAgent(String(params['agentId']??''),chief.id)});
+      if(action==='delete_conversation'){
+        const id=String(params['conversationId']??'');if(!store.getConversation(id))throw Error('Conversation not found.');
+        const run=this.coworkRuns.get(id);if(run){run.queue=[];run.abort.abort(new Error('Conversation deleted by chief.'));}this.delegation().cancel(id,'Conversation deleted by chief.');this.stopCoworkPoller(id);return output({removed:store.deleteConversation(id)});
+      }
+      if(action==='delete_company'){
+        if(companyId)throw Error('Workspace company deletion requires a personal chief of staff.');
+        return output(await this.deleteManagedCompany(String(params['companyId']??'')));
+      }
+      if(action==='set_agent_model'){
+        const agent=store.getAgent(String(params['agentId']??''));if(!agent)throw Error('Teammate not found in this workspace.');
+        const provider=String(params['provider']??''),model=String(params['model']??'');resolveLlm({provider,model,workingDirectory:this.coworkToolContext(agent).cwd});
+        const updated=store.saveAgent({...agent,provider,model});for(const conv of store.listConversations())this.publishCowork(conv.id);return output({agentId:updated.id,provider:updated.provider,model:updated.model});
+      }
+      if(['set_model','set_project','set_settings'].includes(action)){
+        if(companyId)throw Error('Company chiefs may manage their company and teammate models. Workspace-wide model and app settings require a personal chief.');
+        if(action==='set_model'){
+          const provider=String(params['provider']??''),model=String(params['model']??'');if(!provider||!model)throw Error('Specify both provider and model.');resolveLlm({provider,model,workingDirectory:this.config.cwd});return output(saveRuntimeSelection({provider,model}));
+        }
+        if(action==='set_project'){const selected=realpathSync(String(params['projectPath']??''));if(!statSync(selected).isDirectory())throw Error('Choose a project folder.');return output(saveRuntimeSelection({projectPath:selected}));}
+        const input=params['input'];if(!input||typeof input!=='object'||Array.isArray(input))throw Error('Provide a settings input object.');
+        const patch=input as Record<string,unknown>,allowed=['theme','mode','autonomy','fallbackModels','coworkLearning'];
+        if(Object.keys(patch).some(key=>!allowed.includes(key)))throw Error('Unknown app setting. Credentials and security grants use their dedicated controls.');
+        if('theme' in patch||'mode' in patch)saveOnboarding({...readOnboarding(),...('theme'in patch?{theme:patch['theme']}:{}),...('mode'in patch?{mode:patch['mode']}:{} )});
+        const settings=updateWorkspaceSettings({...('autonomy'in patch?{autonomy:patch['autonomy'] as any}:{}),...('fallbackModels'in patch?{fallbackModels:patch['fallbackModels'] as any}:{}),...('coworkLearning'in patch?{coworkLearning:patch['coworkLearning'] as any}:{})});
+        return output({settings,appearance:readOnboarding()});
+      }
+      const send=(conversationId:string,agentId:string,text:string,allowSelf=false):ToolResult=>{
+        const conv=store.getConversation(conversationId),target=store.getAgent(agentId);if(!conv||!target||!conv.memberIds.includes(target.id))throw Error('Choose a teammate in that conversation.');
+        if(!text.trim())throw Error('Message text is required.');if(target.id===chief.id&&!allowSelf)throw Error('Choose another teammate to avoid a self-message loop.');
+        const message=store.addInbox({fromAgentId:chief.id,toAgentId:target.id,conversationId,text});this.publishCowork(conversationId);return output({queued:true,messageId:message.id,conversationId,to:target.name});
+      };
+      if(action==='send_message')return send(String(params['conversationId']??''),String(params['agentId']??''),String(params['text']??''));
+      const task=this.sessions.get(String(params['runId']??''));if(!task||!owned(task))throw Error('Task not found in this workspace.');
+      if(action==='list_checkpoints')return output(await this.codingCheckpoint(task,'list'));
+      if(action==='rollback_task')return output(await this.restoreCodingCheckpoint(task,String(params['checkpointId']??'')));
+      if(action==='get_task')return output(this.sessionView(task));
+      if(action==='delete_task'){this.detachRun(task,'Task deleted by chief.');this.sessions.delete(task.runId);this.db().deleteSession(task.runId);return output({removed:true,runId:task.runId,projectFilesRetained:true});}
+      if(action==='stop_task'){this.detachRun(task,'Stopped by chief of staff '+chief.name);task.status='aborted';task.error='Stopped by chief of staff '+chief.name;task.finishedAt=nowIso();this.pushEvent(task,'stopped by chief of staff '+chief.name);return output({runId:task.runId,status:task.status});}
+      if(action==='send_task'){if(this.codingReviewContext.has(actor.conversationId??''))throw Error('Use the verified reviewOf repair handoff so review repair limits remain in force.');
+        const text=String(params['text']??'').trim();if(!text)throw Error('Task instructions are required.');
+        if(task.coworkTask){if(task.runtime&&task.coworkTask.execution==='host'&&!companyId&&task.status==='running'){await task.runtime.continue(text);return output({steered:true,runId:task.runId});}return send(task.coworkTask.conversationId,task.coworkTask.agentId,text,true);}
+        this.pushEvent(task,'user-msg [Chief '+chief.name+'] '+text);
+        if(task.gitu)task.gitu.queueMessage(text);
+        else if(task.runtime)void task.runtime.continue(text);
+        else{const selected=readRuntimeSelection();if(selected.provider&&selected.model){task.provider=selected.provider;task.model=selected.model;}void this.resumeAfterCredential(task,text,[],[]);}
+        return output({queued:true,runId:task.runId});
+      }
+      throw Error('Unknown app management action.');
+    }catch(error){return{ok:false,output:(error as Error).message};}
+  }
+
+  private companyDeletions=new Set<string>();
+  private async deleteManagedCompany(id:string){
+    if(this.companyDeletions.has(id))throw Error('This company is already being deleted.');
+    const company=this.companies().get(id);if(!company)throw Error('Company not found.');
+    this.companyDeletions.add(id);
+    try{
+        await this.companyScope.run({id,version:company.directionVersion},async()=>{
+          const paused=this.companies().transition(id,'paused');await this.companyApiDependencies().pause(paused);
+          for(const task of this.sessions.values())if(task.coworkTask?.companyId===id&&['running','waiting_for_model'].includes(task.status)){this.detachRun(task,'Company deleted by chief.');task.status='aborted';task.finishedAt=nowIso();this.persistSession(task);}
+          const scopedStore=this.cowork();for(const conv of scopedStore.listConversations())this.delegation().cancel(conv.id,'Company deleted by chief.');
+          await this.waitForCodingCheckpoints([...this.sessions.values()].filter(task=>task.coworkTask?.companyId===id).map(task=>task.runId));
+          for(const [key,computer]of this.coworkComputers)if(key.startsWith(id+':')){await computer.stop();this.coworkComputers.delete(key);this.coworkTools.delete(key);}
+          const active=this.companies().list<{id:string;heldSlot?:boolean;state:string}>('computer',id).filter(record=>record.heldSlot??['running','starting','sleeping'].includes(record.state));
+          for(const record of active){const member=scopedStore.getAgent(record.id);if(!member)throw Error('Stop this company’s active temporary computer before deleting the company.');await this.coworkComputer(record.id,member).stop();}
+        });
+        const removed=this.companies().deleteCompany(id);this.companyCowork.delete(id);this.companyHelpers.delete(id);this.delegationServices.delete(id);return {removed,companyId:id,projectFilesRetained:true,recoverySnapshotSaved:true};
+    }finally{this.companyDeletions.delete(id);}
+  }
+
+  private async removeManagedAgent(id:string,chiefId?:string):Promise<boolean>{
+    const store=this.cowork(),target=store.getAgent(id);if(!target)return false;
+    if(chiefId&&(target.id===chiefId||target.chiefOfStaff))throw Error('Chiefs cannot delete themselves or another chief. The owner manages chief roles.');
+    const companyId=this.companyScope.getStore()?.id;
+    if(companyId&&this.companies().get(companyId)?.leadId===id)throw Error('Choose another company lead before removing this member.');
+    if(!companyId){const memberOf=this.companies().companies().filter(company=>this.companyScope.run({id:company.id,version:company.directionVersion},()=>!!this.cowork().getAgent(id)));if(memberOf.length)throw Error('Remove this teammate’s company memberships before deleting the profile: '+memberOf.map(company=>company.name).join(', '));}
+    for(const conv of store.listConversations())if(conv.memberIds.includes(id)){const run=this.coworkRuns.get(conv.id);if(run){run.queue=[];run.abort.abort(new Error('Teammate deleted.'));}this.delegation().cancel(conv.id,'Teammate deleted.');}
+    const codingTasks=[...this.sessions.values()].filter(task=>task.coworkTask?.agentId===id&&task.coworkTask.companyId===companyId);
+    for(const task of codingTasks)if(['running','waiting_for_model'].includes(task.status)){this.detachRun(task,'Teammate deleted.');task.status='aborted';task.finishedAt=nowIso();this.persistSession(task);}
+    await this.waitForCodingCheckpoints(codingTasks.map(task=>task.runId));
+    await this.coworkComputers.get(this.coworkRuntimeKey(id))?.stop();
+    this.coworkTools.get(this.coworkRuntimeKey(id))?.mcp?.killAll();this.coworkTools.delete(this.coworkRuntimeKey(id));this.coworkComputers.delete(this.coworkRuntimeKey(id));
+    const removed=store.deleteAgent(id);if(removed&&!companyId)this.coworkMemory().clear(target);return removed;
+  }
+
+  private mainAgentRepositories():{path:string;name:string}[]{
+    const selected=[this.config.cwd,readRuntimeSelection().projectPath].filter((value):value is string=>Boolean(value));
+    const runs=[...this.sessions.values()].filter(task=>!task.coworkTask?.companyId&&task.coworkTask?.execution!=='private').flatMap(task=>[task.projectPath,task.worktreePath].filter((value):value is string=>Boolean(value)));
+    return mainRepositories([...selected,...runs,...listProjects().map(project=>project.path)],selected,this.companies().companies().map(company=>this.companies().workspace(company.id)));
+  }
 
   private coworkToolContext(agent: CoworkAgent): ToolContext {
-    let context = this.coworkTools.get(agent.id);
+    let context = this.coworkTools.get(this.coworkRuntimeKey(agent.id,agent.companyId));
     if (!context) {
       const workspace = agent.companyId ? nodePath.join(this.companies().workspace(agent.companyId),'agents',agent.id) : agent.useHostComputer ? ensureGituHome().workspace : nodePath.join(ensureGituHome().root, 'Cowork', 'profiles', agent.id);
       mkdirSync(workspace, { recursive: true });
       const marker = nodePath.join(workspace, 'package.json');
       if (!existsSync(marker)) writeFileSync(marker, '{"name":"cowork-profile","private":true}');
       context = {
+        appManagement:(params,actor)=>this.manageApp(params,actor),
         missionSessionLimit:agent.companyId?()=>this.companies().get(agent.companyId!)?.missionSessions??12:undefined,connectionResponseScope: agent.companyId ? this.companies().workspace(agent.companyId) : undefined,
         guard: ProjectGuard.detect(workspace),
         cwd: workspace,
@@ -2115,7 +2706,10 @@ export class GituServer {
         connectedApps: this.appHub,
         browser: this.browserImpl(agent.id),
       };
-      this.coworkTools.set(agent.id, context);
+      this.coworkTools.set(this.coworkRuntimeKey(agent.id,agent.companyId), context);
+    }
+    if(!agent.companyId&&agent.id===this.proactivity().status().assistantId&&agent.useHostComputer){
+      context.guard.setTaggedReadFolders(()=>{const current=this.cowork().getAgent(agent.id);return current?.chiefOfStaff&&current.useHostComputer?this.mainAgentRepositories().map(repository=>repository.path):[];});
     }
     if(agent.companyId){
       const companyId=agent.companyId,scope=this.companyScope.getStore();
@@ -2128,7 +2722,7 @@ export class GituServer {
         return (tool==='connected_apps'&&args['action']==='execute'&&!isNativeMailRead(String(args['service']),String(args['tool'])))||(tool==='team_manage'&&args['action']==='create')?'write':'read';
       },()=>this.cowork().listAgents().length);
       return {...context,companyHostComputer:()=>this.companies().get(companyId)?.allowHostComputer===true,onComputerLocation:location=>{
-        const previous=this.companies().read<Record<string,unknown>>('computer',agent.id)??{id:agent.id,companyId,state:'unavailable',heldSlot:false};
+        const previous=this.companies().read<Record<string,unknown>>('computer',agent.id,companyId)??{id:agent.id,companyId,state:'unavailable',heldSlot:false};
         this.companies().saveResource('computer',agent.id,companyId,{...previous,executionLocation:location});
         if(location==='host'&&previous['executionLocation']!=='host'){
           const conversationId=this.companies().get(companyId)?.conversationId;
@@ -2167,7 +2761,7 @@ export class GituServer {
           default:throw new Error('Choose a supported onboarding operation; the director retains activation authority.');
         }
         return{ok:true,output:JSON.stringify(value)};
-      },companyOrganizationContext:()=>this.companyOrganization(companyId).context(agent.id)+'\n'+new CompanyHandbook(this.companyOrganization(companyId)).context(),companyOrganization:async(args,session)=>{
+      },companyManagement:(args,session)=>this.coworkCompanyManagement(agent,args,session),companyOrganizationContext:()=>this.companyOrganization(companyId).context(agent.id)+'\n'+new CompanyHandbook(this.companyOrganization(companyId)).context(),companyOrganization:async(args,session)=>{
         if(session.agentId!==agent.id)throw new Error('Organization actor does not match the running agent.');
         if(Object.keys(args).some(key=>!['action','agentId','member','department','revision'].includes(key)))throw new Error('Unsupported organization fields.');
         const organization=this.companyOrganization(companyId),actor={kind:'agent' as const,agentId:agent.id},action=String(args['action']??'read');
@@ -2193,21 +2787,58 @@ export class GituServer {
         if(action==='link'&&adapter.link)return{ok:true,output:await adapter.link(String(args['id']))};throw new Error('Storage operation is unsupported.');
       }};
     }
-    return {...context,companyManagement:async(args,session)=>{
-      if(this.companyScope.getStore()||session.agentId!==agent.id)throw new Error('Company management is available only from an owner Cowork conversation.');
-      const legacy=this.cowork(),conversation=legacy.getConversation(session.conversationId);
-      if(!conversation||!conversation.memberIds.includes(agent.id))throw new Error('Company management requires this teammate’s conversation.');
-      const result=await manageCoworkCompanies(this.companyApiDependencies(),agent.id,session.conversationId,args);
-      if(result.ok&&result.companyLink){legacy.appendMessage(session.conversationId,{id:'company-card-'+result.companyLink.id,role:'system',via:'agent',agentId:agent.id,threadId:session.threadId,text:'Company ready for review: '+result.companyLink.name,companyLink:result.companyLink});this.publishCowork(session.conversationId);}
+    return {...context,companyManagement:(args,session)=>this.coworkCompanyManagement(agent,args,session)};
+  }
+
+  private async coworkCompanyManagement(agent:CoworkAgent,args:Record<string,unknown>,session:{agentId:string;conversationId:string;threadId?:string}):Promise<ToolResult>{
+    const store=this.cowork(),conversation=store.getConversation(session.conversationId);
+    if(session.agentId!==agent.id||!conversation?.memberIds.includes(agent.id))throw new Error('Company management requires this Cowork teammate’s conversation.');
+    const invocation=conversation.id+':'+(store.messages(conversation.id).filter(m=>m.role==='user'&&(m.threadId||'')===(session.threadId||'')).at(-1)?.id??session.threadId??'main');
+    const result=await this.companyScope.exit(()=>manageCoworkCompanies(this.companyApiDependencies(),agent.id,session.conversationId,args,invocation));
+    if(result.ok&&result.companyLink){store.appendMessage(session.conversationId,{id:'company-card-'+result.companyLink.id+(session.threadId?':'+session.threadId:''),role:'system',via:'agent',agentId:agent.id,threadId:session.threadId,text:'Company activity: '+result.companyLink.name,companyLink:result.companyLink});this.publishCowork(session.conversationId);}
+    return result;
+  }
+
+  private syncCompanyKnowledge(company:Company):void {
+    try{this.companyScope.run({id:company.id,version:company.directionVersion},()=>syncCompanyOutcomes(this.companies(),company,this.cowork(),this.coworkMemory()));}catch(error){logger.warn({subsystem:'company-memory',companyId:company.id,...errorMetadata(error)},'Company outcome indexing will retry; saved work is preserved.');}
+  }
+
+  private companyOperationPending=new Map<string,Promise<ToolResult>>();
+
+  /** Forward only named company tools, as the existing membership, never as the owner. */
+  private async coworkCompanyOperation(company:Company,agentId:string,tool:string,args:Record<string,unknown>,invocation:string):Promise<ToolResult>{
+    if(!['company_boardroom','company_workflow','company_organization','company_onboarding','mission_manage'].includes(tool))throw new Error('Unsupported company operation.');
+    return this.companyScope.run({id:company.id,version:company.directionVersion},async()=>{
+      const store=this.cowork(),agent=store.getAgent(agentId);
+      if(!agent||!company.conversationId)throw new Error('Join this company before managing its work.');
+      const context=this.coworkToolContext(agent);
+      const dispatch=()=>executeCoworkTool({...context,companyWorkflow:async input=>executeWorkflowTool(this.companyWorkflows(company.id),agentId,input,invocation)},tool,args,
+        {allowWrites:agent.allowWrites,allowConfig:agent.allowConfig,allowShell:agent.allowShell,chief:agent.chiefOfStaff,browser:false},
+        {agent,store,memory:this.coworkMemory(),conversationId:company.conversationId});
+      const idempotent=['create','propose','request'].includes(String(args['action']));
+      const key='operation:'+createHash('sha256').update(canonicalAction({companyId:company.id,version:company.directionVersion,agentId,invocation,tool,args,permissions:[agent.allowWrites,agent.allowConfig,agent.allowShell]})).digest('hex');
+      let result:ToolResult;
+      if(idempotent){
+        // Recheck revoked authority even when returning a receipt for an earlier invocation.
+        const denied=await context.authorizeTool?.(tool,args);if(denied)return denied;
+        const previous=this.companies().read<{result:ToolResult}>('cowork-company',key);
+        if(previous) return previous.result;
+        const pending=this.companyOperationPending.get(key);if(pending)return pending;
+        const work=(async()=>{const value=await dispatch();if(value.ok)this.companies().saveResource('cowork-company',key,company.id,{result:value});return value;})();
+        this.companyOperationPending.set(key,work);
+        try{result=await work;}finally{this.companyOperationPending.delete(key);}
+      }else result=await dispatch();
+      if(result.ok){this.syncCompanyKnowledge(company);this.ensureCompanyCoordinator();this.publishCowork(company.conversationId);}
+
       return result;
-    }};
+    });
   }
 
   private companyMcpManagers=new Map<string,McpManager>();
   private companyMcp(companyId:string):McpManager{let manager=this.companyMcpManagers.get(companyId);if(!manager){manager=McpManager.forCompany(this.companies().workspace(companyId));this.companyMcpManagers.set(companyId,manager);}return manager;}
   private companyConnections(companyId:string):ConnectionRegistry{
     const registry=this.connections.scoped(id=>this.companies().get(companyId)?.connectionIds.includes(id)??false);
-    return new Proxy(registry,{get(target,key){if(['save','remove'].includes(String(key)))return()=>{throw new Error('Manage company connections through owner settings.');};const value=Reflect.get(target,key);return typeof value==='function'?value.bind(target):value;}});
+    return new Proxy(registry,{get(target,key){if(key==='remove')return()=>{throw new Error('Remove company connections through owner settings.');};if(key==='save')return(draft:import('../connections/connections.js').ConnectionDraft)=>{const current=target.get(draft.id??'');if(!current||draft.token||draft.baseUrl!==current.baseUrl||draft.provider!==current.provider)throw Error('Edit only an assigned connection’s metadata; credentials and endpoint changes use owner settings.');return target.save(draft);};const value=Reflect.get(target,key);return typeof value==='function'?value.bind(target):value;}});
   }
 
   private companyOrganization(companyId:string):CompanyOrganization {
@@ -2230,6 +2861,7 @@ export class GituServer {
       service.handbook.syncMemory();
       this.companyWorkflows(company.id).prepare();
       this.companyCalendar(company.id).prepare();
+      this.syncCompanyKnowledge(company);
     }
   }
 
@@ -2290,7 +2922,8 @@ export class GituServer {
   }
 
   private coworkLlm(agent: CoworkAgent): LlmClient {
-    const resolved=this.config.llm?{client:this.config.llm,providerId:agent.provider??'',model:agent.model??''}:resolveLlm({provider:agent.provider,model:agent.model,workingDirectory:this.coworkToolContext(agent).cwd});
+    const selected=!agent.companyId&&!agent.provider&&!agent.model?readRuntimeSelection():{};
+    const resolved=this.config.llm?{client:this.config.llm,providerId:agent.provider??'',model:agent.model??''}:resolveLlm({provider:agent.provider??selected.provider,model:agent.model??selected.model,workingDirectory:this.coworkToolContext(agent).cwd});
     if (!agent.companyId) return resolved.client;
     const pricing = companyPricing(modelMetadataFor(peekModelCatalog(), resolved.providerId, resolved.model));
     return new CompanyLlm(resolved.client, this.companies(), {
@@ -2337,7 +2970,116 @@ export class GituServer {
     return media;
   }
 
+  private personalProactivity?: Proactivity;
+  private codingReviewContext=new Map<string,string>();
+  private async reviewCodingTask(scope:DelegationScope,params:Record<string,unknown>):Promise<ToolResult>{
+    try{
+      const task=this.sessions.get(String(params['reviewOf']??''));if(!task||task.status!=='completed'||!task.finishedAt)throw Error('Review repairs require a completed coding task.');
+      if(this.companyScope.getStore()||scope.agent.id!==this.proactivity().status().assistantId)throw Error('P.A coordinates automatic review repairs in the personal workspace.');
+      if(task.coworkTask?.companyId||task.coworkTask?.execution==='private')throw Error('This task belongs to a company or private computer. Ask its responsible teammate to review it within that scope; do not move its code to the host.');
+      const review=this.proactivity().codingReview(task.runId,task.finishedAt);if(review?.status!=='issues'||!review.evidence?.length)throw Error('Inspect the code and UI, then record the verified defect with app_manage record_coding_review before requesting a repair.');
+      const goal=String(params['goal']??'').trim();if(!goal)throw Error('Provide a concrete defect and acceptance checks.');
+      const reservation=this.proactivity().reserveReviewRepair(review.root,review.summary??goal);
+      if(reservation.duplicate)return{ok:true,output:JSON.stringify({runId:reservation.runId,message:'A repair was already requested for this finding.'})};
+      const accepted=await this.delegation().start(scope,{goal:'P.A verified a defect while reviewing coding task '+task.runId+'.\nFinding: '+review.summary+'\nEvidence: '+review.evidence.join('\n')+'\nRepair and verify: '+goal,projectPath:task.worktreePath??task.projectPath,mode:'agent'},true);
+      if(!accepted.ok)throw Error(accepted.output);const handle=JSON.parse(accepted.output) as {runId:string};const repair=this.sessions.get(handle.runId);if(repair?.coworkTask){repair.coworkTask.reviewRootId=review.root;this.persistSession(repair);}this.proactivity().linkReviewRepair(task.runId,task.finishedAt,handle.runId);return accepted;
+    }catch(error){
+      const message=(error as Error).message;
+      if(message.startsWith('Two review repair passes')&&scope.conversationId){
+        const title='Coding review needs your help · '+String(params['reviewOf']??'');
+        if(!scope.store.requests(scope.conversationId).some(request=>request.title===title&&request.status==='open'))scope.store.addRequest({conversationId:scope.conversationId,agentId:scope.agent.id,kind:'question',title,detail:message+' Review the recorded evidence and decide the next step.',options:['Review the remaining defect','Pause further repairs']});
+        this.publishCowork(scope.conversationId);
+      }
+      return{ok:false,output:message};
+    }
+  }
+
+  private queueCodingReviews(agent:CoworkAgent):void {
+    const ledger=this.proactivity(),status=ledger.status();if(!status.conversationId||!ledger.settings().autoReview)return;
+    for(const task of this.sessions.values()){
+      if(task.status!=='completed'||!task.finishedAt||/^\[cron\b/i.test(task.goal))continue;
+      const needsUi=/\b(ui|website|front.?end|layout|screen|mobile|design)\b/i.test(task.goal)||(task.report?.filesChanged??[]).some(file=>/\.(?:tsx|jsx|html|css|vue|svelte)$/i.test(file));
+      const review=ledger.beginCodingReview(task.runId,task.finishedAt,task.coworkTask?.reviewRootId??task.runId+'@'+task.finishedAt,needsUi);if(!review)continue;
+      const instruction='AUTOMATIC CODING REVIEW authorized by the owner. Review Main Agent Gitu task '+task.runId+' after completion '+task.finishedAt+'. Goal: '+task.goal+'\nProject: '+(task.worktreePath??task.projectPath??'Assigned private workspace')+'\nVerified execution report: '+JSON.stringify(task.report??{}).slice(0,12000)+'\nUse app_manage get_task and list_repositories, then inspect actual code and verification evidence. '+(needsUi?'This task affects the UI: use the available browser to inspect the running preview and capture visual evidence. Check layout, responsive behavior, errors and the relevant interactions. If no preview URL, browser or permission is available, record blocked and explain what is needed; never mark an unchecked UI as passed.':'Check the relevant implementation and test evidence; inspect the UI if applicable.')+'\nKeep company and private-computer boundaries. Record the result with app_manage {action:"record_coding_review",runId:"'+task.runId+'",reviewStatus:"passed|issues|blocked",text:"specific findings and next step",evidence:["concrete code paths, checks, URLs and visual observations"]}. A verified defect may be sent to Main Agent Gitu using gitu_task {reviewOf:"'+task.runId+'",goal:"specific repair and acceptance checks"}. At most two repair passes per original task are allowed. Do not duplicate a repair, change an unrelated project, run destructive actions, or claim verification without evidence. Keep any routine pass concise; report important defects or blockers clearly.';
+      ledger.enqueue({kind:'coding_review',sourceId:task.runId,completedAt:task.finishedAt,conversationId:status.conversationId,agentId:agent.id,instruction},'review:'+task.runId+':'+task.finishedAt);
+    }
+  }
+  private proactivity():Proactivity {return this.personalProactivity??=new Proactivity(nodePath.join(ensureGituHome().settings,'proactivity.json'));}
+  private preparePersonalAssistant():void {
+    if(this.companyScope.getStore())return;
+    const agent=this.proactivity().ensureAssistant(this.cowork());if(!agent)return;
+    this.proactivity().notify(this.cowork(),agent,'welcome','I’m P.A, your personal assistant and chief of staff. I’ll highlight important changes, track blockers, suggest useful next steps and keep your teammates coordinated. Tell me your current priority so I can focus on what matters to you.');
+  }
+
+  private personalAssistantTick():void {
+    if(this.stopping||!readOnboarding().completed||this.companyScope.getStore())return;
+    const assistant=this.proactivity(),settings=assistant.settings(),status=assistant.status(),store=this.cowork();
+    const agent=status.assistantId?store.getAgent(status.assistantId):undefined;
+    if(!agent||!settings.enabled||agent.personality?.proactivity!=='proactive')return;
+    this.queueCodingReviews(agent);
+    const now=Date.now(),facts:AssistantFact[]=[];
+    const day=localClock(now,settings.timezone);
+    for(const conversation of store.listConversations()){
+      for(const request of store.requests(conversation.id).filter(request=>request.status==='open'&&!request.appConnection))facts.push({id:'request:'+request.id,priority:request.kind==='credential'?95:85,text:request.title+' needs your decision.',next:request.kind==='credential'?'Reconnect the account through the secure sign-in form.':'Review the card so the teammate can continue.',link:'[Open chat](#cowork='+conversation.id+')'});
+      for(const todo of store.todos(conversation.id).filter(todo=>todo.status==='blocked'))facts.push({id:'todo:'+todo.id,priority:55,text:todo.text+' is blocked'+(todo.note?': '+todo.note.slice(0,180):'.'),next:'Clarify the blocker with the assigned teammate.',link:'[Open chat](#cowork='+conversation.id+')'});
+      for(const todo of store.todos(conversation.id).filter(todo=>['pending','in_progress'].includes(todo.status)&&now-Date.parse(todo.updatedAt)<7*86400000))facts.push({id:'todo:'+todo.id,priority:30,text:todo.text+' · '+(store.getAgent(todo.agentId)?.name??'Teammate')+(todo.status==='in_progress'?' is working on this.':' has this on the checklist.'),next:'Review the next checklist step or ask the teammate for a concrete progress update.',link:'[Open chat](#cowork='+conversation.id+')'});
+    }
+    for(const task of this.sessions.values()){
+      if(/\[cron[^\]]*\].*(?:Review permitted connected apps|Consolidate cowork|Distill old cowork)/i.test(task.goal))continue;
+      const recent=now-Date.parse(task.finishedAt??task.startedAt)<7*86400000;
+      if(!recent)continue;
+      if(day.hour>=settings.eveningHour&&task.status==='completed'&&now-Date.parse(task.finishedAt??task.startedAt)<86400000)facts.push({id:'done:'+task.runId,priority:40,text:'Completed: '+task.goal.slice(0,100)+(task.report?.summary?' — '+task.report.summary.slice(0,160):''),next:'Review the verified result and decide whether anything needs follow-up.',link:'[View task](#run='+task.runId+')'});
+      if(['failed','blocked','stalled'].includes(task.status))facts.push({id:'coding:'+task.runId,priority:80,text:task.goal.slice(0,100)+' needs attention: '+(task.error??task.report?.summary??task.status).slice(0,220),next:task.coworkTask?'The requesting teammate can diagnose a bounded repair; review any help card if it needs your input.':'Open the task, inspect the blocker, and send a concrete next instruction.',link:'[View task](#run='+task.runId+')'});
+      if(task.status==='running'){
+        const last=task.events.at(-1)?.t??task.startedAt;
+        if(now-Date.parse(last)>20*60000)facts.push({id:'stalled:'+task.runId,priority:65,text:task.goal.slice(0,100)+' has had no recorded progress for over 20 minutes.',next:'Check the task for an approval, unavailable model or stalled tool before retrying.',link:'[View task](#run='+task.runId+')'});
+      }
+    }
+    for(const follow of store.dueFollowUps(now-10*60000))facts.push({id:'followup:'+follow.id,priority:60,text:'An overdue follow-up is still waiting: '+follow.note.slice(0,180),next:'Check whether the teammate is busy or the background task needs retrying.'});
+    for(const job of status.jobs.filter(job=>job.status==='failed'))facts.push({id:'job:'+job.id,priority:75,text:'A scheduled task failed after '+job.attempts+' attempts: '+(job.error??'No completion recorded.'),next:'Open Assistant settings to review and retry the task.'});
+    if(status.daily.jobs>=settings.dailyJobs&&status.jobs.some(job=>job.status==='queued'))facts.push({id:'daily-work-limit:'+day.date,priority:70,text:'Scheduled work is waiting because today’s background allowance has been used.',next:'Increase the daily work limit in Assistant settings or let it resume tomorrow.'});
+    for(const current of store.listAgents()){
+      if(current.personality?.proactivity==='reactive'||!current.personality?.proactivity)continue;
+      const review=store.appReviewState(current.id);
+      if((review.failures??0)>=3)facts.push({id:'review:'+current.id,priority:70,text:current.name+' could not complete its connected-app review: '+(review.error??'Connection unavailable.'),next:'Check the account and review status in Assistant settings.'});
+    }
+    const {date,hour}=localClock(now,settings.timezone),evening=hour>=settings.eveningHour;
+    if(facts.length){
+      const text=assistantBrief(facts,evening);
+      const briefSent=hour>=settings.morningHour&&assistant.notify(store,agent,'brief:'+date+':'+(evening?'evening':'morning'),text,false);
+      const urgent=facts.filter(fact=>fact.priority>=85);
+      if(!briefSent&&urgent.length&&(hour<settings.morningHour||inQuietHours(now,settings)))assistant.notify(store,agent,'attention:'+urgent.map(fact=>fact.id).sort().join(','),assistantBrief(urgent),urgent.some(fact=>fact.priority>=95));
+    }
+    assistant.checked();if(status.conversationId)this.publishCowork(status.conversationId);
+  }
+
+  private personalBackgroundTick():void {
+    if(this.stopping||this.companyScope.getStore())return;
+    const store=this.cowork(),ledger=this.proactivity();
+    for(const pending of ledger.due()){
+      if(pending.kind==='coding_review'&&(!ledger.settings().enabled||!ledger.settings().autoReview||store.getAgent(pending.agentId)?.personality?.proactivity!=='proactive'||!store.getAgent(pending.agentId)?.chiefOfStaff))continue;
+      if(pending.kind==='coding_review'){const task=this.sessions.get(pending.sourceId);if(!task||task.status!=='completed'||task.finishedAt!==pending.completedAt){ledger.cancel(pending.id);if(pending.completedAt&&ledger.codingReview(pending.sourceId,pending.completedAt))ledger.recordCodingReview(pending.sourceId,pending.completedAt,'blocked','Review superseded by newer coding work.',[]);continue;}}
+      if(this.coworkRuns.get(pending.conversationId)?.busy||this.coworkComputerBusy(pending.agentId))continue;
+      if(!store.getAgent(pending.agentId)||!store.getConversation(pending.conversationId)){ledger.cancel(pending.id);continue;}
+      if(pending.kind==='followup'&&!store.listFollowUps().some(follow=>follow.id===pending.sourceId)){ledger.cancel(pending.id);continue;}
+      if(pending.kind==='schedule'){
+        const schedule=store.getConversation(pending.conversationId)?.schedule;
+        if(!schedule?.enabled||'schedule:'+pending.conversationId+':'+JSON.stringify(schedule)!==pending.sourceId){ledger.cancel(pending.id);continue;}
+      }
+      const job=ledger.claim(pending.id);if(!job)continue;
+      if(job.kind==='coding_review')this.codingReviewContext.set(job.conversationId,job.sourceId);
+      const accepted=this.dispatchAgentWake(job.conversationId,job.agentId,job.instruction,'schedule',{triggerId:'background-'+job.id+'-'+job.leaseId,timeoutMs:job.kind==='coding_review'?180000:undefined,onSettled:error=>{
+        if(job.kind==='coding_review'){this.codingReviewContext.delete(job.conversationId);const review=job.completedAt?ledger.codingReview(job.sourceId,job.completedAt):undefined;if(!error&&review?.status==='queued')error=Error('The coding review ended without a verified result.');}
+        ledger.settle(job.id,error?.message);
+        if(!error){if(job.kind==='followup')store.takeFollowUp(job.sourceId);if(job.kind==='inbox')store.markInboxDelivered([job.sourceId]);if(job.kind==='schedule'){const conversation=store.getConversation(job.conversationId);if(conversation?.schedule&&'schedule:'+conversation.id+':'+JSON.stringify(conversation.schedule)===job.sourceId)store.updateConversation(conversation.id,{schedule:{...conversation.schedule,lastRunAt:nowIso()}});}}
+        this.publishCowork(job.conversationId);
+      }});
+      if(!accepted){this.codingReviewContext.delete(job.conversationId);ledger.settle(job.id,'The teammate or conversation is not currently available.');}
+    }
+  }
+
   private startCoworkLifecycle(): void {
+    if(readOnboarding().completed)this.preparePersonalAssistant();
     if (this.config.mailInboxWatching !== false && !this.mailInboxMonitor) {
       this.mailInboxMonitor = new MailInboxMonitor(
         new InboxArrivalJournal(nodePath.join(ensureGituHome().settings, 'mail-inbox.sqlite')),
@@ -2355,6 +3097,8 @@ export class GituServer {
     this.coworkTimer = setInterval(() => {
       try {
         this.coworkScheduleTick();
+        this.personalAssistantTick();
+        this.personalBackgroundTick();
         for(const company of this.companies().companies().filter(c=>c.state==='running'))this.companyScope.run({id:company.id,version:company.directionVersion},()=>{
           for(const mission of this.cowork().missions())if(mission.status==='running'&&mission.nextWakeAt&&Date.parse(mission.nextWakeAt)<=Date.now())this.companies().enqueue(company.id,'mission',{missionId:mission.id},mission.id);
           for(const follow of this.cowork().dueFollowUps())this.companies().enqueue(company.id,'wake',{conversationId:follow.conversationId,agentId:follow.agentId,note:follow.note,followUpId:follow.id},'followup:'+follow.id);
@@ -2383,13 +3127,10 @@ export class GituServer {
     const ensureJob = (id: string, every: string, goal: string, enabled: boolean): CronJob => {
       const existing = store.jobs().find((j) => j.id === id);
       if (existing) {
-        store.update(id, { enabled, every });
+        store.update(id, { enabled, every, owner:'maintenance' });
         return { ...existing, enabled, every };
       }
-      const created = store.add({ every, goal });
-      const jobs = store.jobs().map((j) => (j.id === created.id ? { ...j, id, enabled } : j));
-      (store as unknown as { save: (jobs: CronJob[]) => void }).save(jobs);
-      return { ...created, id, enabled };
+      const created=store.add({id,every,goal,owner:'maintenance'});store.update(id,{enabled});return {...created,enabled};
     };
     const sweepJob = ensureJob('cowork_learn_consolidate', '1d', 'Consolidate cowork team memory: merge duplicates and supersede contradictions', consolidateEnabled);
     const reviewEvery = settings.reviewEvery ?? '1d';
@@ -2397,7 +3138,7 @@ export class GituServer {
     // Compaction flush: LLM distillation of un-distilled transcripts into
     // candidate memories. Opt-in with the review (it spends model calls).
     const distillJob = ensureJob('cowork_learn_distill', reviewEvery, 'Distill old cowork transcripts into durable candidate memories', reviewEnabled);
-    const appsJob = ensureJob('cowork_learn_apps', '15m', 'Review permitted connected apps and surface useful updates as widgets', reviewEnabled);
+    const appsJob = ensureJob('cowork_learn_apps', '15m', 'Review permitted connected apps and surface useful updates as widgets', reviewEnabled || Boolean(this.proactivity().status().assistantId && this.proactivity().settings().enabled));
     if (this.coworkLearningScheduler) this.coworkLearningScheduler.stop();
     this.coworkLearningScheduler = new CronScheduler(store, async (job) => {
       if (job.id === sweepJob.id) return this.coworkLearnConsolidateTick();
@@ -2405,7 +3146,7 @@ export class GituServer {
       if (job.id === distillJob.id) return this.coworkLearnDistillTick();
       if (job.id === appsJob.id) return this.coworkAppReviewTick();
       return undefined;
-    });
+    },'maintenance');
     this.coworkLearningScheduler.start(30_000);
   }
 
@@ -2526,20 +3267,21 @@ export class GituServer {
 
   /** Review permitted apps only when a proactive heartbeat is due. */
   private async coworkAppReviewTick(): Promise<string> {
-    if (this.coworkLearningMode() !== 'proactive') return 'proactive app reviews disabled';
-    const store = this.cowork(), now = Date.now();
-    const candidates = store.listAgents().filter(agent => agent.allowConfig && agent.allowWrites && agent.personality?.proactivity !== 'reactive' && !this.coworkComputerBusy(agent.id) && store.appConnections(agent.id).length
-      && now - (Date.parse(store.appReviewState(agent.id).checkedAt) || 0) >= APP_REVIEW_INTERVAL_MS)
-      .sort((a, b) => (Date.parse(store.appReviewState(a.id).checkedAt) || 0) - (Date.parse(store.appReviewState(b.id).checkedAt) || 0));
-    for (const agent of candidates) {
-      const conversation = store.listConversations().find(conv => conv.kind === 'dm' && conv.memberIds.includes(agent.id) && !this.coworkRuns.get(conv.id)?.busy && store.messages(conv.id).some(message => message.role === 'user' && now - Date.parse(message.ts) < 14 * 86400_000));
-      if (!conversation) continue;
-      const count = await reviewConnectedApps({ store, agent, conversation, apps: this.appHub, llm: this.coworkLlm(agent), now,
-        userContext: this.coworkUserContext() + '\n' + this.coworkMemoryFor(agent) + '\nRecent user preferences and requests:\n' + store.messages(conversation.id).filter(message => message.role === 'user').slice(-12).map(message => message.text).join('\n').slice(-6000),
-        signal: AbortSignal.timeout(90_000), enabled: () => this.coworkLearningMode() === 'proactive',
-        isBusy: () => this.coworkComputerBusy(agent.id), publish: () => this.publishCowork(conversation.id),
-      });
-      return `${count} useful app updates from ${agent.name}`;
+    const settings=this.proactivity().settings();
+    if(this.stopping||!settings.enabled||inQuietHours(Date.now(),settings))return 'proactive app reviews paused';
+    const store=this.cowork(),now=Date.now(),assistantId=this.proactivity().status().assistantId;
+    if(this.coworkLearningMode()!=='proactive'&&!assistantId)return 'proactive app reviews disabled';
+    const candidates=store.listAgents().filter(agent=>(this.coworkLearningMode()==='proactive'||agent.id===assistantId)&&agent.allowConfig&&agent.allowWrites&&appReviewDue(store,agent,now)&&!this.coworkComputerBusy(agent.id)&&store.appConnections(agent.id).length)
+      .sort((a,b)=>(Date.parse(store.appReviewState(a.id).lastAttemptAt??'')||0)-(Date.parse(store.appReviewState(b.id).lastAttemptAt??'')||0));
+    for(const agent of candidates){
+      const conversation=store.listConversations().find(conv=>conv.kind==='dm'&&conv.memberIds.includes(agent.id)&&!this.coworkRuns.get(conv.id)?.busy&&(agent.id===assistantId||store.messages(conv.id).some(message=>message.role==='user'&&now-Date.parse(message.ts)<14*86400000)));
+      if(!conversation)continue;
+      const selection=readRuntimeSelection(),provider=agent.provider??selection.provider??'',model=agent.model??selection.model??'';
+      const llm=this.proactivity().reviewClient(this.coworkLlm(agent),usage=>this.priceUsage(usage,provider,model));
+      const count=await reviewConnectedApps({store,agent,conversation,apps:this.appHub,llm,now,
+        userContext:this.coworkUserContext()+'\n'+this.coworkMemoryFor(agent)+'\nRecent user preferences and requests:\n'+store.messages(conversation.id).filter(message=>message.role==='user').slice(-12).map(message=>message.text).join('\n').slice(-6000),
+        signal:AbortSignal.timeout(90000),enabled:()=>!this.stopping&&this.proactivity().settings().enabled&&(this.coworkLearningMode()==='proactive'||agent.id===this.proactivity().status().assistantId),isBusy:()=>this.coworkComputerBusy(agent.id),publish:()=>this.publishCowork(conversation.id)});
+      return count+' useful app updates from '+agent.name;
     }
     return 'no app review is due';
   }
@@ -2640,9 +3382,9 @@ export class GituServer {
           : request.permission === 'config' ? { allowConfig: true }
             : { useHostComputer: true };
       store.saveAgent({ ...agent, ...patch });
-      const context = this.coworkTools.get(agent.id);
+      const context = this.coworkTools.get(this.coworkRuntimeKey(agent.id,agent.companyId));
       context?.mcp?.killAll();
-      this.coworkTools.delete(agent.id);
+      this.coworkTools.delete(this.coworkRuntimeKey(agent.id,agent.companyId));
     }
     const answer = response || status;
     store.appendMessage(request.conversationId, { role: 'system', via: 'web', text: `${request.kind === 'permission' ? 'Permission' : request.kind === 'question' ? 'Question' : 'Recommendation'} ${status}: ${answer}.` });
@@ -2664,6 +3406,19 @@ export class GituServer {
    * the tool call, which is what the answer unblocks.
    */
   private resolveDelegationCard(request: CoworkRequest, action: string, response: string): CoworkRequestResolution | undefined {
+    const mirrored=this.codingFollowupCards.get(request.id);
+    if(mirrored){
+      const task=this.sessions.get(mirrored.runId),runtime=task?.runtime;if(!runtime)return{ok:false,statusCode:409,error:'Coding task is no longer waiting for this decision.'};
+      const approved=/^(approve|approved|accept|yes)$/i.test(response.trim()||action);
+      if(mirrored.kind==='questions'&&!response.trim())return{ok:false,statusCode:400,error:'An answer is required.'};
+      this.codingFollowupCards.delete(request.id);
+      if(mirrored.kind==='approval')runtime.approve(mirrored.gateId,approved);
+      else if(mirrored.kind==='plan_review')runtime.approvePlan(mirrored.gateId,{approved});
+      else runtime.answerQuestions(mirrored.gateId,response);
+      const status=mirrored.kind==='questions'?'answered':approved?'approved':'denied',answer=mirrored.kind==='questions'?response:approved?'Approved':'Denied';
+      const card=this.cowork().resolveRequest(request.id,status,answer);this.publishCowork(request.conversationId);
+      return card?{ok:true,statusCode:200,request:card,agent:this.cowork().getAgent(request.agentId),answer,status}:{ok:false,statusCode:409,error:'Decision already resolved.'};
+    }
     const resolved = this.delegation().resolve(request.id, action, response);
     if (!resolved) return undefined;
     if (!resolved.ok) return { ok: false, statusCode: 400, error: resolved.error };
@@ -2935,6 +3690,7 @@ export class GituServer {
     threadId?: string,
     meta?: { id?: string; referencedMessageIds?: string[]; mentionedAgentIds?: string[]; widgetRequest?: CoworkMessage['widgetRequest']; delivery?: CoworkDelivery },
   ): { ok: boolean; queued?: boolean; steered?: boolean; answering?: boolean; error?: string; message?: CoworkMessage } {
+    if(via==='web'||via==='telegram'||via==='discord')this.codingReviewContext.delete(conversationId);
     const store = this.cowork();
     const conv = store.getConversation(conversationId);
     if (!conv) return { ok: false, error: 'conversation not found' };
@@ -3112,7 +3868,13 @@ export class GituServer {
 
   /** Rendered persistent-memory block for one agent's prompt. */
   private coworkMemoryFor(agent: CoworkAgent): string {
-    return this.coworkMemory().promptBlock(agent);
+    const memory=this.coworkMemory(),companies=this.companies().companies();
+    const knowledge=companies.slice(0,30).map(company=>{
+      const roster=this.companyScope.run({id:company.id,version:company.directionVersion},()=>this.cowork().listAgents());
+      const notes=memory.companyEntries(agent,company.id).slice(0,3).map(entry=>entry.claim.slice(0,700));
+      return company.name+' ['+company.id+'] · '+company.state+' · '+company.purpose.slice(0,500)+' · Cowork members: '+roster.map(member=>member.name).join(', ')+'\n'+notes.join('\n');
+    }).join('\n');
+    return [memory.promptBlock(agent),knowledge?'Shared Cowork company context (workspace data; grants and authority remain scoped):\n'+knowledge+'\nUse company_manage status for live progress, inspect with section=tasks/meetings/workflows/runs/handbook/activity and resourceId for details, or search with query for evidence. Detailed discussions retain membership/attendance checks. To manage a company from this chat, use boardroom/workflow/organization/onboarding/task with id and native arguments in input; your membership authority still applies. remember stores a shared note; completed work and meeting outcomes are indexed automatically. Read real records before answering; report unavailable information instead of guessing.':''].filter(Boolean).join('\n');
   }
 
   /** Hybrid cross-session recall index (SQLite FTS5 + embeddings). One per
@@ -3208,7 +3970,7 @@ export class GituServer {
           toolContext: (agent) => this.coworkToolContext(agent),
           computerFor: (agentId, agent) => this.coworkComputer(agentId, agent),
           hostComputerAllowed: agent => !!agent.companyId && this.companies().get(agent.companyId)?.allowHostComputer === true,
-          releaseSubAgentComputer: async id => {const computer=this.coworkComputers.get(id);if(computer)await computer.stop().catch(()=>{});this.coworkTools.delete(id);},
+          releaseSubAgentComputer: async id => {const computer=this.coworkComputers.get(this.coworkRuntimeKey(id));if(computer)await computer.stop().catch(()=>{});this.coworkTools.delete(this.coworkRuntimeKey(id));},
           delegation: this.delegation(),
           withAgent: (agent, work) => this.withCoworkAgent(agent.id, abort.signal, work),
           store,
@@ -3270,7 +4032,7 @@ export class GituServer {
         },
       });
       // Delivery state of the logical message, never its identity.
-      if(this.companyScope.getStore()?.meetingId&&turn.error)throw new Error('Meeting participant turn failed.',{cause:turn.error});
+      if((this.companyScope.getStore()?.meetingId||trigger.via==='schedule')&&turn.error)throw new Error(this.companyScope.getStore()?.meetingId?'Meeting participant turn failed.':'Scheduled work failed: '+String(turn.error),{cause:turn.error});
       if (trigger.role === 'user') store.setMessageStatus(conversationId, trigger.id, turn.error ? 'failed' : 'sent');
       await this.surfaceCoworkRequests(conv);
       } catch (err) {
@@ -3385,7 +4147,7 @@ export class GituServer {
           toolContext: (a) => this.coworkToolContext(a),
           computerFor: (agentId, agent) => this.coworkComputer(agentId, agent),
           hostComputerAllowed: agent => !!agent.companyId && this.companies().get(agent.companyId)?.allowHostComputer === true,
-          releaseSubAgentComputer: async id => {const computer=this.coworkComputers.get(id);if(computer)await computer.stop().catch(()=>{});this.coworkTools.delete(id);},
+          releaseSubAgentComputer: async id => {const computer=this.coworkComputers.get(this.coworkRuntimeKey(id));if(computer)await computer.stop().catch(()=>{});this.coworkTools.delete(this.coworkRuntimeKey(id));},
           delegation: this.delegation(),
           withAgent: (a, work) => this.withCoworkAgent(a.id, abort.signal, work),
           store,
@@ -3450,6 +4212,7 @@ export class GituServer {
           finishedAt: new Date().toISOString(),
           nextWakeAt: undefined,
         });
+        if(companyScope){const company=this.companies().get(companyScope.id);if(company)this.syncCompanyKnowledge(company);}
         await appendNotice(`Mission complete — ${result.result ?? result.progress}`, result.artifactIds);
       } else if (result.status === 'blocked') {
         store.updateMission(missionId, {
@@ -3583,7 +4346,7 @@ export class GituServer {
   }
 
   /** Wake one specific agent with an instruction (follow-ups, inbox mail). */
-  private dispatchAgentWake(conversationId: string, agentId: string, instruction: string, via: CoworkMessage['via'] = 'agent', opts: { learningReview?: boolean; triggerId?: string } = {}): boolean {
+  private dispatchAgentWake(conversationId: string, agentId: string, instruction: string, via: CoworkMessage['via'] = 'agent', opts: { learningReview?: boolean; triggerId?: string; onSettled?: (error?:Error)=>void; timeoutMs?:number } = {}): boolean {
     const store = this.cowork();
     const conversation = store.getConversation(conversationId);
     const agent = store.getAgent(agentId);
@@ -3600,9 +4363,13 @@ export class GituServer {
     const abort = new AbortController();
     this.coworkRuns.set(conversationId, { busy: true, working: agent.name, abort, queue: [trigger], forceAgentId: agentId });
     this.publishCowork(conversationId);
+    const timeout=opts.timeoutMs?setTimeout(()=>abort.abort(Error('Coding review timed out.')),opts.timeoutMs):undefined;
+    let failure:Error|undefined;
     void this.executeCoworkTurn(conversationId, abort)
-      .catch((err: Error) => logger.error({ subsystem: 'cowork', conversationId, ...errorMetadata(err) }, 'Conversation wake failed'))
+      .catch((err: Error) => {failure=err;logger.error({ subsystem: 'cowork', conversationId, ...errorMetadata(err) }, 'Conversation wake failed');})
       .finally(() => {
+        if(timeout)clearTimeout(timeout);if(abort.signal.aborted&&!failure)failure=Error(abort.signal.reason?.message??'Background work stopped.');
+        try{opts.onSettled?.(failure);}catch(error){logger.error({subsystem:'cowork',conversationId,...errorMetadata(error)},'Could not save background work completion; its lease will be recovered.');}
         const current = this.coworkRuns.get(conversationId);
         if (current?.abort === abort) {
           this.coworkRuns.delete(conversationId);
@@ -3626,7 +4393,7 @@ export class GituServer {
       if (!mission.nextWakeAt || Date.parse(mission.nextWakeAt) > now) continue;
       void this.executeMissionSession(mission.id).catch((err: Error) => logger.error({ subsystem: 'cowork-missions', missionId: mission.id, ...errorMetadata(err) }, 'Mission session crashed'));
     }
-    // 2. Due agent follow-ups wake their author.
+    // Persist scheduled work before admission; consume its source after success.
     for (const followUp of store.dueFollowUps(now)) {
       const agent = store.getAgent(followUp.agentId);
       const conversation = store.getConversation(followUp.conversationId);
@@ -3634,10 +4401,7 @@ export class GituServer {
         store.takeFollowUp(followUp.id);
         continue;
       }
-      if (this.coworkRuns.get(conversation.id)?.busy) continue;
-      if (this.dispatchAgentWake(conversation.id, agent.id, `Follow-up reminder from @${agent.name}: ${followUp.note}. Act on it with your tools and report the result to the user here.`, 'schedule')) {
-        store.takeFollowUp(followUp.id);
-      }
+      this.proactivity().enqueue({kind:'followup',sourceId:followUp.id,conversationId:conversation.id,agentId:agent.id,instruction:`Follow-up reminder from @${agent.name}: ${followUp.note}. Act within the existing permissions and report the result here.`},'followup:'+followUp.id);
     }
     // 3. Inbox mail is delivered privately in the recipient's DM. Never append
     // an inbox instruction to the originating group, where other agents could
@@ -3651,10 +4415,9 @@ export class GituServer {
       }
       const target = store.listConversations().find((c) => c.kind === 'dm' && c.memberIds.length === 1 && c.memberIds[0] === mail.toAgentId)
         ?? store.saveConversation({ kind: 'dm', memberIds: [mail.toAgentId] });
-      const run = this.coworkRuns.get(target.id);
-      if (run?.busy) continue; // delivered on a later tick
-      this.dispatchAgentWake(target.id, mail.toAgentId, `Inbox — task from @${from.name}: ${mail.text}. Act on it with your tools and report the result here.`);
+      this.proactivity().enqueue({kind:'inbox',sourceId:mail.id,conversationId:target.id,agentId:to.id,instruction:`Inbox — task from @${from.name}: ${mail.text}. Act within the existing permissions and report the result here.`},'inbox:'+mail.id);
     }
+    this.personalBackgroundTick();
   }
 
   private coworkScheduleTick(): void {
@@ -3672,14 +4435,63 @@ export class GituServer {
       }
       const last = schedule.lastRunAt ? Date.parse(schedule.lastRunAt) : 0;
       if (now - last < interval) continue;
-      store.updateConversation(conv.id, { schedule: { ...schedule, lastRunAt: new Date().toISOString() } });
-      this.dispatchCoworkMessage(conv.id, `Scheduled task (every ${schedule.every}): ${schedule.goal}`, 'schedule');
+      const agent=store.getAgent(conv.chiefId??conv.memberIds[0]??'');if(!agent)continue;
+      const key='schedule:'+conv.id+':'+JSON.stringify(schedule);
+      this.proactivity().enqueue({kind:'schedule',sourceId:key,conversationId:conv.id,agentId:agent.id,instruction:`Scheduled task (every ${schedule.every}): ${schedule.goal}`},key);
     }
   }
 
   /** All /api/cowork/* routes. Returns true when the request was handled. */
   private async coworkRoutes(req: http.IncomingMessage, res: http.ServerResponse, path: string, method: string): Promise<boolean> {
     const store = this.cowork();
+
+    if(path==='/api/cowork/proactivity'){
+      if(this.companyScope.getStore()){this.sendJson(res,403,{error:'Personal assistant settings belong to the workspace owner.'});return true;}
+      if(method==='POST'){try{const body=await this.readBody(req);if(typeof body['retryJobId']==='string')this.proactivity().retry(body['retryJobId']);else this.proactivity().configure(body);this.startCoworkLearning();}catch(error){this.sendJson(res,400,{error:(error as Error).message});return true;}}
+      if(method==='GET'||method==='POST'){this.sendJson(res,200,{...this.proactivity().status(),maintenance:CronStore.forProject(ensureGituHome().workspace).jobs().filter(job=>job.id.startsWith('cowork_learn_')),reviews:store.listAgents().filter(agent=>agent.personality?.proactivity&&agent.personality.proactivity!=='reactive').map(agent=>({agentId:agent.id,agentName:agent.name,...store.appReviewState(agent.id)})),delivery:'Updates are saved in P.A chat while your Gitu server is running. Missed changes are checked when it restarts.'});return true;}
+      this.sendJson(res,405,{error:'method not allowed'});return true;
+    }
+
+    if (path === '/api/cowork/computers/stream' && method === 'GET') {
+      const scope = this.companyScope.getStore();
+      const scopeKey = this.computerScopeKey();
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive', 'x-accel-buffering': 'no' });
+      res.flushHeaders();
+      // A dropped card stream reconnects immediately; the initial snapshot below
+      // makes that reconnect indistinguishable from a live update.
+      res.write('retry: 1000\n\n');
+      const subscribers = this.computerSubscribers.get(scopeKey) ?? new Set<() => void>();
+      this.computerSubscribers.set(scopeKey, subscribers);
+      this.coworkStreams.add(res);
+      const publish = () => {
+        if (res.writableEnded || res.destroyed) return;
+        let computers: ReturnType<CoworkComputer['status']>[];
+        try {
+          computers = scope ? this.companyScope.run(scope, () => this.computerStatuses()) : this.companyScope.exit(() => this.computerStatuses());
+        } catch {
+          res.destroy();
+          return;
+        }
+        try { res.write(`data: ${JSON.stringify({ computers })}\n\n`); } catch { res.destroy(); }
+      };
+      subscribers.add(publish);
+      const heartbeat = setInterval(() => {
+        if (!res.writableEnded && !res.destroyed) {
+          try { res.write(': heartbeat\n\n'); } catch { res.destroy(); }
+        }
+      }, 15_000);
+      const cleanup = () => {
+        clearInterval(heartbeat);
+        subscribers.delete(publish);
+        this.coworkStreams.delete(res);
+        if (!subscribers.size) this.computerSubscribers.delete(scopeKey);
+      };
+      req.on('close', cleanup);
+      res.on('close', cleanup);
+      res.on('error', cleanup);
+      publish();
+      return true;
+    }
 
     if (path === '/api/cowork/cloud-servers' && method === 'GET') {
       this.sendJson(res, 200, { servers: this.cloudServers() });
@@ -3763,8 +4575,8 @@ export class GituServer {
             if (changingComputer) await this.resetCoworkComputer(agent.id);
             // Profile preferences apply on the next turn and leave an active tool session intact.
             if (['allowShell', 'allowWrites', 'allowConfig', 'useHostComputer', 'cloudConnectionId', 'provider', 'model'].some(key => body[key] !== undefined)) {
-              this.coworkTools.get(agent.id)?.mcp?.killAll();
-              this.coworkTools.delete(agent.id);
+              this.coworkTools.get(this.coworkRuntimeKey(agent.id,agent.companyId))?.mcp?.killAll();
+              this.coworkTools.delete(this.coworkRuntimeKey(agent.id,agent.companyId));
             }
           };
           if (existing && (changingComputer || changingName)) await this.withCoworkAgent(existing.id, new AbortController().signal, save);
@@ -3782,6 +4594,10 @@ export class GituServer {
     const agentMatch = path.match(/^\/api\/cowork\/agents\/([\w-]+)$/);
     if (agentMatch && method === 'DELETE') {
       const target = store.getAgent(agentMatch[1]!);
+      if(target&&!this.companyScope.getStore()){
+        const memberships=this.companies().companies().filter(company=>this.companyScope.run({id:company.id,version:company.directionVersion},()=>Boolean(this.cowork().getAgent(target.id))));
+        if(memberships.length){this.sendJson(res,409,{error:"Remove this teammate's company memberships before deleting their Cowork profile.",companies:memberships.map(company=>({id:company.id,name:company.name}))});return true;}
+      }
       if (target) for (const conv of store.listConversations()) {
         if (conv.memberIds.includes(target.id)) {
           const run = this.coworkRuns.get(conv.id);
@@ -3790,12 +4606,12 @@ export class GituServer {
       }
       const removed = store.deleteAgent(agentMatch[1]!);
       if (removed && target) {
-        await this.coworkComputers.get(target.id)?.stop().catch(() => {});
-        this.coworkTools.get(target.id)?.mcp?.killAll();
-        this.coworkTools.delete(target.id);
+        await this.coworkComputers.get(this.coworkRuntimeKey(target.id))?.stop().catch(() => {});
+        this.coworkTools.get(this.coworkRuntimeKey(target.id))?.mcp?.killAll();
+        this.coworkTools.delete(this.coworkRuntimeKey(target.id));
         this.stopCoworkPoller('');
       }
-      if (removed && target) this.coworkMemory().clear(target);
+      if (removed && target && !this.companyScope.getStore()) this.coworkMemory().clear(target);
       this.sendJson(res, removed ? 200 : 404, removed ? { ok: true } : { error: 'agent not found' });
       return true;
     }
@@ -3805,7 +4621,7 @@ export class GituServer {
       let targetAgent = store.getAgent(computerMatch[1]!);
       if (!targetAgent) { this.sendJson(res, 404, { error: 'agent not found' }); return true; }
       const computer = this.coworkComputer(computerMatch[1]!);
-      const status = () => ({ ...computer.status(), useHostComputer: targetAgent!.useHostComputer, ...(targetAgent!.companyId?{executionLocation:this.companies().read<{executionLocation?:string}>('computer',targetAgent!.id)?.executionLocation??'private',hostComputerAllowed:this.companies().get(targetAgent!.companyId)?.allowHostComputer===true}:{}) });
+      const status = () => ({ ...computer.status(), useHostComputer: targetAgent!.useHostComputer, ...(targetAgent!.companyId?{executionLocation:this.companies().read<{executionLocation?:string}>('computer',targetAgent!.id,targetAgent!.companyId)?.executionLocation??'private',hostComputerAllowed:this.companies().get(targetAgent!.companyId)?.allowHostComputer===true}:{}) });
       if (method === 'GET') { if (!targetAgent.useHostComputer) await computer.refreshStatus(); this.sendJson(res, 200, { computer: status() }); return true; }
       if (method === 'POST') {
         const body = await this.readBody(req);
@@ -3813,8 +4629,8 @@ export class GituServer {
           const inUse = this.coworkComputerBusy(targetAgent.id);
           if (inUse) { this.sendJson(res, 409, { error: 'Wait for this teammate to finish, or stop its task before changing computers.' }); return true; }
           targetAgent = store.saveAgent({ ...targetAgent, useHostComputer: false });
-          this.coworkTools.get(targetAgent.id)?.mcp?.killAll();
-          this.coworkTools.delete(targetAgent.id);
+          this.coworkTools.get(this.coworkRuntimeKey(targetAgent.id))?.mcp?.killAll();
+          this.coworkTools.delete(this.coworkRuntimeKey(targetAgent.id));
           void computer.start().catch(() => {});
         }
         else if (body['action'] === 'input') {
@@ -4280,7 +5096,8 @@ export class GituServer {
       const subscribers = this.coworkSubscribers.get(convId) ?? new Set<() => void>();
       this.coworkSubscribers.set(convId, subscribers);
       this.coworkStreams.add(res);
-      const send = () => {
+      const snapshotScope = this.companyScope.getStore();
+      const publish = () => {
         if (res.writableEnded || res.destroyed) return;
         // Reconnect slow clients rather than buffering unbounded token updates.
         if (res.writableLength > 1_000_000) { res.destroy(); return; }
@@ -4294,6 +5111,7 @@ export class GituServer {
           if (snapshot.deleted) res.end();
         } catch { res.destroy(); }
       };
+      const send = () => snapshotScope ? this.companyScope.run(snapshotScope,publish) : this.companyScope.exit(publish);
       subscribers.add(send);
       const heartbeat = setInterval(() => {
         if (!res.writableEnded && !res.destroyed) {
@@ -4598,6 +5416,10 @@ export class GituServer {
         const ssh = request.credential?.providerHint.toLowerCase() === 'ssh' || /^ssh:/i.test(request.credential?.baseUrl ?? '');
         const profile = connectionId ? (ssh ? new SshConnectionRegistry().get(connectionId) : this.connections.get(connectionId)) : undefined;
         if (!profile) { this.sendJson(res, 400, { error: 'Save the credential through the secure form first — no saved connection was provided.' }); return true; }
+        if (!ssh) {
+          try { await this.connections.validate(profile.id); }
+          catch (error) { this.sendJson(res, 400, { error: 'Connection saved, but API verification failed: ' + (error as Error).message }); return true; }
+        }
         credentialConnection = { id: profile.id, label: profile.label };
         status = 'provided';
       }
@@ -4625,9 +5447,9 @@ export class GituServer {
             : request.permission === 'config' ? { allowConfig: true }
               : { useHostComputer: true };
         store.saveAgent({ ...agent, ...patch });
-        const context = this.coworkTools.get(agent.id);
+        const context = this.coworkTools.get(this.coworkRuntimeKey(agent.id,agent.companyId));
         context?.mcp?.killAll();
-        this.coworkTools.delete(agent.id);
+        this.coworkTools.delete(this.coworkRuntimeKey(agent.id,agent.companyId));
       }
       store.appendMessage(request.conversationId, { role: 'system', via: 'web', text: `${request.kind === 'permission' ? 'Permission' : request.kind === 'question' ? 'Question' : request.kind === 'credential' ? 'Credential' : 'Recommendation'} ${status}: ${answer}.` });
       this.publishCowork(request.conversationId);
@@ -4843,7 +5665,7 @@ export class GituServer {
     try { name = new URL(`http://${host}`).hostname.replace(/^\[|\]$/g, '').toLowerCase(); }
     catch { return false; }
     if (!name) return false;
-    const publicOrigin = process.env['AGENT_GITU_PUBLIC_ORIGIN'];
+    const publicOrigin = process.env['AGENT_GITU_PUBLIC_ORIGIN'] || this.googleSignIn.publicOrigin;
     if (publicOrigin) {
       try { const allowed = new URL(publicOrigin); if (allowed.protocol === 'https:' && allowed.host === host) return true; }
       catch { /* Ignore an invalid configured origin. */ }
@@ -4877,6 +5699,7 @@ export class GituServer {
 
   private sessionView(s: RunSession): RunSessionView {
     return {
+      coworkTask: s.coworkTask,
       runId: s.runId,
       goal: s.goal,
       status: s.status,
@@ -5009,7 +5832,7 @@ export class GituServer {
       session.error = undefined;
       session.finishedAt = undefined;
       await this.executeRun(session, llm, {
-        goal: session.goal, mode: session.mode ?? 'agent', review: false, projectPath: root,
+        goal: session.taskId?session.goal:session.goal+'\n\nContinuation instruction:\n'+message, mode: session.mode ?? 'agent', review: false, projectPath: root,
         resume: session.taskId ? { taskId: session.taskId, message } : undefined,
         conversationHistory: this.conversationHistory(session), attachments, images,
         model: session.model, actionProtocolMode: session.actionProtocolMode, autoApprove: session.autoApprove,
@@ -5019,6 +5842,7 @@ export class GituServer {
       session.status = 'blocked';
       session.error = (error as Error).message;
       this.pushEvent(session, `connection saved — ${session.error}`);
+      if(session.coworkTask)this.notifyCodingOutcome(session.runId);
     }
   }
 
@@ -5353,9 +6177,15 @@ export class GituServer {
 
     if (healthRoute(req, res, path)) return;
 
+    if (path === '/auth/google/callback' && method === 'GET') {
+      const ok = await this.googleSignIn.callbackResult(url.searchParams);
+      res.writeHead(ok ? 200 : 400, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer', 'x-frame-options': 'DENY', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'" });
+      res.end('<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Gitu sign-in</title><style>body{font:18px system-ui;padding:32px;max-width:540px;margin:auto}</style><h1>'+(ok?'Google verified your account':'Google sign-in did not complete')+'</h1><p>'+(ok?'Return to Gitu to finish signing in. You can close this browser tab.':'Return to Gitu and start sign-in again.')+'</p>'); return;
+    }
+
     if (path === '/auth' && method === 'GET') {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'DENY', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'" });
-      res.end(authPage(!this.appAuth.configured, AppAuth.local(req), this.appAuth.requiresEmail, this.appAuth.remoteRegistrationEnabled && this.appAuth.secure(req)));
+      res.end(authPage(!this.appAuth.configured, AppAuth.local(req), this.appAuth.requiresEmail, this.appAuth.remoteRegistrationEnabled && this.appAuth.secure(req), this.appAuth.lanLogin(req), { google: this.googleSignIn.enabled && this.appAuth.requiresEmail && (AppAuth.local(req)||this.appAuth.secure(req)), link: url.searchParams.get('link') === 'google' && this.appAuth.authenticated(req) }));
       return;
     }
     if (path.startsWith('/api/auth/')) {
@@ -5364,7 +6194,21 @@ export class GituServer {
       res.setHeader('Cache-Control', 'no-store');
       if (path === '/api/auth/status' && method === 'GET') {
         const authenticated = this.appAuth.authenticated(req);
-        this.sendJson(res, 200, { required: this.appAuth.enabled, configured: this.appAuth.configured, requiresEmail: this.appAuth.requiresEmail, authenticated, ...(authenticated ? { account: this.appAuth.account } : {}) }); return;
+        this.sendJson(res, 200, { required: this.appAuth.enabled, configured: this.appAuth.configured, requiresEmail: this.appAuth.requiresEmail, authenticated, googleEnabled: this.googleSignIn.enabled, ...(authenticated ? { account: this.appAuth.account, googleLinked: this.appAuth.googleLinked } : {}) }); return;
+      }
+      if (path === '/api/auth/google/start' && method === 'POST') {
+        try { const body = await this.readBody(req); this.sendJson(res, 200, this.googleSignIn.start(req,res,this.appAuth,body['link']===true)); }
+        catch(error) { this.sendJson(res, 400, {error:(error as Error).message}); } return;
+      }
+      if (path === '/api/auth/google/settings' && (method === 'GET' || method === 'POST')) {
+        if (!this.appAuth.authenticated(req)) { this.sendJson(res,401,{error:'Sign in to configure Google.'}); return; }
+        if (!AppAuth.local(req) && !this.appAuth.secure(req)) { this.sendJson(res,403,{error:'Configure Google locally or over HTTPS.'}); return; }
+        try { if (method === 'POST') this.googleSignIn.configure(await this.readBody(req)); this.sendJson(res,200,this.googleSignIn.settings()); }
+        catch(error) { this.sendJson(res,400,{error:(error as Error).message}); } return;
+      }
+      if (path === '/api/auth/google/complete' && method === 'POST') {
+        try { const body = await this.readBody(req); this.sendJson(res, 200, this.googleSignIn.complete(req,res,this.appAuth,body['attemptId'])); }
+        catch(error) { this.sendJson(res, 400, {error:(error as Error).message}); } return;
       }
       if ((path === '/api/auth/register' || path === '/api/auth/setup') && method === 'POST') {
         if (this.appAuth.configured) { this.sendJson(res, 409, { error: 'A workspace account is already registered.' }); return; }
@@ -5377,7 +6221,7 @@ export class GituServer {
         return;
       }
       if (path === '/api/auth/login' && method === 'POST') {
-        if (!AppAuth.local(req) && !this.appAuth.secure(req)) { this.sendJson(res, 403, { error: 'Remote password login requires HTTPS.' }); return; }
+        if (!this.appAuth.canLogin(req)) { this.sendJson(res, 403, { error: 'Remote password login requires HTTPS. For trusted Wi-Fi, ask the server owner to enable local-network login and use the computer’s private IP address.' }); return; }
         try {
           const body = await this.readBody(req);
           const result = await this.appAuth.login(req, body['password'], body['email']);
@@ -5403,13 +6247,38 @@ export class GituServer {
     this.appAuth.track(req, res);
     if (this.appAuth.enabled) res.setHeader('Cache-Control', 'no-store');
 
+    if (path==='/api/chrome-profile'||path==='/api/chrome-profile/view'||path==='/api/chrome-profile/screen') {
+      if(!this.appAuth.authenticated(req)){this.sendJson(res,401,{error:'Sign in to use your private Chrome profile.'});return;}
+      if(!this.isSameOrigin(req)){this.sendJson(res,403,{error:'cross-origin request rejected'});return;}
+      try {
+        const profile=this.ownerChromeProfile();
+        if(method==='GET'&&path==='/api/chrome-profile'){this.sendJson(res,200,await profile.refresh());return;}
+        if(method==='GET'&&(path.endsWith('/view')||path.endsWith('/screen'))){
+          if(path.endsWith('/screen')&&profile.snapshot().state!=='running'){this.sendJson(res,409,{error:'Start Chrome before opening its screen.'});return;}
+          const html=path.endsWith('/screen')?desktopView('',undefined,true):chromeProfileView(url.searchParams.get('returnTo')??undefined);
+          res.writeHead(200,{'content-type':'text/html; charset=utf-8','cache-control':'no-store','x-frame-options':'SAMEORIGIN','referrer-policy':'no-referrer','content-security-policy':"default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; frame-src 'self'; img-src 'self' data: blob:; connect-src 'self'; base-uri 'none'; frame-ancestors 'self'"});
+          res.end(html);return;
+        }
+        if(method==='POST'&&path==='/api/chrome-profile'){
+          const body=await this.readBody(req);
+          if(body['action']==='start')profile.start(body['locationId']);
+          else if(body['action']==='stop')await profile.stop();
+          else if(body['action']==='input'){if(!body['input']||typeof body['input']!=='object'||Array.isArray(body['input']))throw new Error('Chrome keyboard input is required.');await profile.input(body['input'] as Record<string,unknown>);}
+          else throw new Error('Unknown Chrome profile action.');
+          this.sendJson(res,202,profile.snapshot());return;
+        }
+        this.sendJson(res,405,{error:'Method not allowed.'});
+      }catch(error){if(!res.headersSent)this.sendJson(res,400,{error:(error as Error).message});else res.end();}return;
+    }
+
     const serverBrowserRoute=path.match(/^\/api(?:\/companies\/([\w-]+))?\/server-browser(?:\/([\w-]+))?(\/view)?$/);
     if(serverBrowserRoute){
-      if(!['GET','HEAD'].includes(method)&&!this.isSameOrigin(req)){this.sendJson(res,403,{error:'cross-origin request rejected'});return;}
+      if(!this.appAuth.authenticated(req)){this.sendJson(res,401,{error:'Sign in to view the private browser.'});return;}
+      if(!this.isSameOrigin(req)){this.sendJson(res,403,{error:'cross-origin request rejected'});return;}
       const company=serverBrowserRoute[1]?this.companies().get(serverBrowserRoute[1]):undefined;if(serverBrowserRoute[1]&&!company){this.sendJson(res,404,{error:'Company not found.'});return;}
-      try{const work=async()=>{const agentId=serverBrowserRoute[2]??'workspace';if(company&&!this.cowork().getAgent(agentId))throw new Error('Company agent not found.');const browser=this.serverBrowser(agentId);
-        if(serverBrowserRoute[3]&&method==='GET'){res.writeHead(200,{'content-type':'text/html; charset=utf-8','cache-control':'no-store','x-frame-options':'SAMEORIGIN'});res.end(serverBrowserView(path.slice(0,-5)));return;}
-        if(method==='GET'){this.sendJson(res,200,{screenshot:await browser.screenshot(),control:browser.state().driving?'agent':'user'});return;}
+      try{const work=async()=>{const agentId=serverBrowserRoute[2]??'workspace';if((company||agentId!=='workspace')&&!this.cowork().getAgent(agentId))throw new Error('Agent not found.');const browser=this.serverBrowser(agentId);
+        if(serverBrowserRoute[3]&&method==='GET'){res.writeHead(200,{'content-type':'text/html; charset=utf-8','cache-control':'no-store','x-frame-options':'SAMEORIGIN','referrer-policy':'no-referrer','content-security-policy':"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"});res.end(serverBrowserView(path.slice(0,-5)));return;}
+        if(method==='GET'){this.sendJson(res,200,{screenshot:await browser.ownerScreenshot(),control:browser.state().control});return;}
         if(method==='POST'){const body=await this.readBody(req),action=String(body['action']);if(action==='take-control'||action==='return-control'){browser.setControl(action==='take-control'?'user':'agent');this.sendJson(res,200,{ok:true});}else this.sendJson(res,200,{state:await browser.human(action,body)});return;}this.sendJson(res,405,{error:'Method not allowed.'});};if(company)await this.companyScope.run({id:company.id,version:company.directionVersion},work);else await work();}catch(error){this.sendJson(res,400,{error:(error as Error).message});}return;
     }
 
@@ -5422,7 +6291,7 @@ export class GituServer {
         const suffix=integration[2]!,mcp=this.companyMcp(c.id);
         if(await storageApi(req,res,c.id,suffix,method,{registry:this.storage(),store:this.companies(),uploads:this.uploads(),mcp,limit:this.selectedFileLimit(c.id),body:r=>this.readBody(r),send:(r,s,v)=>this.sendJson(r,s,v)}))return;
         if(await companyMcpApi(req,res,c.id,suffix,method,mcp,r=>this.readBody(r),(r,s,v)=>this.sendJson(r,s,v)))return;
-        const agentId=suffix.match(/\/agents\/([\w-]+)/)?.[1],agent=agentId?this.cowork().getAgent(agentId):undefined;if(!agent||this.coworkComputer(agent.id).status().state!=='running')throw new Error('Start this private desktop first.');res.writeHead(200,{'content-type':'text/html; charset=utf-8','cache-control':'no-store','x-frame-options':'SAMEORIGIN'});res.end(desktopView(agent.id,c.id));
+        const agentId=suffix.match(/\/agents\/([\w-]+)/)?.[1],agent=agentId?this.cowork().getAgent(agentId):undefined;if(!agent)throw new Error('Agent not found.');const computer=this.coworkComputer(agent.id);if(!agent.useHostComputer)await computer.refreshStatus();if(agent.useHostComputer||computer.status().state!=='running')throw new Error('Start this private desktop first.');res.writeHead(200,{'content-type':'text/html; charset=utf-8','cache-control':'no-store','x-frame-options':'SAMEORIGIN'});res.end(desktopView(agent.id,c.id));
       });}catch(error){this.sendJson(res,400,{error:(error as Error).message});}return;}
       try{if(await companyApi(req,res,path,method,this.companyApiDependencies()))return;}
       catch(error){this.sendJson(res,400,{error:(error as Error).message});return;}
@@ -5442,7 +6311,9 @@ export class GituServer {
     if (desktopMatch && method === 'GET') {
       const agent = this.cowork().getAgent(desktopMatch[1]!);
       if (!agent) { this.sendJson(res, 404, { error: 'Agent not found.' }); return; }
-      if (agent.useHostComputer || this.coworkComputer(agent.id).status().state !== 'running') { this.sendJson(res, 409, { error: 'Start the private desktop first.' }); return; }
+      const computer = this.coworkComputer(agent.id);
+      if (!agent.useHostComputer) await computer.refreshStatus();
+      if (agent.useHostComputer || computer.status().state !== 'running') { this.sendJson(res, 409, { error: 'Start the private desktop first.' }); return; }
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'SAMEORIGIN', 'content-security-policy': "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data: blob:; base-uri 'none'; frame-ancestors 'self'" });
       res.end(desktopView(agent.id)); return;
     }
@@ -5583,7 +6454,7 @@ export class GituServer {
     }
     if (method === 'POST' && path === '/api/onboarding') {
       const body = await this.readBody(req);
-      try { this.sendJson(res, 200, saveOnboarding(body)); }
+      try { if(typeof body['timezone']==='string')this.proactivity().configure({timezone:body['timezone']});const preferences=saveOnboarding(body);this.preparePersonalAssistant();this.startCoworkLearning();this.sendJson(res,200,preferences); }
       catch (err) { this.sendJson(res, 400, { error: (err as Error).message }); }
       return;
     }
@@ -5605,6 +6476,16 @@ export class GituServer {
     // "keep going" — the engine recovers from provider/protocol noise instead
     // of stopping — with an optional spend ceiling (`maxCostUsd`) as the only
     // non-user stop. Applied to the next run; a live run is not re-policed.
+    if (path === '/api/coding-permissions') {
+      if (method === 'GET') this.sendJson(res, 200, codingPermissions());
+      else if (method === 'POST') {
+        const access = (await this.readBody(req))['access'];
+        if (access !== 'ask' && access !== 'full') this.sendJson(res, 400, { error: 'Choose ask or full coding access.' });
+        else this.sendJson(res, 200, saveCodingPermissions(access));
+      }
+      else this.sendJson(res, 405, { error: 'Method not allowed.' });
+      return;
+    }
     if (path === '/api/autonomy') {
       if (method === 'GET') {
         this.sendJson(res, 200, resolveAutonomy(loadWorkspaceSettings().autonomy));
@@ -5708,7 +6589,7 @@ export class GituServer {
           review: mode === 'proactive',
           reviewEvery: settings.reviewEvery ?? '1d',
           skillApproval: settings.skillApproval === true,
-          jobs: jobs.map((j) => ({ id: j.id, every: j.every, enabled: j.enabled, lastRunAt: j.lastRunAt })),
+          jobs: jobs.map((j) => ({ id: j.id, every: j.every, enabled: j.enabled, lastRunAt: j.lastRunAt, status:j.status, lastSuccessAt:j.lastSuccessAt, error:j.error, nextRetryAt:j.nextRetryAt })),
         });
         return;
       }
@@ -5770,11 +6651,12 @@ export class GituServer {
             provider: String(body['provider'] ?? ''),
             baseUrl: String(body['baseUrl'] ?? ''),
             ...(typeof body['documentationUrl'] === 'string' ? { documentationUrl: body['documentationUrl'] } : {}),
+            ...('auth' in body ? { auth: body['auth'] as import('../connections/connections.js').ConnectionDraft['auth'] } : {}),
             ...(Array.isArray(body['capabilities']) ? { capabilities: body['capabilities'].map(String) } : {}),
             ...(Array.isArray(body['operations']) ? { operations: body['operations'] as never[] } : {}),
             ...(typeof body['token'] === 'string' ? { token: body['token'] } : {}),
           });
-          this.sendJson(res, 200, { ok: true, connection: saved });
+          this.sendJson(res, 200, { ok: true, connection: this.connections.rememberCapabilities(saved.id) });
         } catch (error) {
           this.sendJson(res, 400, { error: (error as Error).message });
         }
@@ -5947,10 +6829,21 @@ export class GituServer {
       return;
     }
 
+    if (path === '/api/model-selection') {
+      if(method==='GET'){this.sendJson(res,200,readRuntimeSelection());return;}
+      if(method==='POST'){
+        try{const body=await this.readBody(req),provider=typeof body['provider']==='string'?body['provider']:undefined,model=typeof body['model']==='string'?body['model']:undefined;
+          if(provider||model){if(!provider||!model)throw Error('Choose both provider and model.');resolveLlm({provider,model,workingDirectory:this.config.cwd});}
+          const projectPath=typeof body['projectPath']==='string'?realpathSync(body['projectPath']):undefined;
+          this.sendJson(res,200,saveRuntimeSelection({...provider&&{provider},...model&&{model},...projectPath&&{projectPath}}));
+        }catch(error){this.sendJson(res,400,{error:(error as Error).message});}return;
+      }
+      this.sendJson(res,405,{error:'Method not allowed.'});return;
+    }
     if (method === 'GET' && path === '/api/models') {
-      this.sendJson(res, 200, await resolveModelCatalog({
+      this.sendJson(res, 200, {...await resolveModelCatalog({
         codexSubscriptionInfo: this.config.codexSubscriptionInfo,
-      }));
+      }),selection:readRuntimeSelection()});
       return;
     }
 
@@ -6511,7 +7404,7 @@ export class GituServer {
         : undefined;
       const requestedProvider = provider ?? (!this.config.llm ? detectedModelProvider : undefined);
       const mode = body['mode'] === 'fast' ? 'fast' : body['mode'] === 'chat' ? 'chat' : body['mode'] === 'standard' ? 'standard' : 'agent';
-      const autoApprove = body['autoApprove'] === true;
+      const autoApprove = codingAutoApprove(body['autoApprove']);
       const autoLearn = body['autoLearn'] !== false;
       const effort = body['effort'] === 'low' || body['effort'] === 'medium' || body['effort'] === 'high' || body['effort'] === 'max' ? body['effort'] : undefined;
       const projectPath = typeof body['projectPath'] === 'string' && body['projectPath'].trim() ? body['projectPath'].trim() : undefined;
@@ -6556,6 +7449,7 @@ export class GituServer {
         }
       }
 
+      if(provider&&model)saveRuntimeSelection({provider,model,...projectPath&&{projectPath:realpathSync(projectPath)}});
       const session: RunSession = {
         runId: shortId('run'),
         goal,
@@ -6594,6 +7488,7 @@ export class GituServer {
       const modelImages = [...stored.images, ...(images ?? [])];
       this.saveRegistry();
       this.pushEvent(session, `user-msg ${goal}`);
+      this.recordOwnerDeployment(session, goal);
       for (const file of stored.files) this.pushEvent(session, `file ${JSON.stringify(this.fileView(file))}`);
       const credentialReady = credentialInput.detected ? this.requestChatCredential(session, credentialInput) : Promise.resolve(true);
       this.sendJson(res, 202, { runId: session.runId, mode, safeText: goal, credentialRequired: credentialInput.detected });
@@ -6874,6 +7769,18 @@ export class GituServer {
       return;
     }
 
+    const checkpointMatch = path.match(/^\/api\/runs\/([\w-]+)\/checkpoints(?:\/(cp_[a-f0-9-]+)\/restore)?$/);
+    if (checkpointMatch) {
+      const session = this.sessions.get(checkpointMatch[1]!);
+      if (!session) { this.sendJson(res, 404, { error: 'Task not found.' }); return; }
+      try {
+        if (method === 'GET' && !checkpointMatch[2]) this.sendJson(res, 200, await this.codingCheckpoint(session, 'list'));
+        else if (method === 'POST' && checkpointMatch[2]) this.sendJson(res, 200, await this.restoreCodingCheckpoint(session, checkpointMatch[2]));
+        else this.sendJson(res, 405, { error: 'Method not allowed.' });
+      } catch (error) { this.sendJson(res, 409, { error: (error as Error).message }); }
+      return;
+    }
+
     const runConnectionMatch = path.match(/^\/api\/runs\/([\w-]+)\/connection$/);
     if (method === 'POST' && runConnectionMatch) {
       const session = this.sessions.get(runConnectionMatch[1]!);
@@ -6926,6 +7833,7 @@ export class GituServer {
           operations: existing?.operations ?? [{ id: 'validate', label: 'Validate saved connection', capability: validationCapability, method: 'GET', path: validationPath, risk: 'read' }],
           token: typeof body['token'] === 'string' ? body['token'] : undefined,
         });
+        this.connections.rememberCapabilities(saved.id);
         await this.connections.validate(saved.id);
         if (session.connection !== waiter) {
           this.sendJson(res, 409, { error: 'Connection saved, but this request was superseded. The previous task will stay paused.' });
@@ -7034,6 +7942,13 @@ export class GituServer {
         this.sendJson(res, 404, { error: 'run not found' });
         return;
       }
+      if (session.coworkTask&&(session.coworkTask.execution==='private'||session.coworkTask.companyId)) {
+        try {
+          const body = await this.readBody(req, Math.ceil(MAX_ARTIFACT_BYTES * 1.4) + 20_000);
+          this.sendJson(res, 202, await this.messageScopedCodingAgent(session, body));
+        } catch (error) { this.sendJson(res, 400, { error: (error as Error).message }); }
+        return;
+      }
       // Synchronously reserve the session BEFORE any await. The setup below
       // yields many times (body read, env validation, worktree checks, LLM
       // resolution); a second POST landing in that window used to observe the
@@ -7049,12 +7964,15 @@ export class GituServer {
       const rawFiles = Array.isArray(body['files']) ? body['files'] : [];
       const credentialInput = credentialChatInput(typeof body['text'] === 'string' ? body['text'].trim() : '');
       const typedText = credentialInput.safeText;
+      this.recordOwnerDeployment(session, typedText);
       const text = typedText || (rawFiles.length > 0 ? 'Please review the attached file or document.' : '');
       if (!text) {
         if (!wasRunning) session.status = prevStatus;
         this.sendJson(res, 400, { error: 'text is required' });
         return;
       }
+      const directMessageId=session.coworkTask&&typeof body['id']==='string'&&/^[\w-]{1,160}$/.test(body['id'])?body['id']:undefined;
+      if(directMessageId&&this.companyScope.exit(()=>this.cowork().getMessage(session.coworkTask!.conversationId,directMessageId))){if(!wasRunning)session.status=prevStatus;this.sendJson(res,200,{ok:true,directToCoding:true,runId:session.runId,safeText:text});return;}
       const images = Array.isArray(body['images'])
         ? (body['images'] as Record<string, unknown>[])
             .map((im) => ({ name: String(im['name'] ?? 'image'), dataUrl: String(im['dataUrl'] ?? '') }))
@@ -7077,9 +7995,13 @@ export class GituServer {
       // model identity. Let the current picker supply it once so they can be
       // resumed after an app upgrade instead of falling back to an unrelated
       // provider default.
-      const selectedProvider = typeof body['provider'] === 'string' && body['provider'].trim() ? body['provider'].trim() : undefined;
-      const selectedModel = typeof body['model'] === 'string' && body['model'].trim() ? body['model'].trim() : undefined;
-      const useSelectedModel = body['useSelectedModel'] === true;
+      const recentSelection=readRuntimeSelection();
+      const selectedProvider = typeof body['provider'] === 'string' && body['provider'].trim() ? body['provider'].trim() : recentSelection.provider;
+      const selectedModel = typeof body['model'] === 'string' && body['model'].trim() ? body['model'].trim() : recentSelection.model;
+      // An unchanged saved picker value is not a fresh owner override. Keep
+      // ordinary retries eligible for the existing billing recovery policy.
+      const useSelectedModel = body['useSelectedModel'] === true || (!body['provider']&&!body['model']&&!!recentSelection.provider&&!!recentSelection.model&&(recentSelection.provider!==session.provider||recentSelection.model!==session.model));
+      if(body['useSelectedModel']===true&&selectedProvider&&selectedModel)saveRuntimeSelection({provider:selectedProvider,model:selectedModel});
       // An explicit mode in the body is a deliberate workflow switch (the UI
       // always sends it from the dropdown): update the durable session mode so
       // this continuation — and later ones — run in the newly chosen mode.
@@ -7118,10 +8040,16 @@ export class GituServer {
         this.sendJson(res, 200, { ok: true, credentialRequired: true, safeText: text });
         return;
       }
+      if(session.coworkTask)this.companyScope.exit(()=>this.noteDirectCodingMessage(session,text,directMessageId));
       // A normal reply can supersede secure setup just like any other pending
       // question. Resolve it before continuing, so its old callback cannot run.
       if (!wasRunning && session.connection) this.releasePendingInput(session, text);
       if (wasRunning) {
+        if(session.coworkTask&&session.runtime&&!session.gitu){
+          await session.runtime.continue([text,this.attachmentContext(stored.attachments)].filter(Boolean).join('\n\n'));
+          this.pushEvent(session,'user-msg '+text);
+          this.sendJson(res,200,{ok:true,steered:true,directToCoding:true,runId:session.runId,safeText:text});return;
+        }
         // delivery:'steer' (default) injects the message into the live run so
         // the agent takes it into account at the next step. delivery:'queue'
         // holds it until the run finishes, then it starts a fresh continuation.
@@ -7151,6 +8079,13 @@ export class GituServer {
         return;
       }
       if (!session.taskId) {
+        if(session.coworkTask){
+          const resolved=this.config.llm?{client:this.config.llm,providerId:session.provider,model:session.model}:resolveLlm({provider:session.provider,model:session.model,workingDirectory:session.projectPath??this.config.cwd});
+          session.provider=resolved.providerId;session.model=resolved.model;session.report=undefined;session.error=undefined;session.finishedAt=undefined;
+          this.pushEvent(session,'user-msg '+text);
+          void this.executeRun(session,resolved.client,{goal:session.goal+'\n\nOwner follow-up:\n'+text,mode:session.mode??'agent',projectPath:session.projectPath,model:resolved.model,autoApprove:session.autoApprove}).catch(error=>{session.status='failed';session.error=(error as Error).message;session.finishedAt=nowIso();this.pushEvent(session,session.error);this.notifyCodingOutcome(session.runId);});
+          this.sendJson(res,200,{ok:true,directToCoding:true,runId:session.runId,safeText:text});return;
+        }
         session.status = prevStatus;
         this.sendJson(res, 409, { error: 'run has no task yet' });
         return;
@@ -7575,20 +8510,25 @@ export class GituServer {
       autoInstall: this.config.autoInstallLsp !== false,
       onEvent: (text) => this.pushEvent(session, text),
     }));
-    // Provider writes always require an individual approval. This intentionally
-    // does not consult autoApprove: a model's ability to select a provider
-    // operation must never become blanket authority over user infrastructure.
-    //
+    // Registered provider writes use the same owner-controlled coding gate.
     // The runtime owns approval resolution: the engine is handed the runtime's
     // gate, so there is exactly one approval promise per request. The server
     // keeps a compatibility mirror below for its existing endpoint and UI.
+    const source=session.coworkTask;
+    const parentBudget=source?this.delegationBudgetFor(source.missionId,source.conversationId):undefined;
+    const chief=source?this.chiefFor({goal:opts.goal,workspace:{type:'host',path:root},agentId:source.agentId,requestedBy:source.agentName,parentBudget,runOptions:{mode:opts.mode==='chat'?'standard':opts.mode,timeoutMinutes:30},scope:{conversationId:source.conversationId,...(source.missionId?{missionId:source.missionId}:{})},onApprovalRequired(){},onPlanReviewRequested(){},onQuestionsRequested(){}},{client:llm,providerId:session.activeProvider??session.provider??'',model:opts.model??session.model??''}):undefined;
     const runtimeSession = this.gituRuntime.createSession({
+      autoApprove: () => codingAutoApprove(opts.autoApprove),
       goal: opts.goal,
       workspace: { type: 'host', path: opts.projectPath ?? this.config.cwd },
+      chief,parentBudget,
       gateTimeoutMs: this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS,
       onApprovalRequired: (request) => {
+        this.mirrorCodingFollowupGate(session,'approval',request.id,[request.why,request.summary].filter(Boolean).join('\n'));
         this.pushEvent(session, `approval-required ${request.id} [${request.tool}] ${request.why}`);
       },
+      onPlanReviewRequested:request=>this.mirrorCodingFollowupGate(session,'plan_review',request.id,request.criteria.join('; ')+'\n'+request.steps.map((step,index)=>(index+1)+'. '+step.description+' · Verify: '+step.verification).join('\n')),
+      onQuestionsRequested:request=>this.mirrorCodingFollowupGate(session,'questions',request.id,request.questions.map(question=>question.question+(question.options.length?'\nOptions: '+question.options.join(' · '):'')).join('\n\n')),
     });
     // Compatibility mirrors only.
     // GituSessionRuntime owns resolution authority for all three.
@@ -7629,6 +8569,10 @@ export class GituServer {
         : undefined;
     };
     runtimeSession.subscribe((event) => {
+      this.recordCodingChiefDecision(session,event);
+      const gateId=event.type==='approval_resolved'?event.approvalId:event.type==='plan_review_resolved'||event.type==='questions_answered'?event.requestId:undefined;
+      if(gateId)for(const[id,card]of this.codingFollowupCards){if(card.runId!==session.runId||card.gateId!==gateId)continue;this.codingFollowupCards.delete(id);const approved=event.type==='approval_resolved'?event.approved:event.type==='plan_review_resolved'?event.decision==='approved':true;this.cowork().resolveRequest(id,event.type==='questions_answered'?'answered':approved?'approved':'denied',event.type==='questions_answered'?'Answered in coding chat.':approved?'Approved in coding chat.':'Denied in coding chat.');if(source)this.publishCowork(source.conversationId);}
+
       syncApprovalMirror();
       syncPlanReviewMirror();
       syncQuestionsMirror();
@@ -7710,6 +8654,7 @@ export class GituServer {
     // `buildConnectionHandlers`, so the delegated-session path runs the same
     // ones; only the approval gate, the waiter slot and the event sink differ.
     const connectionHandlers = this.buildConnectionHandlers({
+      deploymentAllowed: () => this.codingDeploymentAllowed(session),
       approvalHandler: runtimeSession.gates.approvalHandler,
       slot: session,
       emit: (text) => this.pushEvent(session, text),
@@ -7717,10 +8662,11 @@ export class GituServer {
     const gitu = createGitu(
       {
         workspaceRoot: opts.projectPath ?? this.config.cwd,
+        deploymentAllowed: () => this.codingDeploymentAllowed(session),
         llm: trackedLlm,
         index,
         mode: opts.mode,
-        autoApprove: opts.autoApprove,
+        autoApprove: codingAutoApprove(opts.autoApprove),
         autoLearn: opts.autoLearn,
         requirePlanReview: opts.review,
         criteria: opts.criteria,
@@ -7782,7 +8728,7 @@ export class GituServer {
     for (const m of buffered ?? []) gitu.queueMessage(m.text, m.attachmentContext);
 
     try {
-      const { ledger, report } = await gitu.run(opts.goal);
+      const { ledger, report } = await this.withCodingCheckpoint(session, root, () => gitu.run(opts.goal));
       if (!isCurrentExecution()) return;
       // A spend ceiling the user set outranks the engine's own report: it is the
       // reason the run ended, and it must be reported as such.
@@ -7928,6 +8874,7 @@ export class GituServer {
       session.gitu = undefined;
       session.finishedAt = session.status === 'waiting_for_model' ? undefined : nowIso();
       this.pushEvent(session, `run finished: ${session.status}`);
+      if(session.coworkTask&&session.status!=='running'&&session.status!=='waiting_for_model')this.notifyCodingOutcome(session.runId);
       this.saveRegistry();
     }
   }

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { CompanyOrganization } from './organization.js';
-import type { CompanyActor, CompanyMeeting, CompanyMeetingType, MeetingHandRequest, MeetingContribution, MeetingDecision, MeetingParticipant } from './management-models.js';
+import type { CompanyActor, CompanyMeeting, CompanyMeetingRequest, CompanyMeetingType, MeetingHandRequest, MeetingContribution, MeetingDecision, MeetingParticipant } from './management-models.js';
+import { canonicalAction } from './store.js';
 
 const TYPES: CompanyMeetingType[] = ['onboarding', 'daily', 'weekly', 'strategy', 'roadmap', 'workflow-planning', 'emergency', 'problem-solving', 'department', 'project-review'];
 const iso = (value: number) => new Date(value).toISOString();
@@ -110,6 +111,59 @@ export class CompanyBoardroom {
       .all(this.companyId)
       .map((row) => JSON.parse(String(row['data'])) as CompanyMeeting);
   }
+  /** Asking for coordination does not confer organizer authority or start work. */
+  request(actor: CompanyActor, input: { title: string; reason: string; type?: CompanyMeetingType; participants?: { agentId: string }[]; agenda?: string[] }): CompanyMeetingRequest {
+    if (actor.kind !== 'agent') throw new Error('Meeting requests must come from a company employee.');
+    const member = this.organization.member(actor.agentId), company = this.organization.store.get(this.companyId)!;
+    if (member.status !== 'active') throw new Error('Only active employees can request meetings.');
+    const title = requiredText(input.title, 160), reason = requiredText(input.reason, 2000), type = input.type ?? 'problem-solving';
+    if (!TYPES.includes(type)) throw new Error('Choose a supported meeting type.');
+    if (input.participants !== undefined && !Array.isArray(input.participants)) throw new Error('Provide company participants.');
+    const ids = [...new Set([actor.agentId, ...(input.participants ?? []).map(p => p.agentId)])];
+    for (const id of ids) if (this.organization.member(id).status !== 'active') throw new Error('Choose active company participants.');
+    if (input.agenda !== undefined && (!Array.isArray(input.agenda) || !input.agenda.length)) throw new Error('Provide agenda items.');
+    const agenda = (input.agenda ?? [reason]).map(item => requiredText(item, 500));
+    const content = { title, reason, type, participants: ids.sort().map(agentId => ({ agentId })), agenda };
+    const pending = this.requests(actor).filter(r => r.state === 'pending' && r.requestedBy === actor.agentId);
+    return this.organization.audited(actor, undefined, 'meeting.requested', this.companyId, () => {
+      const existing = pending.find(r => r.directionVersion === company.directionVersion && canonicalAction({ title:r.title, reason:r.reason, type:r.type, participants:r.participants, agenda:r.agenda }) === canonicalAction(content));
+      if (existing) return existing;
+      if (pending.length >= 10) throw new Error('Wait for outstanding meeting requests to be reviewed.');
+      const at = iso(this.clock()), request: CompanyMeetingRequest = { ...content, id:'meeting-request-'+randomUUID(), companyId:this.companyId, revision:1, requestedBy:actor.agentId, state:'pending', directionVersion:company.directionVersion, createdAt:at, updatedAt:at };
+      this.organization.store.saveResource('meeting-request', request.id, this.companyId, request);
+      if (company.state === 'running' && company.conversationId && company.leadId && company.leadId !== actor.agentId)
+        this.organization.store.enqueue(this.companyId, 'wake', {
+          agentId:company.leadId,
+          conversationId:company.conversationId,
+          note:'An employee submitted a meeting request. Use company_boardroom requests to inspect the saved reason, agenda and participants. Review it with review_request within your organizer authority; reuse existing meetings and decline unnecessary discussion. Request ID: '+request.id,
+        }, 'meeting-request:'+request.id);
+      return request;
+    });
+  }
+  requests(actor: CompanyActor): CompanyMeetingRequest[] {
+    const member = actor.kind === 'agent' ? this.organization.member(actor.agentId) : undefined;
+    if (member && member.status !== 'active') throw new Error('Only active employees can inspect meeting requests.');
+    return this.organization.store.list<CompanyMeetingRequest>('meeting-request', this.companyId)
+      .filter(r => !member || member.role === 'ceo' || r.requestedBy === member.agentId)
+      .sort((a,b) => b.createdAt.localeCompare(a.createdAt));
+  }
+  reviewRequest(actor: CompanyActor, id: string, revision: number, approved: boolean, reason = ''): CompanyMeetingRequest {
+    this.organization.require(actor, 'organize-meetings');
+    if (typeof approved !== 'boolean') throw new Error('Choose approve or decline.');
+    const request = this.requests(actor).find(r => r.id === id);
+    if (!request) throw new Error('Meeting request not found in this company.');
+    if (request.revision !== revision || request.state !== 'pending') throw new Error('Meeting request changed. Refresh before reviewing.');
+    if (approved) {
+      if (request.directionVersion !== this.organization.store.get(this.companyId)!.directionVersion) throw new Error('Direction changed. Decline this request and ask for a current proposal.');
+      this.create(actor, {title:request.title, description:request.reason, type:request.type, participants:request.participants, agenda:request.agenda}, request);
+      return this.organization.store.read<CompanyMeetingRequest>('meeting-request', id)!;
+    }
+    return this.organization.audited(actor, 'organize-meetings', 'meeting.request-declined', id, () => {
+      const saved = { ...request, state:'declined' as const, revision:request.revision+1, resolution:reason.trim() || 'Meeting request declined.', updatedAt:iso(this.clock()) };
+      this.organization.store.saveResource('meeting-request', id, this.companyId, saved);
+      return saved;
+    });
+  }
   historyPage(query: string, offset: number, limit: number): { total: number; meetings: unknown[]; nextOffset?: number } {
     const filter =
         "kind='meeting' AND company_id=? AND (?='' OR instr(lower(json_extract(data,'$.title')||' '||json_extract(data,'$.description')||' '||json_extract(data,'$.agenda')),lower(?))>0)",
@@ -140,6 +194,7 @@ export class CompanyBoardroom {
       budgetUsd?: number | null;
       automaticModeration?: boolean;
     },
+    request?: CompanyMeetingRequest,
   ): CompanyMeeting {
     const organizer = this.organization.require(actor, 'organize-meetings'),
       company = this.organization.store.get(this.companyId)!;
@@ -190,6 +245,8 @@ export class CompanyBoardroom {
       description,
       type,
       organizer: actor,
+      requestId: request?.id,
+      requestedBy: request?.requestedBy,
       chairId,
       departmentId: input.departmentId,
       agenda,
@@ -211,6 +268,11 @@ export class CompanyBoardroom {
       updatedAt: createdAt,
     };
     return this.organization.audited(actor, 'organize-meetings', 'meeting.created', id, () => {
+      if (request) {
+        const current = this.organization.store.read<CompanyMeetingRequest>('meeting-request', request.id);
+        if (!current || current.companyId !== this.companyId || current.state !== 'pending' || current.revision !== request.revision) throw new Error('Meeting request changed. Refresh before scheduling.');
+        this.organization.store.saveResource('meeting-request', request.id, this.companyId, { ...current, state:'scheduled', meetingId:id, revision:current.revision+1, updatedAt:createdAt });
+      }
       const open = Number(
         this.organization.store.db
           .prepare("SELECT COUNT(*) AS count FROM records WHERE kind='meeting' AND company_id=? AND json_extract(data,'$.state') IN ('scheduled','active','interrupted')")

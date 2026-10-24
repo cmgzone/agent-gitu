@@ -64,8 +64,9 @@ describe('cowork proactive learning', () => {
     updateWorkspaceSettings({ coworkLearning: { mode: 'proactive' } });
     const server = newServer([]), runtime = server as any;
     try {
+      runtime.proactivity().configure({quietStart:0,quietEnd:0});
       const store = runtime.cowork();
-      const agent = store.saveAgent({ name: 'busy-review-agent', systemPrompt: 'Help.', allowWrites: true, allowConfig: true });
+      const agent = store.saveAgent({ name: 'busy-review-agent', systemPrompt: 'Help.', allowWrites: true, allowConfig: true, personality:{traits:[],communicationStyle:'',proactivity:'proactive'} });
       const target = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
       const other = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
       store.appendMessage(target.id, { role: 'user', text: 'Track useful offers.' });

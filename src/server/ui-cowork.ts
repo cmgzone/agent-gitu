@@ -1,3 +1,4 @@
+import { PROACTIVITY_JS } from './ui-proactivity.js';
 import { CHARACTER_CSS, CHARACTER_JS } from './ui-characters.js';
 import { ACTIVITY_MARK_HTML, REASONING_STREAM_JS } from './ui-activity.js';
 import { COWORK_PANELS_CSS, COWORK_PANELS_JS } from './ui-cowork-panels.js';
@@ -10,6 +11,8 @@ import { COWORK_WIDGETS_CSS, COWORK_WIDGETS_JS } from './ui-cowork-widgets.js';
 import { WIDGET_APP_RUNTIME_JS } from './ui-widget-app-runtime.js';
 import { COWORK_DIALOGS_JS } from './ui-cowork-dialogs.js';
 import { COWORK_SESSIONS_CSS, COWORK_SESSIONS_JS } from './ui-cowork-sessions.js';
+import { CHAT_QUESTION_CSS, CHAT_QUESTION_JS } from './ui-chat-questions.js';
+import { COWORK_CODING_CSS, COWORK_CODING_JS } from './ui-cowork-coding.js';
 
 /**
  * Cowork mode UI: a messaging-app style surface (agent roster, DMs, group
@@ -25,6 +28,7 @@ import { COWORK_SESSIONS_CSS, COWORK_SESSIONS_JS } from './ui-cowork-sessions.js
  */
 
 export const COWORK_CSS = String.raw`
+  ${CHAT_QUESTION_CSS}
   .cw-message-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
   .cw-message-more { position: absolute; top: 2px; right: 2px; width: 30px; height: 30px; border: 0; border-radius: 50%; background: transparent; color: var(--muted); font-size: 21px; line-height: 1; cursor: pointer; }
   .cw-message-more:hover, .cw-message-more:focus-visible { color: var(--text); background: var(--hover); }
@@ -595,9 +599,11 @@ export const COWORK_CSS = String.raw`
   ${COWORK_COMPUTER_CSS}
   ${COWORK_WIDGETS_CSS}
   ${COWORK_SESSIONS_CSS}
+  ${COWORK_CODING_CSS}
 `;
 
-export const COWORK_JS = String.raw`
+export const COWORK_JS = PROACTIVITY_JS + String.raw`
+  ${CHAT_QUESTION_JS}
   ${REASONING_STREAM_JS}
   ${CHARACTER_JS}
   ${COWORK_PANELS_JS}
@@ -613,6 +619,7 @@ export const COWORK_JS = String.raw`
   ${WIDGET_APP_RUNTIME_JS}
   ${COWORK_DIALOGS_JS}
   ${COWORK_SESSIONS_JS}
+  ${COWORK_CODING_JS}
   function cwAvatarShape(shape, color) {
     if (CW_SHAPES.indexOf(shape) >= 0) return shape;
     // Existing profiles keep their identity and settings; display the plush
@@ -753,7 +760,7 @@ export const COWORK_JS = String.raw`
   }
 
   function cwEnsure() {
-    if (!S.cw) S.cw = { agents: [], convs: [], skills: [], active: null, msgs: [], lastSeq: 0, lastChange: 0, busy: false, working: null, progress: null, progresses: [], timer: null, infoOpen: true, missions: [], artifacts: [], todos: [], requests: [], pendingFiles: [], threads: [], folders: [], widgets: [], threadId: null, learn: null, searchQuery: '', searchHits: [] };
+    if (!S.cw) S.cw = { agents: [], convs: [], skills: [], active: null, msgs: [], lastSeq: 0, lastChange: 0, busy: false, working: null, progress: null, progresses: [], timer: null, computerStream: null, infoOpen: true, missions: [], artifacts: [], todos: [], requests: [], pendingFiles: [], threads: [], folders: [], widgets: [], threadId: null, learn: null, searchQuery: '', searchHits: [] };
     var cw = S.cw;
     if (!cw.lastChange) cw.lastChange = 0;
     if (!cw.outbox) cw.outbox = Object.create(null);
@@ -853,8 +860,37 @@ export const COWORK_JS = String.raw`
     cw.generation = (cw.generation || 0) + 1;
     if (cw.timer) { clearInterval(cw.timer); cw.timer = null; }
     if (cw.stream) { cw.stream.close(); cw.stream = null; }
+    if (cw.computerStream) { cw.computerStream.close(); cw.computerStream = null; }
     cw.streamOpen = false;
     cw.pollPromise = null;
+  }
+
+  function cwStartComputerStream() {
+    var cw = cwEnsure();
+    if (typeof EventSource !== 'function' || cw.computerStream) return;
+    var stream = cw.computerStream = new EventSource('/api/cowork/computers/stream');
+    stream.onmessage = function (event) {
+      if (cw.computerStream !== stream) return;
+      var data; try { data = JSON.parse(event.data); } catch (e) { return; }
+      if (!data || !Array.isArray(data.computers)) return;
+      var changed = JSON.stringify(cw.computers || []) !== JSON.stringify(data.computers);
+      cw.computers = data.computers;
+      cw.computersChecked = Date.now();
+      if (changed) cw.computerRevision = (cw.computerRevision || 0) + 1;
+      if (!changed) return;
+      if (S.active === 'cowork') cwRenderInfo();
+      if (cw.desktopSession && cw.desktopSession.update) {
+        var current = data.computers.filter(function (computer) { return computer.agentId === cw.desktopSession.agentId; })[0];
+        if (current) cw.desktopSession.update(current);
+      }
+    };
+    stream.onerror = function () {
+      // EventSource reconnects network drops itself. A closed stream (for
+      // example after sign-in expiry) gets one fast retry on the next tick.
+      if (cw.computerStream !== stream || stream.readyState !== 2) return;
+      stream.close(); cw.computerStream = null;
+      setTimeout(function () { if (S.active === 'cowork') cwStartComputerStream(); }, 1000);
+    };
   }
 
   // Bundled transparent images share a browser cache across every surface.
@@ -1067,7 +1103,7 @@ export const COWORK_JS = String.raw`
       jobTip(jobs.filter(function (j) { return j.id === 'cowork_learn_consolidate'; })[0], 'Memory consolidation') +
       jobTip(jobs.filter(function (j) { return j.id === 'cowork_learn_review'; })[0], 'Learning review') +
       jobTip(jobs.filter(function (j) { return j.id === 'cowork_learn_distill'; })[0], 'Transcript distillation') +
-      jobTip(jobs.filter(function (j) { return j.id === 'cowork_learn_apps'; })[0], 'Connected app heartbeat (each teammate at most every 6h)') +
+      jobTip(jobs.filter(function (j) { return j.id === 'cowork_learn_apps'; })[0], 'Connected app reviews (Take initiative: hourly)') +
       '\nClick to change';
     el.setAttribute('title', tip);
     el.innerHTML = '<span class="cw-learn-dot"></span><span>' + esc('learn: ' + cwLearnLabel(mode)) + '</span>';
@@ -1090,14 +1126,16 @@ export const COWORK_JS = String.raw`
 
   function cwLoad(openFirst) {
     var cw = cwEnsure();
+    cwStartComputerStream();
     var revision = cw.loadRevision = (cw.loadRevision || 0) + 1;
+    var computerRevision = cw.computerRevision || 0;
     return Promise.all([api('/api/cowork/agents'), api('/api/cowork/conversations')]).then(function (results) {
       if (S.active !== 'cowork' || cw.loadRevision !== revision) return;
       var d = results[0];
       cw.agents = d.agents || [];
       cw.skills = d.availableSkills || [];
       cw.memoryCounts = d.memoryCounts || {};
-      cw.computers = d.computers || [];
+      if ((cw.computerRevision || 0) === computerRevision) cw.computers = d.computers || [];
       cw.cloudServers = d.cloudServers || [];
       cw.profile = d.profile || {};
       cw.convs = results[1].conversations || [];
@@ -1256,6 +1294,7 @@ export const COWORK_JS = String.raw`
     cwRememberChat();
     cwStopPoll();
     cw.active = id;
+    cw.codingTasks = [];
     var conversation = cw.convs.find(function (item) { return item.id === id; });
     if (conversation) {
       if (conversation.kind === 'dm') cw.selectedAgentId = conversation.memberIds[0];
@@ -1301,6 +1340,7 @@ export const COWORK_JS = String.raw`
     cwRememberChat();
     cwStopPoll();
     cw.threadId = threadId || null;
+    cw.codingTasks = [];
     cw.msgs = cwLocalMessages();
     cw.lastSeq = 0;
     cw.transcriptLoaded = false;
@@ -1405,8 +1445,9 @@ export const COWORK_JS = String.raw`
         '<nav class="cw-top-nav" aria-label="Agent navigation">' +
           '<button type="button" id="cwHomeBtn" aria-label="Code mode" title="Code mode">' + cwIcon('home') + '<span>Code</span></button>' +
           '<button type="button" id="cwCurrentChat" aria-label="Cowork mode" title="Cowork mode" aria-pressed="true"><span class="cw-chat-face" id="cwChatAvatar" aria-hidden="true">' + headAva + '</span><span>Cowork</span></button>' +
-          '<button type="button" data-company-nav title="Company mode">' + cwIcon('users') + '<span>Company</span></button>' +
           '<button type="button" id="cwInfoBtn" aria-label="Agent profile" title="Agent profile" aria-controls="cwChat" aria-pressed="false">' + cwIcon('user') + '<span>Profile</span></button>' +
+          '<button type="button" data-company-nav aria-label="Companies" title="Cowork company workspaces">'+cwIcon('users')+'<span>Companies</span></button>'+
+          '<button type="button" id="cwAssistantSettings" data-pa-settings aria-label="Personal assistant preferences" title="P.A preferences and background health">' + cwIcon('crown') + '<span>P.A</span></button>' +
           cwSessionNavHtml() +
         '</nav>' +
         '<div class="cw-visually-hidden"><span id="cwChatTitle">' + esc(activeThread ? activeThread.title : conv.title) + '</span>' +
@@ -1630,7 +1671,8 @@ export const COWORK_JS = String.raw`
         connectionInputHtml('label', cred.label || cred.providerHint || '', true) +
         connectionInputHtml('provider', cred.providerHint || '', true) +
         connectionInputHtml('baseUrl', cred.baseUrl || '', true) +
-        connectionInputHtml('validationPath', cred.validationPath || '/', false)) +
+        connectionInputHtml('validationPath', cred.validationPath || '', true) +
+        (typeof connectionAuthFieldsHtml==='function'?connectionAuthFieldsHtml():'')) +
       connectionInputHtml('token', '', true) +
       '</div>' +
       '<div class="connection-secret-actions"><span class="hint">Saved securely on this device. Never sent to the model or chat history.</span><button class="btn ghost" type="button" data-cwshowkey aria-pressed="false">Show key</button></div>' +
@@ -1695,6 +1737,7 @@ export const COWORK_JS = String.raw`
     el.querySelectorAll('[data-cwcredential]').forEach(function (form) {
       if (form.dataset.cwBound) return;
       form.dataset.cwBound = '1';
+      if(typeof bindConnectionAuthSettings==='function')bindConnectionAuthSettings(form);
       var show = form.querySelector('[data-cwshowkey]');
       if (show) show.onclick = function () {
         var tokenInput = form.querySelector('[data-connection-field="token"]');
@@ -1736,6 +1779,7 @@ export const COWORK_JS = String.raw`
                 provider: values.provider,
                 baseUrl: values.baseUrl,
                 capabilities: ['connection.discover'],
+                auth: typeof connectionAuthFromValues==='function'?connectionAuthFromValues(values):undefined,
                 operations: [{ id: 'validate', label: 'Validate saved connection', capability: 'connection.discover', method: 'GET', path: values.validationPath || '/', risk: 'read' }],
                 token: values.token
               };
@@ -1801,7 +1845,10 @@ export const COWORK_JS = String.raw`
         html += '<div class="cw-action-editor">' + keys.map(function (key) {
           var value = args[key], type = value === undefined || typeof value === 'string' ? 'string' : 'json';
           var text = Object.prototype.hasOwnProperty.call(draft.values, key) ? draft.values[key] : type === 'string' ? String(value === undefined ? '' : value) : JSON.stringify(value, null, 2);
-          return '<label>' + esc(key === 'text' ? 'Message' : cwActionWords(key)) + (type === 'json' ? ' (JSON)' : '') + '<textarea data-cwreview="' + esc(request.id) + '" data-key="' + esc(key) + '" data-value-type="' + type + '" rows="' + (key === 'text' || key === 'body' || key === 'message_body' ? 7 : type === 'json' ? 3 : 1) + '" spellcheck="' + (type === 'string' ? 'true' : 'false') + '"' + (cw.requestPending && cw.requestPending[request.id] ? ' disabled' : '') + '>' + esc(text) + '</textarea></label>';
+          var field = '<label>' + esc(key === 'text' ? 'Message' : cwActionWords(key)) + (type === 'json' ? ' (JSON)' : '') + '<textarea data-cwreview="' + esc(request.id) + '" data-key="' + esc(key) + '" data-value-type="' + type + '" rows="' + (key === 'text' || key === 'body' || key === 'message_body' ? 7 : type === 'json' ? 3 : 1) + '" spellcheck="' + (type === 'string' ? 'true' : 'false') + '"' + (cw.requestPending && cw.requestPending[request.id] ? ' disabled' : '') + '>' + esc(text) + '</textarea></label>';
+          if(type!=='json')return field;
+          var important=/^(?:to|cc|bcc|recipients|recipient|subject|text|body|message_body)$/i.test(key);
+          return (important?'<div><b>'+esc(cwActionWords(key))+'</b>'+cwActionValueHtml(value)+'</div>':'')+'<details data-card-details="'+esc(request.id+':'+key)+'"><summary>'+esc(cwActionWords(key))+' · Advanced details</summary>'+field+'</details>';
         }).join('') + '</div><div class="d">Edit before approving. Only your reviewed version will run.' + (nativeSend ? ' Save draft keeps it unsent in your mailbox.' : '') + '</div>';
       } else if (Object.keys(args).length) html += cwActionValueHtml(args);
       html += '<div class="d">' + (messageReview ? 'Email messages are reviewed each time.' : 'Accept once, or always allow this tool for this teammate and account. Manage saved permissions in Connections.') + '</div>' +
@@ -1813,7 +1860,8 @@ export const COWORK_JS = String.raw`
     if (request.appConnection) return cwAppConnectionHtml(request);
     var cw = cwEnsure();
     var agent = cwAgentById(request.agentId);
-    var appApproval = cwAppApprovalPresentation(request);
+    if(request.kind==='question'&&!request.appAction)return '<div class="cw-row cw-request-row" data-cwrequest-row="'+esc(request.id)+'">'+cwAva(agent)+'<div class="cw-bubble"><div class="cw-meta"><span class="nm">'+esc(agent?agent.name:'Teammate')+'</span><span class="tg">'+cwTime(request.createdAt)+'</span></div>'+chatQuestionHtml(request,cw,'cowork:'+(request.conversationId||cw.active))+'</div></div>';
+    var appApproval = cwAppApprovalPresentation(request), presentation = cardRequestPresentation(request);
     var label = appApproval ? 'App approval' : request.kind === 'permission' ? 'Permission request' : request.kind === 'question' ? 'Question' : request.kind === 'credential' ? 'Secure credential request' : 'Recommendation';
     var controls = '';
     if (request.status !== 'open') controls = '<span class="cw-request-result">' + (appApproval && request.response === 'Always allowed' ? 'Always allowed' : esc(request.status.charAt(0).toUpperCase() + request.status.slice(1)) + (request.response ? ' · ' + esc(request.response) : '')) + '</span>';
@@ -1831,8 +1879,8 @@ export const COWORK_JS = String.raw`
     if (cw.requestPending && cw.requestPending[request.id]) controls = controls.replace(/<(button|input)\b/g, '<$1 disabled');
     return '<div class="cw-row cw-request-row" data-cwrequest-row="' + esc(request.id) + '">' + cwAva(agent) + '<div class="cw-bubble">' +
       '<div class="cw-meta"><span class="nm">' + esc(agent ? agent.name : 'Teammate') + '</span><span class="tg">' + cwTime(request.createdAt) + '</span></div>' +
-      '<div class="cw-request"><div class="k">' + label + '</div><div class="t">' + esc(appApproval ? appApproval.title : request.title) + '</div>' +
-      (appApproval ? appApproval.html : request.detail ? '<div class="d">' + esc(request.detail) + '</div>' : '') + '<div class="cw-actions">' + controls + '</div></div></div></div>';
+      '<div class="cw-request"><div class="k">' + label + '</div><div class="t">' + esc(appApproval ? appApproval.title : presentation.title) + '</div>' +
+      (appApproval ? appApproval.html : (presentation.detail ? '<div class="d">' + esc(presentation.detail) + '</div>' : '') + cardTechnicalDetails(presentation.technical, request.id)) + '<div class="cw-actions">' + controls + '</div></div></div></div>';
   }
 
   function cwRenderWork() {
@@ -1856,6 +1904,13 @@ export const COWORK_JS = String.raw`
 
   function cwBindRequests(el) {
     var cw = cwEnsure();
+    var questionConversation=cw.active;
+    chatBindQuestions(el,cw,'cowork:'+questionConversation,async function(id,response){
+      var data=await api('/api/cowork/requests/'+encodeURIComponent(id),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'answer',response:response})});
+      if(cw.active!==questionConversation)return;
+      cw.requests=(cw.requests||[]).map(function(request){return request.id===id?data.request:request;});
+      if(data.agent)cw.agents=cw.agents.map(function(agent){return agent.id===data.agent.id?data.agent:agent;});
+    },function(){if(cw.active===questionConversation){cwRenderMsgs();cwRenderInfo();cwRenderRail();cwPoll();}});
     el.querySelectorAll('[data-cwreview]').forEach(function (input) {
       input.oninput = function () {
         var draft = cw.reviewDrafts && cw.reviewDrafts[input.getAttribute('data-cwreview')];
@@ -2085,6 +2140,8 @@ export const COWORK_JS = String.raw`
     var members = conv ? cwConvMembers(conv) : [];
     var agent = m.agentId ? cwAgentById(m.agentId) : null;
     if (m.role === 'system') {
+      var codingTask=/\[View task\]\(#run=([a-zA-Z0-9_-]+)\)/.exec(m.text);
+      if(codingTask)return '<div class="cw-sys">'+esc(m.text.slice(0,codingTask.index))+' <button type="button" class="btn ghost" data-main-coding-task="'+codingTask[1]+'">View coding task</button></div>';
       if(m.companyLink&&typeof companyChatCardHtml==='function')return companyChatCardHtml(m.companyLink);
       var event = cwSystemEventHtml(m);
       if (event !== null) return event;
@@ -2366,7 +2423,7 @@ export const COWORK_JS = String.raw`
       if(!anchor){try{url=new URL(destination);}catch(e){return raw;}if(!/^https?:$/.test(url.protocol)||url.username||url.password)return raw;richAnchors.push('<a href="'+esc(url.href)+'" target="_blank" rel="noopener noreferrer">'+esc(destination)+'</a>');anchor='\x00RICH'+(richAnchors.length-1)+'\x00';}
       return anchor+raw.slice(destination.length);
     });}).join('');
-    var out = esc(linked);
+    var out = esc(linked).replace(/\[View task\]\(#run=([a-zA-Z0-9_-]+)\)/g, '<button type="button" class="btn ghost" data-main-coding-task="$1">View coding task</button>');
     out = out.replace(/\x60\x60\x60([\s\S]*?)\x60\x60\x60/g, function (all, code) { return '</span>' + cwCodeHtml(code) + '<span>'; });
     out = out.replace(/~{3}([\s\S]*?)~{3}/g, function (all, code) { return '</span>' + cwCodeHtml(code) + '<span>'; });
     out = out.replace(/\x60([^\x60\n]+)\x60/g, function (all, code) { return '<code>' + code + '</code>'; });
@@ -2503,7 +2560,7 @@ export const COWORK_JS = String.raw`
     var cw = cwEnsure();
     var entries = cw.msgs.map(function (message) { return { time: Date.parse(message.ts) || 0, message: message }; });
     (cw.requests || []).forEach(function (request) {
-      entries.push({ time: Date.parse(request.createdAt) || 0, html: cwRequestHtml(request) });
+      if (request.status !== 'open') entries.push({ time: Date.parse(request.resolvedAt || request.createdAt) || 0, html: cwRequestHtml(request) });
     });
     (cw.workHistory || []).forEach(function (activity) {
       entries.push({ time: Date.parse(activity.ts) || 0, activity: activity });
@@ -2550,6 +2607,7 @@ export const COWORK_JS = String.raw`
       var key = String(cw.active || '') + ':' + String(first.id || first.ts || entry.time);
       html.push('<details class="cw-checkpoints" data-cwcheckpoint="' + esc(key) + '"><summary><span class="cw-checkpoint-check" aria-hidden="true">✓</span><span class="cw-checkpoint-count">' + group.length + ' checkpoint' + (group.length === 1 ? '' : 's') + ' completed</span><span class="cw-checkpoint-action">View history</span></summary><ol>' + group.map(function (item) { return '<li>Checkpoint ' + esc(item.number) + '<time>' + esc(cwTime(item.time)) + '</time></li>'; }).join('') + '</ol></details>');
     }
+    (cw.requests || []).filter(function(request){return request.status === 'open';}).forEach(function(request){html.push(cwRequestHtml(request));});
     return html.join('');
   }
 
@@ -2563,7 +2621,8 @@ export const COWORK_JS = String.raw`
     // Keep the live form node across polls. Recreating it would erase a typed
     // password and hide a validation error while the user is still working.
     var credentialForms = {};
-    var expandedCheckpoints = {};
+    var expandedCheckpoints = {}, expandedCards = {};
+    wrap.querySelectorAll('details[data-card-details]').forEach(function(details){expandedCards[details.getAttribute('data-card-details')]=details.open;});
     var workHistoryState = {};
     wrap.querySelectorAll('details[data-cwworkhistory]').forEach(function (details) {
       workHistoryState[details.getAttribute('data-cwworkhistory')] = { open: details.open, scroll: details.querySelector('ol').scrollTop };
@@ -2587,7 +2646,8 @@ export const COWORK_JS = String.raw`
       if (draft) draft.values[key] = input.value;
       if (input === document.activeElement) reviewFocus = { id: id, key: key, start: input.selectionStart, end: input.selectionEnd, scroll: input.scrollTop };
     });
-    cwReplaceTranscript(wrap, cwTranscriptHtml() + '<div class="cw-row cw-working-row" id="cwWorkingBubble" hidden><div class="cw-working-bubble" role="status" aria-live="polite" aria-atomic="true"><span class="cw-working-dot" aria-hidden="true"></span><span id="cwWorkingLabel"></span></div></div><div id="cwLive" hidden></div>');
+    cwReplaceTranscript(wrap, cwTranscriptHtml() + '<section id="cwCodingActivity" class="cw-coding-activity" aria-label="Coding tasks" hidden></section><div class="cw-row cw-working-row" id="cwWorkingBubble" hidden><div class="cw-working-bubble" role="status" aria-live="polite" aria-atomic="true"><span class="cw-working-dot" aria-hidden="true"></span><span id="cwWorkingLabel"></span></div></div><div id="cwLive" hidden></div>');
+    wrap.querySelectorAll('details[data-card-details]').forEach(function(details){details.open=!!expandedCards[details.getAttribute('data-card-details')];});
     wrap.querySelectorAll('details[data-cwworkhistory]').forEach(function (details) {
       var saved = workHistoryState[details.getAttribute('data-cwworkhistory')];
       if (saved) { details.open = saved.open; details.querySelector('ol').scrollTop = saved.scroll; }
@@ -2633,6 +2693,7 @@ export const COWORK_JS = String.raw`
       cwUpdateJumpLatest();
     };
     if (focused) scroll.follow = false;
+    cwRenderCodingActivity();
     cwRenderProgress(scroll);
   }
 
@@ -2650,7 +2711,7 @@ export const COWORK_JS = String.raw`
       var messageId=node.getAttribute('data-cwentrance'),previous=messageId&&messages.get(messageId),signature=node.outerHTML;
       if(previous){if(previous._cwTranscriptSignature!==signature){previous.innerHTML=node.innerHTML;previous.className=node.className;previous._cwTranscriptSignature=signature;}keep.add(previous);return previous;}
       if(messageId)node._cwTranscriptSignature=signature;
-      if(node.id==='cwLive'||node.id==='cwWorkingBubble'){var live=Array.from(wrap.children).find(function(item){return item.id===node.id;});if(live){keep.add(live);return live;}}
+      if(node.id==='cwLive'||node.id==='cwWorkingBubble'||node.id==='cwCodingActivity'){var live=Array.from(wrap.children).find(function(item){return item.id===node.id;});if(live){keep.add(live);return live;}}
       return node;
     });
     var computer=Array.from(wrap.children).find(function(node){return node.id==='cwInlineComputer';});
@@ -3345,6 +3406,7 @@ export const COWORK_JS = String.raw`
   function cwOpenDesktop(agentId) {
     var cw = cwEnsure(), agent = cwAgentById(agentId);
     if (!agent) return;
+    if (agent.useHostComputer) { cwOpenBrowser(agentId); return; }
     if (cw.desktopSession && cw.desktopSession.agentId === agentId) { cw.desktopSession.focus(); return; }
     if (cw.closeDesktop) cw.closeDesktop();
     var modal = document.createElement('div');
@@ -3357,6 +3419,7 @@ export const COWORK_JS = String.raw`
       '<div class="cw-desktop-toolbar"><span class="cw-desktop-status" role="status" data-status>Checking computer…</span><span class="chip">Shared computer</span><button class="btn" data-browser title="Regular Google Chrome for manual sign-in">Browser</button><button class="btn" data-agent_browser title="Browser used by the agent’s automated tools">Agent browser</button><button class="btn" data-files>Files</button><button class="btn" data-terminal>Terminal</button><button class="btn" data-control>Take control</button><button class="btn" data-sleep title="Pause the desktop and preserve open windows">Sleep</button><button class="btn" data-lock title="Lock the app with your password">Lock</button><button class="btn" data-start>Start desktop</button><button class="btn ghost" data-stop>Stop</button></div></div>';
     var chatTheme=$('cwChat');
     if(chatTheme&&typeof getComputedStyle==='function'){var computed=getComputedStyle(chatTheme);['--accent','--selected','--cw-sidebar-tint'].forEach(function(property){modal.style.setProperty(property,computed.getPropertyValue(property));});}
+    cwThemeElement(modal,agent);
     document.body.appendChild(modal);
     var screen = modal.querySelector('[data-desktop]'), placeholder = modal.querySelector('[data-placeholder]');
     var status = modal.querySelector('[data-status]'), start = modal.querySelector('[data-start]'), stop = modal.querySelector('[data-stop]');
@@ -3442,11 +3505,11 @@ export const COWORK_JS = String.raw`
       if (document.hidden && !action) { clearTimeout(timer); timer = setTimeout(function () { refresh(); }, 3000); return; }
       if (pending) { if (action) queuedAction = action; return; }
       pending = true; clearTimeout(timer);
-      var revision = controlRevision;
+      var revision = controlRevision, computerRevision = cw.computerRevision || 0;
       try {
         var d = await api(endpoint, { signal: controller.signal, ...(action ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: action }) } : {}) });
         if (closed) return;
-        if (!action && (revision !== controlRevision || controlPending)) return;
+        if (!action && (revision !== controlRevision || controlPending || (cw.computerRevision || 0) !== computerRevision)) return;
         if (d.agent) { cw.agents = cw.agents.map(function (a) { return a.id === agentId ? d.agent : a; }); cwRenderRail(); cwRenderInfo(); }
         cw.computers = (cw.computers || []).filter(function (c) { return c.agentId !== agentId; }).concat([d.computer]);
         update(d.computer);
@@ -3458,7 +3521,7 @@ export const COWORK_JS = String.raw`
       }
     }
     cw.closeDesktop = close;
-    cw.desktopSession = { agentId: agentId, focus: focusDesktop };
+    cw.desktopSession = { agentId: agentId, focus: focusDesktop, update: update };
     cwRenderComputerActivity();
     modal.querySelector('[data-close]').onclick = close;
     start.onclick = function () { refresh(host ? 'use-private' : 'start'); };
@@ -3537,6 +3600,7 @@ export const COWORK_JS = String.raw`
     cw.progresses = d.progresses || (d.progress ? [d.progress] : []);
     var historyChanged = JSON.stringify(cw.workHistory || []) !== JSON.stringify(d.workHistory || []);
     cw.workHistory = d.workHistory || [];
+    cw.codingTasks = d.codingTasks || [];
     cw.queued = d.queued || 0;
     var missionsChanged = JSON.stringify(cw.missions || []) !== JSON.stringify(d.missions || []);
     cw.missions = d.missions || [];
@@ -3564,10 +3628,12 @@ export const COWORK_JS = String.raw`
       }
     }
     if (cw.threadId && d.threads && !cw.threads.some(function (thread) { return thread.id === cw.threadId; })) { cwSwitchThread(null); return; }
+    if (rosterChanged) cwApplyCharacterTheme();
     if (rosterChanged || widgetsChanged || threadsChanged) cwRenderRail();
     if (rosterChanged || threadsChanged) cwRenderMembers();
     if (cw.galleryOpen && typeof cwRenderGallery === 'function') cwRenderGallery();
     else if (added || rosterChanged || artifactsChanged || requestsChanged || historyChanged || workerLayoutChanged) cwRenderMsgs(); else cwRenderProgress();
+    cwRenderCodingActivity();
     if (workChanged || rosterChanged) cwRenderWork();
     if (foldersChanged) cwRenderFolders();
     cwRenderTyping();
@@ -3586,10 +3652,11 @@ export const COWORK_JS = String.raw`
     var generation = cw.generation;
       if (!cw.computersChecked || Date.now() - cw.computersChecked > 5000) {
         cw.computersChecked = Date.now();
+        var computerRevision = cw.computerRevision || 0;
         Promise.all(cwConvMembers(conv).map(function (a) {
           return api('/api/cowork/agents/' + encodeURIComponent(a.id) + '/computer').then(function (v) { return v.computer; });
         })).then(function (computers) {
-          if (cw.active !== convId || cw.generation !== generation || S.active !== 'cowork') return;
+          if (cw.active !== convId || cw.generation !== generation || S.active !== 'cowork' || (cw.computerRevision || 0) !== computerRevision) return;
           if (JSON.stringify(cw.computers) !== JSON.stringify(computers)) { cw.computers = computers; cwRenderInfo(); }
         }).catch(function () {});
       }
@@ -3705,7 +3772,7 @@ export const COWORK_JS = String.raw`
     cw.referencedMessageIds = [];
     cwRenderPending();
     cwRenderReferences();
-    return cwPostLocal(entry);
+    return (typeof modelSelectionQueue!=='undefined'?modelSelectionQueue:Promise.resolve()).then(function(){return cwPostLocal(entry);});
   }
 
   // Mutation responses are scoped to their original view; late responses must

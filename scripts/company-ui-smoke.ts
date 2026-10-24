@@ -147,7 +147,7 @@ try {
     html =
       '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>' +
       style +
-      '</style></head><body><script>var S={sel:{model:"preview::preview-model"}};function $(id){return document.getElementById(id);}function esc(v){return String(v).replace(/[&<>"\x27]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;","\\\"":"&quot;","\x27":"&#39;"}[c]||"&quot;";});}function toast(message){window.lastToast=message;}function shortDate(v){return new Date(v).toLocaleDateString();}function humanBytes(v){return (v/1048576).toFixed(1)+" MB";}function api(url,options){return fetch(url,options).then(async function(r){var value=await r.json();if(!r.ok)throw new Error(value.error);return value;});}function openSettings(){}' +
+      '</style></head><body><script>var S={active:"cowork",sel:{model:"preview::preview-model"}};function $(id){return document.getElementById(id);}function esc(v){return String(v).replace(/[&<>"\x27]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;","\\\"":"&quot;","\x27":"&#39;"}[c]||"&quot;";});}function toast(message){window.lastToast=message;}function shortDate(v){return new Date(v).toLocaleDateString();}function humanBytes(v){return (v/1048576).toFixed(1)+" MB";}function api(url,options){return fetch(url,options).then(async function(r){var value=await r.json();if(!r.ok)throw new Error(value.error);return value;});}function openSettings(){}' +
       FILE_UPLOAD_JS +
       COWORK_JS +
       CONNECTED_APPS_JS +
@@ -365,7 +365,7 @@ try {
   await page.evaluate(() => (window as unknown as { openCompanies: () => void }).openCompanies());
   await page.getByRole('button', { name: 'Open company', exact: true }).click();
   await page.getByRole('heading', { name: 'Current direction', exact: true }).waitFor();
-  if ((await page.locator('[aria-label="App modes"] button').allTextContents()).join(',') !== 'Code,Cowork,Company') throw new Error('App modes are not in the requested order.');
+  if ((await page.locator('[aria-label="Cowork workspace"] button').allTextContents()).join(',') !== 'Cowork,Companies') throw new Error('Companies is not inside the Cowork workspace.');
   if (await page.getByText('Old campaign approval', { exact: false }).count()) throw new Error('A previous direction still appears as a decision.');
   if (await page.getByText('Completed email approval', { exact: false }).count()) throw new Error('A completed action still appears as a decision.');
   await page.getByText('Send research email', { exact: false }).waitFor();
@@ -433,7 +433,7 @@ try {
   await review.getByRole('button', { name: 'Save result', exact: true }).click();
   await review.waitFor({ state: 'detached' });
   if (recoveryPosts.length !== 1) throw new Error('The action result was recorded more than once.');
-  const answer = page.locator('#companyDecisions').getByLabel('Your answer', { exact: true });
+  const answer = page.locator('#companyDecisions').getByRole('textbox', { name: /^Answer:/ });
   await answer.fill('Independent pharmacies');
   await page.evaluate(() => (window as any).companyOverviewRefresh());
   if ((await answer.inputValue()) !== 'Independent pharmacies') throw new Error('Live status discarded a question draft.');
@@ -444,14 +444,15 @@ try {
   ];
   await page.getByRole('tab', { name: 'Chat', exact: true }).click();
   await page.locator('#companyChatQuestions').getByRole('heading', { name: 'Choose the report format', exact: true }).waitFor();
-  await page.locator('#companyChatQuestions').getByLabel('Your answer', { exact: true }).fill('A document');
+  await page.locator('#companyChatQuestions').getByRole('textbox', { name: /^Answer:/ }).fill('A document');
   chatMessages.push({ id: 'new-progress', role: 'agent', text: 'The findings are ready for your review.' });
   await page.evaluate(() => (window as any).companyChatRefresh());
-  if ((await page.locator('#companyChatQuestions').getByLabel('Your answer', { exact: true }).inputValue()) !== 'A document')
+  if ((await page.locator('#companyChatQuestions').getByRole('textbox', { name: /^Answer:/ }).inputValue()) !== 'A document')
     throw new Error('New messages discarded the question answer.');
   await page.screenshot({ path: path.join(output, 'question-chat-mobile.png'), fullPage: true });
   await page.locator('#companyChatQuestions').getByRole('button', { name: 'Send answer', exact: true }).click();
-  await page.getByRole('heading', { name: 'Choose the report format', exact: true }).waitFor({ state: 'detached' });
+  await page.locator('#companyChatQuestions [data-question-form]').waitFor({ state: 'detached' });
+  await page.locator('#companyChatQuestions .chat-question-answer').getByText('A document', { exact: false }).waitFor();
   fixture.requests = [];
   fixture.company!.access = 'supervised';
   await page.getByRole('tab', { name: 'Overview', exact: true }).click();
@@ -477,9 +478,9 @@ try {
     )
       throw new Error('Company mode did not inherit the app theme.');
     if (
-      !(await page.locator('.company-mode-nav [aria-pressed="true"]').evaluate((el) => {
+      !(await page.locator('.company-mode-nav [aria-current="page"]').evaluate((el) => {
         const style = getComputedStyle(el);
-        return style.backgroundColor !== 'rgba(0, 0, 0, 0)' && style.backgroundColor !== style.color;
+        return style.color !== getComputedStyle(el.closest('nav')!).backgroundColor && style.visibility !== 'hidden';
       }))
     )
       throw new Error('The selected Company mode is unreadable in this theme.');
@@ -779,16 +780,9 @@ try {
   await page.getByLabel('Name', { exact: true }).fill('Preview Company');
   await page.getByLabel('Purpose and goals').fill('Produce useful reports');
   await page.getByRole('button', { name: 'Continue', exact: true }).click();
-  await page.getByLabel('Lead name').waitFor();
-  await page.locator('#companyLeadProvider option[value="preview"]').waitFor({ state: 'attached' });
-  if ((await page.getByLabel('Provider', { exact: true }).inputValue()) !== 'preview') throw new Error('Selected provider was parsed incorrectly.');
-  if ((await page.getByLabel('Provider', { exact: true }).evaluate((el) => el.tagName)) !== 'SELECT') throw new Error('Provider still requires a typed name.');
-  if ((await page.getByLabel('Model', { exact: true }).evaluate((el) => el.tagName)) !== 'SELECT') throw new Error('Model still requires a typed name.');
-  if (!(await page.locator('#companyLeadProvider option[value="not-connected"]').isDisabled())) throw new Error('An unconnected provider can be chosen.');
-  await page.getByLabel('Provider', { exact: true }).selectOption('second-provider');
-  if ((await page.getByLabel('Model', { exact: true }).inputValue()) !== 'second-model') throw new Error('Changing provider did not update the model choices.');
-  await page.getByLabel('Provider', { exact: true }).selectOption('preview');
-  await page.getByLabel('Model', { exact: true }).selectOption('preview-model-2');
+  await page.getByRole('heading', { name: 'Choose your Cowork lead', exact: true }).waitFor();
+  await page.getByLabel('Cowork teammate', { exact: true }).selectOption(lead.id);
+  if (await page.locator('#companyLeadName,#companyLeadProvider,#companyLeadModel').count()) throw new Error('Company still creates a separate profile.');
   await page.screenshot({ path: path.join(output, 'setup-lead-mobile.png'), fullPage: true });
   await page.getByRole('button', { name: 'Continue', exact: true }).click();
   await page.getByRole('heading', { name: 'Grant resources', exact: true }).waitFor();

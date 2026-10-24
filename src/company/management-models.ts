@@ -2,6 +2,23 @@
 export type CompanyActor = { kind: 'director' } | { kind: 'agent'; agentId: string };
 export type CompanyRole = 'ceo' | 'team-leader' | 'employee';
 export type OrganizationalCapability = 'organize-meetings' | 'chair-meetings' | 'assign-work' | 'design-workflows' | 'manage-departments' | 'propose-staff';
+export interface CompanyMeetingRequest {
+  id: string;
+  companyId: string;
+  revision: number;
+  requestedBy: string;
+  title: string;
+  reason: string;
+  type: CompanyMeetingType;
+  participants: { agentId: string }[];
+  agenda: string[];
+  state: 'pending' | 'scheduled' | 'declined';
+  directionVersion: number;
+  meetingId?: string;
+  resolution?: string;
+  createdAt: string;
+  updatedAt: string;
+}
 export interface CompanyAuthority {
   capabilities: OrganizationalCapability[];
   /** Absent inherits existing grants; an empty list explicitly grants nothing. */
@@ -174,6 +191,8 @@ export interface CompanyMeeting {
   description: string;
   type: CompanyMeetingType;
   organizer: CompanyActor;
+  requestId?: string;
+  requestedBy?: string;
   chairId: string;
   departmentId?: string;
   conversationId?: string;

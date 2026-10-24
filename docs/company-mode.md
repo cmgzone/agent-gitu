@@ -1,12 +1,21 @@
-# Company mode
+# Cowork company workspaces
 
-Company mode uses the existing Cowork execution engine. Each company has its own SQLite-backed configuration and Cowork snapshot, workspace, memory, connection grants, MCP servers, private computers, and usage records. Existing Coding and Cowork sessions retain their original storage.
+Cowork chat supports detailed company lookup/search and forwards daily management
+through the caller's existing membership. Live cards show blockers, discussions,
+workflow drafts and questions. Completed work and meeting outcomes become shared
+memory candidates automatically. See [company chat operations](cowork-company-chat.md).
 
-Open **Companies**, create a draft, then complete **Identity → Lead → Resources → Operating rules → Review**. Choose a monthly AI budget or Unlimited and a file-size policy explicitly. Starting a company enables scheduled reviews. Archive pauses work and preserves history; Restore leaves it paused until Resume.
+Companies are workspaces inside Cowork, using the same execution engine, agent identities, personalities, models and memory. Each company retains its SQLite-backed configuration, scoped Cowork transcript/task snapshot, files, connection grants, MCP servers, private desktops and usage records. Company roles are memberships, not a second type of agent.
 
-The app modes appear in **Code → Cowork → Company** order. Company setup uses the current app theme, provider/model selectors, searchable resource lists and expandable advanced settings. Review shows the lead, model and granted-resource counts. Only pending approvals for the latest direction appear in the decisions box; completed and superseded actions remain in history.
+Open **Cowork → Companies**, create a draft, then complete **Identity → Lead → Resources → Operating rules → Review**. Choose the lead from existing Cowork teammates; create or edit profiles in Cowork. Choose a monthly AI budget or Unlimited and a file-size policy explicitly. Starting a company enables scheduled reviews. Archive pauses work and preserves history; Restore leaves it paused until Resume.
 
-An ordinary Cowork teammate with configuration and write permissions can use `company_manage` to create a draft, list companies and inspect their activity. For example, ask: “Create a company named Research Studio to prepare verified customer research.” The tool clones that teammate into a separate company lead and adds a durable Review company card to the chat. Repeated creation with the same name and purpose in that conversation reuses the draft, including after restart. Creation does not start agents, choose budgets, grant accounts or allow host-computer access. Review resources and operating rules, then select Start. Company agents and temporary helpers cannot create or inspect other companies.
+The app modes are Code and Cowork. **Cowork / Companies** identifies the team workspace; Companies is no longer a third mode or a Code-sidebar entry. Setup uses the selected teammate's Cowork model configuration, the current theme, searchable resource lists and expandable advanced settings. Review shows the lead and granted-resource counts. Only pending approvals for the latest direction appear in the decisions box; completed and superseded actions remain in history.
+
+Any permanent Cowork teammate can list companies, inspect activity and recall or contribute shared company memory with `company_manage`, including while working in a company. Configuration and write permissions are required to create drafts or change memberships. For example: “Create Research Studio for verified customer research and add Milo and Sana from my Cowork team.” The tool links the chosen Cowork lead (the caller by default) and existing member IDs, then adds a durable Review company card. Retrying the same creation reuses the draft, including after restart. Creation retains owner review of resources, budgets and Start; temporary helpers report to permanent Cowork teammates.
+
+**Team → Add Cowork teammates** links existing profiles. One agent can belong to several companies. Removing a membership keeps the Cowork profile and its other memberships. New members receive onboarding and company authority checks; membership itself does not grant tools, accounts or spending. Hires made through the existing Cowork `team_manage` tool are ordinary Cowork profiles, with their company permissions kept in that workspace. Editing their identity or personality updates the shared profile.
+
+**Files & Knowledge → Shared company memory** stores company notes through the existing Cowork MemoryStore. All Cowork teammates receive current company summaries and can recall shared notes. Personal memory follows the same teammate across workspaces and retains its ownership. Notes contributed by agents remain candidates under the existing memory lifecycle. Legacy company-only profiles are imported once into the Cowork roster with stable IDs and preserved history; name collisions are disambiguated. Legacy shared notes and attributable personal memories are imported into Cowork memory, while the original files remain available for recovery.
 
 **Live activity** reports the actual worker phase/tool, current missions, queued tasks and next review. The Cowork card also refreshes from saved/runtime state. Status distinguishes working, waiting for approval/input, queued, between reviews, paused and draft; a saved running state is not a claim that a worker is always active. Live refresh preserves focused navigation and uses a small status response rather than repeatedly transferring usage history.
 
@@ -18,7 +27,45 @@ A mailbox or app recommendation opens this company’s connection form through *
 
 Company Chat uses the shared chat layout and composer. **Follow up** preserves the latest work automatically. **Steer** changes the current direction; **Queue** assigns another request; **Ask** answers a question without replacing the goal. Drafts and delivery mode survive tab changes. Overview displays approvals, agent questions and actions requiring provider reconciliation.
 
+Agent questions use the same cards in Cowork, Company Chat and Company Overview. Select a suggested answer to edit it, or write a multiline response, then select **Send answer** (Ctrl/Cmd + Enter). Choosing a suggestion does not submit it. Drafts remain in memory across refreshes and tab changes, separately for each chat/company; they do not survive an app reload. Sending disables duplicate submissions, failures retain the draft with an inline retry message, and answered questions remain visible in Company Chat with the saved response. Permission and app-approval cards keep their existing controls.
+
 ## Runtime and permissions
+
+### Agent-initiated meetings and workflows
+
+Active permanent employees can ask for a meeting themselves using
+`company_boardroom` with `action: request` and
+`input: { title, reason, participants: [{ agentId }], agenda: [text] }`.
+An identical outstanding request is reused. The request is saved before the
+lead is woken through the durable company queue. The lead can inspect
+`action: requests` and use `review_request` with the exact `requestId`,
+`revision` and `approved` decision. Authorized organizers can still use
+`create` directly. Approving a request schedules one meeting and retains the
+requester's identity; due meetings run the actual participant discussion.
+
+Every active permanent employee can also use `company_workflow` with
+`action: propose` (or `create`) to save a typed workflow draft for director
+review. This needs neither designer authority nor file-write permission.
+Designer edits, version approval, assignment authority, resource grants and
+live execution retain their existing controls. Repeating the same native
+proposal reuses the saved draft. Validation checks supplied workflow inputs
+as well as the definition.
+
+**Overview → Team coordination** shows meeting requests, recent saved
+discussion excerpts, workflow drafts, blocked/running workflows and links to
+the exact meeting or workflow run. **Your decisions** includes coordination
+reviews. **Boardroom → Agent meeting requests** shows who requested each
+discussion and lets the director inspect the agenda/participants, schedule
+or decline it. The meeting itself retains its requester, discussion,
+decisions and assignments. Company Chat has a coordination notice and a
+direct discussion link; sidebar badges mark pending requests and drafts.
+
+Agents receive this coordination guidance in their company context and
+scheduled reviews. They should request a discussion for a real blocker or
+decision, and propose workflows for useful repeatable work. These features
+do not require recurring meetings or manufacture activity when no work is
+needed. Onboarding, suspension, helper restrictions, company scope, budgets
+and external-action approvals continue to apply.
 
 The coordinator admits durable work fairly between companies. Leads, teammates and temporary helpers use the same worker admission pool; a parent awaiting a helper releases its worker slot. Reviews default to 15 minutes. Missions default to twelve sessions. Monthly AI spending uses estimated reservations and reconciliation with provider-reported usage. Unpriced calls remain visibly unknown; finite budgets require explicit input and output pricing. Each priced attempt preserves the price source and rates used for its reservation and reconciliation.
 

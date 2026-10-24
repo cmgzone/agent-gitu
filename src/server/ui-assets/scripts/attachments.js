@@ -125,11 +125,12 @@
     bindGituVoice();
     var model = $('model'), effort = $('effort');
     updatePlanControl();
-    if (model) { if (S.sel.model) model.value = S.sel.model; if (!model.value && model.options.length) model.value = model.options[0].value; S.sel.model = model.value; }
+    if (model) { model.value = S.sel.model || ''; S.sel.model = model.value; }
     fillEffort('effort', provOf(S.sel.model));
     if (effort) effort.value = S.sel.effort;
     if (model) model.onchange = function () {
       S.sel.model = model.value;
+      rememberModelSelection(model.value);
       var activeSession = S.sessions[S.active];
       if (activeSession) activeSession.modelOverride = true;
       fillEffort('effort', provOf(model.value)); persist(); updateAttachState(); updateModelMeta();

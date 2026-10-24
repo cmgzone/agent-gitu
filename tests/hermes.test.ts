@@ -255,7 +255,7 @@ describe('Hermes end-to-end (mock LLM)', () => {
       () => JSON.stringify({ action: { type: 'request_block', reason: 'giving up after loop block' } }),
     ]);
 
-    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast' });
+    const hermes = new Hermes({ autonomy: { persistent: false }, cwd: dir, llm, mode: 'fast' });
     const { ledger, report } = await hermes.run('Run the flaky command');
 
     const blockedActions = ledger.data.actions.filter((a) => a.status === 'blocked');
@@ -301,7 +301,7 @@ describe('Hermes end-to-end (mock LLM)', () => {
       () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'revised step', verification: 'v' }] } }),
       () => JSON.stringify({ action: { type: 'request_block', reason: 'stop after build starts' } }),
     ]);
-    const hermes = new Hermes({
+    const hermes = new Hermes({ autonomy: { persistent: false },
       cwd: dir,
       llm,
       mode: 'fast',
@@ -388,7 +388,7 @@ describe('Hermes end-to-end (mock LLM)', () => {
         // The resumed run must deliver the user's new request through the
         // active follow-up work-phase section (rendered since the follow-up
         // phase model replaced the older FOLLOW-UP MESSAGE block).
-        sawFollowUp = text.includes('ACTIVE FOLLOW-UP WORK PHASE') && text.includes('now build it');
+        sawFollowUp ||= text.includes('ACTIVE FOLLOW-UP WORK PHASE') && text.includes('now build it');
         sawChatPrompt = text.includes('chat mode — answer directly');
         return JSON.stringify({ action: { type: 'request_block', reason: 'paused' } });
       },
@@ -502,7 +502,7 @@ describe('Hermes end-to-end (mock LLM)', () => {
 
   it('answers follow-up comments conversationally without forcing task work', async () => {
     const dir = makeProject('chatty');
-    const first = new Hermes({
+    const first = new Hermes({ autonomy: { persistent: false },
       cwd: dir,
       llm: new ScriptedMockLlm([
         () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['something verified'] } }),
@@ -514,7 +514,7 @@ describe('Hermes end-to-end (mock LLM)', () => {
     const { ledger: led1 } = await first.run('original task');
     expect(led1.data.status).toBe('blocked');
 
-    const second = new Hermes({
+    const second = new Hermes({ autonomy: { persistent: false },
       cwd: dir,
       llm: new ScriptedMockLlm([
         () => JSON.stringify({ action: { type: 'complete', summary: 'Thanks! Glad you like it.', chat: true } }),
@@ -762,7 +762,7 @@ describe('Hermes end-to-end (mock LLM)', () => {
     ]);
 
     const events: string[] = [];
-    const hermes = new Hermes({
+    const hermes = new Hermes({ autonomy: { persistent: false },
       cwd: dir,
       llm,
       mode: 'fast',
@@ -861,7 +861,7 @@ describe('Hermes end-to-end (mock LLM)', () => {
 
     expect(ledger.data.effortPlan?.maxTurns).toBe(20); // low effort budget
     expect(report.status).toBe('failed');
-    expect(ledger.data.blockers.some((b) => b.includes('effort budget'))).toBe(true);
+    expect(ledger.data.blockers.some((b) => /Recovery stopped after .* without new verifiable progress/.test(b))).toBe(true);
     // Extensions are granted while distinct successful work keeps arriving;
     // once the extension allowance is exhausted the stall contract fires.
     expect(events.some((e) => /effort budget of \d+ turns reached/.test(e))).toBe(true);
@@ -885,7 +885,7 @@ describe('Hermes end-to-end (mock LLM)', () => {
           : JSON.stringify({ action: { type: 'request_block', reason: 'wrapped up' } }),
     ]);
 
-    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', effort: 'low', onEvent: (e) => events.push(e) });
+    const hermes = new Hermes({ autonomy: { persistent: false }, cwd: dir, llm, mode: 'fast', effort: 'low', onEvent: (e) => events.push(e) });
     const { report, ledger } = await hermes.run('generate files');
 
     // 24 written files cross the escalation threshold (>= 8), so the first
@@ -938,7 +938,7 @@ describe('Hermes end-to-end (mock LLM)', () => {
     expect(events.some((e) => e.includes('main execution lane stopped after 3'))).toBe(true);
   }, 30000);
 
-  it('clamps delegate calls to the task specialist budget', async () => {
+  it.each([{persistent:false,workers:1},{persistent:true,workers:3}])('uses the selected specialist policy when persistent=$persistent', async ({persistent,workers}) => {
     const dir = makeProject('spec-budget');
     const workerLlm = new ScriptedMockLlm([() => JSON.stringify({ action: { type: 'answer', summary: 'worker done' } })]);
     const runner = new SubAgentRunner({
@@ -964,14 +964,14 @@ describe('Hermes end-to-end (mock LLM)', () => {
       },
     ]);
 
-    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', subagents: runner, effort: 'low' });
+    const hermes = new Hermes({ autonomy: { persistent, maxTurns:6 }, cwd: dir, llm, mode: 'fast', subagents: runner, effort: 'low' });
     await hermes.run('specialist budget test');
 
-    // low effort -> maxSpecialists 1: the first 2-task delegate is clamped to 1,
-    // and the second delegate is rejected outright.
-    expect(runner.status()).toHaveLength(1);
+    // Bounded callers retain the one-specialist estimate. Persistent callers
+    // can use all requested workers; the explicit turn ceiling ends the fixture.
+    expect(runner.status()).toHaveLength(workers);
     const joined = seen.join('\n');
-    expect(joined).toContain('SPECIALIST BUDGET EXHAUSTED');
+    expect(joined.includes('SPECIALIST BUDGET EXHAUSTED')).toBe(!persistent);
   }, 30000);
 
   it('records the risk plan and steers delegations toward the recommended specialists', async () => {

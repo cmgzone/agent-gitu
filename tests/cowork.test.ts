@@ -1338,7 +1338,20 @@ describe('cowork server routes', () => {
     });
     expect(saved.status).toBe(200);
     const connection = saved.json['connection'] as { id: string };
-    const provided = await post(base, `/api/cowork/requests/${request.id}`, { action: 'provide', connectionId: connection.id });
+    const originalFetch = globalThis.fetch;
+    let providerStatus = 401;
+    let provided: Awaited<ReturnType<typeof post>>;
+    try {
+      globalThis.fetch = (async (input, options) => {
+        if (String(input) === 'https://api.github.com/user') return new Response(JSON.stringify(providerStatus === 200 ? { login: 'fixture' } : { message: 'Unauthenticated' }), { status: providerStatus });
+        return originalFetch(input, options);
+      }) as typeof fetch;
+      const rejected = await post(base, `/api/cowork/requests/${request.id}`, { action: 'provide', connectionId: connection.id });
+      expect(rejected.status).toBe(400);
+      expect(store.getRequest(request.id)?.status).toBe('open');
+      providerStatus = 200;
+      provided = await post(base, `/api/cowork/requests/${request.id}`, { action: 'provide', connectionId: connection.id });
+    } finally { globalThis.fetch = originalFetch; }
     expect(provided.status).toBe(200);
     expect(provided.json['answer']).toBe(`Credential saved as connection "GitHub" (id: ${connection.id})`);
     const resolved = store.getRequest(request.id)!;

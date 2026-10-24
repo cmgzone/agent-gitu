@@ -17,13 +17,13 @@ afterEach(() => {
   for (const folder of folders.splice(0)) rmSync(folder, { recursive: true, force: true });
 });
 
-function fixture(scenario: (input: NativeTaskInput) => Promise<void>, opts: { mode?: 'chat' | 'agent'; approval?: boolean } = {}) {
+function fixture(scenario: (input: NativeTaskInput) => Promise<void>, opts: { mode?: 'chat' | 'agent'; approval?: boolean; goal?: string } = {}) {
   const root = mkdtempSync(path.join(tmpdir(), 'gitu-native-supervisor-'));
   folders.push(root);
   writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'native-test', version: '1.0.0' }));
   writeFileSync(path.join(root, 'answer.cjs'), 'module.exports = 1;\n');
   const guard = ProjectGuard.detect(root);
-  const ledger = TaskLedger.create({ repoRoot: root, project: guard.lock, goal: 'Update answer.cjs to return 2.', mode: opts.mode ?? 'agent' });
+  const ledger = TaskLedger.create({ repoRoot: root, project: guard.lock, goal: opts.goal ?? 'Update answer.cjs to return 2.', mode: opts.mode ?? 'agent' });
   ledger.ensureInitialWorkPhase(ledger.data.goal);
   const onEvent = vi.fn(),
     onCodingEvent = vi.fn(),
@@ -38,7 +38,7 @@ function fixture(scenario: (input: NativeTaskInput) => Promise<void>, opts: { mo
   const llm = Object.assign(new ScriptedMockLlm([]), { nativeTask: runtime });
   const config: GituConfig = { cwd: root, llm, mode: opts.mode ?? 'agent', requirePlanReview: false, autoLearn: false, onEvent, onCodingEvent, approvalHandler: approve };
   const controller = new AbortController();
-  const run = () =>
+  const run = (message = ledger.data.goal) =>
     runNativeCodexTask({
       config,
       guard,
@@ -47,7 +47,7 @@ function fixture(scenario: (input: NativeTaskInput) => Promise<void>, opts: { mo
       policy: new PolicyEngine(false, approve),
       signal: controller.signal,
       goal: ledger.data.goal,
-      message: ledger.data.goal,
+      message,
     });
   return { root, guard, ledger, config, runtime, runTurn, run, controller, onEvent, onCodingEvent, approve };
 }
@@ -124,12 +124,95 @@ describe('Gitu supervises the native loop', () => {
     expect(f.runtime.steer).toHaveBeenCalledTimes(1);
   });
 
+  it.each([true, false])('distinguishes scrolling progress from repeated scrolling at the bottom (progress=%s)', async (progress) => {
+    let y = 0;
+    const f = fixture(async input => {
+      for (let i = 0; i < 6; i++) {
+        const result = await call(input, 'gitu_service', { tool: 'browse', params: { action: 'scroll', deltaY: 300 } });
+        expect(result['success']).toBe(true);
+      }
+      await answer(input);
+    }, { mode: 'chat' });
+    f.config.browser = {
+      available: () => true,
+      scroll: async () => { if (progress) y += 300; return { url: 'http://localhost:3000/page' }; },
+      evaluate: async () => ({ x: 0, y, height: 4000, viewport: 800 }),
+    } as any;
+    expect((await f.run()).report.status).toBe(progress ? 'complete' : 'blocked');
+    expect(f.runtime.steer).toHaveBeenCalledTimes(progress ? 0 : 1);
+  });
+
+  it('rejects nonexistent MCP aliases before approval and permits registered tools through policy', async () => {
+    const execute = vi.fn(async () => ({ content: [{ type: 'text', text: 'Registered result' }] }));
+    const f = fixture(async input => {
+      const missing = await call(input, 'gitu_service', { tool: 'mcp:invented:approve', params: {} });
+      expect(missing['success']).toBe(false);
+      expect(JSON.stringify(missing)).toContain('list_mcp');
+      expect(f.approve).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+      await call(input, 'gitu_service', { tool: 'mcp:registered:write', params: {} });
+      expect(f.approve).toHaveBeenCalledOnce();
+      expect(execute).not.toHaveBeenCalled();
+      await answer(input);
+    }, { mode: 'chat' });
+    f.config.mcp = {
+      toolsForServer: async (server: string) => server === 'registered' ? [{ name: 'write', server: 'registered' }] : undefined,
+      call: execute,
+    } as any;
+    await f.run();
+  });
+
+  it('keeps deployment with P.A until a direct owner grant reaches the coding runtime', async () => {
+    let allowed = false;
+    const deploy = vi.fn(async () => ({ message: 'Fixture deployment' }));
+    const f = fixture(async input => {
+      const proposal = { tool: 'connection_operation', params: { connectionId: 'fixture', operation: { id: 'deploy-application', capability: 'deployments.write', path: '/deploy', method: 'POST' } } };
+      expect((await call(input, 'gitu_service', proposal))['success']).toBe(false);
+      expect((await call(input, 'gitu_run_command', { command: 'npm run deploy' }))['success']).toBe(false);
+      expect(deploy).not.toHaveBeenCalled();
+      expect(f.approve).not.toHaveBeenCalled();
+      allowed = true;
+      expect((await call(input, 'gitu_service', proposal))['success']).toBe(true);
+      expect(deploy).toHaveBeenCalledOnce();
+      await answer(input);
+    }, { mode: 'chat' });
+    f.config.deploymentAllowed = () => allowed;
+    f.config.connectionOperationHandler = deploy;
+    await f.run();
+  });
+
   it('answers a simple question with one native turn and no tool loop', async () => {
-    const f = fixture((input) => answer(input, 'Two.'), { mode: 'chat' });
+    const f = fixture(async (input) => {
+      await input.onEvent('item/agentMessage/delta', { itemId: 'answer', delta: 'Tw' });
+      await input.onEvent('item/agentMessage/delta', { itemId: 'answer', delta: 'o.' });
+      await answer(input, 'Two.');
+    }, { mode: 'chat' });
     const result = await f.run();
     expect(result.report.status).toBe('complete');
     expect(result.report.summary).toBe('Two.');
     expect(f.runTurn).toHaveBeenCalledTimes(1);
+    expect(f.ledger.data.actions).toHaveLength(0);
+    expect(f.onEvent.mock.calls.map(([line]) => line)).toContain('say Two.');
+    expect(f.onEvent.mock.calls.map(([line]) => line)).not.toContain('thought Two.');
+  });
+
+  it('answers an unpunctuated question in coding mode without demanding code changes', async () => {
+    const f = fixture(input => answer(input, 'The UI was appending a duplicate completion report.'), { goal: 'Why am I getting a report when asking questions' });
+    const result = await f.run();
+    expect(result.report.status).toBe('complete');
+    expect(result.ledger.data.actions).toHaveLength(0);
+    expect(result.ledger.data.acceptanceCriteria).toHaveLength(0);
+    expect(f.runTurn).toHaveBeenCalledOnce();
+  });
+
+  it('marks a follow-up discussion reply while preserving its unfinished task', async () => {
+    const f = fixture(input => answer(input, 'The checkout needs an authenticated session.'));
+    const goal = f.ledger.data.goal;
+    f.config.resume = { taskId: f.ledger.data.taskId, message: 'Why does checkout need a session' };
+    const { report } = await f.run(f.config.resume.message);
+    expect(report).toMatchObject({ status: 'blocked', responseKind: 'discussion', summary: 'The checkout needs an authenticated session.' });
+    expect(f.ledger.data.goal).toBe(goal);
+    expect(f.ledger.data.blockers).toContain('Paused for discussion with the user.');
     expect(f.ledger.data.actions).toHaveLength(0);
   });
 

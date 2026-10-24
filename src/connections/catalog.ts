@@ -55,6 +55,8 @@ export interface CatalogOperation {
 }
 
 export interface CatalogProvider {
+  /** Saved credentials remain private; providers can require a dedicated key header. */
+  credentialHeader?: string;
   /** Matches ConnectionProfile.provider (slug). */
   provider: string;
   /** Fixed public API origin, when the provider is not self-hosted. */
@@ -66,6 +68,1084 @@ export interface CatalogProvider {
 
 /** Verified-official-documentation seed for well-known providers. */
 export const CONNECTION_CATALOG: CatalogProvider[] = [
+  // Mailcow official OpenAPI, captured 2026-10-24. Metadata only; writes retain their risk gates.
+  {
+    "provider": "mailcow",
+    "credentialHeader": "X-API-Key",
+    "documentationUrl": "https://github.com/mailcow/mailcow-dockerized/blob/master/data/web/api/openapi.yaml",
+    "capabilities": [
+      {
+        "id": "mailcow.alias.write",
+        "riskClass": "reversible-write"
+      },
+      {
+        "id": "mailcow.time-limited-alias.write",
+        "riskClass": "reversible-write"
+      },
+      {
+        "id": "mailcow.app-passwd.write",
+        "riskClass": "reversible-write"
+      },
+      {
+        "id": "mailcow.bcc.write",
+        "riskClass": "reversible-write"
+      },
+      {
+        "id": "mailcow.dkim.write",
+        "riskClass": "reversible-write"
+      },
+      {
+        "id": "mailcow.dkim-duplicate.write",
+        "riskClass": "reversible-write"
+      },
+      {
+        "id": "mailcow.domain.write",
+        "riskClass": "reversible-write"
+      },
+      {
+        "id": "mailcow.domain-admin.write",
+        "riskClass": "reversible-write"
+      },
+      {
+        "id": "mailcow.sso.write",
+        "riskClass": "reversible-write"
+      },
+      {
+        "id": "mailcow.da-acl.write",
+        "riskClass": "reversible-write"
+      },
+      {
+        "id": "mailcow.domain-policy.write",
+        "riskClass": "reversible-write"
+      },
+      {
+        "id": "mailcow.fwdhost.write",
+        "riskClass": "reversible-write"
+      },
+      {
+        "id": "mailcow.mailbox.write",
+        "riskClass": "reversible-write"
+      },
+      {
+        "id": "mailcow.oauth2-client.write",
+        "riskClass": "reversible-write"
+      },
+      {
+        "id": "mailcow.recipient-map.write",
+        "riskClass": "reversible-write"
+      },
+      {
+        "id": "mailcow.relayhost.write",
+        "riskClass": "reversible-write"
+      },
+      {
+        "id": "mailcow.resource.write",
+        "riskClass": "reversible-write"
+      },
+      {
+        "id": "mailcow.syncjob.write",
+        "riskClass": "reversible-write"
+      },
+      {
+        "id": "mailcow.tls-policy-map.write",
+        "riskClass": "reversible-write"
+      },
+      {
+        "id": "mailcow.transport.write",
+        "riskClass": "reversible-write"
+      },
+      {
+        "id": "mailcow.alias.delete",
+        "riskClass": "destructive"
+      },
+      {
+        "id": "mailcow.app-passwd.delete",
+        "riskClass": "destructive"
+      },
+      {
+        "id": "mailcow.bcc.delete",
+        "riskClass": "destructive"
+      },
+      {
+        "id": "mailcow.dkim.delete",
+        "riskClass": "destructive"
+      },
+      {
+        "id": "mailcow.domain.delete",
+        "riskClass": "destructive"
+      },
+      {
+        "id": "mailcow.domain-admin.delete",
+        "riskClass": "destructive"
+      },
+      {
+        "id": "mailcow.domain-policy.delete",
+        "riskClass": "destructive"
+      },
+      {
+        "id": "mailcow.fwdhost.delete",
+        "riskClass": "destructive"
+      },
+      {
+        "id": "mailcow.mailbox.delete",
+        "riskClass": "destructive"
+      },
+      {
+        "id": "mailcow.mailq.delete",
+        "riskClass": "destructive"
+      },
+      {
+        "id": "mailcow.oauth2-client.delete",
+        "riskClass": "destructive"
+      },
+      {
+        "id": "mailcow.qitem.delete",
+        "riskClass": "destructive"
+      },
+      {
+        "id": "mailcow.qitem.write",
+        "riskClass": "reversible-write"
+      },
+      {
+        "id": "mailcow.recipient-map.delete",
+        "riskClass": "destructive"
+      },
+      {
+        "id": "mailcow.relayhost.delete",
+        "riskClass": "destructive"
+      },
+      {
+        "id": "mailcow.resource.delete",
+        "riskClass": "destructive"
+      },
+      {
+        "id": "mailcow.syncjob.delete",
+        "riskClass": "destructive"
+      },
+      {
+        "id": "mailcow.tls-policy-map.delete",
+        "riskClass": "destructive"
+      },
+      {
+        "id": "mailcow.transport.delete",
+        "riskClass": "destructive"
+      },
+      {
+        "id": "mailcow.fail2ban.write",
+        "riskClass": "reversible-write"
+      },
+      {
+        "id": "mailcow.mailq.write",
+        "riskClass": "reversible-write"
+      },
+      {
+        "id": "mailcow.pushover.write",
+        "riskClass": "reversible-write"
+      },
+      {
+        "id": "mailcow.quarantine-notification.write",
+        "riskClass": "reversible-write"
+      },
+      {
+        "id": "mailcow.user-acl.write",
+        "riskClass": "reversible-write"
+      },
+      {
+        "id": "mailcow.alias.read",
+        "riskClass": "read"
+      },
+      {
+        "id": "mailcow.time-limited-aliases.read",
+        "riskClass": "read"
+      },
+      {
+        "id": "mailcow.app-passwd.read",
+        "riskClass": "read"
+      },
+      {
+        "id": "mailcow.bcc.read",
+        "riskClass": "read"
+      },
+      {
+        "id": "mailcow.dkim.read",
+        "riskClass": "read"
+      },
+      {
+        "id": "mailcow.domain-admin.read",
+        "riskClass": "read"
+      },
+      {
+        "id": "mailcow.domain.read",
+        "riskClass": "read"
+      },
+      {
+        "id": "mailcow.fail2ban.read",
+        "riskClass": "read"
+      },
+      {
+        "id": "mailcow.fwdhost.read",
+        "riskClass": "read"
+      },
+      {
+        "id": "mailcow.logs.read",
+        "riskClass": "read"
+      },
+      {
+        "id": "mailcow.mailbox.read",
+        "riskClass": "read"
+      },
+      {
+        "id": "mailcow.mailq.read",
+        "riskClass": "read"
+      },
+      {
+        "id": "mailcow.oauth2-client.read",
+        "riskClass": "read"
+      },
+      {
+        "id": "mailcow.policy-bl-domain.read",
+        "riskClass": "read"
+      },
+      {
+        "id": "mailcow.policy-wl-domain.read",
+        "riskClass": "read"
+      },
+      {
+        "id": "mailcow.quarantine.read",
+        "riskClass": "read"
+      },
+      {
+        "id": "mailcow.recipient-map.read",
+        "riskClass": "read"
+      },
+      {
+        "id": "mailcow.relayhost.read",
+        "riskClass": "read"
+      },
+      {
+        "id": "mailcow.resource.read",
+        "riskClass": "read"
+      },
+      {
+        "id": "mailcow.rl-mbox.read",
+        "riskClass": "read"
+      },
+      {
+        "id": "mailcow.rl-domain.read",
+        "riskClass": "read"
+      },
+      {
+        "id": "mailcow.rl-mbox.write",
+        "riskClass": "reversible-write"
+      },
+      {
+        "id": "mailcow.rl-domain.write",
+        "riskClass": "reversible-write"
+      },
+      {
+        "id": "mailcow.status.read",
+        "riskClass": "read"
+      },
+      {
+        "id": "mailcow.syncjobs.read",
+        "riskClass": "read"
+      },
+      {
+        "id": "mailcow.tls-policy-map.read",
+        "riskClass": "read"
+      },
+      {
+        "id": "mailcow.transport.read",
+        "riskClass": "read"
+      },
+      {
+        "id": "mailcow.spam-score.write",
+        "riskClass": "reversible-write"
+      },
+      {
+        "id": "mailcow.cors.write",
+        "riskClass": "reversible-write"
+      },
+      {
+        "id": "mailcow.spam-score.read",
+        "riskClass": "read"
+      },
+      {
+        "id": "mailcow.identity-provider.write",
+        "riskClass": "reversible-write"
+      }
+    ],
+    "operations": [
+      {
+        "id": "mailcow-add-alias",
+        "label": "Create alias",
+        "capability": "mailcow.alias.write",
+        "method": "POST",
+        "path": "/api/v1/add/alias",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-add-time-limited-alias",
+        "label": "Create time limited alias",
+        "capability": "mailcow.time-limited-alias.write",
+        "method": "POST",
+        "path": "/api/v1/add/time_limited_alias",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-add-app-passwd",
+        "label": "Create App Password",
+        "capability": "mailcow.app-passwd.write",
+        "method": "POST",
+        "path": "/api/v1/add/app-passwd",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-add-bcc",
+        "label": "Create BCC Map",
+        "capability": "mailcow.bcc.write",
+        "method": "POST",
+        "path": "/api/v1/add/bcc",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-add-dkim",
+        "label": "Generate DKIM Key",
+        "capability": "mailcow.dkim.write",
+        "method": "POST",
+        "path": "/api/v1/add/dkim",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-add-dkim-duplicate",
+        "label": "Duplicate DKIM Key",
+        "capability": "mailcow.dkim-duplicate.write",
+        "method": "POST",
+        "path": "/api/v1/add/dkim_duplicate",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-add-domain",
+        "label": "Create domain",
+        "capability": "mailcow.domain.write",
+        "method": "POST",
+        "path": "/api/v1/add/domain",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-add-domain-admin",
+        "label": "Create Domain Admin user",
+        "capability": "mailcow.domain-admin.write",
+        "method": "POST",
+        "path": "/api/v1/add/domain-admin",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-add-sso",
+        "label": "Issue Domain Admin SSO token",
+        "capability": "mailcow.sso.write",
+        "method": "POST",
+        "path": "/api/v1/add/sso/domain-admin",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-edit-da-acl",
+        "label": "Edit Domain Admin ACL",
+        "capability": "mailcow.da-acl.write",
+        "method": "POST",
+        "path": "/api/v1/edit/da-acl",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-edit-domain-admin",
+        "label": "Edit Domain Admin user",
+        "capability": "mailcow.domain-admin.write",
+        "method": "POST",
+        "path": "/api/v1/edit/domain-admin",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-add-domain-policy",
+        "label": "Create domain policy",
+        "capability": "mailcow.domain-policy.write",
+        "method": "POST",
+        "path": "/api/v1/add/domain-policy",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-add-fwdhost",
+        "label": "Add Forward Host",
+        "capability": "mailcow.fwdhost.write",
+        "method": "POST",
+        "path": "/api/v1/add/fwdhost",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-add-mailbox",
+        "label": "Create mailbox",
+        "capability": "mailcow.mailbox.write",
+        "method": "POST",
+        "path": "/api/v1/add/mailbox",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-add-oauth2-client",
+        "label": "Create oAuth Client",
+        "capability": "mailcow.oauth2-client.write",
+        "method": "POST",
+        "path": "/api/v1/add/oauth2-client",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-add-recipient-map",
+        "label": "Create Recipient Map",
+        "capability": "mailcow.recipient-map.write",
+        "method": "POST",
+        "path": "/api/v1/add/recipient_map",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-add-relayhost",
+        "label": "Create Sender-Dependent Transports",
+        "capability": "mailcow.relayhost.write",
+        "method": "POST",
+        "path": "/api/v1/add/relayhost",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-add-resource",
+        "label": "Create Resources",
+        "capability": "mailcow.resource.write",
+        "method": "POST",
+        "path": "/api/v1/add/resource",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-add-syncjob",
+        "label": "Create sync job",
+        "capability": "mailcow.syncjob.write",
+        "method": "POST",
+        "path": "/api/v1/add/syncjob",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-add-tls-policy-map",
+        "label": "Create TLS Policy Map",
+        "capability": "mailcow.tls-policy-map.write",
+        "method": "POST",
+        "path": "/api/v1/add/tls-policy-map",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-add-transport",
+        "label": "Create Transport Maps",
+        "capability": "mailcow.transport.write",
+        "method": "POST",
+        "path": "/api/v1/add/transport",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-delete-alias",
+        "label": "Delete alias",
+        "capability": "mailcow.alias.delete",
+        "method": "POST",
+        "path": "/api/v1/delete/alias",
+        "risk": "destructive"
+      },
+      {
+        "id": "mailcow-delete-app-passwd",
+        "label": "Delete App Password",
+        "capability": "mailcow.app-passwd.delete",
+        "method": "POST",
+        "path": "/api/v1/delete/app-passwd",
+        "risk": "destructive"
+      },
+      {
+        "id": "mailcow-delete-bcc",
+        "label": "Delete BCC Map",
+        "capability": "mailcow.bcc.delete",
+        "method": "POST",
+        "path": "/api/v1/delete/bcc",
+        "risk": "destructive"
+      },
+      {
+        "id": "mailcow-delete-dkim",
+        "label": "Delete DKIM Key",
+        "capability": "mailcow.dkim.delete",
+        "method": "POST",
+        "path": "/api/v1/delete/dkim",
+        "risk": "destructive"
+      },
+      {
+        "id": "mailcow-delete-domain",
+        "label": "Delete domain",
+        "capability": "mailcow.domain.delete",
+        "method": "POST",
+        "path": "/api/v1/delete/domain",
+        "risk": "destructive"
+      },
+      {
+        "id": "mailcow-delete-domain-admin",
+        "label": "Delete Domain Admin",
+        "capability": "mailcow.domain-admin.delete",
+        "method": "POST",
+        "path": "/api/v1/delete/domain-admin",
+        "risk": "destructive"
+      },
+      {
+        "id": "mailcow-delete-domain-policy",
+        "label": "Delete domain policy",
+        "capability": "mailcow.domain-policy.delete",
+        "method": "POST",
+        "path": "/api/v1/delete/domain-policy",
+        "risk": "destructive"
+      },
+      {
+        "id": "mailcow-delete-fwdhost",
+        "label": "Delete Forward Host",
+        "capability": "mailcow.fwdhost.delete",
+        "method": "POST",
+        "path": "/api/v1/delete/fwdhost",
+        "risk": "destructive"
+      },
+      {
+        "id": "mailcow-delete-mailbox",
+        "label": "Delete mailbox",
+        "capability": "mailcow.mailbox.delete",
+        "method": "POST",
+        "path": "/api/v1/delete/mailbox",
+        "risk": "destructive"
+      },
+      {
+        "id": "mailcow-delete-mailq",
+        "label": "Delete Queue",
+        "capability": "mailcow.mailq.delete",
+        "method": "POST",
+        "path": "/api/v1/delete/mailq",
+        "risk": "destructive"
+      },
+      {
+        "id": "mailcow-delete-oauth2-client",
+        "label": "Delete oAuth Client",
+        "capability": "mailcow.oauth2-client.delete",
+        "method": "POST",
+        "path": "/api/v1/delete/oauth2-client",
+        "risk": "destructive"
+      },
+      {
+        "id": "mailcow-delete-qitem",
+        "label": "Delete mails in Quarantine",
+        "capability": "mailcow.qitem.delete",
+        "method": "POST",
+        "path": "/api/v1/delete/qitem",
+        "risk": "destructive"
+      },
+      {
+        "id": "mailcow-edit-qitem",
+        "label": "Edit mails in Quarantine",
+        "capability": "mailcow.qitem.write",
+        "method": "POST",
+        "path": "/api/v1/edit/qitem",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-delete-recipient-map",
+        "label": "Delete Recipient Map",
+        "capability": "mailcow.recipient-map.delete",
+        "method": "POST",
+        "path": "/api/v1/delete/recipient_map",
+        "risk": "destructive"
+      },
+      {
+        "id": "mailcow-delete-relayhost",
+        "label": "Delete Sender-Dependent Transports",
+        "capability": "mailcow.relayhost.delete",
+        "method": "POST",
+        "path": "/api/v1/delete/relayhost",
+        "risk": "destructive"
+      },
+      {
+        "id": "mailcow-delete-resource",
+        "label": "Delete Resources",
+        "capability": "mailcow.resource.delete",
+        "method": "POST",
+        "path": "/api/v1/delete/resource",
+        "risk": "destructive"
+      },
+      {
+        "id": "mailcow-delete-syncjob",
+        "label": "Delete sync job",
+        "capability": "mailcow.syncjob.delete",
+        "method": "POST",
+        "path": "/api/v1/delete/syncjob",
+        "risk": "destructive"
+      },
+      {
+        "id": "mailcow-delete-tls-policy-map",
+        "label": "Delete TLS Policy Map",
+        "capability": "mailcow.tls-policy-map.delete",
+        "method": "POST",
+        "path": "/api/v1/delete/tls-policy-map",
+        "risk": "destructive"
+      },
+      {
+        "id": "mailcow-delete-transport",
+        "label": "Delete Transport Maps",
+        "capability": "mailcow.transport.delete",
+        "method": "POST",
+        "path": "/api/v1/delete/transport",
+        "risk": "destructive"
+      },
+      {
+        "id": "mailcow-delete-mailbox-40",
+        "label": "Delete mailbox tags",
+        "capability": "mailcow.mailbox.delete",
+        "method": "POST",
+        "path": "/api/v1/delete/mailbox/tag/:mailbox",
+        "risk": "destructive"
+      },
+      {
+        "id": "mailcow-delete-domain-41",
+        "label": "Delete domain tags",
+        "capability": "mailcow.domain.delete",
+        "method": "POST",
+        "path": "/api/v1/delete/domain/tag/:domain",
+        "risk": "destructive"
+      },
+      {
+        "id": "mailcow-edit-alias",
+        "label": "Update alias",
+        "capability": "mailcow.alias.write",
+        "method": "POST",
+        "path": "/api/v1/edit/alias",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-edit-domain",
+        "label": "Update domain",
+        "capability": "mailcow.domain.write",
+        "method": "POST",
+        "path": "/api/v1/edit/domain",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-edit-domain-44",
+        "label": "Update domain wide footer",
+        "capability": "mailcow.domain.write",
+        "method": "POST",
+        "path": "/api/v1/edit/domain/footer",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-edit-fail2ban",
+        "label": "Edit Fail2Ban",
+        "capability": "mailcow.fail2ban.write",
+        "method": "POST",
+        "path": "/api/v1/edit/fail2ban",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-edit-mailbox",
+        "label": "Update mailbox",
+        "capability": "mailcow.mailbox.write",
+        "method": "POST",
+        "path": "/api/v1/edit/mailbox",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-edit-mailbox-47",
+        "label": "Update mailbox custom attributes",
+        "capability": "mailcow.mailbox.write",
+        "method": "POST",
+        "path": "/api/v1/edit/mailbox/custom-attribute",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-edit-mailq",
+        "label": "Flush Queue",
+        "capability": "mailcow.mailq.write",
+        "method": "POST",
+        "path": "/api/v1/edit/mailq",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-edit-pushover",
+        "label": "Update Pushover settings",
+        "capability": "mailcow.pushover.write",
+        "method": "POST",
+        "path": "/api/v1/edit/pushover",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-edit-quarantine-notification",
+        "label": "Quarantine Notifications",
+        "capability": "mailcow.quarantine-notification.write",
+        "method": "POST",
+        "path": "/api/v1/edit/quarantine_notification",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-edit-syncjob",
+        "label": "Update sync job",
+        "capability": "mailcow.syncjob.write",
+        "method": "POST",
+        "path": "/api/v1/edit/syncjob",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-edit-user-acl",
+        "label": "Update mailbox ACL",
+        "capability": "mailcow.user-acl.write",
+        "method": "POST",
+        "path": "/api/v1/edit/user-acl",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-get-alias",
+        "label": "Get aliases",
+        "capability": "mailcow.alias.read",
+        "method": "GET",
+        "path": "/api/v1/get/alias/:id",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-time-limited-aliases",
+        "label": "Get time limited aliases",
+        "capability": "mailcow.time-limited-aliases.read",
+        "method": "GET",
+        "path": "/api/v1/get/time_limited_aliases/:mailbox",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-app-passwd",
+        "label": "Get App Password",
+        "capability": "mailcow.app-passwd.read",
+        "method": "GET",
+        "path": "/api/v1/get/app-passwd/all/:mailbox",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-bcc",
+        "label": "Get BCC Map",
+        "capability": "mailcow.bcc.read",
+        "method": "GET",
+        "path": "/api/v1/get/bcc/:id",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-dkim",
+        "label": "Get DKIM Key",
+        "capability": "mailcow.dkim.read",
+        "method": "GET",
+        "path": "/api/v1/get/dkim/:domain",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-domain-admin",
+        "label": "Get Domain Admins",
+        "capability": "mailcow.domain-admin.read",
+        "method": "GET",
+        "path": "/api/v1/get/domain-admin/all",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-domain",
+        "label": "Get domains",
+        "capability": "mailcow.domain.read",
+        "method": "GET",
+        "path": "/api/v1/get/domain/:id",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-fail2ban",
+        "label": "Get Fail2Ban Config",
+        "capability": "mailcow.fail2ban.read",
+        "method": "GET",
+        "path": "/api/v1/get/fail2ban",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-fwdhost",
+        "label": "Get Forwarding Hosts",
+        "capability": "mailcow.fwdhost.read",
+        "method": "GET",
+        "path": "/api/v1/get/fwdhost/all",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-logs",
+        "label": "Get ACME logs",
+        "capability": "mailcow.logs.read",
+        "method": "GET",
+        "path": "/api/v1/get/logs/acme/:count",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-logs-63",
+        "label": "Get Api logs",
+        "capability": "mailcow.logs.read",
+        "method": "GET",
+        "path": "/api/v1/get/logs/api/:count",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-logs-64",
+        "label": "Get Autodiscover logs",
+        "capability": "mailcow.logs.read",
+        "method": "GET",
+        "path": "/api/v1/get/logs/autodiscover/:count",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-logs-65",
+        "label": "Get Dovecot logs",
+        "capability": "mailcow.logs.read",
+        "method": "GET",
+        "path": "/api/v1/get/logs/dovecot/:count",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-logs-66",
+        "label": "Get Netfilter logs",
+        "capability": "mailcow.logs.read",
+        "method": "GET",
+        "path": "/api/v1/get/logs/netfilter/:count",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-logs-67",
+        "label": "Get Postfix logs",
+        "capability": "mailcow.logs.read",
+        "method": "GET",
+        "path": "/api/v1/get/logs/postfix/:count",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-logs-68",
+        "label": "Get Ratelimit logs",
+        "capability": "mailcow.logs.read",
+        "method": "GET",
+        "path": "/api/v1/get/logs/ratelimited/:count",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-logs-69",
+        "label": "Get Rspamd logs",
+        "capability": "mailcow.logs.read",
+        "method": "GET",
+        "path": "/api/v1/get/logs/rspamd-history/:count",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-logs-70",
+        "label": "Get SOGo logs",
+        "capability": "mailcow.logs.read",
+        "method": "GET",
+        "path": "/api/v1/get/logs/sogo/:count",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-logs-71",
+        "label": "Get Watchdog logs",
+        "capability": "mailcow.logs.read",
+        "method": "GET",
+        "path": "/api/v1/get/logs/watchdog/:count",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-mailbox",
+        "label": "Get mailboxes",
+        "capability": "mailcow.mailbox.read",
+        "method": "GET",
+        "path": "/api/v1/get/mailbox/:id",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-mailq",
+        "label": "Get Queue",
+        "capability": "mailcow.mailq.read",
+        "method": "GET",
+        "path": "/api/v1/get/mailq/all",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-oauth2-client",
+        "label": "Get oAuth Clients",
+        "capability": "mailcow.oauth2-client.read",
+        "method": "GET",
+        "path": "/api/v1/get/oauth2-client/:id",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-policy-bl-domain",
+        "label": "List blacklist domain policy",
+        "capability": "mailcow.policy-bl-domain.read",
+        "method": "GET",
+        "path": "/api/v1/get/policy_bl_domain/:domain",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-policy-wl-domain",
+        "label": "List whitelist domain policy",
+        "capability": "mailcow.policy-wl-domain.read",
+        "method": "GET",
+        "path": "/api/v1/get/policy_wl_domain/:domain",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-quarantine",
+        "label": "Get mails in Quarantine",
+        "capability": "mailcow.quarantine.read",
+        "method": "GET",
+        "path": "/api/v1/get/quarantine/all",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-recipient-map",
+        "label": "Get Recipient Map",
+        "capability": "mailcow.recipient-map.read",
+        "method": "GET",
+        "path": "/api/v1/get/recipient_map/:id",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-relayhost",
+        "label": "Get Sender-Dependent Transports",
+        "capability": "mailcow.relayhost.read",
+        "method": "GET",
+        "path": "/api/v1/get/relayhost/:id",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-resource",
+        "label": "Get Resources",
+        "capability": "mailcow.resource.read",
+        "method": "GET",
+        "path": "/api/v1/get/resource/all",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-rl-mbox",
+        "label": "Get mailbox ratelimits",
+        "capability": "mailcow.rl-mbox.read",
+        "method": "GET",
+        "path": "/api/v1/get/rl-mbox/:mailbox",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-rl-domain",
+        "label": "Get domain ratelimits",
+        "capability": "mailcow.rl-domain.read",
+        "method": "GET",
+        "path": "/api/v1/get/rl-domain/:domain",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-edit-rl-mbox",
+        "label": "Edit mailbox ratelimits",
+        "capability": "mailcow.rl-mbox.write",
+        "method": "POST",
+        "path": "/api/v1/edit/rl-mbox/",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-edit-rl-domain",
+        "label": "Edit domain ratelimits",
+        "capability": "mailcow.rl-domain.write",
+        "method": "POST",
+        "path": "/api/v1/edit/rl-domain/",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-get-status",
+        "label": "Get container status",
+        "capability": "mailcow.status.read",
+        "method": "GET",
+        "path": "/api/v1/get/status/containers",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-status-86",
+        "label": "Get vmail status",
+        "capability": "mailcow.status.read",
+        "method": "GET",
+        "path": "/api/v1/get/status/vmail",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-status-87",
+        "label": "Get version status",
+        "capability": "mailcow.status.read",
+        "method": "GET",
+        "path": "/api/v1/get/status/version",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-syncjobs",
+        "label": "Get sync jobs",
+        "capability": "mailcow.syncjobs.read",
+        "method": "GET",
+        "path": "/api/v1/get/syncjobs/all/no_log",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-tls-policy-map",
+        "label": "Get TLS Policy Map",
+        "capability": "mailcow.tls-policy-map.read",
+        "method": "GET",
+        "path": "/api/v1/get/tls-policy-map/:id",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-get-transport",
+        "label": "Get Transport Maps",
+        "capability": "mailcow.transport.read",
+        "method": "GET",
+        "path": "/api/v1/get/transport/:id",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-edit-spam-score",
+        "label": "Edit mailbox spam filter score",
+        "capability": "mailcow.spam-score.write",
+        "method": "POST",
+        "path": "/api/v1/edit/spam-score/",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-get-mailbox-92",
+        "label": "Get mailboxes of a domain",
+        "capability": "mailcow.mailbox.read",
+        "method": "GET",
+        "path": "/api/v1/get/mailbox/all/:domain",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-edit-cors",
+        "label": "Edit Cross-Origin Resource Sharing (CORS) settings",
+        "capability": "mailcow.cors.write",
+        "method": "POST",
+        "path": "/api/v1/edit/cors",
+        "risk": "reversible-write"
+      },
+      {
+        "id": "mailcow-get-spam-score",
+        "label": "Get mailbox or global spam filter score",
+        "capability": "mailcow.spam-score.read",
+        "method": "GET",
+        "path": "/api/v1/get/spam-score/:mailbox",
+        "risk": "read"
+      },
+      {
+        "id": "mailcow-edit-identity-provider",
+        "label": "Edit external Identity Provider",
+        "capability": "mailcow.identity-provider.write",
+        "method": "POST",
+        "path": "/api/v1/edit/identity-provider",
+        "risk": "reversible-write"
+      }
+    ]
+  },
   {
     provider: 'coolify',
     documentationUrl: 'https://coolify.io/docs/api-reference',

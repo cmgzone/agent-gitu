@@ -43,6 +43,7 @@ export interface TrapEvalOptions {
   /** Optional post-run hidden verification against the final workspace. */
   hiddenCheck?: (dir: string) => { pass: boolean; output: string };
   effort?: 'low' | 'medium' | 'high';
+  autonomy?: { persistent: boolean };
   criteria?: { text: string; verification: string; evidenceType: 'command_success' | 'test_success' | 'any' }[];
 }
 
@@ -63,6 +64,7 @@ export async function runTrapEval(opts: TrapEvalOptions): Promise<EvalRecord> {
     llm,
     mode: 'fast',
     effort: opts.effort ?? 'low',
+    autonomy: opts.autonomy,
     ...(opts.criteria ? { criteria: opts.criteria } : {}),
     onEvent: (e) => events.push(e),
   });

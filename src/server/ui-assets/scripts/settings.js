@@ -1,5 +1,13 @@
 
 
+  function syncCodingPermissions() {
+    return api('/api/coding-permissions').then(function (saved) {
+      // Import an existing full-access choice once; a fresh client's default
+      // must never overwrite another device's saved permission choice.
+      if (!saved.configured && S.settings.autoApprove === true) return api('/api/coding-permissions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ access: 'full' }) });
+      return saved;
+    }).then(function (saved) { S.settings.autoApprove = saved.access === 'full'; persist(); return saved; }).catch(function () {});
+  }
   function openSettings(section) {
     S.setSection = section || 'overview';
     closeToolPanel();
@@ -7,6 +15,7 @@
     shell.inert=true;
     $('settings').hidden = false;
     renderSettings();
+    if (S.setSection === 'permissions') syncCodingPermissions().then(function () { var button = $('pAuto'); if (button) button.classList.toggle('on', !!S.settings.autoApprove); });
     var focus=$('settingsDirectoryQuery')||$('setnav').querySelector('[aria-current="page"]');if(focus)focus.focus({preventScroll:true});
     $('settings').onkeydown=function(event){if(event.key!=='Tab')return;var controls=Array.from(this.querySelectorAll('button:not(:disabled),input:not([type=hidden]):not(:disabled),textarea:not(:disabled),select:not(:disabled)')).filter(function(node){return node.getClientRects().length;});var first=controls[0],last=controls[controls.length-1];if(!first)return;if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}};
   }
@@ -55,6 +64,16 @@
         '<div class="setrow"><div class="grow"><div class="t">Keep going until done</div><div class="d">The agent recovers from provider and protocol errors — empty completions, malformed replies, repeated calls — instead of stopping itself mid-task. Off restores the original fail-fast limits.</div></div><input type="checkbox" id="gPersist" style="width:18px;height:18px;flex:none"></div>' +
         '<div class="setrow"><div class="grow"><div class="t">Spend ceiling</div><div class="d">Optional per-run limit in USD. Left empty, a run is never stopped for cost — only by you, or by finishing the task.</div></div><input type="text" id="gSpend" inputmode="decimal" placeholder="none" style="width:96px;background:var(--card2);border:1px solid var(--border2);color:var(--text);border-radius:8px;padding:6px 9px;font:inherit;font-size:13px"></div>' +
         '</div>';
+      b.insertAdjacentHTML('beforeend','<h2>Account</h2><div class="setcard" id="googleAccountSettings"><div class="setrow"><div class="grow"><div class="t">Google sign-in</div><div class="d">Checking configuration…</div></div></div></div>');
+      api('/api/auth/status').then(function(status){var card=$('googleAccountSettings');if(!card)return;card.querySelector('.d').textContent=status.googleEnabled?(status.googleLinked?'Your Google account is linked. You can use Google on the sign-in screen.':'Link the Google account matching your workspace owner email.'): 'The server owner can enable Google sign-in with a Google OAuth client and an HTTPS public address.';if(status.googleEnabled&&!status.googleLinked){var link=document.createElement('a');link.className='btn';link.href='/auth?link=google';link.textContent='Link Google account';card.querySelector('.setrow').appendChild(link);}}).catch(function(){});
+      var googleCard=$('googleAccountSettings'),details=document.createElement('details');
+      details.style.padding='12px';details.innerHTML='<summary>Configure Google sign-in</summary><p class="meta">Create a Web application OAuth client in Google Cloud. Register the callback shown below. Your client secret stays on this Gitu server.</p><form id="googleOAuthForm"><label>Public address<input name="origin" type="url" placeholder="https://gitu.example.com" required></label><label>Google client ID<input name="clientId" autocomplete="off" required></label><label>Client secret<input name="clientSecret" type="password" autocomplete="new-password" placeholder="Leave blank to keep saved secret"></label><p data-callback class="meta"></p><button type="submit" class="btn">Save Google configuration</button><p data-result role="status" class="meta"></p></form>';
+      googleCard.appendChild(details);
+      var googleForm=details.querySelector('form'),googleResult=details.querySelector('[data-result]'),callbackLabel=details.querySelector('[data-callback]');
+      googleForm.querySelectorAll('label').forEach(function(label){label.style.display='grid';label.style.gap='6px';label.style.margin='12px 0';});
+      googleForm.elements.origin.oninput=function(){try{callbackLabel.textContent='Callback: '+new URL(this.value).origin+'/auth/google/callback';}catch(error){callbackLabel.textContent='Enter your HTTPS Gitu address (or localhost).';}};
+      details.ontoggle=function(){if(!details.open||details._loaded)return;details._loaded=true;api('/api/auth/google/settings').then(function(value){googleForm.elements.origin.value=value.origin;googleForm.elements.clientId.value=value.clientId;callbackLabel.textContent=value.callback?'Callback: '+value.callback:'Callback: your Gitu public origin + /auth/google/callback';}).catch(function(error){googleResult.textContent=error.message;});};
+      googleForm.onsubmit=async function(event){event.preventDefault();var save=googleForm.querySelector('button');save.disabled=true;try{var result=await api('/api/auth/google/settings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({origin:googleForm.elements.origin.value,clientId:googleForm.elements.clientId.value,clientSecret:googleForm.elements.clientSecret.value})});googleForm.elements.clientSecret.value='';callbackLabel.textContent='Callback: '+result.callback;googleResult.textContent='Saved. Google sign-in is available. Register this exact callback in Google Cloud.';renderSettings();}catch(error){googleForm.elements.clientSecret.value='';googleResult.textContent=error.message;}finally{save.disabled=false;}};
       fillEffort('gEffort', provOf(S.sel.model));
       $('gEffort').value = S.sel.effort;
       $('gEffort').onchange = function () { S.sel.effort = $('gEffort').value; persist(); };
@@ -86,6 +105,20 @@
       }).catch(function () {});
       b.insertAdjacentHTML('beforeend', '<h2>Getting started</h2><p class="appearance-description">Choose your theme, connect a provider, and pick a workspace.</p><button class="btn ghost" id="setupAgain">Open setup wizard</button>');
       $('setupAgain').onclick = function () { closeSettings(); openSetupWizard(); };
+      if (window.gituDesktop && typeof window.gituDesktop.phoneAccess === 'function') {
+        b.insertAdjacentHTML('beforeend', '<h2>Phone access</h2><div class="setcard" id="phoneAccessCard"><div class="setrow"><div class="grow"><div class="t">Connect your Android phone</div><div class="d">Checking your Wi-Fi address…</div></div></div></div>');
+        var renderPhoneAccess = function (status) {
+          var card = $('phoneAccessCard'); if (!card || S.setSection !== 'general') return;
+          var addresses = status && status.addresses || [];
+          card.innerHTML = '<div class="setrow"><div class="grow"><div class="t">'+(status && status.enabled ? 'Starts automatically with Gitu' : 'Phone access is disabled')+'</div><div class="d">Connect both devices to the same Wi-Fi. Choose Local network in Android and sign in with your Gitu email and password.</div></div></div>' +
+            addresses.map(function (address) { return '<div class="setrow"><div class="grow"><code style="overflow-wrap:anywhere">'+esc(address)+'</code></div></div>'; }).join('') +
+            '<div class="setrow"><div class="grow"><div class="d">'+esc(status && status.pending ? 'Waiting for the Windows permission request…' : status && status.allowed ? 'Windows network permission is configured.' : status && status.message || 'No Wi-Fi address is available. Check your network connection.')+'</div><div class="d">Local HTTP sends passwords and workspace data unencrypted. Use trusted Wi-Fi.</div></div></div>' +
+            (status && status.enabled ? '<div class="setrow"><button class="btn ghost" id="allowPhoneAccess">Allow Wi-Fi access</button><button class="btn ghost" id="refreshPhoneAccess">Refresh address</button></div>' : '');
+          if ($('refreshPhoneAccess')) $('refreshPhoneAccess').onclick = function () { window.gituDesktop.phoneAccess().then(renderPhoneAccess).catch(function (error) { toast(error.message, true); }); };
+          if ($('allowPhoneAccess')) $('allowPhoneAccess').onclick = function () { var button=this;button.disabled=true;window.gituDesktop.allowPhoneAccess().then(renderPhoneAccess).catch(function (error) { toast(error.message, true); }).finally(function(){if(button.isConnected)button.disabled=false;}); };
+        };
+        window.gituDesktop.phoneAccess().then(renderPhoneAccess).catch(function () { renderPhoneAccess({ enabled: true, addresses: [], message: 'Could not read phone access. Reopen Gitu and try again.' }); });
+      }
     } else if (S.setSection === 'cowork') {
       b.innerHTML = '<h1>Cowork</h1>' +
         '<p style="color:var(--muted);font-size:12.5px;max-width:640px">Shared context for your agent team. Every teammate receives this in their system prompt, and they will update it themselves when you ask them to in a chat (or when you share something durable about you).</p>' +
@@ -528,13 +561,13 @@
         '<div class="setrow"><div class="grow"><div class="t">Auto-learn reusable skills</div><div class="d">After a successful task the agent reflects on what it did and saves any repeatable multi-step pattern (deploy flows, design conventions, checklists) as a skill with create_skill. Turn off to stop all proactive skill creation.</div></div><button class="toggle ' + (S.settings.autoLearn ? 'on' : '') + '" id="pLearn"></button></div>' +
         '<div class="setrow"><div class="grow"><div class="t">Cowork learning mode</div><div class="d">When your cowork teammates learn from their work. <b>On each task</b> reflects after every completed turn (the original behavior). <b>Scheduled review</b> keeps ordinary turns quiet and reflects on a timer instead, plus a daily memory consolidation sweep. <b>Off</b> stops cowork learning entirely.</div></div><select id="pCwLearn"><option value="reactive">On each task (original)</option><option value="proactive">Scheduled review</option><option value="off">Off</option></select></div>' +
         '<div class="setrow"><div class="grow"><div class="t">Plan review</div><div class="d">In Plan mode the agent waits for your approval before building.</div></div><button class="toggle ' + (S.settings.review ? 'on' : '') + '" id="pReview"></button></div>' +
-        '<div class="setrow"><div class="grow"><div class="t">Auto-approve dangerous actions</div><div class="d">Skips the approval gate for destructive commands. Significantly increases risk of data loss.</div></div><button class="toggle ' + (S.settings.autoApprove ? 'on' : '') + '" id="pAuto"></button></div>' +
+        '<div class="setrow"><div class="grow"><div class="t">Full coding access</div><div class="d">Run coding tasks without approval cards, including tasks sent by P.A. Shared across desktop, mobile and hosted sessions.</div></div><button class="toggle ' + (S.settings.autoApprove ? 'on' : '') + '" id="pAuto" aria-label="Full coding access"></button></div>' +
         '<div class="setrow"><div class="grow"><div class="t">Loop prevention</div><div class="d">Repeated failing actions are blocked automatically. Always on.</div></div><button class="toggle on" disabled></button></div>' +
         '<div class="setrow"><div class="grow"><div class="t">Evidence gate</div><div class="d">Tasks cannot complete without passing evidence for every criterion. Always on.</div></div><button class="toggle on" disabled></button></div>' +
         '</div>';
       $('pLearn').onclick = function () { S.settings.autoLearn = !S.settings.autoLearn; persist(); renderSettings(); };
       $('pReview').onclick = function () { S.settings.review = !S.settings.review; persist(); renderSettings(); };
-      $('pAuto').onclick = function () { S.settings.autoApprove = !S.settings.autoApprove; persist(); renderSettings(); };
+      $('pAuto').onclick = function () { var button = this, next = !S.settings.autoApprove; button.disabled = true; api('/api/coding-permissions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ access: next ? 'full' : 'ask' }) }).then(function (saved) { S.settings.autoApprove = saved.access === 'full'; persist(); renderSettings(); }).catch(function (error) { toast(error.message, true); button.disabled = false; }); };
       var cwLearn = $('pCwLearn');
       if (cwLearn) {
         if (['reactive', 'proactive', 'off'].indexOf(S.settings.cwLearn) < 0) S.settings.cwLearn = 'reactive';

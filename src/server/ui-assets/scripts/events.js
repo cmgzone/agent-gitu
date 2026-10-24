@@ -149,8 +149,15 @@
       if (sess.nodes.thought) flushStreamText(sess.nodes.thought.querySelector('.txt'));
       var prose = text.slice(4);
       if (!prose.trim()) { closeThought(runId); return; }
+      sess.lastPublicReply = prose.trim();
+      // Polling can finish before the final SSE snapshot arrives. Reconcile
+      // the same duplicate in either delivery order.
+      if (sess.session && reportRepeatsReply(sess.session.report, prose)) clearRenderedReport(runId);
       if (sess && sess.chatish) {
         if (sess.nodes.abubble) {
+          var finalText = sess.nodes.abubble.querySelector('.txt');
+          flushStreamText(finalText);
+          if (finalText) finalText.textContent = prose;
           retireAbubble(sess);
         } else {
           var ab2 = document.createElement('div');
@@ -198,8 +205,10 @@
     if (text.indexOf('ask-user') === 0) { closeThought(runId); setWorking('Waiting for your answers…'); return; }
     if (text.indexOf('user-msg ') === 0) {
       var userText = text.slice(9);
+      retireAbubble(sess); closeThought(runId);
+      sess.lastPublicReply = null; sess.lastThoughtText = ''; sess.lastBubbleText = '';
       if (settlePendingUserMessage(runId, userText, null, true)) return;
-      retireAbubble(sess); closeThought(runId); appendLive(stream, userBubble(userText, runId)); stickScroll(stream, true); return;
+      appendLive(stream, userBubble(userText, runId)); stickScroll(stream, true); return;
     }
     if (text.indexOf('continue ') === 0) return;
     if (text.indexOf('queued ') === 0 || text.indexOf('stopped ') === 0) {
@@ -448,6 +457,7 @@
 
     if (tag === 'run') {
       var kind = toolKind(body);
+      if (kind === 'browser' && typeof showChatBrowser === 'function') showChatBrowser();
       var summary = splitSummary(body);
       var reason = splitReason(body);
       var group = ensureToolActivityGroup(sess, insert);

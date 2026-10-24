@@ -2,6 +2,101 @@
 
 This is an implementation checkpoint, not a release-completion declaration.
 
+## Codex model update — 21 October 2026
+
+The local 0.4.13 update upgrades the bundled Codex SDK/runtime from 0.155.1 to
+0.163.0 and updates the subscription fallback model list. All 189 focused checks
+pass; GPT-6.1 Sol is discovered by the packaged runtime and answers a minimal
+real request through the source bridge. See [validation](codex-model-update.md).
+The Windows Setup and Portable packages both pass archive and embedded runtime
+verification, including a SHA-256 comparison of the bundled Codex executable.
+
+## Project navigation and reliability — 20 October 2026
+
+The local 0.4.12 update adds expandable project chats, pinning, display names,
+archive/restore, folder opening, status badges, separate drafts and consistent
+Code navigation. All 288 distinct focused checks and desktop/mobile browser flows pass;
+the staged Electron app matches 362 runtime/desktop/asset files and passes its
+isolated health and Company checks. The real Alibaba connection check returned
+an account access/payment restriction. See [behavior and remaining acceptance](project-navigation.md).
+Both 0.4.12 Windows Setup and Portable packages pass archive integrity and
+current-source verification. The broader fast run and focused reruns together
+contain 3,135 distinct passing checks and 19 skips; the original fast run had
+three failures, documented with their resolutions in the linked audit.
+
+## Code home layout — 20 October 2026
+
+The local 0.4.11 update moves recent projects and creation controls to a
+collapsible sidebar, centers the task composer and keeps Code/Cowork as the
+main mode switch. Forty focused checks and production-UI browser flows across
+desktop/mobile and light/dark themes pass. See [layout and validation](code-home-layout.md).
+
+## Company management from Cowork chat — 20 October 2026
+
+The local 0.4.10 update adds detailed company lookup/search, native management
+operations through the caller's company membership, live Cowork cards with
+meeting review and question answers, and automatic shared memories of completed
+meetings, tasks and workflow runs. Owner approvals and resource authority remain
+enforced. See [behavior and validation](cowork-company-chat.md).
+
+## Cowork company workspaces — 20 October 2026
+
+The local 0.4.9 update moves Companies into Cowork navigation and replaces
+company-only agent identities with memberships in the canonical Cowork roster.
+Cowork teammates can create drafts, add existing teammates and share company
+memory. Personalities, models and personal memory follow the same identity;
+permissions, transcripts, budgets, resources and desktops remain scoped.
+Existing profiles/history and attributable memories migrate without changing
+saved agent IDs. See [implementation and validation](cowork-company-workspaces.md).
+
+## Agent-initiated coordination — 20 October 2026
+
+The local 0.4.8 update adds a durable meeting-request path for active employees,
+including profiles without shell, configuration or file-write access. Requests
+retain their author, reason, agenda and participants, deduplicate retries, and
+wake the CEO through the existing Company queue. Authorized review schedules
+one meeting atomically; the actual Cowork meeting runtime records each
+participant's contribution. Requests and workflow proposals do not expand
+organizational, tool, account or spending grants.
+
+Employees can now propose typed workflow drafts using the native `propose`
+action (`create` is an alias), without needing designer authority. Director
+version approval and live-run authorization remain separate. Proposal retries
+reuse their saved version, including after a later draft revision. Native
+workflow validation now checks the supplied workflow input as well as the
+definition.
+
+Overview includes a director coordination view with pending requests, saved
+discussion excerpts, exact-meeting links, workflow drafts, live/blocked runs
+and exact-run navigation. Your decisions includes coordination reviews.
+Boardroom identifies requesters and supports request review; Company Chat
+links to coordination and current discussions. Context and scheduled-review
+prompts teach agents when and how to use these actions. The browser checks
+now select Chromium on Linux/macOS instead of requiring Windows Edge.
+
+The new isolated integration coverage runs an actual Company chat through
+the tool dispatcher and a separate employee-request → CEO review → two-agent
+discussion through the durable runtime, using scripted model responses.
+The expanded browser flow verifies request approval/decline, workflow and
+discussion navigation, chat notices, preserved drafts, themes and mobile
+layout. Compilation, lint and formatting checks passed. The packaged native
+runtime passed isolated server health and coordination checks; 357 runtime,
+desktop and asset files matched the workspace. `scripts/company-package-smoke.mjs`
+repeats that comparison and runs the packaged Electron executable as Node.
+
+Both Windows 0.4.8 executables passed archive and application-payload CRC
+checks, and their embedded updated Company modules matched the final compiled
+files. SHA-256 sidecars and the build manifest are in `release/windows-0.4.8`.
+The full regression completed with 3,308 passes, 18 failures and 20 skipped
+tests; all 28 Company-related suites passed. See
+[the validation report](company-coordination-validation.md) for exact scope and
+remaining failures. This is a local release candidate, not a claim of full
+release acceptance. Native install/update/uninstall, live external providers
+and cross-platform acceptance remain required. Existing unrelated local edits
+were preserved and are included in local builds.
+
+## Earlier checkpoints
+
 The 0.4.7 Company management update adds scoped organization authority, moderated Boardroom meetings, approved handbook versions, evidence-based onboarding, immutable workflows with real mission execution, a visual workflow editor with separate simulation, and opt-in Google Calendar synchronization. The complete checkpoint is in [company-management-plan.md](company-management-plan.md). The source was merged into `main` and pushed to GitHub. Release preparation passed 177 checks across 25 suites, compilation, full lint, formatting and all four management browser flows.
 
 Windows x64 0.4.7 Setup and Portable installers were built locally in `release/windows-0.4.7`. Both payloads passed archive integrity checks, all 629 bundled files matched source or committed Git bytes for checkout line-ending changes, and the bundled runtime passed CLI startup, isolated server health, background search/cancellation and Company management checks. SHA-256 sidecars and a build manifest record the artifacts. Setup assembly required a retry from the verified archive after a write failure; older staging was preserved, space recovered through compression, and additional output compression disabled. Native installation/update/uninstall, tray lifecycle, live Calendar and cross-platform acceptance remain pending.

@@ -37,7 +37,7 @@ function fixture(owner = () => 'owner-uuid') {
   const authorize = vi.fn(async () => ({ redirectUrl: 'https://connect.composio.dev/link', id: 'own' }));
   const create = vi.fn(async () => ({ sessionId: 'test-session', toolkits, authorize }));
   const use = vi.fn(async () => ({ sessionId: 'saved-session', toolkits, authorize }));
-  const list = vi.fn(async (): Promise<{ items: { id: string; toolkit: { slug: string }; status: string; isDisabled: boolean; data?: Record<string, unknown> }[]; nextCursor: string | null }> => ({
+  const list = vi.fn(async (): Promise<{ items: { id: string; toolkit: { slug: string }; status: string; isDisabled: boolean; statusReason?: string; data?: Record<string, unknown> }[]; nextCursor: string | null }> => ({
     items: [{ id: 'own', toolkit: { slug: 'gmail' }, status: 'ACTIVE', isDisabled: false, data: { accessToken: 'never-expose-me' } }],
     nextCursor: null,
   }));
@@ -61,6 +61,21 @@ function fixture(owner = () => 'owner-uuid') {
 }
 
 describe('Composio connections', () => {
+  it('distinguishes unfinished sign-ins from expired authorization without exposing raw provider reasons', async () => {
+    const f = fixture();
+    const base = { toolkit: { slug: 'gmail' }, status: 'EXPIRED', isDisabled: false };
+    f.list.mockResolvedValue({items:[
+      {...base,id:'unfinished',statusReason:'Connection initiation did not complete within 10 minutes. secret-provider-detail'},
+      {...base,id:'grant',statusReason:'Refresh token has expired. secret-provider-detail'},
+      {...base,id:'active',status:'ACTIVE',statusReason:'secret-provider-detail'},
+    ],nextCursor:null});
+    const accounts=await f.apps.accounts();
+    expect(accounts[0]).toEqual({id:'unfinished',toolkit:'gmail',status:'EXPIRED',disabled:false,connectionIssue:'sign-in-expired'});
+    expect(accounts[1]).not.toHaveProperty('connectionIssue');
+    expect(accounts[2]).not.toHaveProperty('connectionIssue');
+    expect(JSON.stringify(accounts)).not.toContain('secret-provider-detail');
+  });
+
   it.each(['{interrupted', 'null', '{"owner":"owner-uuid","sessionId":42}'])('recovers an invalid saved session: %s', async (saved) => {
     const f = fixture();
     writeFileSync(path.join(process.env['AGENT_GITU_HOME']!, 'Settings', 'composio-session.json'), saved);

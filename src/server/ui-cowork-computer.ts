@@ -14,6 +14,15 @@ export const COWORK_COMPUTER_CSS = String.raw`
   .cw-computer-inline button svg { width:15px; height:15px; }
   .cw-computer-preview { aspect-ratio:16/10; width:100%; background:#0d1a2c; border-top:1px solid #ffffff45; }
   .cw-computer-preview iframe { width:100%; height:100%; display:block; border:0; pointer-events:none; }
+  .cw-computer-inline[data-browser=true] .cw-computer-preview { aspect-ratio:auto; height:min(65dvh,640px); min-height:350px; }
+  .cw-computer-inline[data-browser=true] iframe { pointer-events:auto; }
+  .cw-computer-inline[data-browser=true] header { flex-wrap:nowrap; gap:8px; padding:12px; }
+  .cw-computer-inline[data-browser=true] header > div { min-width:0; }
+  .cw-computer-inline[data-browser=true] header strong { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:12px; }
+  .cw-computer-inline[data-browser=true] header p { display:none; }
+  .cw-computer-inline[data-browser=true] [data-close-browser] { width:32px; min-height:32px; padding:7px; justify-content:center; }
+  .cw-computer-inline.cw-browser-expanded { position:fixed; inset:10px; z-index:10020; width:auto; height:auto; display:flex; flex-direction:column; background:var(--card); }
+  .cw-computer-inline.cw-browser-expanded .cw-computer-preview { flex:1; min-height:0; height:auto; }
   .cw-computer-inline button:focus-visible,.cw-computer-toggle:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
   .cw-desktop-dialog .box { background:var(--cw-sidebar-tint,var(--card)); color:var(--text); border-color:var(--border2); }
   .cw-desktop-dialog .bar,.cw-desktop-dialog .cw-desktop-toolbar { background:var(--cw-sidebar-tint,var(--card)); border-color:var(--border2); }
@@ -26,6 +35,27 @@ export const COWORK_COMPUTER_CSS = String.raw`
 `;
 
 export const COWORK_COMPUTER_JS = String.raw`
+  if(typeof window.addEventListener==='function')window.addEventListener('message',function(event){
+    if(event.origin!==location.origin||event.data?.type!=='gitu-chrome-profile-connect')return;
+    var trusted=Array.from(document.querySelectorAll('#cwInlineComputer iframe,#chatBrowserCard iframe,#sideBody iframe')).some(function(frame){return frame.contentWindow===event.source;});
+    if(!trusted)return;
+    cwCloudServerModal(function(server){event.source.postMessage({type:'gitu-chrome-profile-connected',locationId:server.id},event.origin);});
+  });
+  function cwRevealBrowser(card) {
+    var wrap=$('cwMsgs');if(!wrap||!card)return;
+    var inset=parseFloat(getComputedStyle(wrap).scrollPaddingTop)||0;
+    wrap.scrollTop=Math.max(0,wrap.scrollTop+card.getBoundingClientRect().top-wrap.getBoundingClientRect().top-inset);
+  }
+  async function cwOpenBrowser(agentId) {
+    var cw=cwEnsure(),agent=cwAgentById(agentId);if(!agent)return;
+    var conv=cwActiveConv();
+    if(cw.profileOpen||!conv||conv.memberIds.indexOf(agentId)<0)await cwOpenDm(agentId);
+    cw.inlineBrowser={agentId:agentId,conversationId:cw.active};
+    cw.browserDismissed=null;
+    cw.profileOpen=false;cw.connectionsOpen=false;cw.galleryOpen=false;
+    cwRenderChat();cwRenderComputerActivity();
+    cwRevealBrowser($('cwInlineComputer'));
+  }
   function cwComputerActivities() {
     var cw=cwEnsure(),conv=cwActiveConv();if(!conv)return [];
     var key=conv.id+':'+String(cw.generation||0),seen=cw.computerActivitySeen;
@@ -37,7 +67,9 @@ export const COWORK_COMPUTER_JS = String.raw`
       var handoff=!!request||!!(computer&&computer.control==='user'&&!agent.useHostComputer&&!(computer.handoff&&computer.handoff.requestId));
       var action=progress.find(function(item){return item.agentId===agent.id&&/^(browse|desktop_input|desktop_screenshot|computer_process|computer_status|run_command)$/.test(item.tool||'');});
       if(action)seen.agents[agent.id]=true;
-      if(!handoff&&!(cw.busy&&seen.agents[agent.id]))return null;
+      var pinned=cw.inlineBrowser&&cw.inlineBrowser.agentId===agent.id&&cw.inlineBrowser.conversationId===conv.id;
+      if(agent.useHostComputer&&!pinned&&cw.browserDismissed===conv.id+':'+String(cw.generation||0)+':'+agent.id)return null;
+      if(!handoff&&!pinned&&!(cw.busy&&seen.agents[agent.id]))return null;
       return {agent:agent,computer:computer,handoff:handoff,reason:request&&request.detail||computer&&computer.handoff&&computer.handoff.reason||'',live:!agent.useHostComputer&&computer&&computer.state==='running'};
     }).filter(Boolean);
   }
@@ -48,18 +80,23 @@ export const COWORK_COMPUTER_JS = String.raw`
     var activity=activities.find(function(item){return item.agent.id===cw.inlineComputerAgentId;})||activities.find(function(item){return item.handoff;})||activities[0];
     var conv=cwActiveConv(),members=conv?cwConvMembers(conv):[],shortcutAgent=members.find(function(agent){return agent.id===(cw.selectedAgentId||conv.chiefId);})||members[0];
     var shortcutActivity=shortcutAgent&&activities.find(function(item){return item.agent.id===shortcutAgent.id;}),shortcutCard=!!(activity&&shortcutAgent&&activity.agent.id===shortcutAgent.id);
-    if(button){button.hidden=!!(cw.profileOpen||cw.connectionsOpen||cw.galleryOpen||!shortcutAgent);button.setAttribute('data-handoff',String(!!(shortcutActivity&&shortcutActivity.handoff)));button.title=shortcutCard?(activity.handoff?'Your turn on the computer':'View computer activity'):shortcutAgent?'Open '+shortcutAgent.name+' computer':'Computer';button.setAttribute('aria-label',button.title);if(shortcutCard&&wrap)button.setAttribute('aria-controls','cwInlineComputer');else button.removeAttribute('aria-controls');button.onclick=function(){if(shortcutCard&&card)card.scrollIntoView({behavior:window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth',block:'center'});else if(shortcutAgent)cwOpenDesktop(shortcutAgent.id);};}
+    if(button){button.hidden=!!(cw.profileOpen||cw.connectionsOpen||cw.galleryOpen||!shortcutAgent);button.setAttribute('data-handoff',String(!!(shortcutActivity&&shortcutActivity.handoff)));button.title=shortcutCard?(activity.handoff?'Your turn on the computer':'View computer activity'):shortcutAgent?'Open '+shortcutAgent.name+' computer':'Computer';button.setAttribute('aria-label',button.title);if(shortcutCard&&wrap)button.setAttribute('aria-controls','cwInlineComputer');else button.removeAttribute('aria-controls');button.onclick=function(){if(shortcutCard&&card){if(activity.agent.useHostComputer)cwRevealBrowser(card);else card.scrollIntoView({behavior:window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth',block:'center'});}else if(shortcutAgent)cwOpenDesktop(shortcutAgent.id);};}
     if(!wrap||!activity){if(card)card.remove();return;}
     var atBottom=wrap.scrollHeight-wrap.scrollTop-wrap.clientHeight<120;
-    if(!card){card=document.createElement('section');card.id='cwInlineComputer';card.className='cw-computer-inline';card.setAttribute('aria-label','Computer activity');card.setAttribute('data-cwentrance','computer-'+(cw.computerCardRevision=(cw.computerCardRevision||0)+1));card.innerHTML='<header>'+cwIcon('monitor')+'<div><strong data-computer-title></strong><p data-computer-description></p></div><button type="button" data-expand-computer>'+cwIcon('panel')+'<span>Expand</span></button></header><div class="cw-computer-preview" data-computer-preview hidden></div>';wrap.appendChild(card);cwAnimateChatBubbles(wrap);}
+    if(!card){card=document.createElement('section');card.id='cwInlineComputer';card.className='cw-computer-inline';card.setAttribute('aria-label','Computer activity');card.setAttribute('data-cwentrance','computer-'+(cw.computerCardRevision=(cw.computerCardRevision||0)+1));card.innerHTML='<header>'+cwIcon('monitor')+'<div><strong data-computer-title></strong><p data-computer-description></p></div><button type="button" data-expand-computer>'+cwIcon('panel')+'<span>Expand</span></button><button type="button" data-close-browser hidden>Close</button></header><div class="cw-computer-preview" data-computer-preview hidden></div>';wrap.appendChild(card);cwAnimateChatBubbles(wrap);}
     var title=card.querySelector('[data-computer-title]'),description=card.querySelector('[data-computer-description]'),expand=card.querySelector('[data-expand-computer]'),preview=card.querySelector('[data-computer-preview]');
+    if(typeof cwThemeElement==='function')cwThemeElement(card,activity.agent);
     title.textContent=activity.handoff?'Your turn · '+activity.agent.name:activity.agent.name+' is using the computer';
     description.textContent=activity.handoff?(activity.reason||'The agent is waiting for you. Expand the computer to continue.'):(activity.agent.useHostComputer?'Working with the browser and workspace on this computer.':'Live view · Expand to use the shared desktop.');
-    expand.hidden=!!activity.agent.useHostComputer;
-    expand.onclick=function(){cwOpenDesktop(activity.agent.id);};
-    var source=activity.live&&!(cw.desktopSession&&cw.desktopSession.agentId===activity.agent.id)?'/api/cowork/agents/'+encodeURIComponent(activity.agent.id)+'/computer/view?preview=1':null;
-    if(preview._source!==source){preview.replaceChildren();preview._source=source;if(source){var frame=document.createElement('iframe');frame.src=source;frame.title=activity.agent.name+' live computer preview';frame.tabIndex=-1;preview.appendChild(frame);}}
+    var browser=!!activity.agent.useHostComputer;
+    card.setAttribute('data-browser',String(browser));
+    var close=card.querySelector('[data-close-browser]');close.hidden=!browser;close.setAttribute('aria-label','Close browser');close.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>';close.onclick=function(){cw.inlineBrowser=null;cw.browserDismissed=cw.active+':'+String(cw.generation||0)+':'+activity.agent.id;card.remove();cwRenderComputerActivity();};
+    if(browser){title.textContent=activity.agent.name+' · Browser';description.textContent='Browse and sign in here. Take control to pause the agent’s browser tools.';}
+    expand.hidden=false;
+    expand.onclick=function(){if(browser){card.classList.toggle('cw-browser-expanded');expand.querySelector('span').textContent=card.classList.contains('cw-browser-expanded')?'Collapse':'Expand';}else cwOpenDesktop(activity.agent.id);};
+    var source=browser?'/api/server-browser/'+encodeURIComponent(activity.agent.id)+'/view':activity.live&&!(cw.desktopSession&&cw.desktopSession.agentId===activity.agent.id)?'/api/cowork/agents/'+encodeURIComponent(activity.agent.id)+'/computer/view?preview=1':null;
+    if(preview._source!==source){preview.replaceChildren();preview._source=source;if(source){var frame=document.createElement('iframe');frame.src=source;frame.title=activity.agent.name+(browser?' browser':' live computer preview');frame.tabIndex=browser?0:-1;preview.appendChild(frame);}}
     preview.hidden=!source;
-    if(atBottom)wrap.scrollTop=wrap.scrollHeight;
+    if(atBottom&&!browser)wrap.scrollTop=wrap.scrollHeight;
   }
 `;

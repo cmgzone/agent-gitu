@@ -20,14 +20,14 @@ describe('desktop app sign-in', () => {
     expect(await handler({ senderFrame: mainFrame }, 'https://connect.composio.dev/link')).toBe(false);
     expect(openExternal).toHaveBeenCalledOnce();
   });
-  it('exposes only the narrow sign-in bridge in preload', async () => {
+  it('exposes only the named sign-in and directory bridges in preload', async () => {
     let exposed!: { openAppSignIn: (url: string) => Promise<boolean> };
     const invoke = vi.fn(async () => true);
     new Script(readFileSync(new URL('../desktop/preload.cjs', import.meta.url), 'utf8')).runInContext(createContext({
       require: () => ({ contextBridge: { exposeInMainWorld: (_name: string, value: typeof exposed) => { exposed = value; } }, ipcRenderer: { invoke } }),
       window: { addEventListener: vi.fn() },
     }));
-    expect(Object.keys(exposed)).toEqual(['openAppSignIn']);
+    expect(Object.keys(exposed)).toEqual(['openProjectFolder','openAppSignIn','phoneAccess','allowPhoneAccess']);
     expect(await exposed.openAppSignIn('https://connect.composio.dev/link')).toBe(true);
     expect(invoke).toHaveBeenCalledWith('gitu:open-app-sign-in', 'https://connect.composio.dev/link');
   });

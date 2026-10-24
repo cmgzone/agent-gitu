@@ -103,9 +103,14 @@ try {
   await page.getByLabel('Connection name', { exact: true }).fill('Local API');
   await page.getByLabel('API address', { exact: true }).fill('http://127.0.0.1:9400');
   await page.getByLabel('API key or access token', { exact: true }).fill('local-fixture-key');
+  await page.getByText('Advanced connection settings', { exact: true }).click();
+  await page.getByLabel('Connection test path', { exact: true }).fill('/api/me');
+  await page.getByLabel('Authentication', { exact: true }).selectOption('header');
+  await page.getByLabel('Authentication header', { exact: true }).fill('X-API-Key');
   await page.getByRole('button', { name: 'Save and test connection', exact: true }).click();
   await page.locator('.custom-connection').waitFor({ state: 'detached' });
   if (saved?.provider !== 'api-127-0-0-1') throw Error('Local IP address did not produce a valid provider identifier.');
+  if (saved?.auth?.type !== 'header' || saved.auth.header !== 'X-API-Key') throw Error('Custom authentication settings were not saved.');
   await page.getByRole('button', { name: 'Close settings', exact: true }).click();
   if ((await page.locator('#cwChat').innerText()) !== 'Original conversation stays here') throw Error('Closing connections lost the original chat.');
   if (errors.length) throw Error(errors.join('\n'));

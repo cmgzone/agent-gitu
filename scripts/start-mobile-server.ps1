@@ -1,4 +1,4 @@
-param([int]$Port = 8421)
+param([int]$Port = 8421, [switch]$AllowLanLogin)
 $ErrorActionPreference = 'Stop'
 Write-Output 'Close the Agent Gitu desktop app before starting this server to avoid running scheduled jobs twice.'
 $repository = Split-Path -Parent $PSScriptRoot
@@ -17,8 +17,14 @@ if (-not (Test-Path -LiteralPath $accessKeyFile)) {
   [System.IO.File]::WriteAllText($accessKeyFile, $newAccessKey)
 }
 $env:AGENT_GITU_ACCESS_KEY = (Get-Content -LiteralPath $accessKeyFile -Raw).Trim()
+$env:AGENT_GITU_ALLOW_LAN_LOGIN = if ($AllowLanLogin) { '1' } else { '0' }
+if ($AllowLanLogin) {
+  Write-Output 'Local HTTP login enabled for private IP addresses. Passwords and workspace data are unencrypted: use only trusted Wi-Fi.'
+} else {
+  Write-Output 'Phone sign-in requires HTTPS. For trusted Wi-Fi HTTP login, restart with -AllowLanLogin.'
+}
 Write-Output "Mobile access key: $accessKeyFile"
-Write-Output 'Open that file and enter its value in the phone app.'
+Write-Output 'The Android full-interface app uses your workspace email and password. The companion also needs this access key.'
 Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } | ForEach-Object { Write-Output "Phone server address: http://$($_.IPAddress):$Port" }
 Write-Output 'Keep this terminal open while using the phone app.'
 Push-Location -LiteralPath $repository

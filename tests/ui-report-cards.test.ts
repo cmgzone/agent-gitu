@@ -10,6 +10,11 @@ function source(name: string) {
   return UI_HTML.slice(start, end + declaration[1].length + 2);
 }
 
+it('does not claim private execution left source unchanged when host file arrays are unavailable',()=>{
+  const context=createContext({});new Script(source('reportStatusLine')+';result=reportStatusLine("complete",[],0,0,0,true);').runInContext(context);
+  expect(context.result).toContain('see execution report');expect(context.result).not.toContain('No source code was modified');
+});
+
 function proseRenderer() {
   const emitted: { innerHTML: string }[] = [];
   const stream = { appendChild: (element: { innerHTML: string }) => emitted.push(element) };
@@ -30,7 +35,7 @@ function proseRenderer() {
   new Script([
     'responseEscape', 'responseLink', 'responseVideoEmbed', 'responseInline', 'responseEmbeds', 'responseListItem', 'responseFence',
     'responseBlockStart', 'renderResponseText', 'stripJsonLeak', 'finalizeNarration',
-    'parseOutcome', 'readableSummary', 'reportStatusLine', 'reportMessageText', 'reportReplyHtml', 'reportSideCard', 'reportChangedFilesHtml', 'appendSummary',
+    'parseOutcome', 'readableSummary', 'reportStatusLine', 'reportMessageText', 'reportReplyHtml', 'reportSideCard', 'reportChangedFilesHtml', 'reportRepeatsReply', 'appendSummary',
   ].map(source).join('\n') + '\nvar esc = responseEscape;\n' + COWORK_JS).runInContext(context);
   return { context, emitted };
 }
@@ -43,6 +48,33 @@ const longResponse = [
 // Public narration preserves the assistant’s complete explanation. Technical
 // telemetry is disclosed separately and protocol objects never become prose.
 describe('UI — narration structuring & technical disclosures', () => {
+  it('shows an answered question once while retaining its report for task details', () => {
+    const { context, emitted } = proseRenderer();
+    const report = { status: 'complete', summary: '**Two** is the answer.', changes: [], remainingRisks: [], followUps: [] };
+    context.S.sessions.run.lastPublicReply = report.summary;
+    context.appendSummary('run', { report, status: 'complete' });
+    expect(emitted).toHaveLength(0);
+    expect(context.reportSideCard(report)).toContain('<strong>Two</strong>');
+  });
+
+  it('keeps new limitations, findings and failure outcomes visible', () => {
+    const { context, emitted } = proseRenderer();
+    context.S.sessions.run.lastPublicReply = 'Two.';
+    for (const extra of [{ remainingRisks: ['The deployment is unverified.'] }, { findings: [{ claim: 'A separate bug was found.' }] }, { status: 'blocked' }, { status: 'blocked', responseKind: 'discussion', remainingRisks: ['A new limitation remains.'] }]) {
+      context.appendSummary('run', { report: { status: 'complete', summary: 'Two.', ...extra }, status: 'complete' });
+    }
+    expect(emitted).toHaveLength(4);
+  });
+
+  it('does not duplicate a discussion reply while its coding task remains paused', () => {
+    const { context, emitted } = proseRenderer();
+    context.S.sessions.run.lastPublicReply = 'The task is waiting for your choice.';
+    const report = { status: 'blocked', responseKind: 'discussion', summary: 'The task is waiting for your choice.', changes: ['Updated checkout before the question.'], findings: [{ claim: 'Earlier task finding.' }] };
+    context.appendSummary('run', { report, status: 'blocked' });
+    expect(emitted).toHaveLength(0);
+    expect(context.reportSideCard(report)).toContain('The task is waiting for your choice.');
+  });
+
   it('shows a lack of progress as paused instead of a failed report', () => {
     const { context } = proseRenderer();
     const html = context.reportReplyHtml({ status: 'failed', summary: 'Completed work is saved.', failureReason: 'Work paused because the last segment had no new verifiable progress.', filesChanged: [], changes: [], verification: [] }, null, '');

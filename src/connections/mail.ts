@@ -17,7 +17,7 @@ import { simpleParser } from 'mailparser';
 import type { AddressObject } from 'mailparser';
 import nodemailer from 'nodemailer';
 import { execFile, execFileSync } from 'node:child_process';
-import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { isIP } from 'node:net';
 import { ensureGituHome } from '../workspace/home.js';
@@ -25,6 +25,7 @@ import {SecretVault} from './secret-vault.js';
 import { readCredentialFile, writeCredentialFile, updateCredentialJson } from '../llm/credential-file.js';
 import { discoverMailServers } from './mail-detect.js';
 import type { MailDiscovery } from './mail-detect.js';
+import { mailConnectionFailure, type MailHealth, type MailConnectionCheck } from './mail-status.js';
 
 /** A bound operation never returns more than this much message text. */
 const BODY_LIMIT = 6000;
@@ -134,6 +135,7 @@ export interface MailAccount {
   provider: string;
   createdAt: string;
   watchInbox: boolean;
+  mailHealth?: MailHealth;
 }
 
 export interface MailTool {
@@ -383,6 +385,8 @@ function mailConnectionError(account: MailboxRecord, failure: unknown, signingIn
 
 export class MailConnections {
   private readonly detections = new Map<string, { at: number; value: MailDiscovery }>();
+  private readonly health = new Map<string, { settings: string; result: MailHealth }>();
+  private readonly checking = new Map<string, { settings: string; pending: Promise<MailHealth> }>();
   constructor(
     private readonly secrets = new MailSecretStore(),
     private readonly createImap: (options: ImapFlowOptions) => ImapFlow = (options) => new ImapFlow(options),
@@ -474,7 +478,48 @@ export class MailConnections {
       provider: account.provider,
       createdAt: account.createdAt,
       watchInbox: account.watchInbox !== false,
+      ...(this.currentHealth(account) ? { mailHealth: this.currentHealth(account)! } : {}),
     }));
+  }
+
+  private settingsFingerprint(account: MailboxRecord): string {
+    return createHash('sha256').update(JSON.stringify(account)).digest('hex');
+  }
+
+  private currentHealth(account: MailboxRecord): MailHealth | undefined {
+    const checked = this.health.get(account.id);
+    return checked?.settings === this.settingsFingerprint(account) && Date.now() - Date.parse(checked.result.checkedAt) < 5 * 60_000 ? checked.result : undefined;
+  }
+
+  /** Authenticate both protocols without fetching messages, sending, or changing saved settings. */
+  async check(accountId: string): Promise<MailHealth> {
+    await this.secrets.readAsync();
+    const account = this.record(accountId), settings = this.settingsFingerprint(account), existing = this.checking.get(accountId);
+    if (existing?.settings === settings) return existing.pending;
+    const incoming = async (): Promise<MailConnectionCheck> => {
+      let client: ImapFlow | undefined;
+      try {
+        client = this.client(account);
+        await client.connect();
+        const lock = await client.getMailboxLock('INBOX');
+        lock.release();
+        return { state: 'ok', message: 'Incoming IMAP sign-in and inbox access verified.' };
+      } catch (error) { return mailConnectionFailure(error, 'imap'); }
+      finally { await client?.logout().catch(() => {}); }
+    };
+    const outgoing = async (): Promise<MailConnectionCheck> => {
+      try { await this.transport(account).verify(); return { state: 'ok', message: 'Outgoing SMTP sign-in verified. No email was sent.' }; }
+      catch (error) { return mailConnectionFailure(error, 'smtp'); }
+    };
+    const pending = Promise.all([incoming(), outgoing()]).then(async ([imap, smtp]) => {
+      await this.secrets.readAsync();
+      if (this.settingsFingerprint(this.record(accountId)) !== settings) throw new Error('The mailbox changed while checking its connection. Refresh and try again.');
+      const result: MailHealth = { checkedAt: new Date().toISOString(), imap, smtp };
+      this.health.set(accountId, { settings, result });
+      return result;
+    }).finally(() => { if (this.checking.get(accountId)?.pending === pending) this.checking.delete(accountId); });
+    this.checking.set(accountId, { settings, pending });
+    return pending;
   }
 
   /** Validates and tests the mailbox before anything is written to disk. */
@@ -543,6 +588,7 @@ export class MailConnections {
     const next = records.filter((account) => account.id !== accountId);
     if (next.length === records.length) throw new Error('That mailbox is no longer connected.');
     this.secrets.save(next);
+    this.health.delete(accountId);
   }
 
   setInboxWatch(accountId: string, enabled: boolean): void {
@@ -864,6 +910,8 @@ export class MailConnections {
     const limit = Math.min(Math.max(Number(args['limit']) || 20, 1), LIST_LIMIT);
     const uid = Number(args['uid']);
     switch (tool) {
+      case 'mail_check':
+        return this.check(accountId);
       case 'mail_folders':
         return { folders: await this.folders(account) };
       case 'mail_list':
@@ -943,6 +991,12 @@ export function mailToolDefinitions(): MailTool[] {
       name: 'List folders',
       description: 'List the mailbox folders so you can target the right path.',
       inputParameters: { type: 'object', properties: {} },
+    },
+    {
+      slug: 'mail_check',
+      name: 'Check mailbox connection',
+      description: 'Check native inbox IMAP access and outgoing SMTP sign-in separately. Diagnose timeout, DNS, TLS or rejected authentication before claiming a mailbox expired. This does not read messages or send email.',
+      inputParameters: { type: 'object', properties: {}, additionalProperties: false },
     },
   ];
 }

@@ -142,6 +142,8 @@
       S.pollFailures = 0;
       retainUsageEstimate(sess, session);
       sess.session = session;
+      homeRunProjectLabel();
+      renderCoworkCodingSource(session);
       sess.taggedFolders = session.taggedFolders || [];
       sess.writableFolders = session.writableFolders || [];
       renderTaggedFolders(runId);

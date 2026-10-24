@@ -129,6 +129,35 @@ afterEach(() => {
 });
 
 describe('mail connections', () => {
+  it('checks incoming and outgoing separately without reading messages or sending email', async () => {
+    const f=fixture();const {account}=await f.mail.connect(valid);
+    f.imap.connect.mockRejectedValueOnce(Object.assign(new Error('private '+PASSWORD),{code:'CONNECT_TIMEOUT'}));
+    const result=await f.mail.check(account.id);
+    expect(result.imap.state).toBe('timeout');expect(result.smtp.state).toBe('ok');
+    expect(result.imap.message).toContain('credentials were not verified');
+    expect(JSON.stringify(result)).not.toContain(PASSWORD);
+    expect(f.sent).toEqual([]);expect(f.imap.fetchCalls).toEqual([]);
+    expect((await f.mail.accounts())[0]?.mailHealth).toEqual(result);
+    expect(await f.mail.execute('mail_check',{},account.id)).toMatchObject({imap:{state:'ok'},smtp:{state:'ok'}});
+  });
+  it.each(['CERT_HAS_EXPIRED','EAUTH','ETIMEDOUT','ENOTFOUND','ECONNREFUSED'])('classifies %s independently for both protocols', async code => {
+    const f=fixture();const {account}=await f.mail.connect(valid);
+    f.imap.connect.mockRejectedValueOnce(Object.assign(new Error(PASSWORD),{code}));
+    vi.mocked(f.transport.verify).mockRejectedValueOnce(Object.assign(new Error(PASSWORD),{code}));
+    const result=await f.mail.check(account.id);
+    const expected:Record<string,string>={CERT_HAS_EXPIRED:'tls-error',EAUTH:'authentication-rejected',ETIMEDOUT:'timeout',ENOTFOUND:'dns-error',ECONNREFUSED:'refused'};
+    expect(result.imap.state).toBe(expected[code]);expect(result.smtp.state).toBe(expected[code]);
+    expect(JSON.stringify(result)).not.toContain(PASSWORD);expect(f.sent).toEqual([]);
+  });
+  it('coalesces concurrent checks and does not restore results after mailbox removal', async () => {
+    const f=fixture();const {account}=await f.mail.connect(valid);
+    let finish!:()=>void;f.imap.connect.mockImplementationOnce(()=>new Promise<void>(resolve=>{finish=resolve;}));
+    const first=f.mail.check(account.id),second=f.mail.check(account.id);
+    const rejected=Promise.all([expect(first).rejects.toThrow('no longer connected'),expect(second).rejects.toThrow('no longer connected')]);
+    await vi.waitFor(()=>expect(finish).toBeDefined());
+    await f.mail.remove(account.id);finish();await rejected;
+    expect(await f.mail.accounts()).toEqual([]);expect(f.sent).toEqual([]);
+  });
   beforeEach(() => {
     delete process.env['AGENT_GITU_SECRETS_KEY'];
     process.env['AGENT_GITU_HOME'] = mkdtempSync(path.join(tmpdir(), 'gitu-mail-case-'));
@@ -604,6 +633,9 @@ describe('mail API routes', () => {
       expect(listed.mail.available).toEqual([]);
       expect(listed.mail.providers.map((provider: { id: string }) => provider.id)).toContain('gmail');
       expect((await connections()).mail.keyStorage).toBe('server-encrypted');
+      const checked=await post('/api/connected-apps/mail/check',{accountId:first.id});
+      expect(checked.status).toBe(200);expect(await checked.json()).toMatchObject({imap:{state:'ok'},smtp:{state:'ok'}});
+      expect((await connections()).mail.accounts[0].mailHealth.imap.state).toBe('ok');
 
       // A saved mailbox can be released and handed back without reconnecting it.
       const second = (await (await post('/api/connected-apps/mail', { ...valid, address: 'second@example.com', label: 'Sales', agentId: agent.id })).json()).account as { id: string };
@@ -725,6 +757,12 @@ describe('connections hub', () => {
     expect(read.ok).toBe(true);
     expect(JSON.parse(read.output).body).toContain('Body text for the mailbox reader.');
     expect(read.output).not.toContain(PASSWORD);
+    const checkParams={action:'execute',service:'mail',accountId:account.id,tool:'mail_check',args:{}};
+    const checkReview=await executeCoworkTool(ctx,'connected_apps',checkParams,perms,scope);
+    expect(checkReview.output).toMatch(/^Review /);
+    const checkCard=store.openRequests(conversation.id)[0]!;store.resolveRequest(checkCard.id,'accepted');
+    const checked=await executeCoworkTool(ctx,'connected_apps',{...checkParams,approvalId:checkCard.id},perms,scope);
+    expect(checked.ok).toBe(true);expect(JSON.parse(checked.output)).toMatchObject({imap:{state:'ok'},smtp:{state:'ok'}});
     expect((await executeCoworkTool(ctx, 'connected_apps', approved, perms, { ...scope, agent: other })).ok).toBe(false);
     for (const tool of ['mail_send', 'mail_mark', 'mail_read_and_delete']) {
       expect((await executeCoworkTool(ctx, 'connected_apps', { ...params, tool }, perms, scope)).ok).toBe(false);

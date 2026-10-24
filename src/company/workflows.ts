@@ -139,6 +139,24 @@ export class CompanyWorkflows {
   }
   save(actor: CompanyActor, input: { id?: string; revision?: number; title: string; steps: WorkflowStep[]; inputs: WorkflowSchema; parallelism: number }): CompanyWorkflow {
     this.organization.require(actor, 'design-workflows');
+    return this.saveDraft(actor, input);
+  }
+  /** Any active employee can propose a draft; approval and assignment remain separate. */
+  propose(actor: CompanyActor, input: Parameters<CompanyWorkflows['save']>[1], proposalKey?: string): CompanyWorkflow {
+    if (actor.kind !== 'agent' || this.organization.member(actor.agentId).status !== 'active') throw new Error('Only active employees can propose workflows.');
+    if (proposalKey) {
+      const existing = this.store.db.prepare(`SELECT records.id FROM records, json_each(records.data,'$.versions') AS version
+        WHERE records.kind='workflow' AND records.company_id=? AND json_extract(version.value,'$.proposalKey')=?
+        AND json_extract(version.value,'$.createdBy.agentId')=? LIMIT 1`).get(this.companyId, proposalKey, actor.agentId);
+      if (existing) return this.read(actor, String(existing['id']));
+    }
+    if (input?.id) {
+      const latest = this.read(actor, input.id).versions.at(-1)!;
+      if (latest.state !== 'draft' || latest.createdBy.kind !== 'agent' || latest.createdBy.agentId !== actor.agentId) throw new Error('Propose changes in your own draft; approved workflows require a designer.');
+    }
+    return this.saveDraft(actor, input, true, proposalKey);
+  }
+  private saveDraft(actor: CompanyActor, input: Parameters<CompanyWorkflows['save']>[1], proposal = false, proposalKey?: string): CompanyWorkflow {
     if (!input || typeof input !== 'object') throw new Error('Provide workflow settings and steps.');
     const before = input.id ? this.read(actor, input.id) : undefined;
     if (before && before.revision !== input.revision) throw new Error('Workflow changed. Refresh before saving a new version.');
@@ -205,12 +223,12 @@ export class CompanyWorkflows {
     const id = before?.id ?? 'workflow-' + randomUUID(),
       title = text(input.title, 160),
       inputs = schema(input.inputs);
-    return this.organization.audited(actor, 'design-workflows', 'workflow.version-created', id, () => {
+    return this.organization.audited(actor, proposal ? undefined : 'design-workflows', proposal ? 'workflow.proposed' : 'workflow.version-created', id, () => {
       const current = before ? this.store.read<CompanyWorkflow>('workflow', id) : undefined;
       if (current && current.revision !== input.revision) throw new Error('Workflow revision changed.');
       const w = current ?? { id, companyId: this.companyId, title, revision: 0, versions: [], updatedAt: now() };
       w.title = title;
-      w.versions.push({ version: w.versions.length + 1, state: 'draft', steps, inputs, parallelism: input.parallelism, createdBy: actor, createdAt: now() });
+      w.versions.push({ version: w.versions.length + 1, state: 'draft', steps, inputs, parallelism: input.parallelism, createdBy: actor, createdAt: now(), proposalKey });
       w.revision++;
       w.updatedAt = now();
       this.store.saveResource('workflow', id, this.companyId, w);

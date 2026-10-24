@@ -32,6 +32,18 @@ function fixture() {
   return { store, first, second, a, b, lead, colleague, outsider, conversation, apps, call, start: d.start, owned: (value: ConnectedApp[]) => { owned = value; } };
 }
 describe('Company connected accounts', () => {
+  it('checks native mailbox health only through a secure session for a granted native account', async () => {
+    const f=fixture(),check=vi.fn(async()=>({checkedAt:new Date().toISOString(),imap:{state:'timeout'},smtp:{state:'ok'}}));
+    Object.assign(f.apps.mail,{check});
+    await expect(f.call('/mail/check','POST',{accountId:'foreign'})).rejects.toThrow('granted');expect(check).not.toHaveBeenCalled();
+    await f.call('/assign','POST',{accountId:'existing-mail',agentIds:[f.lead.id]});
+    f.apps.mail.accounts.mockResolvedValue([{id:'existing-mail'}] as never);
+    f.apps.secure.mockReturnValue(false);
+    await expect(f.call('/mail/check','POST',{accountId:'existing-mail'})).rejects.toThrow('HTTPS');expect(check).not.toHaveBeenCalled();
+    f.apps.secure.mockReturnValue(true);
+    expect(await f.call('/mail/check','POST',{accountId:'existing-mail'})).toMatchObject({status:200,imap:{state:'timeout'},smtp:{state:'ok'}});
+    expect(check).toHaveBeenCalledWith('existing-mail');
+  });
   it('limits mailbox rediscovery to a secure session and a granted company account', async () => {
     const f = fixture(), rediscover = vi.fn(async () => ({ account: { id: 'existing-mail' } }));
     Object.assign(f.apps.mail, { rediscover });

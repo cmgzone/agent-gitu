@@ -38,28 +38,26 @@ const captureStateMessages = (sink: LlmMessage[]) => (_n: number, messages: LlmM
 };
 
 describe('agent-eval: false green (bug "fixed" without reproduction)', () => {
-  it('rigor gate rejects twice, then completion carries the gap as a risk', async () => {
+  it('records missing reproduction as a limitation after the required evidence passes', async () => {
     const record = await runTrapEval({
       name: 'false-green',
       goal: 'fix the broken calculator output',
       project: (dir) => writeFileSync(path.join(dir, 'calc.js'), 'console.log("calc");\n'),
       script: [
         () => criteriaMsg(),
-        () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'fix calc', verification: 'node calc.js' }] } }),
+        () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'fix calc', verification: 'node --version' }] } }),
         () => JSON.stringify({ action: { type: 'set_hypothesis', text: 'assumed a formatting bug — never reproduced' } }),
         () => JSON.stringify({ action: { type: 'tool_call', tool: 'write_file', params: { path: 'calc.js', content: 'console.log("calc fixed");\n' }, reason: 'fix', expected: 'better output' } }),
-        () => JSON.stringify({ action: { type: 'tool_call', tool: 'run_command', params: { command: 'node calc.js' }, reason: 'verify', expected: 'exit 0' } }),
+        () => JSON.stringify({ action: { type: 'tool_call', tool: 'run_command', params: { command: 'node --version' }, reason: 'verify', expected: 'exit 0' } }),
         claimLastEvidence,
-        () => JSON.stringify({ action: { type: 'complete', summary: 'attempt 1', risks: [], followUps: [] } }),
-        () => JSON.stringify({ action: { type: 'complete', summary: 'attempt 2', risks: [], followUps: [] } }),
+        () => JSON.stringify({ action: { type: 'complete', summary: 'Required command passes; regression reproduction is unverified.', risks: [], followUps: [] } }),
         () => 'VERDICT: PASS',
-        () => JSON.stringify({ action: { type: 'complete', summary: 'attempt 3', risks: [], followUps: [] } }),
       ],
     });
-    // The trap: a green suite that never covered the bug. The gate MUST notice
-    // there is no FAIL -> edit -> PASS pair.
-    expect(record.gateRejections.filter((e) => e.includes('bug-fix completion rejected')).length).toBe(2);
-    expect(record.risks.some((r) => r.includes('rigor override'))).toBe(true);
+    // A passing generic command is not a recorded regression reproduction.
+    // The final report must retain that limitation after the required checks pass.
+    expect(record.criteriaSatisfied).toBe(record.criteriaTotal);
+    expect(record.risks.some((r) => r.includes('Regression verification limitation')&&r.includes('fail-before / pass-after'))).toBe(true);
     expect(record.outcome).toBe('complete');
   }, 60000);
 });
@@ -163,6 +161,7 @@ describe('agent-eval: failure storm (repeated distinct failures)', () => {
   it('escalates on distinct failure signatures and records the extension', async () => {
     const record = await runTrapEval({
       name: 'failure-storm',
+      autonomy: { persistent: false },
       goal: 'wrestle a flaky integration',
       project: () => {},
       script: [

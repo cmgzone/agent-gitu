@@ -72,9 +72,13 @@ export function conversationIntent(message: string): 'pause' | 'question' | unde
       /\b(?:don't|do not)\s+(?:start|continue|proceed|work|do anything)\b/i.test(text)) return 'pause';
   if (isProgressNudge(text)) return undefined;
   if (isNonMutatingStatusQuestion(text)) return 'question';
+  // Everyday questions often omit the final question mark. Keep them out of
+  // implementation acceptance gates, while preserving an explicit request to act.
+  const plainQuestion = /^(?:(?:why|what|how|which|where|when)\s+(?:am|is|are|was|were|do|does|did|can|could|would|should|will|has|have)\b|what\s+(?:else|about)\b|how\s+(?:many|much)\b|(?:what|why|how|where|when)'s\b)/i.test(text) &&
+    !/(?:[.!?;]\s+|\n|\s+(?:and|then)\s+)(?:please\s+)?(?:fix|build|create|add|edit|update|remove|delete|install|deploy|run|implement|change|start|continue|proceed)\b/i.test(text);
   // "Can you fix ...?" is an action request, whereas "Why ...?" or "Can
   // you explain ...?" asks for a response before more autonomous execution.
-  if (/^(?:(?:please\s+)?(?:explain|tell me|help me understand)\b|(?:can|could|would) you (?:please )?(?:explain|tell me|clarify)\b|(?:why|what|how|which|where|when)\b[^\n]*\?\s*$|(?:is|are|does|do|will|would|should|could|can)\b[^\n]*\?\s*$)/i.test(text) &&
+  if ((plainQuestion || /^(?:(?:please\s+)?(?:explain|tell me|help me understand)\b|(?:can|could|would) you (?:please )?(?:explain|tell me|clarify)\b|(?:why|what|how|which|where|when)\b[^\n]*\?\s*$|(?:is|are|does|do|will|would|should|could|can)\b[^\n]*\?\s*$)/i.test(text)) &&
       // A discussion commonly ends with wording such as "Can you now fix
       // it?" or "Could you go ahead and implement it?".  Those are work
       // requests, not more discussion; treating them as questions leaves the

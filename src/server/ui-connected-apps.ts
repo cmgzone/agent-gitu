@@ -9,7 +9,7 @@ export const CONNECTED_APPS_CSS = String.raw`
 .cw-service-section{margin:0 0 30px}.cw-service-section h2,.cw-service-permissions h2{font-size:14px;font-weight:600;margin:0 0 18px}.cw-service-section>p{font-size:12px;margin:-8px 0 14px}.cw-service-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:40px;row-gap:8px}
 .cw-service-row{display:flex;align-items:center;gap:12px;min-width:0;min-height:68px;padding:10px 0;border:0;background:transparent}.cw-service-row .cw-service-symbol{flex:none;width:36px;height:36px;border:1px solid var(--border);border-radius:10px;background:var(--card);font-size:16px}.cw-service-copy{flex:1;min-width:0}.cw-service-copy h3{margin:0;font-size:13px;font-weight:600;line-height:1.5;overflow-wrap:anywhere}.cw-service-copy p{font-size:12px;margin:3px 0 0;line-height:1.45;overflow-wrap:anywhere}.cw-service-copy small{display:block;font-size:11px;color:var(--muted);margin-top:3px}.cw-service-row>.cw-service-action{flex:none;width:36px;height:36px;min-height:36px;padding:8px;border-radius:50%;color:var(--muted)}.cw-service-action svg{width:18px;height:18px}.cw-service-action.connected{color:var(--ok)}.cw-service-status{font-size:12px;color:var(--muted)}.cw-service-status.connected{color:var(--ok)}
 .cw-service-symbol{width:40px;height:40px;display:grid;place-items:center;border-radius:10px;background:var(--card2);color:var(--accent);font-size:18px;font-weight:650}.cw-service-empty{padding:18px 0;max-width:520px}.cw-service-empty h2{font-size:17px;margin:0 0 10px}.cw-service-empty p{font-size:13px}.cw-provider-form{max-width:460px;margin-top:22px}.cw-provider-form label{display:block;font-size:13px;margin-bottom:8px}.cw-provider-form input{width:100%;padding:11px 14px;border:1px solid var(--border2);border-radius:9px;background:var(--card);color:var(--text);font:inherit}.cw-provider-form .btn{margin-top:12px}.cw-services-error{color:var(--err)!important}.cw-account-row{display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--border);padding:12px 0}.cw-account-row>span{flex:1}.cw-service-permissions{border-top:1px solid var(--border);padding-top:22px;margin-top:24px}.cw-service-permissions>p{font-size:12px}.cw-service-more{margin-top:16px;font-size:12px}.cw-services-content{animation:cw-services-in .16s ease-out}.cw-services-content:empty{animation:none}@keyframes cw-services-in{from{opacity:.5;transform:translateY(3px)}to{opacity:1;transform:translateY(0)}}
-@container services(max-width:620px){.cw-services-head{flex-direction:column;gap:18px}.cw-services-actions{width:100%}.cw-services-search{flex:1;max-width:none}.cw-services-search input{width:100%}.cw-service-grid{grid-template-columns:1fr}.cw-services-controls{margin:20px 0 26px}.cw-service-row{min-height:66px}}
+@container services (max-width:620px){.cw-services-head{flex-direction:column;gap:18px}.cw-services-actions{width:100%}.cw-services-search{flex:1;max-width:none}.cw-services-search input{width:100%}.cw-service-grid{grid-template-columns:1fr}.cw-services-controls{margin:20px 0 26px}.cw-service-row{min-height:66px}}
 @media(max-width:480px){.cw-services{padding:22px 20px 36px}.cw-services-agent{width:100%;justify-content:space-between}.cw-services-agent select{max-width:70%}.cw-service-row>.cw-service-action{width:44px;height:44px;min-height:44px}}
 @media(prefers-reduced-motion:reduce){.cw-services-content{animation:none}}
 .cw-service-symbol>*{grid-area:1/1}.cw-service-symbol.has-logo{background:#fff}.cw-service-logo{width:32px;height:32px;object-fit:contain;opacity:0}.cw-service-logo.loaded{opacity:1}.cw-account-row .cw-service-symbol{flex:none}
@@ -78,7 +78,7 @@ export const CONNECTED_APPS_JS = String.raw`
     var cw=cwEnsure();cw.connectionsAgentId=agentId||cw.selectedAgentId||'';
     openSettings('connections');
   }
-  function cwCloseConnectionManager(){var cw=cwEnsure();cw.connectionsOpen=false;cw.connectionRevision=(cw.connectionRevision||0)+1;}
+  function cwCloseConnectionManager(){var cw=cwEnsure();cw.connectionsOpen=false;cw.connectionRevision=(cw.connectionRevision||0)+1;clearTimeout(cw.serviceSignInTimer);}
   function cwMountConnections(root){
     var cw=cwEnsure();cw.connectionsOpen=true;cw.connectionRevision=(cw.connectionRevision||0)+1;
     cw.servicesTab='available';cw.servicesSearch='';cw.servicesData=null;
@@ -141,7 +141,8 @@ export const CONNECTED_APPS_JS = String.raw`
       cwRenderMsgs();exits.forEach(function(exit){var row=document.querySelector('[data-cwrequest-row="'+exit.id+'"] .cw-app-controls');if(!row)return;exit.node.classList.add('cw-app-connect-exit');exit.node.setAttribute('aria-hidden','true');exit.node.removeAttribute('href');exit.node.disabled=true;exit.node.tabIndex=-1;row.appendChild(exit.node);if(window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches)exit.node.remove();else exit.node.addEventListener('animationend',function(){exit.node.remove();},{once:true});});cwRenderRail();if(profileChanged)cwRenderInfo();
     }).catch(function(){}).finally(function(){cw.appConnectionsLoading=false;});
   }
-  function cwServiceStatus(status, disabled) {
+  function cwServiceStatus(status, disabled, issue) {
+    if(issue==='sign-in-expired')return 'Sign-in link expired · sign-in was not completed';
     if(status==='UNKNOWN'||status==='UNAVAILABLE')return 'Status unavailable · refresh to check';
     if(disabled)return 'Disconnected';
     return ({ACTIVE:'Connected',EXPIRED:'Reconnect needed',REVOKED:'Disconnected',INACTIVE:'Disconnected',PENDING:'Waiting for sign-in',INITIATED:'Waiting for sign-in',INITIALIZING:'Waiting for sign-in',FAILED:'Connection failed'})[status] || 'Not connected';
@@ -184,7 +185,38 @@ export const CONNECTED_APPS_JS = String.raw`
   function cwServiceMatches(service,search){return !search||[service.name,service.slug,service.description,service.reason].filter(Boolean).join(' ').toLowerCase().indexOf(search.toLowerCase())>=0;}
   function cwServiceRow(service,action,detail){
     var name=service.name||cwActionWords(service.slug),label=action.label;
-    return '<article class="cw-service-row" data-service="'+esc(service.slug)+'">'+cwServiceIcon(service)+'<div class="cw-service-copy"><h3>'+esc(name)+'</h3><p>'+esc(cwServiceDescription(Object.assign({},service,{name:name})))+'</p>'+(detail?'<small class="cw-service-status'+(action.connected?' connected':'')+'">'+esc(detail)+'</small>':'')+'</div><button class="btn ghost cw-service-action'+(action.connected?' connected':'')+'" '+action.attribute+'="'+esc(action.value)+'" aria-label="'+esc(label)+'" title="'+esc(label)+'">'+cwIcon(action.icon)+'</button></article>';
+    return '<article class="cw-service-row" data-service="'+esc(service.slug)+'">'+cwServiceIcon(service)+'<div class="cw-service-copy"><h3>'+esc(name)+'</h3><p>'+esc(cwServiceDescription(Object.assign({},service,{name:name})))+'</p>'+(detail?'<small class="cw-service-status'+(action.connected?' connected':'')+'">'+esc(detail)+'</small>':'')+'</div><button class="btn ghost cw-service-action'+(action.connected?' connected':'')+'" '+action.attribute+'="'+esc(action.value)+'" aria-label="'+esc(label)+'" title="'+esc(label)+'">'+cwIcon(action.icon)+'</button>'+(action.removeAccountId?'<button class="btn ghost cw-service-action" data-cwdisconnect="'+esc(action.removeAccountId)+'" aria-label="Remove '+esc(name)+' access" title="Remove '+esc(name)+' access">'+cwIcon('close')+'</button>':'')+'</article>';
+  }
+  function cwAssignedServiceRow(account,service,accounts){
+    var reconnect=['EXPIRED','REVOKED','INACTIVE','FAILED'].indexOf(account.status)>=0;
+    var action=reconnect?{attribute:'data-cwconnect',value:account.toolkit,label:'Sign in again to '+service.name,icon:'external',removeAccountId:account.id}:{attribute:'data-cwdisconnect',value:account.id,label:'Remove '+service.name+' access',icon:'close',connected:account.status==='ACTIVE'&&!account.disabled};
+    return cwServiceRow(service,action,cwServiceStatus(account.status,account.disabled,account.connectionIssue)+(accounts.filter(function(a){return a.toolkit===account.toolkit;}).length>1?' · account '+account.id.slice(-8):''));
+  }
+  function cwServiceSignInHtml(agentId){
+    var flow=cwEnsure().serviceSignIn;if(!flow||flow.agentId!==agentId)return '';
+    return '<section class="cw-service-section cw-service-sign-in" aria-label="App sign-in"><p role="status">'+(flow.expired?'This sign-in link has expired. Start a fresh sign-in.':flow.statusUnavailable?'Could not check sign-in yet. Retrying automatically…':'Finish sign-in in your browser. This page updates automatically. Sign-in links last 10 minutes.')+'</p>'+(flow.expired?'<button class="btn dark" data-cwconnect="'+esc(flow.service)+'">Start fresh sign-in</button>':'<a class="btn dark" href="'+esc(flow.url)+'" target="_blank" rel="noopener noreferrer">Continue sign-in</a>')+'</section>';
+  }
+  function cwWatchServiceSignIn(){
+    var cw=cwEnsure(),flow=cw.serviceSignIn;clearTimeout(cw.serviceSignInTimer);
+    if(!flow||flow.expired||!cw.connectionsOpen||cw.connectionsAgentId!==flow.agentId)return;
+    cw.serviceSignInTimer=setTimeout(function(){cwRefreshServiceSignIn(flow);},2500);
+  }
+  async function cwRefreshServiceSignIn(flow){
+    var cw=cwEnsure(),revision=cw.connectionRevision;
+    if(cw.serviceSignIn!==flow||!cw.connectionsOpen||cw.connectionsAgentId!==flow.agentId)return;
+    if(Date.now()>=flow.expiresAt){flow.expired=true;cwRenderServices();return;}
+    try{
+      var data=await api('/api/connected-apps?agentId='+encodeURIComponent(flow.agentId)+'&statusOnly=true');
+      if(cw.serviceSignIn!==flow||!cw.connectionsOpen||cw.connectionsAgentId!==flow.agentId||revision!==cw.connectionRevision)return;
+      var changed=JSON.stringify([cw.servicesData&&cw.servicesData.accounts,cw.servicesData&&cw.servicesData.availableAccounts,cw.servicesData&&cw.servicesData.appPermissions,cw.servicesData&&cw.servicesData.accountStatusIncomplete])!==JSON.stringify([data.accounts,data.availableAccounts,data.appPermissions,data.accountStatusIncomplete]);
+      var account=(data.accounts||[]).find(function(a){return a.id===flow.accountId&&a.toolkit===flow.service;});
+      if(account&&account.status==='ACTIVE'&&!account.disabled){changed=true;cw.serviceSignIn=null;toast('Account connected for this teammate.');}
+      else if(account&&['EXPIRED','FAILED','REVOKED'].indexOf(account.status)>=0){changed=true;flow.expired=true;}
+      if(!!flow.statusUnavailable!==!!data.accountStatusIncomplete)changed=true;
+      flow.statusUnavailable=!!data.accountStatusIncomplete;
+      cwSetAppConnectionState(flow.agentId,data);cw.servicesData=Object.assign({},cw.servicesData,data);if(changed)cwRenderServices();
+    }catch(e){if(cw.serviceSignIn===flow&&cw.connectionsOpen&&cw.connectionsAgentId===flow.agentId&&revision===cw.connectionRevision&&!flow.statusUnavailable){flow.statusUnavailable=true;cwRenderServices();}}
+    finally{if(cw.serviceSignIn===flow)cwWatchServiceSignIn();}
   }
   function cwRenderServices(){
     var cw=cwEnsure(),data=cw.servicesData,content=$('cwServicesContent'),agentId=cw.connectionsAgentId||'';
@@ -194,12 +226,13 @@ export const CONNECTED_APPS_JS = String.raw`
     content.setAttribute('aria-labelledby',connected?'cwServicesConnected':'cwServicesAvailable');
     if(!data||!data.configured||!agentId||cw.servicesAgentId!==agentId)return;
     var accounts=data.accounts||[],available=data.availableAccounts||[],services=cw.services||[],requests=data.requests||[];
-    var count=$('cwServicesCount');if(count)count.textContent=accounts.length?String(accounts.length):'';
+    var activeCount=accounts.filter(function(account){return account.status==='ACTIVE'&&!account.disabled;}).length;
+    var count=$('cwServicesCount');if(count)count.textContent=activeCount?String(activeCount):'';
     var serviceFor=function(slug){var app=services.find(function(service){return service.slug===slug;}),request=requests.find(function(request){return request.appConnection&&request.appConnection.service===slug;}),names={github:'GitHub',gmail:'Gmail',googlecalendar:'Google Calendar',googledrive:'Google Drive',outlook:'Outlook Email',outlookemail:'Outlook Email',mail:'Mailbox'};return app||request&&Object.assign({slug:slug},request.appConnection)||{slug:slug,name:names[slug]||cwActionWords(slug)};};
     var rows=function(list){return '<div class="cw-service-grid">'+list.join('')+'</div>';};
     if(connected){
       var own=accounts.filter(function(account){return cwServiceMatches(serviceFor(account.toolkit),search);}),existing=available.filter(function(account){return cwServiceMatches(serviceFor(account.toolkit),search);});
-      content.innerHTML='<section class="cw-service-section" aria-label="Teammate accounts"><h2>Connected for this teammate</h2>'+ (own.length?rows(own.map(function(account){return cwServiceRow(serviceFor(account.toolkit),{attribute:'data-cwdisconnect',value:account.id,label:'Remove '+serviceFor(account.toolkit).name+' access',icon:'close',connected:account.status==='ACTIVE'&&!account.disabled},cwServiceStatus(account.status,account.disabled)+(accounts.filter(function(a){return a.toolkit===account.toolkit;}).length>1?' · account '+account.id.slice(-8):''));})):'<p>'+esc(search?'No connected apps match your search.':'No apps connected yet. Browse Available to connect your first app.')+'</p>')+'</section>'+
+      content.innerHTML='<section class="cw-service-section" aria-label="Teammate accounts"><h2>Accounts for this teammate</h2>'+ (own.length?rows(own.map(function(account){return cwAssignedServiceRow(account,serviceFor(account.toolkit),accounts);})):'<p>'+esc(search?'No connected apps match your search.':'No apps connected yet. Browse Available to connect your first app.')+'</p>')+'</section>'+
         (existing.length?'<section class="cw-service-section" aria-label="Existing accounts"><h2>Existing accounts</h2><p>Choose an account to give this teammate access.</p>'+rows(existing.map(function(account){var service=serviceFor(account.toolkit);return cwServiceRow(service,{attribute:'data-cwassignapp',value:account.id,label:'Assign '+service.name+' to this teammate',icon:'plus'},'Available to assign'+(available.filter(function(a){return a.toolkit===account.toolkit;}).length>1?' · account '+account.id.slice(-8):''));}))+'</section>':'')+cwAppPermissionsHtml(data.appPermissions);
     }else{
       var suggestions=new Map();requests.forEach(function(request){var app=request.appConnection;if(request.agentId===agentId&&app&&request.status!=='dismissed'){var service=Object.assign({},serviceFor(app.service),{slug:app.service,name:app.name,reason:app.reason,logo:app.logo||serviceFor(app.service).logo});if(cwServiceMatches(service,search))suggestions.set(app.service,service);}});
@@ -208,11 +241,12 @@ export const CONNECTED_APPS_JS = String.raw`
       content.innerHTML=(suggestions.size?'<section class="cw-service-section" aria-label="Suggested apps"><h2>Suggested for '+esc(agent?agent.name:'this teammate')+'</h2>'+rows(Array.from(suggestions.values()).map(appRow))+'</section>':'')+'<section class="cw-service-section" aria-label="Browse apps"><h2>Browse apps</h2>'+ (browse.length?rows(browse.map(appRow)):suggestions.size?'':'<p>No apps match your search.</p>')+(cw.servicesCursor?'<button class="btn ghost cw-service-more" id="cwServicesMore">Load more apps</button>':'')+'</section>';
     }
     if(data.accountStatusIncomplete||data.catalogUnavailable)content.innerHTML='<p class="cw-services-error" role="status">'+(data.accountStatusIncomplete?'Some account statuses could not be checked. Saved access is preserved. ':'')+(data.catalogUnavailable?'The app catalog is unavailable. Your connected accounts are still listed in Connected. ':'')+'Refresh to try again.</p>'+content.innerHTML;
+    content.innerHTML=cwServiceSignInHtml(agentId)+content.innerHTML;
     cwBindServiceIcons(content);cwBindAppPermissions(content);cwBindServiceActions(content,agentId);cwInsertMail(content,agentId);
     var moreButton=$('cwServicesMore');if(moreButton)moreButton.onclick=function(){moreButton.disabled=true;cwLoadServices(cw.servicesSearch||'',true);};
   }
   function cwBindServiceActions(content,agentId){
-    content.querySelectorAll('[data-cwconnect]').forEach(function(button){button.onclick=async function(){if(button.disabled)return;button.disabled=true;var signIn=cwPrepareAppSignIn();try{var result=await api('/api/connected-apps/connect',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({agentId:agentId,service:button.getAttribute('data-cwconnect')})});var opened=await signIn.open(result.url),url=new URL(result.url);var link=document.createElement('a');link.href=url.href;link.target='_blank';link.rel='noopener noreferrer';link.className='btn ghost cw-service-action';link.setAttribute('aria-label','Continue sign-in');link.title='Continue sign-in';link.innerHTML=cwIcon('external');button.replaceWith(link);toast(opened?'Finish sign-in in your browser, then refresh Connections.':'Use Continue sign-in to open your browser.');}catch(e){signIn.cancel();cwAppSignInError(e,agentId);}finally{button.disabled=false;}};});
+    content.querySelectorAll('[data-cwconnect]').forEach(function(button){button.onclick=async function(){if(button.disabled)return;button.disabled=true;var signIn=cwPrepareAppSignIn(),service=button.getAttribute('data-cwconnect'),startedAt=Date.now();try{var result=await api('/api/connected-apps/connect',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({agentId:agentId,service:service})});var cw=cwEnsure();if(!cw.connectionsOpen||cw.connectionsAgentId!==agentId){signIn.cancel();return;}var opened=await signIn.open(result.url),url=new URL(result.url);cw.serviceSignIn={agentId:agentId,service:service,accountId:result.accountId,url:url.href,expiresAt:startedAt+600000};cwRenderServices();cwWatchServiceSignIn();toast(opened?'Finish sign-in in your browser. This page updates automatically.':'Use Continue sign-in to open your browser.');}catch(e){signIn.cancel();cwAppSignInError(e,agentId);}finally{button.disabled=false;}};});
     content.querySelectorAll('[data-cwassignapp]').forEach(function(button){button.onclick=async function(){if(button.disabled)return;button.disabled=true;try{await api('/api/connected-apps/assign',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({agentId:agentId,accountId:button.getAttribute('data-cwassignapp')})});cwLoadServices(cwEnsure().servicesSearch||'',false);}catch(e){toast('Could not assign this account. Try again.',true);button.disabled=false;}};});
     content.querySelectorAll('[data-cwdisconnect]').forEach(function(button){button.onclick=async function(){if(button.disabled)return;button.disabled=true;try{await api('/api/connected-apps/disconnect',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({agentId:agentId,accountId:button.getAttribute('data-cwdisconnect')})});cwLoadServices(cwEnsure().servicesSearch||'',false);}catch(e){toast('Could not remove this teammate’s access. Try again.',true);button.disabled=false;}};});
   }
@@ -225,6 +259,7 @@ export const CONNECTED_APPS_JS = String.raw`
       var data=await api('/api/connected-apps?agentId='+encodeURIComponent(agentId)+'&search='+encodeURIComponent(search)+(more&&cw.servicesCursor?'&cursor='+encodeURIComponent(cw.servicesCursor):''));
       if(!cw.connectionsOpen||revision!==cw.connectionRevision)return;
       var content=$('cwServicesContent'); if(!content)return;
+      cw.mail=data.mail||null;
       var select=$('cwServicesAgent'),agents=data.agents||cw.agents||[];
       if(select){select.innerHTML='<option value="">Choose a teammate</option>'+agents.map(function(agent){return '<option value="'+esc(agent.id)+'"'+(agent.id===agentId?' selected':'')+'>'+esc(agent.name)+'</option>';}).join('');select.onchange=function(){cw.connectionsAgentId=select.value;cw.servicesData=null;cw.services=[];content.innerHTML='<p role="status">Loading apps…</p>';cwLoadServices(cw.servicesSearch||'',false);};}
       if(!data.configured){
@@ -240,6 +275,7 @@ export const CONNECTED_APPS_JS = String.raw`
       var catalog=new Map();(more?(cw.services||[]).concat(data.services||[]):data.services||[]).forEach(function(service){catalog.set(service.slug,service);});
       cw.services=Array.from(catalog.values());cw.servicesCursor=data.cursor;cw.servicesData=data;cw.servicesAgentId=agentId;
       cwRenderServices();
+      cwWatchServiceSignIn();
     } catch(e) {
       if(!cw.connectionsOpen||revision!==cw.connectionRevision)return;
       var content=$('cwServicesContent');if(content)content.innerHTML='<p class="cw-services-error" role="alert">Could not load your services. Check your connection and refresh.</p>';
@@ -248,6 +284,11 @@ export const CONNECTED_APPS_JS = String.raw`
   function cwMailErrorText(error, fallback) {
     try { var parsed = JSON.parse(String((error && error.message) || '')); if (parsed && typeof parsed.error === 'string') return parsed.error; } catch (e) {}
     return fallback;
+  }
+  function cwMailHealthHtml(account){
+    var health=account.mailHealth;
+    if(!health)return '<small role="status">Saved settings · check the connection to verify inbox and sending.</small>';
+    return '<small class="cw-mail-health" role="status">'+esc(health.imap.message)+'<br>'+esc(health.smtp.message)+'</small>';
   }
   function cwMailSectionHtml(agentId, scope) {
     if (!agentId) return '';
@@ -261,10 +302,10 @@ export const CONNECTED_APPS_JS = String.raw`
       var controls = connected
         ? action('data-cwmaildisconnect', account.id, 'Remove this teammate access', 'close') + action('data-cwmailforget', account.id, 'Delete this saved mailbox', 'trash')
         : action('data-cwmailassign', account.id, 'Give this teammate access', 'plus') + action('data-cwmailforget', account.id, 'Delete this saved mailbox', 'trash');
-      controls = (scope && !connected ? '' : action('data-cwmailrediscover', account.id, 'Find and verify current mail servers from this address', 'search')) + controls;
-      var watch = mail.watching && mail.watching[account.id], status = account.watchInbox === false ? 'New email notifications paused' : watch && watch.state === 'listening' ? 'Listening for new email' : watch && watch.state === 'polling' ? 'Checking for new email · server has no push support' : watch && watch.state === 'reconnecting' ? 'Reconnecting to inbox…' : 'New email notifications enabled';
+      controls = action('data-cwmailcheck', account.id, 'Check inbox and outgoing connection without sending email', 'check') + (scope && !connected ? '' : action('data-cwmailrediscover', account.id, 'Find and verify current mail servers from this address', 'search')) + controls;
+      var watch = mail.watching && mail.watching[account.id], status = account.watchInbox === false ? 'New email notifications paused' : watch && watch.state === 'listening' ? 'Listening for new email' : watch && watch.state === 'polling' ? 'Checking for new email · server has no push support' : watch && watch.state === 'reconnecting' ? (watch.problem&&(!account.mailHealth||account.mailHealth.imap.state!==watch.problem.state)?watch.problem.message+' ':'')+'Retrying inbox connection…' : watch && watch.state==='connecting' ? 'Connecting to inbox…' : 'New email notifications enabled';
       var toggle = connected ? '<label class="cw-mail-check"><input type="checkbox" data-cwmailwatch="' + esc(account.id) + '"' + (account.watchInbox !== false ? ' checked' : '') + '> React to new email</label><small role="status">' + esc(status) + '</small>' : '';
-      return '<article class="cw-service-row" data-cwmailrow="' + esc(account.id) + '"><div class="cw-service-symbol" aria-hidden="true"><span>' + esc(label.slice(0, 1).toUpperCase()) + '</span></div><div class="cw-service-copy"><h3>' + esc(label) + '</h3><p>' + esc(account.address || '') + '</p><small class="cw-service-status' + (connected ? ' connected' : '') + '">' + (connected ? 'Connected for this teammate' : 'Saved - assign to give access') + '</small>' + toggle + '</div><div class="cw-mail-row-controls">' + controls + '</div></article>';
+      return '<article class="cw-service-row" data-cwmailrow="' + esc(account.id) + '"><div class="cw-service-symbol" aria-hidden="true"><span>' + esc(label.slice(0, 1).toUpperCase()) + '</span></div><div class="cw-service-copy"><h3>' + esc(label) + '</h3><p>' + esc(account.address || '') + '</p><small class="cw-service-status' + (connected ? ' connected' : '') + '">' + (connected ? 'Assigned to this teammate' : 'Saved - assign to give access') + '</small>' + cwMailHealthHtml(account) + toggle + '</div><div class="cw-mail-row-controls">' + controls + '</div></article>';
     };
     var options = providers.map(function (provider) { return '<option value="' + esc(provider.id) + '">' + esc(provider.name) + '</option>'; }).join('');
     var form = '<form class="cw-provider-form cw-mail-form" id="cwMailForm" hidden novalidate>'
@@ -297,6 +338,12 @@ export const CONNECTED_APPS_JS = String.raw`
   function cwBindMail(root, agentId, scope) {
     var cw = scope ? scope.state : cwEnsure(), request = scope ? scope.request : api;
     function reload(){if(scope)scope.reload();else cwLoadServices(cw.servicesSearch || '', false);}
+    root.querySelectorAll('[data-cwmailcheck]').forEach(function(button){button.onclick=async function(){
+      if(button.disabled)return;button.disabled=true;button.setAttribute('aria-busy','true');
+      try{var result=await request('/api/connected-apps/mail/check',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({accountId:button.getAttribute('data-cwmailcheck')})});toast(result.imap.state==='ok'&&result.smtp.state==='ok'?'Inbox and outgoing sign-in verified. No email was sent.':'Mailbox check completed. Review incoming and outgoing results.',result.imap.state!=='ok'||result.smtp.state!=='ok');reload();}
+      catch(error){toast(cwMailErrorText(error,'Could not check this saved mailbox. Refresh and try again.'),true);}
+      finally{button.disabled=false;button.removeAttribute('aria-busy');}
+    };});
     root.querySelectorAll('[data-cwmailrediscover]').forEach(function(button){button.onclick=async function(){
       if(button.disabled)return;
       button.disabled=true;button.setAttribute('aria-busy','true');

@@ -6,12 +6,13 @@ const object = { type: 'object', additionalProperties: true };
 const strings = { type: 'array', items: text };
 type Fields = Record<string, Record<string, unknown>>;
 const schemas: Record<string, { fields: Fields; required?: string[] }> = {
-  company_workflow: {fields:{action:{type:'string',enum:['list','read','save','validate','simulate','start','run']},id:text,version:number,input:object,samples:object},required:['action']},
+  app_manage:{fields:{action:{type:'string',enum:['read_settings','list_repositories','record_coding_review','set_model','set_project','set_settings','list_models','list_tasks','get_task','stop_task','send_task','delete_task','list_checkpoints','rollback_task','list_conversations','send_message','delete_conversation','list_agents','delete_agent','set_agent_model','list_companies','delete_company']},provider:text,model:text,projectPath:text,runId:text,checkpointId:text,reviewStatus:text,evidence:strings,conversationId:text,agentId:text,companyId:text,text,input:object},required:['action']},
+  company_workflow: {fields:{action:{type:'string',enum:['list','read','create','propose','save','validate','simulate','start','run']},id:text,version:number,input:object,samples:object},required:['action']},
   company_handbook: { fields: { action: { type: 'string', enum: ['list', 'read', 'propose'] }, id: text, input: object }, required: ['action'] },
   company_onboarding: { fields: { action: { type: 'string', enum: ['list', 'read', 'orient', 'schedule', 'check', 'assess', 'review'] }, agentId: text, revision: number, input: object }, required: ['action'] },
   company_organization: { fields: { action: { type: 'string', enum: ['read', 'save_department', 'update_member'] }, agentId: text, member: object, department: object, revision: number }, required: ['action'] },
-  company_boardroom: { fields: { action: { type: 'string', enum: ['list', 'read', 'create', 'start', 'raise_hand', 'grant', 'revoke', 'moderate', 'contribute', 'written', 'propose', 'propose_assignment', 'assign', 'decide', 'finish', 'interrupt', 'cancel'] }, meetingId: text, query: text, input: object }, required: ['action'] },
-  company_manage: { fields: { action: { type: 'string', enum: ['create', 'list', 'status'] }, id: text, name: text, purpose: text, leadName: text }, required: ['action'] },
+  company_boardroom: { fields: { action: { type: 'string', enum: ['list', 'read', 'request', 'requests', 'review_request', 'create', 'start', 'raise_hand', 'grant', 'revoke', 'moderate', 'contribute', 'written', 'propose', 'propose_assignment', 'assign', 'decide', 'finish', 'interrupt', 'cancel'] }, meetingId: text, query: text, input: object }, required: ['action'] },
+  company_manage: { fields: { action: { type: 'string', enum: ['create', 'list', 'status', 'agents', 'add_agent', 'remove_agent', 'remember', 'recall', 'inspect', 'search', 'help', 'boardroom', 'workflow', 'organization', 'onboarding', 'task'] }, id: text, name: text, purpose: text, leadName: text, leadId: text, memberIds: strings, agentId: text, text, query: text, section: { type: 'string', enum: ['overview','team','tasks','meetings','workflows','runs','handbook','activity','spending','knowledge','search'] }, resourceId: text, offset: { type: 'number' }, limit: { type: 'number' }, input: { type: 'object' } }, required: ['action'] },
   mission_manage: { fields: { action: text, id: text, goal: text, agentId: text, criteria: strings, maxSessions: number }, required: ['action'] },
   company_files: { fields: { action: text, artifactId: text }, required: ['action'] },
   storage: { fields: { action: text, connectionId: text, id: text, folder: text, parent: text, name: text, artifactId: text }, required: ['action'] },
@@ -37,12 +38,17 @@ const schemas: Record<string, { fields: Fields; required?: string[] }> = {
     fields: {
       path: text,
       title: text,
+      subtitle: text,
+      style: object,
       sections: { type: 'array', items: object },
-      rows: { type: 'array', items: { type: 'array', items: { type: ['string', 'number', 'boolean', 'null'] } } },
+      rows: { type: 'array', items: { type: 'array', items: { type: ['string', 'number', 'boolean', 'null', 'object'] } } },
+      columns: { type: 'array', items: object },
+      sheets: { type: 'array', items: object },
+      image: object,
     },
     required: ['path'],
   },
-  gitu_task: { fields: { goal: text, mode: text, effort: text, timeoutMinutes: number, maxCostUsd: number }, required: ['goal'] },
+  gitu_task: { fields: { goal: text, retryOf:text,reviewOf:text, projectPath: text, mode: text, effort: text, timeoutMinutes: number, maxCostUsd: number }, required: ['goal'] },
   spawn_sub_agent: {
     fields: { role: text, objective: text, reason: text, budget: object, permissions: object, skills: strings, maxRuntimeMinutes: number },
     required: ['role', 'objective', 'reason'],
@@ -62,6 +68,7 @@ const schemas: Record<string, { fields: Fields; required?: string[] }> = {
   configure_mcp: { fields: { name: text, command: text, args: strings, global: boolean }, required: ['name', 'command'] },
   list_connections: { fields: {} },
   connection_read: { fields: { connectionId: text, operationId: text, operation: object, documentationUrl: text, query: object }, required: ['connectionId'] },
+  connection_test: { fields: { connectionId: text }, required: ['connectionId'] },
   inspect_connection_response: { fields: { responseId: text, path: text, offset: number, limit: number, fields: strings, search: text, mode: text }, required: ['responseId'] },
   connected_apps: {
     fields: { action: text, service: text, query: text, cursor: text, reason: text, tool: text, args: object, accountId: text, approvalId: text },

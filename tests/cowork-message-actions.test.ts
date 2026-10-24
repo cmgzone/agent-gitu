@@ -20,7 +20,7 @@ function fixture() {
   const context = createContext({
     S: { active: 'cowork', cw: { active: 'conv', threadId: null, msgs: [], lastSeq: 0,
       agents: [{ id: 'chief', name: 'Chief' }], convs: [{ id: 'conv', kind: 'group', memberIds: ['chief'] }] } },
-    window: { addEventListener: vi.fn() }, document: { createElement: node, body: { appendChild: vi.fn() } },
+    window: { addEventListener: vi.fn() }, document: { addEventListener: vi.fn(), createElement: node, body: { appendChild: vi.fn() } },
     navigator: { clipboard: { writeText: copy } }, crypto: { randomUUID }, URL,
     $: (id: string) => nodes[id], api, toast: vi.fn(), confirm: () => true,
     esc: (s: unknown) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'),
@@ -142,18 +142,19 @@ describe('cwBody prose layout', () => {
 });
 
 describe('Cowork message actions', () => {
-  it('interleaves requests with messages by creation time and keeps resolved answers inline', () => {
+  it('places open requests below the latest message and keeps resolved answers inline', () => {
     const u = fixture();
     u.cw.msgs = [message({ text: 'Earlier message', ts: '2026-09-20T10:00:00Z' }), message({ id: 'm2', text: 'Later message', ts: '2026-09-20T10:02:00Z' })];
     const request = { id: 'q1', agentId: 'chief', kind: 'question', title: 'Choose a region', detail: 'Pick a launch region', options: ['EU', 'US'], status: 'open', createdAt: '2026-09-20T10:01:00Z' };
     u.cw.requests = [request];
     const html = u.context.cwTranscriptHtml();
     expect(html.indexOf('Earlier message')).toBeLessThan(html.indexOf('Choose a region'));
-    expect(html.indexOf('Choose a region')).toBeLessThan(html.indexOf('Later message'));
+    expect(html.indexOf('Choose a region')).toBeGreaterThan(html.indexOf('Later message'));
     expect(html).toContain('cw-row cw-request-row');
     expect(html).toContain('aria-label="Answer: Choose a region"');
     const resolved = u.context.cwRequestHtml({ ...request, status: 'answered', response: 'EU <first>' });
-    expect(resolved).toContain('Answered · EU &lt;first>');
+    expect(resolved).toContain('Answered</span>');
+    expect(resolved).toContain('<strong>Your answer</strong>EU &lt;first>');
     expect(resolved).not.toContain('data-cwrequest=');
     expect(resolved).not.toContain('<input');
   });

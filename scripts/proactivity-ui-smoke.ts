@@ -1,0 +1,46 @@
+import assert from 'node:assert/strict';
+import {readFileSync,mkdtempSync,mkdirSync,rmSync} from 'node:fs';
+import os from 'node:os';import path from 'node:path';import {pathToFileURL} from 'node:url';import {chromium} from 'playwright';
+const stage=JSON.parse(readFileSync('.qa/proactivity-update.json','utf8')),home=mkdtempSync(path.join(os.tmpdir(),'pa-mobile-'));
+process.env.AGENT_GITU_HOME=home;mkdirSync(path.join(home,'Workspace'));
+const at=(file:string)=>import(pathToFileURL(path.join(stage.preview,file)).href);
+const {GituServer}=await at('dist/server/server.js'),{ScriptedMockLlm}=await at('dist/llm/llm.js');
+const server=new GituServer({cwd:path.join(home,'Workspace'),port:0,llm:new ScriptedMockLlm([])});let browser;
+try {
+ const origin='http://127.0.0.1:'+await server.start();
+ const credentials={email:'owner@example.com',password:'Disposable personal assistant fixture password'};
+ const registration=await fetch(origin+'/api/auth/register',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:'Owner',...credentials})});assert(registration.ok);
+ browser=await chromium.launch({channel:'msedge',headless:true});
+ const page=await browser.newPage({viewport:{width:390,height:844},isMobile:true,hasTouch:true}),errors:string[]=[];
+ page.on('pageerror',error=>errors.push(error.message));
+ page.on('console',message=>{if(message.type()==='error')console.log('Browser error: '+message.text().slice(0,500));});
+ await page.route('https://fonts.googleapis.com/**',route=>route.abort());await page.route('https://fonts.gstatic.com/**',route=>route.abort());
+ const api=async(route:string,body?:object)=>{const response=await page.request.fetch(origin+route,{method:body?'POST':'GET',data:body});assert(response.ok(),route+' '+response.status());return response.json();};
+ await api('/api/auth/login',credentials);
+ await api('/api/cowork/proactivity',{quietStart:0,quietEnd:0});
+ await api('/api/onboarding',{theme:'light',mode:'cowork',model:'',timezone:'Africa/Nairobi'});
+ const initial=await api('/api/cowork/proactivity'),store=(server as any).cowork(),agent=store.getAgent(initial.assistantId);
+ store.saveAgent({...agent,avatar:{...agent.avatar,shape:'dot-blue',color:'#e66ca9'}});
+ store.appendMessage(initial.conversationId,{id:'qa-user-colour',role:'user',via:'web',text:'Check my priorities today.'});
+ await page.addInitScript(()=>localStorage.setItem('hermes.cowork','open'));
+ await page.goto(origin,{waitUntil:'domcontentloaded',timeout:60000});
+ await page.locator('#startupCover').waitFor({state:'hidden',timeout:30000});
+ console.log('Workspace opened.');
+ await page.locator('#cwAssistantSettings').tap();await page.getByRole('heading',{name:'P.A · Personal assistant'}).waitFor();assert.equal(await page.locator('#paTimezone').inputValue(),'Africa/Nairobi');
+ await page.locator('#paCalls').fill('4');await page.locator('#paAutoReview').uncheck();await page.locator('#paSave').tap();await page.locator('#paSave').waitFor({state:'detached'});
+ const saved=await api('/api/cowork/proactivity');assert.equal(saved.settings.dailyModelCalls,4);assert.equal(saved.settings.autoReview,false);
+ await page.locator('#cwAssistantSettings').tap();await page.getByRole('heading',{name:'P.A · Personal assistant'}).waitFor();assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+ mkdirSync('.qa/proactivity-ui',{recursive:true});await page.screenshot({path:'.qa/proactivity-ui/mobile-settings.png'});console.log('Mobile preferences verified.');
+ await page.locator('#paOpen').tap();await page.locator('#cwMsgs').waitFor();await page.getByText('I’m P.A, your personal assistant and chief of staff.',{exact:false}).first().waitFor();
+ const bubble=page.locator('.cw-row.me .cw-bubble').filter({hasText:'Check my priorities today.'});await bubble.waitFor();
+ assert.equal(await bubble.evaluate(el=>getComputedStyle(el).backgroundColor),'rgb(230, 108, 169)');assert.equal(await bubble.evaluate(el=>getComputedStyle(el).color),'rgb(0, 0, 0)');
+ store.saveAgent({...store.getAgent(initial.assistantId),avatar:{shape:'dot-blue',color:'#112244'}});(server as any).publishCowork(initial.conversationId);
+ await page.waitForFunction(()=>{const bubble=document.querySelector('.cw-row.me .cw-bubble');return bubble&&getComputedStyle(bubble).backgroundColor==='rgb(17, 34, 68)';},{},{timeout:30000});
+ assert.equal(await bubble.evaluate(el=>getComputedStyle(el).color),'rgb(255, 255, 255)');assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+ await page.screenshot({path:'.qa/proactivity-ui/mobile-assistant.png'});console.log('User message colours verified.');
+ await page.setViewportSize({width:1280,height:900});await page.locator('#cwAssistantSettings').evaluate((button:HTMLElement)=>button.click());await page.getByRole('heading',{name:'P.A · Personal assistant'}).waitFor();assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+ await page.screenshot({path:'.qa/proactivity-ui/desktop-settings.png'});assert.deepEqual(errors,[]);
+ console.log(JSON.stringify({passed:true,defaultAssistant:true,mobilePreferences:true,persistedLimits:true,assistantChat:true,desktopPreferences:true,noOverflow:true,noPageErrors:true,userMessageAvatarColour:true,lightAndDarkContrast:true}));
+} catch(error) {
+ console.log('UI failure: '+String(error));const page=browser?.contexts()[0]?.pages()[0];if(page){try{await page.screenshot({path:'.qa/proactivity-ui/failure.png',timeout:5000});}catch{}console.log((await page.locator('body').innerText()).slice(0,2500));}throw error;
+} finally {await browser?.close();await server.stop();rmSync(home,{recursive:true,force:true,maxRetries:8,retryDelay:100});}

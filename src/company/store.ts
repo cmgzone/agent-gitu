@@ -1,12 +1,12 @@
 import { DatabaseSync } from 'node:sqlite';
 import type { CompanyPricing } from './pricing.js';
 import { randomUUID, createHash } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { WalletTransaction } from './wallets.js';
 import type { CompanyMeeting } from './management-models.js';
 
-export type CompanyResourceKind = 'storage' | 'transfer' | 'webhook' | 'wallet' | 'computer' | 'file-reference' | 'cowork-company' | 'connected-account' | 'organization' | 'department' | 'management-event' | 'meeting' | 'onboarding' | 'handbook' | 'workflow' | 'workflow-run' | 'workflow-mission' | 'workflow-simulation' | 'company-decision' | 'calendar-link';
+export type CompanyResourceKind = 'storage' | 'transfer' | 'webhook' | 'wallet' | 'computer' | 'file-reference' | 'cowork-company' | 'connected-account' | 'organization' | 'department' | 'management-event' | 'meeting' | 'meeting-request' | 'onboarding' | 'handbook' | 'workflow' | 'workflow-run' | 'workflow-mission' | 'workflow-simulation' | 'company-decision' | 'calendar-link';
 
 export type CompanyState = 'draft' | 'running' | 'paused' | 'archived';
 export interface Company {
@@ -136,12 +136,31 @@ export class CompanyStore {
   close(): void {
     this.db.close();
   }
+  /** Remove the app record after runtime cleanup; retain a recovery snapshot and project files. */
+  deleteCompany(id:string):boolean {
+    const company=this.get(id);if(!company)return false;
+    if(company.state==='running')throw Error('Pause the company before deleting it.');
+    const records=this.db.prepare('SELECT kind,id,company_id,data FROM records WHERE company_id=?').all(id);
+    const directory=path.join(this.root,'Deleted');mkdirSync(directory,{recursive:true});
+    writeFileSync(path.join(directory,id+'-'+Date.now()+'.json'),JSON.stringify({company,records,deletedAt:stamp()},null,2),{mode:0o600});
+    this.db.exec('BEGIN IMMEDIATE');
+    try{this.db.prepare('DELETE FROM reservations WHERE company_id=?').run(id);this.db.prepare('DELETE FROM meeting_reservations WHERE company_id=?').run(id);this.db.prepare('DELETE FROM records WHERE company_id=?').run(id);this.db.exec('COMMIT');return true;}catch(error){this.db.exec('ROLLBACK');throw error;}
+  }
   private put(kind: string, id: string, value: unknown, companyId?: string): void {
+    const key = kind === 'computer' && companyId ? companyId + ':' + id : id;
     this.db
       .prepare('INSERT INTO records(kind,id,company_id,data) VALUES(?,?,?,?) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data,company_id=excluded.company_id')
-      .run(kind, id, companyId ?? null, JSON.stringify(value));
+      .run(kind, key, companyId ?? null, JSON.stringify(value));
+    if (key !== id) this.db.prepare('DELETE FROM records WHERE kind=? AND id=? AND company_id=?').run(kind, id, companyId!);
   }
-  read<T>(kind: string, id: string): T | undefined {
+  read<T>(kind: string, id: string, companyId?: string): T | undefined {
+    if (kind === 'computer') {
+      const rows = companyId
+        ? this.db.prepare('SELECT data FROM records WHERE kind=? AND company_id=? AND (id=? OR id=?) ORDER BY length(id) DESC').all(kind, companyId, companyId + ':' + id, id)
+        : this.db.prepare("SELECT data FROM records WHERE kind=? AND (id=? OR json_extract(data,'$.id')=?)").all(kind, id, id);
+      if (!companyId && rows.length > 1) throw new Error('Include the company scope when reading a shared teammate’s private computer.');
+      return rows[0] ? JSON.parse(String(rows[0]['data'])) as T : undefined;
+    }
     const row = this.db.prepare('SELECT data FROM records WHERE kind=? AND id=?').get(kind, id) as { data: string } | undefined;
     return row ? (JSON.parse(row.data) as T) : undefined;
   }
@@ -152,7 +171,7 @@ export class CompanyStore {
     value: unknown,
   ): void {
     if (!this.get(companyId)) throw new Error('Company not found.');
-    const existing = this.db.prepare('SELECT company_id FROM records WHERE kind=? AND id=?').get(kind, id);
+    const existing = this.db.prepare('SELECT company_id FROM records WHERE kind=? AND id=?').get(kind, kind === 'computer' ? companyId + ':' + id : id);
     if (existing && existing['company_id'] !== companyId) throw new Error('Resource belongs to another company.');
     this.put(kind, id, value, companyId);
   }
@@ -194,7 +213,7 @@ export class CompanyStore {
     try {
       const c = this.get(companyId);
       if (!c) throw new Error('Company not found.');
-      const previous = this.read<{ companyId: string; heldSlot?: boolean; state: string; computerServerId?: string | null }>('computer', agentId);
+      const previous = this.read<{ companyId: string; heldSlot?: boolean; state: string; computerServerId?: string | null }>('computer', agentId, companyId);
       if (previous && previous.companyId !== companyId) throw new Error('Private computer belongs to another company.');
       if (
         previous &&
@@ -203,7 +222,7 @@ export class CompanyStore {
       )
         throw new Error('Reconcile and stop the previous private computer before selecting another server.');
       const computers = this.list<{ id: string; companyId: string; state: string; heldSlot?: boolean }>('computer').filter(
-        (v) => (v.heldSlot ?? ['starting', 'running', 'sleeping'].includes(v.state)) && v.id !== agentId,
+        (v) => (v.heldSlot ?? ['starting', 'running', 'sleeping'].includes(v.state)) && !(v.id === agentId && v.companyId === companyId),
       );
       if (computers.length >= this.runtimeSettings().computers || computers.filter((v) => v.companyId === companyId).length >= (c.computerLimit ?? 2))
         throw new Error('Private computer concurrency limit reached. Stop an idle desktop before starting another.');
@@ -215,7 +234,7 @@ export class CompanyStore {
     }
   }
   computerState(companyId: string, id: string, state: string): void {
-    const previous = this.read<{ heldSlot?: boolean; state: string; computerServerId?: string | null }>('computer', id);
+    const previous = this.read<{ heldSlot?: boolean; state: string; computerServerId?: string | null }>('computer', id, companyId);
     this.saveResource('computer', id, companyId, {
       ...previous,
       id,

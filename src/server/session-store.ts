@@ -20,6 +20,7 @@ export interface SessionUsage {
 }
 
 export interface StoredSession {
+  coworkTask?: { agentId: string; agentName: string; conversationId: string; companyId?: string; missionId?: string; execution: 'host' | 'private'; recoveryAttempts?:number; previousFailure?:string; recoveryRunId?:string; reviewRootId?:string };
   modelRecovery?: { attempt: number; nextRetryAt: string };
   runId: string;
   taskId?: string;
@@ -100,6 +101,9 @@ export class SessionStore {
     }
     mkdirSync(path.dirname(target), { recursive: true });
     this.db = new DatabaseSync(target);
+    // A history reader must not abort a coding turn when its next event is
+    // persisted. WAL permits concurrent readers; short competing writes wait.
+    this.db.exec('PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;');
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS sessions (
          runId TEXT PRIMARY KEY,
@@ -169,6 +173,7 @@ export class SessionStore {
       ['sessions', 'error TEXT'],
       ['sessions', 'usage TEXT'],
       ['sessions', 'modelRecovery TEXT'],
+      ['sessions', 'coworkTask TEXT'],
       ['sessions', 'branch TEXT'],
       ['sessions', 'worktreePath TEXT'],
       ['sessions', 'taggedFolders TEXT'],
@@ -188,8 +193,8 @@ export class SessionStore {
   upsertSession(s: StoredSession): void {
     this.db
       .prepare(
-        `INSERT INTO sessions (runId, taskId, goal, project, projectPath, taggedFolders, writableFolders, branch, worktreePath, startedAt, status, finishedAt, mode, provider, model, requestedProvider, requestedModel, activeProvider, activeModel, report, error, usage, modelRecovery, updatedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO sessions (runId, taskId, goal, project, projectPath, taggedFolders, writableFolders, branch, worktreePath, startedAt, status, finishedAt, mode, provider, model, requestedProvider, requestedModel, activeProvider, activeModel, report, error, usage, modelRecovery, updatedAt, coworkTask)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(runId) DO UPDATE SET
            taskId = excluded.taskId,
            goal = excluded.goal,
@@ -212,6 +217,7 @@ export class SessionStore {
            error = excluded.error,
            usage = excluded.usage,
            modelRecovery = excluded.modelRecovery,
+           coworkTask = excluded.coworkTask,
            updatedAt = excluded.updatedAt`,
       )
       .run(
@@ -239,6 +245,7 @@ export class SessionStore {
         s.usage ? JSON.stringify(s.usage) : null,
         s.modelRecovery ? JSON.stringify(s.modelRecovery) : null,
         new Date().toISOString(),
+        s.coworkTask ? JSON.stringify(s.coworkTask) : null,
       );
   }
 
@@ -320,7 +327,7 @@ export class SessionStore {
 
   listSessions(): StoredSession[] {
     const rows = this.db
-      .prepare(`SELECT runId, taskId, goal, project, projectPath, taggedFolders, writableFolders, branch, worktreePath, startedAt, status, finishedAt, mode, provider, model, requestedProvider, requestedModel, activeProvider, activeModel, report, error, usage, modelRecovery FROM sessions ORDER BY startedAt DESC`)
+      .prepare(`SELECT * FROM sessions ORDER BY startedAt DESC`)
       .all() as {
         runId: string;
         taskId: string | null;
@@ -345,6 +352,7 @@ export class SessionStore {
         error: string | null;
         usage: string | null;
         modelRecovery: string | null;
+        coworkTask: string | null;
       }[];
     return rows.map((r) => ({
       runId: r.runId,
@@ -370,12 +378,13 @@ export class SessionStore {
       error: r.error ?? undefined,
       usage: parseUsage(r.usage),
       modelRecovery: parseModelRecovery(r.modelRecovery),
+      coworkTask: parseCoworkTask(r.coworkTask),
     }));
   }
 
   getSessionByTaskId(taskId: string): StoredSession | undefined {
     const r = this.db
-      .prepare(`SELECT runId, taskId, goal, project, projectPath, taggedFolders, writableFolders, branch, worktreePath, startedAt, status, finishedAt, mode, provider, model, requestedProvider, requestedModel, activeProvider, activeModel, report, error, usage, modelRecovery FROM sessions WHERE taskId = ? ORDER BY startedAt DESC LIMIT 1`)
+      .prepare(`SELECT * FROM sessions WHERE taskId = ? ORDER BY startedAt DESC LIMIT 1`)
       .get(taskId) as {
         runId: string;
         taskId: string | null;
@@ -400,6 +409,7 @@ export class SessionStore {
         error: string | null;
         usage: string | null;
         modelRecovery: string | null;
+        coworkTask: string | null;
       } | undefined;
     if (!r) return undefined;
     return {
@@ -426,6 +436,7 @@ export class SessionStore {
       error: r.error ?? undefined,
       usage: parseUsage(r.usage),
       modelRecovery: parseModelRecovery(r.modelRecovery),
+      coworkTask: parseCoworkTask(r.coworkTask),
     };
   }
 
@@ -470,6 +481,13 @@ export class SessionStore {
   close(): void {
     this.db.close();
   }
+}
+
+function parseCoworkTask(value: string | null): StoredSession['coworkTask'] {
+  try {
+    const parsed = JSON.parse(value ?? 'null') as StoredSession['coworkTask'];
+    return parsed && typeof parsed.agentId === 'string' && typeof parsed.agentName === 'string' && typeof parsed.conversationId === 'string' && ['host', 'private'].includes(parsed.execution) ? parsed : undefined;
+  } catch { return undefined; }
 }
 
 function parseTaggedFolders(value: string | null): string[] {

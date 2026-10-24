@@ -1,7 +1,8 @@
 import { randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, renameSync, unlinkSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
+import { privateNetworkRequest } from './lan-login.js';
 const derive = (password: string, salt: string): Promise<Buffer> =>
   new Promise((resolve, reject) => {
     scrypt(password, salt, 32, { N: 131072, r: 8, p: 1, maxmem: 256 * 1024 * 1024 }, (error, key) => (error ? reject(error) : resolve(key)));
@@ -16,6 +17,7 @@ interface PasswordRecord {
   email?: string;
   salt: string;
   hash: string;
+  googleSubject?: string;
 }
 interface Session {
   expires: number;
@@ -36,6 +38,7 @@ export class AppAuth {
     readonly required = true,
     private readonly trustLocalProxy = false,
     private readonly registrationToken?: string,
+    private readonly allowLanLogin = false,
   ) {
     if (existsSync(file)) {
       const record = JSON.parse(readFileSync(file, 'utf8')) as PasswordRecord;
@@ -45,6 +48,7 @@ export class AppAuth {
         !/^[a-f0-9]{64}$/.test(record.hash) ||
         typeof record.userId !== 'string' ||
         !record.userId ||
+        (record.googleSubject !== undefined && (typeof record.googleSubject !== 'string' || !record.googleSubject || record.googleSubject.length > 255)) ||
         (record.version === 2 && (!record.name?.trim() || record.name.length > 100 || !record.email || !AppAuth.validEmail(record.email)))
       ) {
         throw new Error('App password settings are damaged. Restore the password settings file before starting.');
@@ -79,6 +83,24 @@ export class AppAuth {
   get account(): { id: string; name?: string; email?: string } | undefined {
     return this.record ? { id: this.record.userId, name: this.record.name, email: this.record.email } : undefined;
   }
+  get googleLinked(): boolean { return Boolean(this.record?.googleSubject); }
+  /** Only verified Google identities reach here. Never create/replace an owner. */
+  googleLogin(identity: { sub: string; email: string; authoritative: boolean }, link = false): void {
+    const record = this.record;
+    if (!record?.email || identity.email.toLowerCase() !== record.email.toLowerCase()) throw new Error('Use the Google account matching the workspace owner email.');
+    if (record.googleSubject) {
+      if (record.googleSubject !== identity.sub) throw new Error('This Google account is not linked to the workspace.');
+      return;
+    }
+    if (!identity.authoritative && !link) throw new Error('Sign in with your password first, then link Google in General settings.');
+    const updated = { ...record, googleSubject: identity.sub };
+    const temporary = this.file + '.' + randomBytes(8).toString('hex') + '.tmp';
+    try {
+      writeFileSync(temporary, JSON.stringify(updated), { mode: 0o600, flag: 'wx' });
+      renameSync(temporary, this.file);
+      this.record = updated;
+    } finally { if (existsSync(temporary)) unlinkSync(temporary); }
+  }
   private static validEmail(value: string): boolean {
     return value.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
   }
@@ -97,6 +119,14 @@ export class AppAuth {
       Boolean((req.socket as { encrypted?: boolean }).encrypted) ||
       (this.trustLocalProxy && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress ?? '') && req.headers['x-forwarded-proto'] === 'https')
     );
+  }
+
+  lanLogin(req: IncomingMessage): boolean {
+    return this.allowLanLogin && privateNetworkRequest(req) && !this.secure(req);
+  }
+
+  canLogin(req: IncomingMessage): boolean {
+    return AppAuth.local(req) || this.secure(req) || this.lanLogin(req);
   }
 
   private token(req: IncomingMessage): string | undefined {
@@ -142,7 +172,9 @@ export class AppAuth {
     timer.unref();
     this.sessions.set(token, { expires: Date.now() + SESSION_MS, streams: new Set(), timer });
     const secure = this.secure(req);
-    res.setHeader('Set-Cookie', `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_MS / 1000}${secure ? '; Secure' : ''}`);
+    const cookie = `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_MS / 1000}${secure ? '; Secure' : ''}`;
+    const existing = res.getHeader('Set-Cookie');
+    res.setHeader('Set-Cookie', existing ? [...(Array.isArray(existing) ? existing.map(String) : [String(existing)]), cookie] : cookie);
     res.setHeader('Cache-Control', 'no-store');
   }
 

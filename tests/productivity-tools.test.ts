@@ -19,10 +19,10 @@ afterAll(() => rmSync(root, { recursive: true, force: true }));
 const sections = Array.from({ length: 8 }, (_, i) => ({ heading: `Page ${i + 1}`, body: `Verified source material for section ${i + 1}.`, bullets: ['First finding', 'Next action'] }));
 
 describe('bundled productivity tools', () => {
-  it('creates an eight-page PDF without a shell or private computer', async () => {
+  it('flows eight short sections into at most two PDF pages without a private computer', async () => {
     const result = await toolCreateDocument(ctx, { path: 'brief.pdf', title: 'Research brief', sections });
     expect(result.ok, result.output).toBe(true);
-    expect((await PDFDocument.load(readFileSync(path.join(root, 'brief.pdf')))).getPageCount()).toBe(8);
+    expect((await PDFDocument.load(readFileSync(path.join(root, 'brief.pdf')))).getPageCount()).toBeLessThanOrEqual(2);
   });
   it('preserves overflow content on continuation pages', async () => {
     const result = await toolCreateDocument(ctx, { path: 'long.pdf', title: 'Long brief', sections: [{ heading: 'Long', body: 'A complete paragraph of source material. '.repeat(600) }] });

@@ -21,8 +21,8 @@ export function desktopAsset(relative: string): string | undefined {
   return path.join(DESKTOP_ASSETS, relative);
 }
 
-export function desktopView(agentId: string,companyId?:string): string {
-  const endpoint = JSON.stringify((companyId?'/api/companies/'+encodeURIComponent(companyId):'/api')+'/cowork/agents/' + encodeURIComponent(agentId) + '/computer/vnc');
+export function desktopView(agentId: string,companyId?:string,chromeProfile=false): string {
+  const endpoint = JSON.stringify(chromeProfile?'/api/chrome-profile/vnc':(companyId?'/api/companies/'+encodeURIComponent(companyId):'/api')+'/cowork/agents/' + encodeURIComponent(agentId) + '/computer/vnc');
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Shared desktop</title><style>html,body,#screen{width:100%;height:100%;margin:0;overflow:hidden;background:#151821}#message{position:fixed;inset:0;display:grid;place-items:center;color:#c3c6d1;font:14px system-ui;pointer-events:none}#message[hidden]{display:none}</style></head><body><div id="screen"></div><div id="message">Connecting to live desktop…</div><script type="module">
 import RFB from '/api/desktop-assets/core/rfb.js';
 let rfb, activeSocket, timer, frames, monitorTimer, closed=false;
@@ -45,6 +45,7 @@ if(diagnostic){
 function status(state){parent.postMessage({type:'gitu-desktop',state},location.origin);}
 function stopFrames(){clearInterval(frames);frames=undefined;}
 addEventListener('message',event=>{
+  if(!preview&&event.origin===location.origin&&event.source===parent&&event.data?.type==='gitu-desktop-control'&&event.data.action==='viewport'&&!closed){if(rfb){rfb.scaleViewport=event.data.scale!==false;rfb.clipViewport=event.data.scale===false;rfb.dragViewport=event.data.pan===true&&event.data.scale===false;}return;}
   if(preview||event.origin!==location.origin||event.source!==parent||event.data?.type!=='gitu-desktop-control'||event.data.action!=='focus'||closed)return;
   // A modifier held by the previous controller must not affect the next user's typing.
   for(const [keysym,code] of [[0xffe1,'ShiftLeft'],[0xffe2,'ShiftRight'],[0xffe3,'ControlLeft'],[0xffe4,'ControlRight'],[0xffe9,'AltLeft'],[0xffea,'AltRight'],[0xffeb,'MetaLeft'],[0xffec,'MetaRight']])rfb?.sendKey(keysym,code,false);

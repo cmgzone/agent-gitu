@@ -157,6 +157,18 @@ describe('Follow-up Continuity & Delta Routing', () => {
     expect(conversationIntent('Can you explain why the connection form failed?')).toBe('question');
   });
 
+  it.each(['Why am I getting a report when asking questions', 'What is this function doing', 'How does company memory work', "What's wrong with this layout"])(
+    'recognizes an ordinary question without a question mark: %s', message => {
+      expect(conversationIntent(message)).toBe('question');
+    },
+  );
+
+  it.each(['What I want is a new checkout', 'Why is checkout failing; fix the checkout', 'How does auth work and add a logout button'])(
+    'preserves explicit implementation requests: %s', message => {
+      expect(conversationIntent(message)).toBeUndefined();
+    },
+  );
+
   it('extracts target hints accurately from message text', () => {
     const hints = extractTargetHints('Fix bug in src/agent/gitu.ts and check parseReplyAction() when Error: ECONNRESET occurs');
     expect(hints.files).toContain('src/agent/gitu.ts');

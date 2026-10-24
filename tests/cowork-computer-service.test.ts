@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { runInNewContext } from 'node:vm';
 import { EventEmitter } from 'node:events';
@@ -13,7 +14,7 @@ afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
 
 /** Run the actual container service against temporary files and a browser
  * double. Docker integration is tested separately when Docker is available. */
-function service(name: string, processMock?: { spawn: (...args: any[]) => any; kill: (...args: any[]) => any }, desktop = false) {
+function service(name: string, processMock?: { spawn: (...args: any[]) => any; kill: (...args: any[]) => any }, desktop = false, googleChrome=true) {
   const workspace = path.join(root, name);
   fs.mkdirSync(workspace);
   const home = path.join(root, name + '-home');
@@ -21,12 +22,17 @@ function service(name: string, processMock?: { spawn: (...args: any[]) => any; k
   const translate = (p: string) => p.startsWith('/workspace') ? path.join(workspace, p.slice('/workspace'.length)) : p.startsWith('/home/agent') ? path.join(home, p.slice('/home/agent'.length)) : path.join(root, name + (p.startsWith('/tmp/gitu-desktop.') ? '-desktop' + path.extname(p) : '-key'));
   const files = {
     ...fs,
-    existsSync: (p: string) => fs.existsSync(translate(p)),
+    existsSync: (p: string) => p==='/usr/bin/google-chrome-stable'?googleChrome:fs.existsSync(translate(p)),
     readFileSync: (p: string, ...args: any[]) => (fs.readFileSync as any)(translate(p), ...args),
     writeFileSync: (p: string, ...args: any[]) => (fs.writeFileSync as any)(translate(p), ...args),
     statSync: (p: string) => fs.statSync(translate(p)),
     mkdirSync: (p: string, options: any) => fs.mkdirSync(translate(p), options),
     readdirSync: (p: string, options: any) => fs.readdirSync(translate(p), options),
+    openSync: (p: string, ...args: any[]) => (fs.openSync as any)(translate(p), ...args),
+    closeSync: fs.closeSync,
+    readSync: fs.readSync,
+    writeSync: fs.writeSync,
+    createReadStream: (p: string, ...args: any[]) => (fs.createReadStream as any)(translate(p), ...args),
     realpathSync: (p: string) => {
       const real = fs.realpathSync(translate(p));
       const relative = path.relative(workspace, real);
@@ -124,6 +130,21 @@ describe('virtual computer service', () => {
     await expect(a.execute('export_file', { path: '/home/agent/Downloads' })).rejects.toThrow('regular files');
   });
 
+  it('reads desktop files for chat sharing while keeping writes inside the workspace', async () => {
+    const a = service('transfer-desktop');
+    const downloads = path.join(a.home, 'Downloads');
+    fs.mkdirSync(downloads);
+    const media = Buffer.alloc(3_000_001, 73);
+    fs.writeFileSync(path.join(downloads, 'clip.mp4'), media);
+    const info = await a.execute('file_transfer_info', { path: '/home/agent/Downloads/clip.mp4' });
+    expect(JSON.parse(info.output).size).toBe(media.length);
+    const checksum = await a.execute('file_transfer_checksum', { path: '/home/agent/Downloads/clip.mp4' });
+    expect(checksum.output).toBe(createHash('sha256').update(media).digest('hex'));
+    const chunk = await a.execute('file_transfer_read', { path: '/home/agent/Downloads/clip.mp4', offset: 0, length: media.length });
+    expect(Buffer.from(chunk.output, 'base64').equals(media)).toBe(true);
+    await expect(a.execute('file_transfer_info', { path: '/home/agent/manual-browser/Cookies' })).rejects.toThrow(/workspace/);
+    await expect(a.execute('file_transfer_write', { path: '/home/agent/Downloads/clip.mp4', offset: 0, data: 'AA==' })).rejects.toThrow(/workspace/);
+  });
   it('does not export browser profiles or symlinks from downloads to private files', async () => {
     const a = service('download-guard');
     const downloads = path.join(a.home, 'Downloads');
@@ -144,6 +165,16 @@ describe('virtual computer service', () => {
     a.closeBrowser();
     await a.execute('browse', { action: 'state' });
     expect(a.launch).toHaveBeenCalledTimes(2);
+  });
+  it('requires real Google Chrome when opening the owner profile',async()=>{
+    const missing=service('missing-profile-chrome',undefined,true,false);
+    await expect(missing.execute('desktop_input',{action:'launch',app:'browser',requireGoogleChrome:true})).rejects.toThrow('AMD64');
+    expect(missing.launch).not.toHaveBeenCalled();
+    const spawn=vi.fn(()=>{const child=new EventEmitter() as EventEmitter&{unref:()=>void};child.unref=vi.fn();queueMicrotask(()=>child.emit('spawn'));return child;});
+    const ready=service('regular-profile-chrome',{spawn,kill:vi.fn()},true,true);
+    expect((await ready.execute('desktop_input',{action:'launch',app:'browser',requireGoogleChrome:true})).ok).toBe(true);
+    expect(spawn).toHaveBeenCalledWith('node',['/computer/open-browser.cjs'],{stdio:'ignore'});
+    expect(ready.launch).not.toHaveBeenCalled();
   });
   it('uses compressed frames for the interactive viewer while retaining PNG captures', async () => {
     const a = service('compressed-desktop', undefined, true);

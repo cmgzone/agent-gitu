@@ -35,6 +35,7 @@ describe('ChatGPT subscription provider', () => {
     // when that query fails, so the default must always be among the seeds and
     // no retired model may linger there (the service rejects retired ids).
     expect(spec.models).toContain(spec.defaultModel);
+    expect(spec.models).toContain('gpt-6.1-sol');
     expect(new Set(spec.models).size).toBe(spec.models.length);
     expect(spec.models.every((id) => /^gpt-[\w.-]+$/.test(id))).toBe(true);
   });

@@ -119,7 +119,8 @@ describe('Shared main-agent chat and Home motion', () => {
     f.context.S = { active: 'task', sessions: { task: { replaying: true } } };
     f.context.trimTimeline = vi.fn();
     const source = UI_HTML.slice(UI_HTML.indexOf('  function appendLive('), UI_HTML.indexOf('  function sendFollow('));
-    new Script(source).runInContext(f.context);
+    const placement = UI_HTML.slice(UI_HTML.indexOf('  function placeDecisionCards('), UI_HTML.indexOf('  function renderApprovals('));
+    new Script(placement + source).runInContext(f.context);
     f.context.appendLive(stream, bubble);
     expect(bubble.animate).not.toHaveBeenCalled();
     f.context.S.sessions.task.replaying = false;

@@ -127,16 +127,17 @@ describe('resolveModelCatalog', () => {
       signedIn: true,
       planType: 'plus',
       models: [
-        { id: 'gpt-6-astra', vision: true, effortLevels: ['low'], isDefault: true },
+        { id: 'gpt-6.1-sol', vision: true, effortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], isDefault: true },
+        { id: 'gpt-6-astra', vision: true, effortLevels: ['low'], isDefault: false },
         { id: 'gpt-5.6-sol', vision: true, effortLevels: ['low'], isDefault: false },
       ],
     });
     const { providers, defaultProvider } = await resolveModelCatalog(deps);
     expect(providers[0]).toMatchObject({
       id: 'chatgpt', signedIn: true, usable: true, live: true, hasKey: false,
-      defaultModel: 'gpt-6-astra',
+      defaultModel: 'gpt-6.1-sol',
     });
-    expect(ids(providers[0]!)).toEqual(['gpt-6-astra', 'gpt-5.6-sol']);
+    expect(ids(providers[0]!)).toEqual(['gpt-6.1-sol', 'gpt-6-astra', 'gpt-5.6-sol']);
     expect(defaultProvider).toBe('chatgpt');
   });
 

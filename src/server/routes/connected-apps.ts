@@ -12,7 +12,7 @@ export interface ConnectedAppsRouteDeps {
   cowork(): CoworkStore;
   appHub: Pick<ConnectionsHub, 'accounts' | 'accountStatusIncomplete'>;
   connectedApps: Pick<ComposioConnections, 'configured' | 'setup' | 'catalog' | 'configure' | 'connect'>;
-  mailConnections: Pick<MailConnections, 'accounts' | 'setup' | 'detect' | 'connect' | 'remove' | 'rediscover' | 'setInboxWatch'>;
+  mailConnections: Pick<MailConnections, 'accounts' | 'setup' | 'detect' | 'connect' | 'remove' | 'rediscover' | 'setInboxWatch' | 'check'>;
   mailInboxMonitor?: Pick<MailInboxMonitor, 'statuses' | 'refresh'>;
   readBody(req: IncomingMessage): Promise<Record<string, unknown>>;
   sendJson(res: ServerResponse, status: number, data: unknown): void;
@@ -203,6 +203,19 @@ export async function connectedAppsRoutes(req: IncomingMessage, res: ServerRespo
         deps.sendJson(res, 400, { error: error instanceof Error ? error.message : 'Could not remove this mailbox.' });
         return;
       }
+    }
+    if (path === '/api/connected-apps/mail/check' && method === 'POST') {
+      if (!AppAuth.local(req) && (!deps.appAuth.secure(req) || !deps.appAuth.authenticated(req))) {
+        deps.sendJson(res, 403, { error: 'Mailbox checks require an authenticated HTTPS session.' });
+        return;
+      }
+      const body = await deps.readBody(req);
+      try {
+        deps.sendJson(res, 200, await deps.mailConnections.check(String(body['accountId'] ?? '')));
+      } catch {
+        deps.sendJson(res, 400, { error: 'Could not check this saved mailbox. Refresh Connections and try again.' });
+      }
+      return;
     }
     if (path === '/api/connected-apps/mail/rediscover' && method === 'POST') {
       if (!AppAuth.local(req) && (!deps.appAuth.secure(req) || !deps.appAuth.authenticated(req))) {

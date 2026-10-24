@@ -68,9 +68,10 @@ describe('chat credential handoff', () => {
     expect(firstTime.required).toEqual(['provider', 'baseUrl', 'token']);
   });
 
-  it('keeps the final report in chat and rebuilds it when a task is reopened', () => {
+  it('keeps the report in task details and rebuilds terminal presentation when reopened', () => {
     const side = UI_HTML.slice(UI_HTML.indexOf('  function renderRunSide('), UI_HTML.indexOf('  function switchSide('));
-    expect(side).not.toContain('reportSideCard(');
+    expect(side).toContain('reportSideCard(sess.session.report)');
+    expect(side).toContain('<summary>Completion report</summary>');
     expect(UI_HTML).toContain('resetStreamRenderState(sess)');
     expect(UI_HTML).toContain('sess.summaryShown = summaryKey');
   });

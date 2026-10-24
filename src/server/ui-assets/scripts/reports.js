@@ -34,7 +34,7 @@
     return out;
   }
   // One status strip answering: did it work, was it verified, what moved.
-  function reportStatusLine(status, checks, passed, fileCount, updateCount) {
+  function reportStatusLine(status, checks, passed, fileCount, updateCount, executionReportOnly) {
     var bits = [];
     bits.push(status === 'complete' ? '<span>🟢 <b>Completed</b></span>'
       : status === 'blocked' ? '<span>⚠️ <b>Blocked</b></span>'
@@ -45,7 +45,7 @@
         ? '<span>✅ All ' + checks.length + ' verification checks passed</span>'
         : '<span>' + (passed ? '⚠️' : '❌') + ' ' + passed + ' passed · ' + (checks.length - passed) + ' failed verification attempt' + (checks.length - passed === 1 ? '' : 's') + '</span>');
     }
-    bits.push(fileCount
+    bits.push(executionReportOnly ? '<span>File changes and checks: see execution report</span>' : fileCount
       ? '<span>🛠️ ' + fileCount + ' file' + (fileCount === 1 ? '' : 's') + ' changed</span>'
       : updateCount ? '<span>🛠️ ' + updateCount + ' update' + (updateCount === 1 ? '' : 's') + ' reported</span>'
       : '<span>🔒 No source code was modified</span>');
@@ -160,7 +160,7 @@
     var evidence = verificationSection(checks) + browserHighlight(report.browserActivity) + qualityMetricsHtml(report.qualityMetrics);
     if (report.tokenTelemetry && devMode()) evidence += telemetryGridHtml(report.tokenTelemetry);
     if (evidence) body += '<details class="exec-details" style="margin-top:12px"><summary><b>Technical evidence</b><span class="chev">\u25B8</span></summary>' +
-      reportStatusLine(displayStatus, currentChecks, currentChecks.filter(function (check) { return check.passed; }).length, files.length, (report.changes || []).length) + evidence + '</details>';
+      reportStatusLine(displayStatus, currentChecks, currentChecks.filter(function (check) { return check.passed; }).length, files.length, (report.changes || []).length, report.executionReportOnly) + evidence + '</details>';
     var status = { complete: 'Completed', blocked: 'Blocked', aborted: 'Stopped', failed: 'Failed', paused: 'Paused' }[displayStatus] || displayStatus;
     if (report.phase && report.phase.kind === 'follow_up') status += ' · Follow-up';
     return '<article class="agent-report" aria-label="Agent Gitu report"><header class="agent-report-heading"><b>Agent Gitu</b><span class="agent-report-status" data-status="'+esc(displayStatus)+'">'+esc(status)+'</span>'+(actions||'')+'</header><div class="agent-report-body">'+body+'</div></article>';
@@ -195,12 +195,21 @@
     return html + '</section>';
   }
 
+  function reportRepeatsReply(report, reply) {
+    if (!report || !reply) return false;
+    // A paused task's report can contain delivery facts from work before the
+    // question. Those remain in task details, rather than repeating its answer.
+    if (report.status === 'blocked' && report.responseKind === 'discussion' && !(report.remainingRisks || []).length && !(report.followUps || []).length) return String(report.summary || '').trim() === String(reply).trim();
+    return report.status === 'complete' && reportMessageText(report).trim() === String(reply).trim();
+  }
+
   function appendSummary(runId, session) {
     var stream = $('stream');
     if (!stream) return;
     var sess = S.sessions[runId];
     if (sess && sess.chatish) return;
     var r = session.report;
+    if (reportRepeatsReply(r, sess && sess.lastPublicReply)) return;
     var div = document.createElement('div');
     div.className = 'report-flat';
     var menuId = 'report-menu-' + runId;
@@ -259,6 +268,7 @@
     html += '<div class="side-summary"><div class="t">Task state</div><div class="d">' +
       (L.acceptanceCriteria.length ? satisfied + '/' + L.acceptanceCriteria.length + ' criteria · ' : '') +
       (L.plan.length ? planDone + '/' + L.plan.length + ' plan steps · ' : '') + L.evidence.length + ' checks</div></div>';
+    if (sess.session && sess.session.report) html += '<details class="task-report-details"><summary>Completion report</summary>' + reportSideCard(sess.session.report) + '</details>';
     var visibleBlockers = L.blockers.filter(function (b) { return b !== failure; });
     if (visibleBlockers.length) {
       html += '<div class="section-h" style="margin-top:0">Blockers</div>';

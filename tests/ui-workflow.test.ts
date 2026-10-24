@@ -39,7 +39,7 @@ describe('single Agent composer', () => {
       S: { active: 'run-1', sessions: { 'run-1': { session: { status: 'completed', mode: 'agent', provider: 'chatgpt', model: 'model' } } }, sel: { model: 'chatgpt::model', effort: 'max' }, settings: {} },
       $: () => null,
       removeUserBubble() {}, renderRunSide() {}, pendingFor: () => [], planRequested: () => false,
-      appendPendingUserMessage: () => 'pending', updateSendState() {},
+      appendPendingUserMessage: () => 'pending', updateSendState() {}, homeSaveFollowDraft() {}, homeRestoreFollowDraft() {},
       api: (url: string, options: { body: string }) => {
         sent = { url, body: JSON.parse(options.body) };
         return new Promise(() => {});

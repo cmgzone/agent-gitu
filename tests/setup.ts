@@ -5,4 +5,7 @@ import path from 'node:path';
 // Tests must never write sessions, projects, or settings into the real
 // AgentGitu home, otherwise every test run litters the user's sidebar with
 // phantom projects. Point the home at a throwaway temp directory.
+// The primary override takes precedence over HERMES_HOME_DIR. A previous
+// test file may have set it, so clear it before choosing this file's home.
+delete process.env.AGENT_GITU_HOME;
 process.env.HERMES_HOME_DIR = mkdtempSync(path.join(tmpdir(), 'hermes-test-home-'));

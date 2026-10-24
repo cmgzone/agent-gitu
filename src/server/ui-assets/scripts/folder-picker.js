@@ -1,12 +1,14 @@
 
 
-  function openFolderBrowser(mode) {
+  function openFolderBrowser(mode,targetPath) {
+    S.browseInspect=mode==='inspect';
+    $('browseUse').hidden=S.browseInspect;
     S.browseTagRun = mode === 'tag' && S.active !== 'home' ? S.active : null;
-    $('browseTitle').textContent = S.browseTagRun ? 'Tag a read-only reference folder' : 'Choose a project folder';
+    $('browseTitle').textContent = S.browseInspect?'Project folder':S.browseTagRun ? 'Tag a read-only reference folder' : 'Choose a project folder';
     $('browseUse').textContent = S.browseTagRun ? 'Tag folder' : 'Use this folder';
     $('browseModal').hidden = false;
     var sess = S.browseTagRun && S.sessions[S.browseTagRun];
-    browseTo((sess && sess.session && sess.session.projectPath) || effectiveProjectPath());
+    browseTo(targetPath||(sess && sess.session && sess.session.projectPath) || effectiveProjectPath());
   }
 
   function browseTo(p, isFallback) {
@@ -43,6 +45,7 @@
     var up = box.querySelector('[data-up]');
     if (up) up.onclick = function () { browseTo(d.parent || ''); };
     $('browseUse').onclick = function () {
+      if(S.browseInspect)return;
       if (d.atRoot || !d.path) { toast('Open a folder first', true); return; }
       if (S.browseTagRun) {
         var runId = S.browseTagRun;
@@ -62,10 +65,7 @@
           }).catch(function (error) { toast(error.message, true); });
         return;
       }
-      S.settings.projectPath = d.path;
-      persist();
-      updateProjChip();
-      renderSidebar();
+      homeSelectProject({path:d.path,name:basename(d.path)});
       $('browseModal').hidden = true;
       toast('Project set to ' + d.path);
       if (S.active === 'home') openHome();

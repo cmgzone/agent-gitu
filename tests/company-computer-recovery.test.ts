@@ -11,12 +11,28 @@ function fixture() {
   const server = Object.create(GituServer.prototype) as any;
   Object.assign(server, {
     companies: () => store, cowork: () => ({ listAgents: () => [], getAgent: () => undefined }),
-    companyScope: { run: (_scope: unknown, work: () => unknown) => work() },
+    companyScope: { run: (_scope: unknown, work: () => unknown) => work(), getStore: () => ({ id: company.id, version: 0 }) },
     coworkComputers: new Map(), coworkComputerTargets: new Map(), desktopAgents: new Map(),
   });
   return { root, store, company, server, close: () => { store.close(); rmSync(root, { recursive: true, force: true }); } };
 }
 describe('company private computer recovery', () => {
+  it('keeps durable desktop slots separate when the same Cowork agent belongs to two companies', () => {
+    const f = fixture();
+    try {
+      const other = f.store.create({ name: 'Other workspace' });
+      f.store.setRuntimeSettings({ computers: 2 });
+      f.store.reserveComputer(f.company.id, 'shared-agent', 'alpha-server');
+      f.store.computerState(f.company.id, 'shared-agent', 'running');
+      f.store.reserveComputer(other.id, 'shared-agent', 'beta-server');
+      expect(f.store.read('computer', 'shared-agent', f.company.id)).toMatchObject({ state: 'running', computerServerId: 'alpha-server', heldSlot: true });
+      expect(f.store.read('computer', 'shared-agent', other.id)).toMatchObject({ state: 'starting', computerServerId: 'beta-server', heldSlot: true });
+      expect(() => f.store.read('computer', 'shared-agent')).toThrow('company scope');
+      f.store.computerState(other.id, 'shared-agent', 'stopped');
+      expect(f.store.read('computer', 'shared-agent', f.company.id)).toMatchObject({ state: 'running', heldSlot: true });
+      expect(f.store.list('computer')).toHaveLength(2);
+    } finally { f.close(); }
+  });
   it('waits before provisioning or executing work when kernel quotas are unavailable', async () => {
     const f = fixture();
     try {
@@ -81,10 +97,10 @@ describe('company private computer recovery', () => {
     const f = fixture();
     try {
       const computer = { stop: vi.fn(async () => { throw new Error('Cannot confirm stop'); }) };
-      f.server.coworkComputers.set('lead', computer); f.server.coworkComputerTargets.set('lead', 'old-server');
+      f.server.coworkComputers.set(f.company.id+':lead', computer); f.server.coworkComputerTargets.set(f.company.id+':lead', 'old-server');
       await expect(f.server.resetCoworkComputer('lead')).rejects.toThrow('Cannot confirm');
-      expect(f.server.coworkComputers.get('lead')).toBe(computer);
-      expect(f.server.coworkComputerTargets.get('lead')).toBe('old-server');
+      expect(f.server.coworkComputers.get(f.company.id+':lead')).toBe(computer);
+      expect(f.server.coworkComputerTargets.get(f.company.id+':lead')).toBe('old-server');
     } finally { f.close(); }
   });
   it('refuses to replace a running hosted computer with a local computer', () => {
@@ -92,9 +108,9 @@ describe('company private computer recovery', () => {
     try {
       f.server.cowork = () => ({ getAgent: () => ({ id: 'lead', companyId: f.company.id, cloudConnectionId: undefined }) });
       const computer = { status: () => ({ state: 'running' }) };
-      f.server.coworkComputers.set('lead', computer); f.server.coworkComputerTargets.set('lead', 'hosted');
+      f.server.coworkComputers.set(f.company.id+':lead', computer); f.server.coworkComputerTargets.set(f.company.id+':lead', 'hosted');
       expect(() => f.server.coworkComputer('lead')).toThrow('Stop the previous');
-      expect(f.server.coworkComputers.get('lead')).toBe(computer);
+      expect(f.server.coworkComputers.get(f.company.id+':lead')).toBe(computer);
     } finally { f.close(); }
   });
 });

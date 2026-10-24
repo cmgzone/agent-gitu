@@ -1,6 +1,6 @@
 {
   "name": "agent-gitu",
-  "version": "0.4.7",
+  "version": "0.4.13",
   "description": "Agent Gitu: an autonomous engineering agent with project guard, task ledger, evidence gates, specialist sub-agents, in-app browser and an animated voxel mascot",
   "type": "module",
   "main": "desktop/main.cjs",
@@ -133,7 +133,7 @@
     "@composio/core": "^0.22.0",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "@novnc/novnc": "^1.7.0",
-    "@openai/codex-sdk": "^0.155.1",
+    "@openai/codex-sdk": "^0.163.0",
     "docx": "^9.7.1",
     "exceljs": "^4.4.0",
     "fflate": "^0.8.3",

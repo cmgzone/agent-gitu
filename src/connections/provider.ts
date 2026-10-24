@@ -10,12 +10,16 @@
 
 import type { ComposioConnections } from './composio.js';
 import type { MailConnections } from './mail.js';
+import type { MailHealth } from './mail-status.js';
 
 export interface ConnectedAppAccount {
   id: string;
   toolkit: string;
   status: string;
   disabled: boolean;
+  /** An unfinished hosted sign-in, rather than an expired mailbox grant. */
+  connectionIssue?: 'sign-in-expired';
+  mailHealth?: MailHealth;
   /** Present for mailboxes so the UI can name the account without a provider lookup. */
   label?: string;
   address?: string;
@@ -52,7 +56,7 @@ export const MAIL_SERVICE_SLUG = 'mail';
 
 /** Only known reads from the native mailbox adapter bypass write/config switches. */
 export function isNativeMailRead(service: string, tool: string): boolean {
-  return service === MAIL_SERVICE_SLUG && ['mail_list', 'mail_search', 'mail_read', 'mail_folders'].includes(tool);
+  return service === MAIL_SERVICE_SLUG && ['mail_check', 'mail_list', 'mail_search', 'mail_read', 'mail_folders'].includes(tool);
 }
 
 export function isNativeMailTool(service: string, tool: string): boolean {

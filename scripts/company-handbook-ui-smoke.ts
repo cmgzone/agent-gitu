@@ -25,7 +25,8 @@ org.updateMember({ kind: 'director' }, employee.id, { responsibilities: ['Verify
 const room = new CompanyBoardroom(org),
   styles = [...UI_HTML.slice(0, UI_HTML.indexOf('</head>')).matchAll(/<style>([\s\S]*?)<\/style>/g)].map((m) => m[1]).join('\n');
 const html = `<!doctype html><html data-theme="light"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${styles}body{padding:24px}#fixture{max-width:1100px;margin:auto}</style></head><body><main id="fixture" class="company-page"></main><script>var Companies={id:${JSON.stringify(company.id)},tab:'Handbook',data:{agents:${JSON.stringify(cowork.listAgents())}}};function esc(value){var el=document.createElement('span');el.textContent=String(value??'');return el.innerHTML.replace(/"/g,'&quot;').replace(/'/g,'&#39;');}function companyUrl(suffix){return '/api/companies/'+Companies.id+suffix;}function companyRender(){window.lastNavigation=Companies.tab;}async function api(url,options){var res=await fetch(url,options),data=await res.json();if(!res.ok)throw Error(data.error);return data;}${COMPANY_HANDBOOK_JS}companyHandbookMount(document.getElementById('fixture'));</script></body></html>`;
-const browser = await chromium.launch({ channel: 'msedge', headless: true });
+const smokeChannel = process.env['GITU_UI_SMOKE_CHANNEL'] ?? (process.platform === 'win32' ? 'msedge' : undefined);
+const browser = await chromium.launch({ headless: true, ...(smokeChannel ? { channel: smokeChannel } : {}) });
 try {
   const page = await browser.newPage({ viewport: { width: 1360, height: 960 } }),
     errors: string[] = [];

@@ -62,8 +62,8 @@ function wizard() {
     $: (id: string) => elements[id], esc: (text: unknown) => String(text ?? ''),
     document: { querySelector: () => shell },
     themeOptionsHtml: () => '', providerIsUsable: (p: any) => Boolean(p?.hasKey || p?.signedIn),
-    api, persist: vi.fn(), applyTheme: vi.fn(), openCowork: vi.fn(), cwExit: vi.fn(),
-    loadModelCatalog: vi.fn(async () => {}), localStorage: { getItem: () => null }, AbortSignal,
+    api, persist: vi.fn(), rememberModelSelection: vi.fn(), applyTheme: vi.fn(), openCowork: vi.fn(), cwExit: vi.fn(),
+    loadModelCatalog: vi.fn(async () => {}), localStorage: { getItem: () => null }, AbortSignal, console: { error: vi.fn() },
   });
   new Script(ONBOARDING_JS).runInContext(context);
   return { context, elements, shell, api };
@@ -82,7 +82,7 @@ describe('setup wizard flow', () => {
     u.elements.setupSkip.onclick();
     u.context.setupState.mode = 'cowork';
     await u.context.finishSetup();
-    expect(u.api).toHaveBeenCalledWith('/api/onboarding', expect.objectContaining({ body: JSON.stringify({ theme: 'light', mode: 'cowork', model: '' }) }));
+    expect(u.api).toHaveBeenCalledWith('/api/onboarding', expect.objectContaining({ body: JSON.stringify({ theme: 'light', mode: 'cowork', model: '', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }) }));
     expect(u.context.openCowork).toHaveBeenCalledOnce();
     expect(u.elements.setupWizard.hidden).toBe(true);
     expect(u.shell.inert).toBe(false);
@@ -138,6 +138,19 @@ describe('setup wizard flow', () => {
     await u.elements.startupReload.onclick();
     expect(u.elements.startupCover.className).toBe('gitu-opening');
     expect(u.elements.startupReload.hidden).toBe(true);
+    expect(u.elements.startupCover.hidden).toBe(true);
+    expect(u.shell.inert).toBe(false);
+  });
+
+  it('identifies workspace rendering failures after setup has loaded and allows retry', async () => {
+    const u = wizard();
+    u.api.mockResolvedValue({ completed: true, theme: 'light', mode: 'cowork', model: '' });
+    u.context.openCowork.mockImplementationOnce(() => { throw new DOMException('Invalid target origin', 'SyntaxError'); });
+    await u.context.initializeOnboarding();
+    expect(u.elements.startupMessage.textContent).toBe('Could not open your workspace. Please try again.');
+    expect(u.context.console.error).toHaveBeenCalledWith('Agent Gitu startup failed (workspace): SyntaxError: Invalid target origin');
+    expect(u.context.onboardingLoading).toBe(false);
+    await u.elements.startupReload.onclick();
     expect(u.elements.startupCover.hidden).toBe(true);
     expect(u.shell.inert).toBe(false);
   });

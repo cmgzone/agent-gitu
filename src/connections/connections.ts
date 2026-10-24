@@ -62,12 +62,16 @@ export interface ConnectionOperationProposal {
   reason: string;
 }
 
+export type ConnectionAuth = { type: 'bearer' } | { type: 'header'; header: string; prefix?: string };
+
 export interface ConnectionProfile {
   id: string;
   label: string;
   provider: string;
   baseUrl: string;
   documentationUrl?: string;
+  /** Non-secret transport settings; the credential stays in the key vault. */
+  auth?: ConnectionAuth;
   capabilities: string[];
   operations: ConnectionOperation[];
   createdAt: string;
@@ -111,6 +115,7 @@ export interface ConnectionAuthStateRecord {
   status: 'valid' | 'invalid' | 'expired' | 'unknown';
   reason?: string;
   checkedAt?: string;
+  credentialFingerprint?: string;
 }
 
 /** Operation availability, evaluated independently of credential validity. */
@@ -209,6 +214,8 @@ export interface ConnectionDraft {
   provider: string;
   baseUrl: string;
   documentationUrl?: string;
+  /** Omit to preserve saved settings; null restores the provider default. */
+  auth?: ConnectionAuth | null;
   capabilities?: string[];
   operations?: ConnectionOperation[];
   /** Accepted only by the local server endpoint; never persisted in profile data. */
@@ -257,7 +264,9 @@ function compactText(value: unknown, limit: number): string {
 
 function normalizeCapabilities(value: unknown): string[] {
   const raw = Array.isArray(value) ? value : [];
-  return [...new Set(raw.map((item) => String(item).trim().toLowerCase()).filter((item) => CAPABILITY_RE.test(item)))].slice(0, 24);
+  const capabilities = [...new Set(raw.map((item) => String(item).trim().toLowerCase()).filter((item) => CAPABILITY_RE.test(item)))];
+  if (capabilities.length > 4096) throw Error('A connection supports at most 4096 capability definitions. Split larger APIs into separate connections.');
+  return capabilities;
 }
 
 function normalizeAuthState(value: unknown): ConnectionAuthStateRecord | undefined {
@@ -267,7 +276,8 @@ function normalizeAuthState(value: unknown): ConnectionAuthStateRecord | undefin
   if (status !== 'valid' && status !== 'invalid' && status !== 'expired' && status !== 'unknown') return undefined;
   const reason = typeof raw['reason'] === 'string' ? compactText(raw['reason'], 300) : undefined;
   const checkedAt = typeof raw['checkedAt'] === 'string' ? raw['checkedAt'].slice(0, 80) : undefined;
-  return { status, ...(reason ? { reason } : {}), ...(checkedAt ? { checkedAt } : {}) };
+  const credentialFingerprint = typeof raw['credentialFingerprint'] === 'string' && /^[a-f0-9]{64}$/.test(raw['credentialFingerprint']) ? raw['credentialFingerprint'] : undefined;
+  return { status, ...(reason ? { reason } : {}), ...(checkedAt ? { checkedAt } : {}), ...(credentialFingerprint ? { credentialFingerprint } : {}) };
 }
 
 function normalizeCapabilityState(value: unknown): ConnectionCapabilityStateRecord | undefined {
@@ -417,9 +427,51 @@ function normalizeOperations(value: unknown): ConnectionOperation[] {
     if (!operation || seen.has(operation.id)) continue;
     seen.add(operation.id);
     out.push(operation);
-    if (out.length >= 24) break;
+    if (out.length > 4096) throw Error('A connection supports at most 4096 operation definitions. Split larger APIs into separate connections.');
   }
   return out;
+}
+
+export function sameConnectionOperation(a: ConnectionOperation, b: ConnectionOperation): boolean {
+  return a.id === b.id && a.capability === b.capability && a.method === b.method && a.path === b.path && a.risk === b.risk;
+}
+
+export function normalizeConnectionAuth(value: unknown): ConnectionAuth | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw Error('Choose Bearer authentication or a named API-key header.');
+  const raw = value as Record<string, unknown>;
+  if (raw['type'] === 'bearer') return { type: 'bearer' };
+  const header = typeof raw['header'] === 'string' ? raw['header'].trim() : '';
+  const prefix = typeof raw['prefix'] === 'string' ? raw['prefix'].trim() : '';
+  if (raw['type'] !== 'header' || !/^[a-z][a-z0-9-]{0,79}$/i.test(header) || /^(?:host|cookie|set-cookie|connection|content-type|content-length|transfer-encoding|accept|origin|referer|proxy-.*|sec-.*)$/i.test(header))
+    throw Error('Use a valid authentication header, such as X-API-Key, api-key or Authorization.');
+  if (prefix && !/^[a-z][a-z0-9_-]{0,31}$/i.test(prefix)) throw Error('The authentication prefix must be a scheme name, such as Bearer, Basic or ApiKey.');
+  return { type: 'header', header, ...(prefix ? { prefix } : {}) };
+}
+
+function credentialParts(profile: Pick<ConnectionProfile, 'provider' | 'auth'>): { header: string; prefix: string } {
+  if (profile.auth?.type === 'bearer') return { header: 'authorization', prefix: 'Bearer' };
+  if (profile.auth?.type === 'header') return { header: profile.auth.header, prefix: profile.auth.prefix ?? '' };
+  const header = catalogProvider(profile.provider)?.credentialHeader;
+  return header ? { header, prefix: '' } : { header: 'authorization', prefix: 'Bearer' };
+}
+
+function normalizeSavedCredential(value: string, profile: Pick<ConnectionProfile, 'provider' | 'auth'>): string {
+  const { header, prefix } = credentialParts(profile);
+  const unwrap = (text: string): string => /^(["']).*\1$/s.test(text) ? text.slice(1, -1).trim() : text;
+  let token = unwrap(value.trim());
+  const label = new RegExp('^' + header + '\\s*:\\s*', 'i');
+  token = unwrap(token.replace(label, ''));
+  if (prefix) token = unwrap(token.replace(new RegExp('^' + prefix + '\\s+', 'i'), ''));
+  if (/[\u0000-\u001f\u007f]/.test(token) || (prefix.toLowerCase() === 'bearer' && /\s/.test(token)))
+    throw Error('Paste one complete API key or token. Line breaks and spaces inside a Bearer token are not supported.');
+  return token;
+}
+
+function connectionAuthHeaders(profile: ConnectionProfile, token: string): Record<string, string> {
+  const { header, prefix } = credentialParts(profile);
+  const value = normalizeSavedCredential(token, profile);
+  return { [header]: prefix ? `${prefix} ${value}` : value };
 }
 
 /**
@@ -525,10 +577,13 @@ function scrubKnownConnectionSecrets(text: string, secrets: readonly string[]): 
   return safe;
 }
 
-function storedConnectionSecrets(id: string): string[] {
-  const token = loadStoredKeys()[keyRef(id)]?.trim();
-  return token ? [token] : [];
+function storedConnectionSecrets(profile: ConnectionProfile): string[] {
+  const token = loadStoredKeys()[keyRef(profile.id)]?.trim();
+  return token ? [token, normalizeSavedCredential(token, profile)] : [];
 }
+
+const authenticationRechecks = new Map<string, Promise<void>>();
+const AUTHENTICATION_RECHECK_MS = 60_000;
 
 function profileFromUnknown(value: unknown): ConnectionProfile | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
@@ -542,6 +597,7 @@ function profileFromUnknown(value: unknown): ConnectionProfile | undefined {
   const createdAt = typeof raw['createdAt'] === 'string' ? raw['createdAt'].slice(0, 80) : nowIso();
   const updatedAt = typeof raw['updatedAt'] === 'string' ? raw['updatedAt'].slice(0, 80) : createdAt;
   const documentationUrl = normalizeConnectionDocumentationUrl(raw['documentationUrl']);
+  const auth = normalizeConnectionAuth(raw['auth']);
   const lastValidatedAt = typeof raw['lastValidatedAt'] === 'string' ? raw['lastValidatedAt'].slice(0, 80) : undefined;
   const lastValidationStatus = raw['lastValidationStatus'] === 'ok' || raw['lastValidationStatus'] === 'failed' ? raw['lastValidationStatus'] : undefined;
   const authState = normalizeAuthState(raw['authState']);
@@ -558,6 +614,7 @@ function profileFromUnknown(value: unknown): ConnectionProfile | undefined {
     createdAt,
     updatedAt,
     ...(documentationUrl ? { documentationUrl } : {}),
+    ...(auth ? { auth } : {}),
     ...(lastValidatedAt ? { lastValidatedAt } : {}),
     ...(lastValidationStatus ? { lastValidationStatus } : {}),
     ...(authState ? { authState } : {}),
@@ -688,12 +745,12 @@ export class ConnectionRegistry {
     try {
       result = await searchApi(profile, token, query, count, signal);
     } catch (error) {
-      this.updateValidation(profile.id, 'failed');
-      if (error instanceof SearchApiError && error.status === 401) this.recordAuth(profile.id, 'invalid', 'Search API rejected authentication (HTTP 401).');
+      this.updateValidation(profile.id, 'failed', token);
+      if (error instanceof SearchApiError && error.status === 401) this.recordAuth(profile.id, 'invalid', 'Search API rejected authentication (HTTP 401).', token);
       throw error;
     }
-    this.recordAuth(profile.id, 'valid');
-    this.updateValidation(profile.id, 'ok');
+    this.recordAuth(profile.id, 'valid', undefined, token);
+    this.updateValidation(profile.id, 'ok', token);
     if (!this.get(id)) throw new Error('Search connection access was revoked while the request was running.');
     return result;
   }
@@ -758,7 +815,8 @@ export class ConnectionRegistry {
             .map((operation) => `${operation.id} (${operation.method} ${operation.path}; ${operation.capability}; ${operation.risk})`)
             .join(', ') || 'none';
         const auth = !profile.hasCredential ? 'credential missing' : (profile.authState?.status ?? 'available');
-        return `- ${profile.id}: ${profile.label} [provider ${profile.provider}; auth ${auth}; capabilities ${profile.capabilities.join(', ') || 'none'}; read operations ${readOperations}; approved write operations ${writeOperations}]`;
+        const transport = credentialParts(profile);
+        return `- ${profile.id}: ${profile.label} [provider ${profile.provider}; auth ${auth}${profile.authState?.checkedAt ? ' checked ' + profile.authState.checkedAt : ''}; credential header ${transport.header}${transport.prefix ? ' (' + transport.prefix + ')' : ''}; capabilities ${profile.capabilities.join(', ') || 'none'}; read operations ${readOperations}; approved write operations ${writeOperations}]`;
       })
       .join('\n');
   }
@@ -825,7 +883,7 @@ export class ConnectionRegistry {
     if (operations.some((operation) => !capabilities.includes(operation.capability))) {
       throw new Error('Each registered operation must use one of the connection capabilities.');
     }
-    const token = typeof draft.token === 'string' ? draft.token.trim() : '';
+    let token = typeof draft.token === 'string' ? draft.token.trim() : '';
     if (token.length > 16_384) throw new Error('The credential is too large.');
     const now = nowIso();
     let profile!: ConnectionProfile;
@@ -843,6 +901,9 @@ export class ConnectionRegistry {
         }
       }
       const existing = profiles.find((candidate) => candidate.id === id);
+      const auth = draft.auth === undefined ? existing?.auth : normalizeConnectionAuth(draft.auth);
+      token = normalizeSavedCredential(token, { provider, auth });
+      const configChanged = Boolean(existing && (existing.baseUrl !== baseUrl || existing.provider !== provider || JSON.stringify(existing.auth) !== JSON.stringify(auth)));
       if (!token && !loadStoredKeys()[keyRef(id)]?.trim()) throw new Error('An API key or token is required for a new connection.');
       this.assertGeneratedSkillAvailable(id);
       profile = {
@@ -855,17 +916,19 @@ export class ConnectionRegistry {
         createdAt: existing?.createdAt ?? now,
         updatedAt: now,
         ...(documentationUrl ? { documentationUrl } : {}),
-        ...(existing?.lastValidatedAt ? { lastValidatedAt: existing.lastValidatedAt } : {}),
-        ...(existing?.lastValidationStatus ? { lastValidationStatus: existing.lastValidationStatus } : {}),
+        ...(auth ? { auth } : {}),
+        ...(!token && !configChanged && existing?.lastValidatedAt ? { lastValidatedAt: existing.lastValidatedAt } : {}),
+        ...(!token && !configChanged && existing?.lastValidationStatus ? { lastValidationStatus: existing.lastValidationStatus } : {}),
         ...(token
-          ? { authState: { status: 'unknown' as const }, capabilityState: { denied: [], missing: [] } }
+          ? { authState: { status: 'unknown' as const, credentialFingerprint: sha256(token) }, capabilityState: { denied: [], missing: [] } }
+          : configChanged ? { authState: { status: 'unknown' as const }, capabilityState: { denied: [], missing: [] } }
           : {
               ...(existing?.authState ? { authState: existing.authState } : {}),
               ...(existing?.capabilityState ? { capabilityState: existing.capabilityState } : {}),
             }),
         // Operation registration rewrites the profile; the provider's recorded
         // route rejections (do-not-retry memory) must survive that rewrite.
-        ...(existing?.rejectedOperations?.length ? { rejectedOperations: existing.rejectedOperations } : {}),
+        ...(!configChanged && existing?.rejectedOperations?.length ? { rejectedOperations: token ? existing.rejectedOperations.filter(operation => operation.status !== 403) : existing.rejectedOperations } : {}),
       };
       // Persist the key before publishing metadata that says it is configured.
       if (token) setStoredKey(keyRef(id), token);
@@ -873,6 +936,31 @@ export class ConnectionRegistry {
     });
     this.syncGlobalSkill(profile);
     return { ...profile, hasCredential: true };
+  }
+
+  /** Persist API knowledge without invoking it or changing the saved credential. */
+  rememberCapabilities(id: string, proposed: unknown[] = [], documentationUrl?: string): ConnectionProfileView {
+    const profile = this.get(id);
+    if (!profile) throw Error('Saved connection not found.');
+    const catalog = catalogProvider(profile.provider);
+    const docs = normalizeConnectionDocumentationUrl(documentationUrl ?? profile.documentationUrl ?? catalog?.documentationUrl);
+    if (proposed.length && !docs) throw Error('Supply the API documentation URL before saving new operations.');
+    const operations = [...profile.operations];
+    // Templates stay in the catalog until a real resource id is known. Never
+    // register a literal :id route or overwrite an existing exact operation.
+    const candidates = [...(catalog?.operations ?? []).filter(op => !/:[a-zA-Z]|\{/.test(op.path)), ...proposed];
+    for (const candidate of candidates) {
+      const op = normalizeConnectionOperation(candidate);
+      if (!op) throw Error('A documented operation is malformed.');
+      const existing = operations.find(item => item.id === op.id);
+      if (existing) {
+        if (proposed.includes(candidate) && !sameConnectionOperation(existing, op)) throw Error('Use a new operation id to change a registered route.');
+      } else operations.push(op);
+    }
+    const capabilities = [...new Set([...profile.capabilities, ...(catalog?.capabilities.map(cap => cap.id) ?? []), ...operations.map(op => op.capability)])];
+    if (JSON.stringify(operations) === JSON.stringify(profile.operations) && JSON.stringify(capabilities) === JSON.stringify(profile.capabilities) && docs === profile.documentationUrl)
+      return { ...profile, hasCredential: this.credentialPresent(id) };
+    return this.save({ ...profile, capabilities, operations, ...(docs ? { documentationUrl: docs } : {}) });
   }
 
   remove(id: string): boolean {
@@ -925,12 +1013,13 @@ export class ConnectionRegistry {
     }
   }
 
-  private updateValidation(id: string, status: 'ok' | 'failed'): void {
+  private updateValidation(id: string, status: 'ok' | 'failed', expectedToken?: string): void {
     // Telemetry only — a persistence failure here must never corrupt an
     // invocation result: a successful write reported as failed invites a
     // duplicate retry.
     try {
       this.withProfile(id, (current) => {
+        if (expectedToken !== undefined && loadStoredKeys()[keyRef(id)]?.trim() !== expectedToken) return;
         current.lastValidatedAt = nowIso();
         current.lastValidationStatus = status;
       });
@@ -959,14 +1048,17 @@ export class ConnectionRegistry {
    * HTTP 401 / provider-declared broken credentials and a missing credential;
    * nothing else ever downgrades auth state.
    */
-  private recordAuth(id: string, status: 'valid' | 'invalid' | 'expired' | 'unknown', reason?: string): void {
+  private recordAuth(id: string, status: 'valid' | 'invalid' | 'expired' | 'unknown', reason?: string, expectedToken?: string): void {
     this.withProfile(id, (profile) => {
-      profile.authState = { status, ...(reason ? { reason: compactText(reason, 300) } : {}), checkedAt: nowIso() };
+      const currentToken = loadStoredKeys()[keyRef(id)]?.trim();
+      if (expectedToken !== undefined && currentToken !== expectedToken) return;
+      profile.authState = { status, ...(reason ? { reason: compactText(reason, 300) } : {}), checkedAt: nowIso(), ...(currentToken ? { credentialFingerprint: sha256(currentToken) } : {}) };
     });
   }
 
-  private recordCapability(id: string, patch: { deny?: string[]; miss?: string[]; discovered?: boolean }): void {
+  private recordCapability(id: string, patch: { deny?: string[]; miss?: string[]; discovered?: boolean }, expectedToken?: string): void {
     this.withProfile(id, (profile) => {
+      if (expectedToken !== undefined && loadStoredKeys()[keyRef(id)]?.trim() !== expectedToken) return;
       const current = profile.capabilityState ?? { denied: [], missing: [] };
       const denied = [...new Set([...current.denied, ...(patch.deny ?? [])])].slice(0, 24);
       const missing = [...new Set([...current.missing, ...(patch.miss ?? [])])].filter((item) => !denied.includes(item)).slice(0, 24);
@@ -979,8 +1071,9 @@ export class ConnectionRegistry {
   }
 
   /** Exact operation rejection: stores failed route so it is not blindly retried. */
-  recordRejectedOperation(id: string, rejection: Omit<RejectedOperationRecord, 'observedAt'>): void {
+  recordRejectedOperation(id: string, rejection: Omit<RejectedOperationRecord, 'observedAt'>, expectedToken?: string): void {
     this.withProfile(id, (profile) => {
+      if (expectedToken !== undefined && loadStoredKeys()[keyRef(id)]?.trim() !== expectedToken) return;
       const existing = profile.rejectedOperations ?? [];
       const isDuplicate = existing.some(
         (r) => r.operationId === rejection.operationId && r.method === rejection.method && r.path === rejection.path && r.paramsHash === rejection.paramsHash,
@@ -1008,7 +1101,10 @@ export class ConnectionRegistry {
 
   /** Credential validity is stored separately from operation availability. */
   authStateOf(id: string): ConnectionAuthStateRecord {
-    return this.get(id)?.authState ?? { status: 'unknown' };
+    const auth = this.get(id)?.authState ?? { status: 'unknown' as const };
+    const token = auth.credentialFingerprint ? loadStoredKeys()[keyRef(id)]?.trim() : undefined;
+    if (token && auth.credentialFingerprint !== sha256(token)) return { status: 'unknown' };
+    return auth;
   }
 
   /** Operation availability is stored separately from credential validity. */
@@ -1083,7 +1179,7 @@ export class ConnectionRegistry {
       );
     }
 
-    const secrets = storedConnectionSecrets(profile.id);
+    const secrets = storedConnectionSecrets(profile);
     const token = secrets[0];
     if (!token) {
       this.recordAuth(profile.id, 'invalid', 'The saved credential is missing.');
@@ -1094,13 +1190,13 @@ export class ConnectionRegistry {
     try {
       response = await fetch(url, {
         method: operation.method,
-        headers: { ...extraHeaders, accept: 'application/json', authorization: `Bearer ${token}`, ...(encoded ? { 'content-type': 'application/json' } : {}) },
+        headers: { ...extraHeaders, accept: 'application/json', ...connectionAuthHeaders(profile, token), ...(encoded ? { 'content-type': 'application/json' } : {}) },
         ...(encoded ? { body: encoded } : {}),
         redirect: 'error',
         signal: AbortSignal.timeout(15_000),
       });
     } catch {
-      this.updateValidation(profile.id, 'failed');
+      this.updateValidation(profile.id, 'failed', token);
       throw new ConnectionInvocationError(
         'sent-unknown',
         'Connection request did not complete (network, timeout, or redirect). The provider may or may not have received it — verify provider state before any retry.',
@@ -1109,7 +1205,7 @@ export class ConnectionRegistry {
     }
 
     if (!response.ok) {
-      this.updateValidation(profile.id, 'failed');
+      this.updateValidation(profile.id, 'failed', token);
       const detail = await readConnectionResponse(response, secrets).catch(() => undefined);
       const detailText = detail === undefined ? '' : ` Provider said: ${JSON.stringify(detail).slice(0, 4_000)}`;
 
@@ -1117,11 +1213,12 @@ export class ConnectionRegistry {
         const expired = /expired|revoked/i.test(detailText.toLowerCase());
         const state = expired ? 'AUTH_EXPIRED' : 'AUTH_INVALID';
         const statusLabel = expired ? 'Authentication or token is expired/revoked' : 'Authentication was rejected';
-        this.recordAuth(profile.id, expired ? 'expired' : 'invalid', `HTTP 401${detailText}`.slice(0, 300));
+        this.recordAuth(profile.id, expired ? 'expired' : 'invalid', `HTTP 401${detailText}`.slice(0, 300), token);
         throw new ConnectionInvocationError('sent-rejected', `${statusLabel} (HTTP 401).${detailText}`, state, true);
       }
 
       if (response.status === 403) {
+        this.recordAuth(profile.id, 'valid', undefined, token);
         this.recordRejectedOperation(profile.id, {
           operationId: operation.id,
           method: operation.method,
@@ -1130,8 +1227,8 @@ export class ConnectionRegistry {
           status: 403,
           detail: detailText.slice(0, 500),
           paramsHash,
-        });
-        this.recordCapability(profile.id, { deny: [operation.capability] });
+        }, token);
+        this.recordCapability(profile.id, { deny: [operation.capability] }, token);
         throw new ConnectionInvocationError(
           'sent-rejected',
           `Permission or scope for "${operation.capability}" was denied (HTTP 403) — the credential itself is valid; the token lacks the required scope.${detailText}`,
@@ -1149,8 +1246,8 @@ export class ConnectionRegistry {
           status: 404,
           detail: detailText.slice(0, 500),
           paramsHash,
-        });
-        this.recordCapability(profile.id, { miss: [operation.capability] });
+        }, token);
+        this.recordCapability(profile.id, { miss: [operation.capability] }, token);
         throw new ConnectionInvocationError(
           'sent-rejected',
           `The provider does not expose "${operation.path}" (HTTP 404) — the connection is valid; this exact endpoint is rejected.${detailText}`,
@@ -1165,8 +1262,8 @@ export class ConnectionRegistry {
       throw new ConnectionInvocationError('sent-rejected', `${safeErrorStatus(response.status)} (HTTP ${response.status}).${detailText}`, 'CONFIG_INVALID');
     }
 
-    this.updateValidation(profile.id, 'ok');
-    this.recordAuth(profile.id, 'valid');
+    this.updateValidation(profile.id, 'ok', token);
+    this.recordAuth(profile.id, 'valid', undefined, token);
     let data: unknown;
     try {
       data = await readConnectionResponse(response, secrets);
@@ -1218,12 +1315,12 @@ export class ConnectionRegistry {
         truncated: false,
       };
     }
-    const secrets = storedConnectionSecrets(profile.id);
+    const secrets = storedConnectionSecrets(profile);
     const token = secrets[0];
     const catalogOps = (catalogProvider(profile.provider)?.operations ?? []) as AnnotatedCatalogOperation[];
     const headers: Record<string, string> = {
       accept: 'application/json',
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(token ? connectionAuthHeaders(profile, token) : {}),
     };
     const fetcher = async ({ baseUrl, path, method, headers: reqHeaders }: { baseUrl: string; path: string; method: string; headers: Record<string, string> }) => {
       const url = new URL(path, `${baseUrl}/`);
@@ -1270,6 +1367,8 @@ export class ConnectionRegistry {
    * manually register a catalog-backed operation.
    */
   async resolveAndExecuteRead(input: ResolveConnectionOperationInput, query?: Record<string, unknown>): Promise<ConnectionInvocationResult> {
+    const profile = this.pickConnection(input);
+    if (profile) await this.recheckAuthentication(profile.id);
     const resolution = this.resolveConnectionOperation(input);
     if (resolution.resolution === 'insufficient_scope') {
       throw new ConnectionInvocationError('not-run', resolution.reason, 'CONNECTED_INSUFFICIENT_SCOPE');
@@ -1284,7 +1383,8 @@ export class ConnectionRegistry {
       );
     }
     if (resolution.resolution === 'discovery_failed' || !resolution.operation) {
-      throw new ConnectionInvocationError('not-run', resolution.reason, resolution.state === 'KNOWN_REJECTED_OPERATION' ? 'KNOWN_REJECTED_OPERATION' : 'DISCOVERY_FAILED');
+      const state = ['KNOWN_REJECTED_OPERATION', 'AUTH_INVALID', 'AUTH_EXPIRED'].includes(resolution.state) ? resolution.state : 'DISCOVERY_FAILED';
+      throw new ConnectionInvocationError('not-run', resolution.reason, state, state === 'AUTH_INVALID' || state === 'AUTH_EXPIRED');
     }
     if (resolution.resolution === 'provisional') {
       // Phase 2: Execute candidate operation PROVISIONALLY.
@@ -1335,7 +1435,7 @@ export class ConnectionRegistry {
     }
     const existing = profile.operations.find((item) => item.id === operation.id);
     if (existing) {
-      if (JSON.stringify(existing) !== JSON.stringify(operation)) {
+      if (!sameConnectionOperation(existing, operation)) {
         throw new Error(`Connection operation id "${operation.id}" is already registered with different details.`);
       }
       return existing;
@@ -1709,15 +1809,38 @@ export class ConnectionRegistry {
 
   async validate(id: string): Promise<ConnectionInvocationResult> {
     const profile = this.get(id);
+    const validationToken = loadStoredKeys()[keyRef(id)]?.trim();
     if (!profile) throw new Error('Saved connection not found.');
     if (['brave', 'tavily'].includes(profile.provider) && profile.capabilities.includes('web.search')) {
       await this.webSearch(profile.id, 'Agent Gitu', 1);
       return { ok: true, status: 200, message: 'Search API is connected.' };
     }
-    const operation =
-      profile.operations.find((candidate) => candidate.id === 'validate') ?? profile.operations.find((candidate) => candidate.risk === 'read' && candidate.method === 'GET');
-    if (!operation || operation.risk !== 'read' || operation.method !== 'GET') throw new Error('Connection needs a registered read-only GET validation operation.');
-    return this.invoke(profile.id, operation.id);
+    const candidates = profile.operations.filter(candidate => candidate.risk === 'read' && candidate.method === 'GET' && candidate.path !== '/' && !/(?:^|\/)(?:health|healthz|ready|version)(?:\/|$)/i.test(candidate.path));
+    const operation = candidates.find(candidate => candidate.id === 'validate') ?? candidates[0];
+    if (!operation || operation.risk !== 'read' || operation.method !== 'GET') throw new Error('Configure a documented, authenticated API GET endpoint to verify this connection. A homepage or health page cannot verify credentials.');
+    const result = await this.invoke(profile.id, operation.id);
+    if (typeof result.data === 'string' && /<(?:!doctype\s+html|html|head|body|form)\b/i.test(result.data)) {
+      this.recordAuth(id, 'unknown', 'Validation returned a web/login page; an authenticated API endpoint is required.', validationToken);
+      this.updateValidation(id, 'failed', validationToken);
+      throw new ConnectionInvocationError('sent-rejected', 'Validation returned a web/login page. Configure an authenticated API GET endpoint; the credential has not been verified.', 'CONFIG_INVALID');
+    }
+    return result;
+  }
+
+  /** Retry stale negative evidence once, coalescing concurrent readers. Never replays a write. */
+  async recheckAuthentication(id: string): Promise<void> {
+    const profile = this.get(id), token = loadStoredKeys()[keyRef(id)]?.trim();
+    if (!profile || !token || !['invalid', 'expired'].includes(profile.authState?.status ?? '')) return;
+    const fingerprint = sha256(token), key = connectionFile() + ':' + id + ':' + fingerprint;
+    const pending = authenticationRechecks.get(key);
+    if (pending) return pending;
+    const auth = profile.authState!;
+    if ((!auth.credentialFingerprint || auth.credentialFingerprint === fingerprint) && Date.now() - Date.parse(auth.checkedAt ?? '') < AUTHENTICATION_RECHECK_MS) return;
+    const work = this.validate(id).then(() => undefined).catch(error => {
+      if (!(error instanceof ConnectionInvocationError) || !error.authEvident) throw error;
+    });
+    authenticationRechecks.set(key, work);
+    try { await work; } finally { if (authenticationRechecks.get(key) === work) authenticationRechecks.delete(key); }
   }
 
   asPrerequisiteProvider(): PrerequisiteProvider {
@@ -1753,6 +1876,7 @@ export class ConnectionRegistry {
           return { status: 'needs-user', registeredReads: 0, awaitingApproval: [], summary: 'Multiple saved connections can meet this capability; the host routes the choice.' };
         }
         const profile = candidates[0]!;
+        await registry.recheckAuthentication(profile.id);
         const check = registry.resolveConnectionOperation({
           connectionId: profile.id,
           capability: input.capabilities[0],

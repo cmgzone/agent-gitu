@@ -338,8 +338,12 @@ export interface RiskPlan {
 }
 
 export interface CompletionReport {
+  /** File/check evidence is in a scoped execution report, rather than host ledger arrays. */
+  executionReportOnly?: boolean;
   taskId: string;
   goal: string;
+  /** A discussion reply can pause an unfinished task without failing its answer. */
+  responseKind?: 'discussion';
   /** Present when this report covers a scoped continuation, rather than the
    * entire historical task. */
   phase?: { id: string; kind: WorkPhaseKind; startedAt: string };

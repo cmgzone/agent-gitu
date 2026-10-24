@@ -559,7 +559,7 @@ export type SubAgentChildRunner = (input: SubAgentChildRunInput) => Promise<SubA
 
 /** What the tool surface gets: identity already bound, params the only input. */
 export interface CoworkSubAgentBridge {
-  run: (params: Record<string, unknown>) => Promise<ToolResult>;
+  run: (params: Record<string, unknown>, signal?: AbortSignal) => Promise<ToolResult>;
 }
 
 /**
@@ -775,7 +775,7 @@ export class CoworkSubAgentRunner {
 
   /** Bind host-derived identity to a child runner, producing the tool bridge. */
   bridgeFor(scope: SubAgentToolScope, runChild: SubAgentChildRunner): CoworkSubAgentBridge {
-    return { run: (params) => this.run(scope, runChild, params) };
+    return { run: (params, signal) => this.run(signal ? { ...scope, signal: scope.signal ? AbortSignal.any([scope.signal, signal]) : signal } : scope, runChild, params) };
   }
 
   async run(scope: SubAgentToolScope, runChild: SubAgentChildRunner, params: Record<string, unknown>): Promise<ToolResult> {

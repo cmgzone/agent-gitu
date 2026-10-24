@@ -33,17 +33,17 @@ function paste(files: ReturnType<typeof png>[], text = '', filesOnly = false) {
 }
 
 describe('Cowork clipboard images', () => {
-  it('attaches pasted screenshots, previews them, and sends an image-only message', () => {
+  it('attaches pasted screenshots, previews them, and sends an image-only message', async () => {
     const u = fixture(), event = paste([png()]);
     u.context.cwPasteImages(event);
     expect(event.preventDefault).toHaveBeenCalled();
     expect(u.send.disabled).toBe(true);
-    u.context.cwSend();
+    await u.context.cwSend();
     expect(u.context.cwPostLocal).not.toHaveBeenCalled();
     u.readers[0].finish();
     expect(u.send.disabled).toBe(false);
     expect(u.pending.innerHTML).toContain('<img src="blob:preview"');
-    u.context.cwSend();
+    await u.context.cwSend();
     expect(u.context.cwPostLocal.mock.calls[0][0].payload).toMatchObject({
       text: '', files: [expect.objectContaining({ name: 'image.png', type: 'image/png', artifactId:'artifact-fixture' })],
     });

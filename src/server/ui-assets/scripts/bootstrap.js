@@ -2,6 +2,36 @@
   window.__bootErrors = [];
   window.addEventListener('error', function (e) { window.__bootErrors.push(String(e && e.message) + ' @ ' + String(e && e.filename) + ':' + String(e && e.lineno)); });
   window.addEventListener('unhandledrejection', function (e) { window.__bootErrors.push('unhandled: ' + String(e && e.reason)); });
+  // LAN HTTP omits randomUUID although getRandomValues is still available.
+  if (window.crypto && !window.crypto.randomUUID) {
+    window.crypto.randomUUID = function () {
+      var bytes = new Uint8Array(16);
+      window.crypto.getRandomValues(bytes);
+      bytes[6] = (bytes[6] & 15) | 64;
+      bytes[8] = (bytes[8] & 63) | 128;
+      var hex = Array.from(bytes, function (b) { return b.toString(16).padStart(2, '0'); }).join('');
+      return hex.slice(0,8)+'-'+hex.slice(8,12)+'-'+hex.slice(12,16)+'-'+hex.slice(16,20)+'-'+hex.slice(20);
+    };
+  }
+  // Copy stays available on trusted Wi-Fi HTTP, where Clipboard API is absent.
+  if (!navigator.clipboard) {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+      writeText: function (text) {
+        return new Promise(function (resolve, reject) {
+          var previous = document.activeElement, field = document.createElement('textarea');
+          field.value = String(text); field.style.cssText = 'position:fixed;left:-9999px;top:0;font-size:16px';
+          field.setAttribute('readonly', '');
+          document.body.appendChild(field);
+          try {
+            field.select();
+            if (!document.execCommand('copy')) throw new Error('Could not copy. Select the text and copy it manually.');
+            resolve();
+          } catch (error) { reject(error); }
+          finally { field.remove(); if (previous && previous.focus) previous.focus({ preventScroll:true }); }
+        });
+      }
+    } });
+  }
   /* GITU_BINDING_UI_MOTION_JS */
   /* GITU_BINDING_CHAT_SURFACE_JS */
   /* GITU_BINDING_WORKSPACE_SEARCH_JS */
@@ -30,6 +60,7 @@
       if (typeof S.settings.scope === 'string') S.settings.scope = S.settings.scope.split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
       if (!Array.isArray(S.settings.scope)) S.settings.scope = [];
       S.draft = saved.draft || '';
+      S.codeWorkspace = saved.codeWorkspace;
     }
   } catch (e) {}
   // Old workflow preferences must never re-enable persistent planning.
@@ -37,7 +68,7 @@
   delete S.settings.review;
   S.sel.persistent = true;
   function persist() {
-    try { localStorage.setItem('hermes.settings', JSON.stringify({ sel: S.sel, settings: S.settings, draft: credentialChatInput(S.draft || '').safeText })); } catch (e) {}
+    try { localStorage.setItem('hermes.settings', JSON.stringify({ sel: S.sel, settings: S.settings, draft: credentialChatInput(S.draft || '').safeText, codeWorkspace: typeof homeWorkspaceSnapshot==='function'?homeWorkspaceSnapshot():undefined })); } catch (e) {}
   }
   /* GITU_BINDING_UI_THEME_JS */
   document.querySelector('.sb .foot').insertAdjacentHTML('beforeend', themeToggleHtml());
@@ -90,7 +121,7 @@
       actions.className = 'toast-actions';
       var copyBtn = document.createElement('button');
       copyBtn.textContent = 'Copy';
-      copyBtn.onclick = function () { navigator.clipboard.writeText(String(msg)).catch(function () {}); copyBtn.textContent = 'Copied'; setTimeout(function () { copyBtn.textContent = 'Copy'; }, 1200); };
+      copyBtn.onclick = function () { navigator.clipboard.writeText(String(msg)).then(function () { copyBtn.textContent = 'Copied'; setTimeout(function () { copyBtn.textContent = 'Copy'; }, 1200); }, function () { copyBtn.textContent = 'Copy failed'; }); };
       var dismiss = document.createElement('button');
       dismiss.textContent = 'Dismiss';
       dismiss.onclick = function () { t.remove(); };
@@ -108,6 +139,8 @@
   }
   var SVG_OPEN = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">';
   var ICONS = {
+    more: SVG_OPEN + '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>',
+    pin: SVG_OPEN + '<path d="m16 3 5 5-4 1-3 5-4 1-1-4 5-3Z"/><path d="m10 14-7 7"/></svg>',
     plus: SVG_OPEN + '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>',
     gear: SVG_OPEN + '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
     shield: SVG_OPEN + '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
@@ -140,7 +173,7 @@
   function api(path, opts) {
     return fetch(path, opts).then(function (r) {
       if (r.status === 401) return r.clone().json().catch(function () { return {}; }).then(function (data) { if (data.code === 'APP_LOCKED') { location.replace('/auth'); throw new Error('Unlock Agent Gitu to continue.'); } return r.text().then(function (t) { throw new Error(t || 'Unauthorized'); }); });
-      if (!r.ok) return r.text().then(function (t) { throw new Error(t || String(r.status)); });
+      if (!r.ok) return r.text().then(function (t) { var message=t;try{message=JSON.parse(t).error||t;}catch(e){}throw new Error(message || String(r.status)); });
       return r.json();
     });
   }
@@ -155,7 +188,7 @@
   }
   function effectiveProjectName() {
     var path = effectiveProjectPath();
-    return path ? basename(path) : 'no project selected';
+    return path ? (typeof homeProjectName==='function'?homeProjectName(path):basename(path)) : 'no project selected';
   }
   function providerIsUsable(p) { return Boolean(p && (p.usable || p.hasKey || p.signedIn)); }
   function chipFor(status) {
@@ -191,7 +224,7 @@
       (p.models || []).forEach(function (m) { if (current === p.id + '::' + m.id) found = true; });
     });
     if (found) return;
-    var firstProvider = (S.models || []).filter(providerIsUsable)[0];
+    var firstProvider = (S.models || []).filter(function(p){return p.id!=='alibaba'&&providerIsUsable(p);})[0];
     if (!firstProvider) { S.sel.model = ''; return; }
     var firstModel = (firstProvider.models || []).filter(function (m) { return m.id === firstProvider.defaultModel; })[0] || firstProvider.models[0];
     S.sel.model = firstModel ? firstProvider.id + '::' + firstModel.id : '';

@@ -39,6 +39,13 @@ async function ready(f: ReturnType<typeof fixture>): Promise<InboxClient> {
 }
 
 describe('instant native inbox monitoring', () => {
+  it('reports an inbox timeout distinctly without exposing the server response or blaming credentials', async () => {
+    const f=fixture({client:()=>{const client=new InboxClient();client.connect.mockRejectedValue(Object.assign(new Error('private password must not appear'),{code:'CONNECT_TIMEOUT'}));return client;}});
+    f.monitor.start();await vi.waitFor(()=>expect(f.monitor.statuses()['mail-own']?.state).toBe('reconnecting'));
+    const status=f.monitor.statuses()['mail-own'];expect(status?.problem?.state).toBe('timeout');
+    expect(status?.problem?.message).toContain('credentials were not verified');
+    expect(JSON.stringify(status)).not.toContain('private password');
+  });
   it('starts at the current inbox, then delivers new UIDs immediately without a timer tick', async () => {
     const f = fixture(), client = await ready(f);
     expect(f.deliver).not.toHaveBeenCalled();

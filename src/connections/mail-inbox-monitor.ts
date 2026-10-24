@@ -3,6 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import type { ImapFlow } from 'imapflow';
+import { mailConnectionFailure, type MailConnectionCheck } from './mail-status.js';
 
 export interface InboxArrival {
   id: string;
@@ -11,7 +12,7 @@ export interface InboxArrival {
   uid: number;
   detectedAt: string;
 }
-export type InboxWatchStatus = { state: 'connecting' | 'listening' | 'polling' | 'reconnecting'; lastEventAt?: string };
+export type InboxWatchStatus = { state: 'connecting' | 'listening' | 'polling' | 'reconnecting'; lastEventAt?: string; problem?: MailConnectionCheck };
 type Watch = { client: ImapFlow; state: InboxWatchStatus; closed: boolean; scanning: boolean; dirty: boolean; retryAt: number; failures: number; release?: () => void };
 
 /** UID checkpoints and pending arrivals are committed together. No message bodies
@@ -133,10 +134,11 @@ export class MailInboxMonitor {
     const client = this.createClient(id);
     const watch: Watch = { client, state: { state: 'connecting' }, closed: false, scanning: false, dirty: false, retryAt: 0, failures };
     this.watches.set(id, watch);
-    const disconnected = () => {
+    const disconnected = (error?: unknown) => {
       if (this.watches.get(id) !== watch || watch.closed) return;
       watch.closed = true;
       watch.state.state = 'reconnecting';
+      watch.state.problem = mailConnectionFailure(error, 'imap');
       watch.failures++;
       watch.retryAt = Date.now() + Math.min(60_000, 1000 * 2 ** Math.min(watch.failures - 1, 6));
       watch.release?.(); watch.release = undefined;
@@ -162,7 +164,7 @@ export class MailInboxMonitor {
         watch.failures = 0;
         watch.dirty = true;
         await this.scan(id, watch);
-      } catch { disconnected(); }
+      } catch (error) { disconnected(error); }
     })();
   }
   private async scan(id: string, watch: Watch): Promise<void> {

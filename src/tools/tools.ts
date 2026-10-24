@@ -22,6 +22,7 @@ import { readSearchText } from './search-text.js';
 import { isGeneratedIndexDirectory } from '../context/generated-directory.js';
 
 export interface ToolContext {
+  appManagement?: (params: Record<string, unknown>, actor: { agentId: string; conversationId?: string }) => Promise<ToolResult>;
   /** Trusted owner grant, checked live before Company work uses the runtime host. */
   companyHostComputer?: () => boolean;
   onComputerLocation?: (location: 'host' | 'private') => void;
@@ -501,13 +502,15 @@ export function validateToolParams(tool: string, params: unknown): ToolValidatio
         if (p['env'] !== undefined)
           return { valid: false, error: 'Configure credentials through secure settings. configure_mcp preserves the saved environment without exposing it.' };
       }
-      if (tool === 'update_connection' && Object.keys(p).some((key) => !['connectionId', 'label', 'documentationUrl'].includes(key)))
+      if (tool === 'update_connection' && Object.keys(p).some((key) => !['connectionId', 'label', 'documentationUrl', 'operations', 'discoverCapabilities'].includes(key)))
         return {
           valid: false,
           error:
-            'update_connection changes label and documentationUrl only. Change endpoint or credentials through the secure connection form; register operations with connection_operation.',
+            'Update label, documentationUrl, documented operations or discoverCapabilities. Endpoint and credentials use the secure connection form.',
         };
-      if (tool !== 'configure_mcp' && !fields.some((field) => p[field] !== undefined))
+      if (tool === 'update_connection' && p['operations'] !== undefined && !Array.isArray(p['operations'])) return { valid: false, error: 'operations must be an array.' };
+      if (tool === 'update_connection' && p['discoverCapabilities'] !== undefined && typeof p['discoverCapabilities'] !== 'boolean') return { valid: false, error: 'discoverCapabilities must be a boolean.' };
+      if (tool !== 'configure_mcp' && !fields.some((field) => p[field] !== undefined) && !(tool === 'update_connection' && (p['operations'] !== undefined || p['discoverCapabilities'] === true)))
         return { valid: false, error: `Provide at least one field to update: ${fields.join(', ')}.` };
       return { valid: true };
     }
@@ -2104,12 +2107,13 @@ export function toolUpdateConnection(ctx: ToolContext, params: Record<string, un
     const registry = ctx.connections ?? new ConnectionRegistry();
     const profile = registry.get(String(params['connectionId'] ?? ''));
     if (!profile) return fail('Saved connection not found. Call list_connections and use its exact connection id.');
+    const remembered = registry.rememberCapabilities(profile.id, params['operations'] as unknown[] | undefined, typeof params['documentationUrl'] === 'string' ? params['documentationUrl'] : undefined);
     const saved = registry.save({
-      ...profile,
+      ...remembered,
       ...(typeof params['label'] === 'string' ? { label: params['label'] } : {}),
       ...(typeof params['documentationUrl'] === 'string' ? { documentationUrl: params['documentationUrl'] } : {}),
     });
-    return { ok: true, output: `Connection "${saved.id}" updated: ${saved.label}. Its registered operations remain available.` };
+    return { ok: true, output: JSON.stringify({ id: saved.id, label: saved.label, capabilities: saved.capabilities, operations: saved.operations, message: 'Connection knowledge saved for future tasks. No API operation was executed.' }) };
   } catch (error) {
     return fail(`update_connection failed: ${(error as Error).message}`);
   }
@@ -2297,7 +2301,9 @@ export async function toolBrowse(ctx: ToolContext, params: Record<string, unknow
       case 'scroll': {
         if (!ctx.browser.scroll) return fail('browse scroll is not supported by this browser');
         const st = await ctx.browser.scroll(Number(params['x'] ?? 640), Number(params['y'] ?? 450), Number(params['deltaY'] ?? 300));
-        return { ok: true, output: `scrolled ${Number(params['deltaY'] ?? 300)}px on ${st.url}` };
+        const position = await ctx.browser.evaluate?.('({x:window.scrollX,y:window.scrollY,height:document.documentElement.scrollHeight,viewport:window.innerHeight})').catch(() => undefined);
+        const state = position && typeof position === 'object' ? position as Record<string, unknown> : undefined;
+        return { ok: true, output: `scrolled ${Number(params['deltaY'] ?? 300)}px on ${st.url}` + (typeof state?.['y'] === 'number' ? `; position x=${state['x']}, y=${state['y']}, page height=${state['height']}, viewport=${state['viewport']}` : ''), ...(state ? { payload: { browserPosition: state } } : {}) };
       }
       case 'fill': {
         if (!ctx.browser.fill) return fail('browse fill is not supported by this browser');

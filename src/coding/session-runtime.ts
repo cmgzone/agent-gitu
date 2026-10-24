@@ -43,6 +43,10 @@ import { createGitu, type GituFactoryDependencies, type GituFactoryOptions } fro
 import { describeWorkspace, isLocalWorkspace, workspacePath, type WorkspaceRef } from './workspace.js';
 
 export interface GituSessionRequest {
+  /** Live owner preference. Models cannot grant this authority to themselves. */
+  autoApprove?: () => boolean;
+  provider?: string;
+  model?: string;
   goal: string;
   workspace: WorkspaceRef;
   /**
@@ -381,6 +385,11 @@ export class GituSessionRuntime {
      * request whose resolution has been published, and it must not claim one either.
      */
     const offerToChief = (input: { kind: ChiefRequestKind; requestId: string; request: ChiefRequest }, surface: () => void): void => {
+      if (input.kind !== 'questions' && request.autoApprove?.()) {
+        const decision: ChiefDecision = { action: 'approve', reason: 'Approved by the owner’s full coding access setting.' };
+        applyChiefDecision(input.kind, input.requestId, decision);
+        return;
+      }
       const chief = request.chief;
       if (!chief) {
         surface();
@@ -642,6 +651,7 @@ export class GituSessionRuntime {
       id,
       getState: (): CodingSessionView => ({
         id,
+        provider:request.provider,model:request.model,
         goal: request.goal,
         status,
         startedAt,

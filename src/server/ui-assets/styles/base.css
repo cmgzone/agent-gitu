@@ -37,6 +37,18 @@
   select option { background: var(--card); color: var(--text); }
   [hidden] { display: none !important; }
 
+  /* Phone transcripts and controls stay sharp. Broad glass overlays can blur
+     unrelated content when composited by Android WebView. */
+  @media (max-width: 720px), (pointer: coarse) {
+    * { scrollbar-width:none!important; }
+    *::-webkit-scrollbar { display:none!important; width:0!important; height:0!important; }
+    #cw .cw-chat::before, #cw .cw-chat::after { display:none!important; }
+    :is(.stream,.cw-msgs,.home-brand,.workspace-search) { filter:none!important; }
+    *, *::before, *::after { backdrop-filter:none!important; -webkit-backdrop-filter:none!important; }
+    :is(.cw-composer,.composer,.cw-top-nav,.cw-bubble,.abubble,.agent-report,.tl-note-row,.ub,.setcard,.appearance-card,.ws-search-field,.ws-result-list,.cw-panel-card,.cw-widget-lane) { background-color:var(--card)!important; }
+    :is(.cw-panel-backdrop,.cw-widget-backdrop,.mobile-backdrop,.modal.cw-modal) { background:var(--overlay)!important; }
+  }
+
   .shell { display: flex; height: 100%; min-width: 0; }
   .mobile-nav-btn, .mobile-backdrop { display: none; }
   .sb { width: var(--sbw, 264px); flex: none; border-right: 1px solid var(--border); background: var(--sidebar); display: flex; flex-direction: column; overflow: hidden; }
@@ -246,3 +258,4 @@
 
   .run { flex: 1; display: flex; min-height: 0; }
   .run-main { position: relative; flex: 1; display: flex; flex-direction: column; min-width: 0; }
+ .chat-browser-card{flex:none;width:100%;border:1px solid var(--border2);border-radius:16px;overflow:hidden;background:var(--card);margin:12px 0}.chat-browser-card header{display:flex;align-items:center;gap:8px;padding:10px}.chat-browser-card iframe{display:block;border:0;width:100%;height:min(65dvh,640px);min-height:350px}.chat-browser-card.is-expanded{position:fixed;inset:10px;z-index:10020;width:auto;margin:0;display:flex;flex-direction:column}.chat-browser-card.is-expanded iframe{flex:1;min-height:0;height:auto}

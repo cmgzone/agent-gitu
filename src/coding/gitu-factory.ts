@@ -44,6 +44,7 @@ import type { AutonomyPolicy } from '../agent/autonomy.js';
 
 /** What varies from one run to the next. */
 export interface GituFactoryOptions {
+  deploymentAllowed?: () => boolean;
   /** Workspace root the run is locked to; becomes the engine's `cwd`. */
   workspaceRoot: string;
   llm: LlmClient;
@@ -132,6 +133,7 @@ export function buildGituConfig(options: GituFactoryOptions, deps: GituFactoryDe
   const agentsSection = agents ? agents.renderForPrompt() || undefined : undefined;
   const specialists = agents ? agents.list().map((agent) => ({ name: agent.name, role: agent.role })) : undefined;
   return {
+    deploymentAllowed: options.deploymentAllowed,
     cwd: options.workspaceRoot,
     llm: options.llm,
     mode: options.mode,

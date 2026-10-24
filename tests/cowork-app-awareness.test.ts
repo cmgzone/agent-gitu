@@ -20,6 +20,28 @@ function fixture() {
   return { store, agent, conversation, apps };
 }
 describe('Immediate teammate app awareness', () => {
+  it('reports native inbox and outgoing failures separately instead of claiming the mailbox expired', async () => {
+    const f=fixture();f.store.assignAppAccount(f.agent.id,'mail','own');
+    vi.mocked(f.apps.accounts).mockResolvedValue([{id:'own',toolkit:'mail',status:'ACTIVE',disabled:false,mailHealth:{checkedAt:new Date().toISOString(),imap:{state:'timeout',message:'Incoming IMAP connection timed out; credentials were not verified.'},smtp:{state:'ok',message:'Outgoing SMTP sign-in verified. No email was sent.'}}}]);
+    const awareness=await appAwareness(f.apps,f.store,f.agent.id);
+    const reply=await connectionReply({...f,text:'Can you access my inbox and email connection?',history:[],agentId:f.agent.id,conversationId:f.conversation.id,awareness});
+    expect(reply).toContain('Incoming IMAP connection timed out');expect(reply).toContain('Outgoing SMTP sign-in verified');
+    expect(reply).not.toContain('expired');expect(awareness.context).toContain('mail_check');
+    expect(awareness.context).toContain('A review expiry concerns that proposed action only');
+  });
+  it('answers from an active Gmail connection despite an older unfinished sign-in for the same teammate', async () => {
+    const f=fixture();f.store.assignAppAccount(f.agent.id,'gmail','old');f.store.assignAppAccount(f.agent.id,'gmail','live');
+    vi.mocked(f.apps.accounts).mockResolvedValue([
+      {id:'old',toolkit:'gmail',status:'EXPIRED',disabled:false,connectionIssue:'sign-in-expired'},
+      {id:'live',toolkit:'gmail',status:'ACTIVE',disabled:false},
+    ]);
+    const awareness=await appAwareness(f.apps,f.store,f.agent.id);
+    const reply=await connectionReply({...f,text:'Are you connected to my Gmail?',history:[],agentId:f.agent.id,conversationId:f.conversation.id,awareness});
+    expect(reply).toContain('Gmail is connected');
+    expect(f.store.openRequests(f.conversation.id)).toHaveLength(0);
+    expect(awareness.context).toContain('An older EXPIRED entry does not invalidate another ACTIVE account');
+    expect(awareness.context).toContain('Never silently substitute a different mailbox');
+  });
   it('shares pending refreshes and retains status arriving after the quick-context deadline', async () => {
     vi.useFakeTimers();
     try {

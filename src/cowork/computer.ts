@@ -206,7 +206,7 @@ export class CoworkComputer {
     readonly agentId: string,
     private readonly root: string,
     private readonly exec: ComputerExec = computerExec,
-    private readonly runtime: { key: string; cloud?: boolean; beforeStart?:()=>void;onState?:(state:ComputerStatus['state'])=>void;limits?:()=>{cpu:number;memoryMb:number;diskMb:number};maxFileBytes?: () => number|null; resolveArtifact?: (id:string,conversationId:string)=>string|undefined } = { key: 'default' },
+    private readonly runtime: { key: string; cloud?: boolean; beforeStart?:()=>void;onState?:(state:ComputerStatus['state'])=>void;onControl?:()=>void;limits?:()=>{cpu:number;memoryMb:number;diskMb:number};maxFileBytes?: () => number|null; resolveArtifact?: (id:string,conversationId:string)=>string|undefined } = { key: 'default' },
   ) {
     const key = createHash('sha256')
       .update(`${path.resolve(root)}:${agentId}`)
@@ -238,6 +238,7 @@ export class CoworkComputer {
     writeFileSync(this.controlFile + '.tmp', JSON.stringify({ control, handoff }), { mode: 0o600 });
     renameSync(this.controlFile + '.tmp', this.controlFile);
     this.control = control; this.handoff = handoff;
+    this.runtime.onControl?.();
     if (control === 'user') for (const controller of this.active) controller.abort(new Error('The user has taken control of the desktop.'));
   }
 

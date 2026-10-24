@@ -3,6 +3,7 @@ import path from 'node:path';
 import { MemoryStore } from '../memory/memory-store.js';
 import { CompanyOrganization } from './organization.js';
 import { canonicalAction } from './store.js';
+import { ensureGituHome } from '../workspace/home.js';
 import type { CompanyActor, CompanyHandbookEntry, CompanyOrganizationRecord } from './management-models.js';
 
 const now = () => new Date().toISOString();
@@ -15,7 +16,7 @@ function text(value: unknown, _max: number): string {
 export class CompanyHandbook {
   constructor(
     readonly organization: CompanyOrganization,
-    private readonly memory: Pick<MemoryStore, 'add' | 'query' | 'archive'> = MemoryStore.forProject(organization.store.workspace(organization.companyId)),
+    private readonly memory: Pick<MemoryStore, 'add' | 'query' | 'archive'> = MemoryStore.forProject(organization.cowork.usesSharedRoster ? ensureGituHome().workspace : organization.store.workspace(organization.companyId)),
   ) {}
   private get companyId(): string {
     return this.organization.companyId;
@@ -120,7 +121,7 @@ export class CompanyHandbook {
     return entry;
   }
   syncMemory(): void {
-    const scope = path.basename(this.organization.store.workspace(this.companyId));
+    const scope = path.basename(this.organization.cowork.usesSharedRoster ? ensureGituHome().workspace : this.organization.store.workspace(this.companyId));
     for (const entry of this.organization.store.list<CompanyHandbookEntry>('handbook', this.companyId)) {
       if (entry.memoryIndexedVersion === (entry.state === 'archived' ? 0 : entry.approvedVersion)) continue;
       try {
@@ -132,7 +133,7 @@ export class CompanyHandbook {
         } else if (entry.approvedVersion) {
           const indexed = this.memory.add({
             type: 'fact',
-            claim: `Director-approved ${entry.kind}: ${entry.title}. Authoritative record ${entry.id}, version ${entry.approvedVersion}; read company_handbook for its current content. Operational guidance does not enlarge tool, account or spending grants.`,
+            claim: `Company ${this.organization.store.get(this.companyId)!.name} [${this.companyId}]. Director-approved ${entry.kind}: ${entry.title}. Authoritative record ${entry.id}, version ${entry.approvedVersion}; read company_handbook for its current content. Operational guidance does not enlarge tool, account or spending grants.`,
             scope,
             projectId: scope,
             visibility: 'project',

@@ -5,9 +5,11 @@ import { CompanyStore } from '../src/company/store.js';
 import { CoworkStore } from '../src/cowork/store.js';
 import { CompanyOrganization } from '../src/company/organization.js';
 import { CompanyBoardroom } from '../src/company/boardroom.js';
+import { CompanyWorkflows } from '../src/company/workflows.js';
 import { companyApi } from '../src/company/api.js';
 import { UI_HTML } from '../src/server/ui.js';
 import { COMPANY_JS } from '../src/server/ui-companies.js';
+import { COMPANY_CONNECTIONS_JS } from '../src/server/ui-company-connections.js';
 import { plushCharacterHtml } from '../src/server/ui-characters.js';
 import { CHARACTERS_DIR, CHARACTER_FILES, FONTS_DIR, FONT_FILES } from '../src/server/static-assets.js';
 
@@ -27,8 +29,9 @@ store.update(company.id, { leadId: ceo.id, conversationId: conversation.id });
 store.transition(company.id, 'running');
 const room = new CompanyBoardroom(new CompanyOrganization(store, company.id, cowork));
 const styles = [...UI_HTML.slice(0, UI_HTML.indexOf('</head>')).matchAll(/<style>([\s\S]*?)<\/style>/g)].map((m) => m[1]).join('\n');
-const html = `<!doctype html><html data-theme="light"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${styles}</style></head><body><script>function $(id){return document.getElementById(id);}function toast(message){window.lastToast=message;}function esc(value){var el=document.createElement('span');el.textContent=String(value??'');return el.innerHTML.replace(/"/g,'&quot;').replace(/'/g,'&#39;');}${plushCharacterHtml.toString()}function cwAvaImg(avatar,id){return plushCharacterHtml((avatar&&avatar.shape||'dot-purple').replace('dot-',''),id);}async function api(url,options){var r=await fetch(url,options),data=await r.json();if(!r.ok)throw Error(data.error);return data;}${COMPANY_JS}Companies.id=${JSON.stringify(company.id)};Companies.tab='Boardroom';Companies.data={company:${JSON.stringify(store.get(company.id))},agents:${JSON.stringify(cowork.listAgents())},missions:[],helpers:[],requests:[],actions:[],activity:[],jobs:[],totals:{knownCostUsd:0,unknownCostCalls:0},monthly:{month:'2026-10',knownCostUsd:0,unknownCalls:0}};companyRender();</script></body></html>`;
-const browser = await chromium.launch({ channel: 'msedge', headless: true });
+const html = `<!doctype html><html data-theme="light"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${styles}</style></head><body><script>function $(id){return document.getElementById(id);}function toast(message){window.lastToast=message;}function fileLimitLabel(value){return value===null?'Unlimited':String(value);}function esc(value){var el=document.createElement('span');el.textContent=String(value??'');return el.innerHTML.replace(/"/g,'&quot;').replace(/'/g,'&#39;');}${plushCharacterHtml.toString()}function cwAvaImg(avatar,id){return plushCharacterHtml((avatar&&avatar.shape||'dot-purple').replace('dot-',''),id);}async function api(url,options){var r=await fetch(url,options),data=await r.json();if(!r.ok)throw Error(data.error);return data;}${COMPANY_JS}${COMPANY_CONNECTIONS_JS}Companies.id=${JSON.stringify(company.id)};Companies.tab='Boardroom';Companies.data={company:${JSON.stringify(store.get(company.id))},agents:${JSON.stringify(cowork.listAgents())},missions:[],helpers:[],requests:[],actions:[],activity:[],jobs:[],totals:{knownCostUsd:0,unknownCostCalls:0},monthly:{month:'2026-10',knownCostUsd:0,unknownCalls:0}};companyRender();</script></body></html>`;
+const smokeChannel = process.env['GITU_UI_SMOKE_CHANNEL'] ?? (process.platform === 'win32' ? 'msedge' : undefined);
+const browser = await chromium.launch({ headless: true, ...(smokeChannel ? { channel: smokeChannel } : {}) });
 try {
   const page = await browser.newPage({ viewport: { width: 1360, height: 1000 } }),
     errors: string[] = [];
@@ -40,6 +43,8 @@ try {
     if (url.pathname.startsWith('/characters/') && CHARACTER_FILES[filename])
       return route.fulfill({ contentType: CHARACTER_FILES[filename], body: readFileSync(path.join(CHARACTERS_DIR, filename)) });
     if (url.pathname.startsWith('/fonts/') && FONT_FILES[filename]) return route.fulfill({ contentType: FONT_FILES[filename], body: readFileSync(path.join(FONTS_DIR, filename)) });
+    if (url.pathname.endsWith('/files/policy')) return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ maxFileBytes: null }) });
+    if (/\/computers\//.test(url.pathname)) return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ computer: { state: 'stopped' } }) });
     let status = 200,
       data: unknown;
     try {
@@ -149,6 +154,80 @@ try {
   await page.getByRole('button', { name: 'End meeting', exact: true }).click();
   await page.getByRole('heading', { name: 'Meeting concluded', exact: true }).waitFor();
   if (!room.read({ kind: 'director' }, meeting.id).summary?.confirmedDecisions.includes(decision.id)) throw Error('Meeting summary lost the confirmed decision.');
+  console.log('Boardroom controls passed; checking employee requests and overview navigation.');
+  const requested = room.request(
+    { kind: 'agent', agentId: worker.id },
+    {
+      title: 'Discuss the research blocker',
+      reason: 'Customer evidence needs a shared decision.',
+      participants: [{ agentId: ceo.id }],
+      agenda: ['Agree on the next evidence source'],
+    },
+  );
+  const workflows = new CompanyWorkflows(room.organization);
+  const proposed = workflows.propose(
+    { kind: 'agent', agentId: worker.id },
+    {
+      title: 'Employee research workflow',
+      inputs: { type: 'object' },
+      parallelism: 1,
+      steps: [
+        {
+          id: 'research',
+          name: 'Verify customer evidence',
+          type: 'mission',
+          agentId: worker.id,
+          goal: 'Prepare a verified customer report',
+          criteria: ['Cite evidence'],
+          dependsOn: [],
+          bindings: {},
+          inputSchema: { type: 'object' },
+          outputSchema: { type: 'string' },
+          tools: [],
+          skills: [],
+          connectionIds: [],
+          accountIds: [],
+          maxSessions: 2,
+          maxAttempts: 1,
+          timeoutMinutes: 5,
+        },
+      ],
+    },
+  );
+  await page.evaluate(() => (document.getElementById('companyBody') as any)._meetingRefresh());
+  await page.getByRole('heading', { name: 'Agent meeting requests', exact: true }).waitFor();
+  await page.getByText('Requested by Milo', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Schedule meeting', exact: true }).click();
+  await page.waitForFunction(() => !document.querySelector('[data-meeting-request-card]'), undefined, { timeout: 15000 });
+  const approvedRequest = room.requests({ kind: 'director' }).find((r) => r.id === requested.id)!;
+  if (!approvedRequest.meetingId) throw Error('The request review did not schedule a meeting.');
+  await page.getByRole('tab', { name: 'Overview', exact: true }).click();
+  await page.getByRole('heading', { name: 'Team coordination', exact: true }).waitFor();
+  await page.getByRole('heading', { name: 'Workflow drafts awaiting approval', exact: true }).waitFor();
+  await page.getByRole('heading', { name: 'Team coordination needs review', exact: true }).waitFor();
+  room.request({ kind: 'agent', agentId: worker.id }, { title: 'Review the pilot budget', reason: 'A budget question needs review.', agenda: ['Pilot spending'] });
+  await page.evaluate(() => companyOverviewRefresh());
+  const pendingCard = page.locator('#companyManagement [data-meeting-request-card]').filter({ has: page.getByRole('heading', { name: 'Review the pilot budget', exact: true }) });
+  await pendingCard.getByRole('button', { name: 'Decline', exact: true }).click();
+  await pendingCard.waitFor({ state: 'detached' });
+  await page.getByRole('tab', { name: 'Chat', exact: true }).click();
+  await page.evaluate(() => companyChatRefresh());
+  if (errors.length) throw Error(errors.join('\n'));
+  if (await page.locator('#companyError').textContent()) throw Error('Company chat: ' + (await page.locator('#companyError').textContent()));
+  await page.getByRole('button', { name: 'Review team coordination', exact: true }).click();
+  await page.getByRole('heading', { name: 'Team coordination', exact: true }).waitFor();
+
+  await page.getByRole('button', { name: 'Review workflow', exact: true }).click();
+  await page.waitForFunction((id) => document.querySelector<HTMLSelectElement>('[data-wf-select]')?.value === id, proposed.id, { timeout: 15000 });
+  await page.getByRole('tab', { name: 'Overview', exact: true }).click();
+  await page.screenshot({ path: '.qa/company-ui/company-coordination-mobile.png', fullPage: true });
+  if (await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)) throw Error('Company coordination overflows on mobile.');
+  await page.setViewportSize({ width: 1360, height: 1000 });
+  await page.screenshot({ path: '.qa/company-ui/company-coordination-dark.png', fullPage: true });
+  const requestedCard = page.locator('#companyManagement article').filter({ has: page.getByRole('heading', { name: 'Discuss the research blocker', exact: true }) });
+  await requestedCard.getByRole('button', { name: 'Open discussion', exact: true }).click();
+  await page.getByRole('heading', { name: 'Discuss the research blocker', exact: true }).waitFor();
+  await page.getByText('Organized by You · Requested by Milo', { exact: true }).waitFor();
   if (errors.length) throw Error(errors.join('\n'));
   console.log('Boardroom UI passed real scoped persistence, scheduling, floor ownership, draft preservation, director review, light/dark themes and mobile layout.');
 } finally {

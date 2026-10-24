@@ -23,6 +23,7 @@ import type { CriterionSpec, ToolResult } from '../types.js';
 import { canonicalJson, sha256 } from '../util.js';
 import { nativeCodexPermissions, NATIVE_PERMISSION_PROFILE } from './native-codex-permissions.js';
 import { COMMAND_RECOVERY_CONTRACT } from '../agent/command-recovery.js';
+import { isDeploymentAction, DEPLOYMENT_OWNERSHIP } from './deployment-authority.js';
 
 function object(value: unknown): NativeRecord {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as NativeRecord) : {};
@@ -168,7 +169,7 @@ export async function runNativeCodexTask(input: {
     config.subagents ? (ids) => config.subagents!.status(ids) : undefined,
     undefined,
     config.connections,
-    { memory, memoryContext: config.memoryRetrieval ?? { projectId: guard.lock.name }, signal: () => signal, onCodingEvent: typed },
+    { memory, memoryContext: config.memoryRetrieval ?? { projectId: guard.lock.name }, signal: () => signal, onCodingEvent: typed, deploymentAllowed: config.deploymentAllowed },
   );
   const processed = new Set((ledger.data.execution?.native?.processedItems ?? []).filter((id) => id.startsWith('tool:')));
   const seenItems = new Set<string>();
@@ -182,6 +183,7 @@ export async function runNativeCodexTask(input: {
     exited: 'complete' | 'blocked' | 'aborted' = 'blocked';
   let planReviewed = !config.requirePlanReview || ledger.data.planApproved === true;
   let runtimeResult: 'completed' | 'interrupted' | undefined;
+  let answeredDiscussion = false;
   let providerError: unknown;
   const discussion = Boolean(config.resume && conversationIntent(input.message));
   const acceptedChanges = (): boolean =>
@@ -258,6 +260,11 @@ export async function runNativeCodexTask(input: {
   const service = async (params: NativeRecord): Promise<NativeRecord> => {
     const tool = String(params['tool'] ?? '');
     const toolParams = object(params['params']);
+    const operation = object(toolParams['operation']);
+    const capability = tool === 'capability_action' ? config.universalRegistry?.get(String(toolParams['capability'] ?? '')) : undefined;
+    const deploymentMetadata = [operation['id'], operation['capability'], operation['path'], toolParams['operationId'], capability?.id, capability?.capability, capability?.label].filter(Boolean).join(' ');
+    if (config.deploymentAllowed?.() === false && isDeploymentAction(tool, toolParams, deploymentMetadata))
+      return { success: false, contentItems: [{ type: 'inputText', text: DEPLOYMENT_OWNERSHIP }] };
     if (
       (discussion || input.conversationControl?.()) &&
       ![
@@ -281,7 +288,12 @@ export async function runNativeCodexTask(input: {
         contentItems: [{ type: 'inputText', text: 'Execution is paused for the user’s question/discussion. Answer with read-only inspection and preserve unfinished work.' }],
       };
     if (!SERVICE_TOOLS.includes(tool) && !(tool.startsWith('mcp:') && config.mcp))
-      return { success: false, contentItems: [{ type: 'inputText', text: 'Unsupported Gitu service.' }] };
+      return { success: false, contentItems: [{ type: 'inputText', text: 'Unsupported Gitu service. Discover exact tools with list_mcp or list_connections, then use their registered names. Do not invent approval endpoints or MCP aliases.' }] };
+    if (tool.startsWith('mcp:') && config.mcp) {
+      const [, server, ...name] = tool.split(':');
+      const tools = server ? await config.mcp.toolsForServer(server) : undefined;
+      if (!tools?.some(entry => entry.name === name.join(':'))) return { success: false, contentItems: [{ type: 'inputText', text: 'This MCP tool is not registered or available. Use list_mcp or list_connections to discover the actual saved connection and supported operations. An approval cannot create a missing tool.' }] };
+    }
     if (tool === 'bind_criterion_verification') {
       const criterion = currentCriteria().find((c) => c.id === toolParams['criterionId']);
       const command = typeof toolParams['verification'] === 'string' ? toolParams['verification'] : '';
@@ -526,7 +538,9 @@ export async function runNativeCodexTask(input: {
     seenItems.add(itemKey);
     if (item['type'] === 'agentMessage') {
       const text = String(item['text'] ?? responseByItem.get(id) ?? '').trim();
-      if (text) emit('thought ' + text);
+      // The completed snapshot replaces streamed deltas; it is not another
+      // chunk to append to the same answer.
+      if (text) emit('say ' + text);
       if (item['phase'] !== 'commentary') finalAnswer = text;
     }
     if (item['type'] === 'commandExecution') throw new Error('Unexpected built-in command completion: guarded execution is required.');
@@ -563,6 +577,8 @@ export async function runNativeCodexTask(input: {
     ledger.setStatus('executing');
     const nativeInstructions = [
       'You are the native Codex execution runtime inside Agent Gitu. Use your native agent loop and tools; reply in normal prose, never Gitu action JSON. Gitu is the authority for scope, permissions, and verification.',
+      config.autoApprove ? 'The owner enabled full coding access. Gitu automatically handles coding approvals under the owner’s grants. Perform authorized work through the registered tools; do not ask for duplicate approval or invent approval.request tools. Missing tools or credentials are actual prerequisites, not approval requests.' : '',
+      config.deploymentAllowed?.() === false ? DEPLOYMENT_OWNERSHIP : '',
       'For nontrivial work, call gitu_task({operation:"update_plan",plan:[{step:"...",status:"inProgress"},{step:"...",status:"pending"}]}). Update the same checklist as work proceeds; mark each completed step with status:"completed". Small edits need no formal plan or criteria. Choose the smallest meaningful check; substantial work benefits from acceptance criteria with exact verification commands. Use state to recover saved facts and link_criterion only with real recorded evidence. Finish with a final answer reporting changes, checks, and concrete limitations.',
       'A criterion verification field pins an exact executable command, never a description such as "run focused tests". Discover available project commands. Bind a missing or invalid check with gitu_service({tool:"bind_criterion_verification",params:{criterionId:"ac-N",verification:"exact command"}}). An unsuitable model-selected command can be replaced with replacementReason explaining how the new check covers the unchanged requirement and evidence type. Explicit user-pinned commands stay fixed. Binding never supplies passing evidence.',
       'Verification scales with consequences and changed scope. Reuse fresh passing evidence and finish; do not add test/lint/typecheck/build runs merely because those scripts exist. For focused commands, verificationScope:{paths:["src/module","tests/module.test.ts"],reason:"dependency coverage"} allows host-validated reuse after unrelated edits. Include all source, data, and shared dependencies; omit scope when uncertain. Project configuration is always included. Required failing checks still need a repair or a concrete dependency report.',
@@ -660,6 +676,7 @@ export async function runNativeCodexTask(input: {
     if (result.status === 'interrupted') exited = 'aborted';
     else if (!finalAnswer) ledger.addBlocker('Native Codex ended without a final answer. Progress messages are not completion; no automatic restart was made.');
     else if (discussion || input.conversationControl?.()) {
+      answeredDiscussion = discussion;
       ledger.addBlocker('Paused for discussion with the user.');
     } else {
       // One verification phase after Codex's completed turn. No second model loop.
@@ -787,6 +804,7 @@ export async function runNativeCodexTask(input: {
       filesChanged: ledger.data.filesChanged.slice(phase.fileStartIndex),
     },
   );
+  if (answeredDiscussion) report.responseKind = 'discussion';
   ledger.data.report = report;
   ledger.save();
   memory.add({

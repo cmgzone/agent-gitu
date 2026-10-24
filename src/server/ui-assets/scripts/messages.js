@@ -131,6 +131,9 @@
 
   function resetStreamRenderState(sess) {
     sess.summaryShown = null;
+    sess.lastPublicReply = null;
+    sess.lastThoughtText = '';
+    sess.lastBubbleText = '';
     sess.connShown = null;
     sess.qShown = null;
     sess.prShown = null;
@@ -211,6 +214,7 @@
     if (state && state.replaying) el.classList.add('replayed');
     if (w) stream.insertBefore(el, w); else stream.appendChild(el);
     if ((!state||!state.replaying)&&el.matches('.usermsg,.abubble,.agent-report,.tl-note-row')) chatBubbleEntrance(el);
+    placeDecisionCards(stream);
     trimTimeline(stream);
     stickScroll(stream);
   }
@@ -239,12 +243,13 @@
     var sentBubbleId = appendPendingUserMessage(runId, text);
     var follow = $('follow');
     if (follow) follow.value = '';
+    homeSaveFollowDraft(runId,'');
     var send2 = $('send2');
     if (send2) send2.disabled = true;
     // Textarea cleared: if the agent is still running the button reverts to Stop.
     updateSendState();
     api('/api/runs/' + runId + '/message', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
-      text: text, files: attached,
+      id: 'coding-follow-' + sentBubbleId, text: text, files: attached,
       delivery: running ? S.delivery : undefined,
       provider: useSelectedModel ? mc[0] : undefined, model: useSelectedModel ? mc[1] : undefined, useSelectedModel: useSelectedModel,
       effort: S.sel.effort,
@@ -254,6 +259,12 @@
       autoApprove: S.settings.autoApprove
     }) })
       .then(function (result) {
+        if (result && result.directToCoding && result.runId && result.runId !== runId) {
+          settlePendingUserMessage(runId, result.safeText, sentBubbleId, false);
+          pendingFor().length = 0; renderThumbs(); setWorking(null);
+          openRun(result.runId,{projectPath:sess.projectPath,mode:'agent'});
+          return;
+        }
         // The server has accepted the continuation. Remove the terminal card
         // from the previous task before showing the new task's activity.
         // Keeping it visible until the new task completes made an old report
@@ -279,6 +290,7 @@
         pollRun(runId);
       })
       .catch(function (er) {
+        homeRestoreFollowDraft(runId,text);
         var msg = String(er.message);
         if (msg.indexOf('run not found') >= 0) {
           var mc = (S.sel.model || '').split('::');

@@ -110,6 +110,7 @@ export const ONBOARDING_JS = String.raw`
         if ($('setupKey') && $('setupKey').value.trim()) { setupMessage('Save your API key before continuing.', true); return; }
         if (!providerIsUsable(p) || !setupState.model) { setupMessage('Connect a provider and choose a model, or select Set up later.', true); return; }
         S.sel.model = setupState.model;
+        rememberModelSelection(setupState.model);
         persist();
       }
       if (step === 2) { finishSetup(); return; }
@@ -187,7 +188,7 @@ export const ONBOARDING_JS = String.raw`
   async function finishSetup() {
     return setupOperation(async function () {
       setupMessage('Saving your setup…');
-      await api('/api/onboarding', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ theme: S.settings.theme, mode: setupState.mode, model: S.sel.model || '' }) });
+      await api('/api/onboarding', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ theme: S.settings.theme, mode: setupState.mode, model: S.sel.model || '', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }) });
       S.settings.onboardingComplete = true;
       S.settings.startMode = setupState.mode;
       persist();
@@ -206,14 +207,16 @@ export const ONBOARDING_JS = String.raw`
     $('startupCover').className = 'gitu-opening';
     $('startupMessage').textContent = 'Opening your workspace…';
     $('startupReload').hidden = true;
+    var startupStage = 'setup';
     try {
       var prefs = await api('/api/onboarding', { signal: AbortSignal.timeout(15000) });
+      startupStage = 'workspace';
       if (!prefs.completed) openSetupWizard();
       else {
         if (!S.settings.onboardingComplete) {
           S.settings.theme = prefs.theme;
           S.settings.startMode = prefs.mode;
-          if (prefs.model) S.sel.model = prefs.model;
+          if (prefs.model&&!S.savedSelectionAt) S.sel.model = prefs.model;
           S.settings.onboardingComplete = true;
           applyTheme(); persist();
         }
@@ -224,9 +227,9 @@ export const ONBOARDING_JS = String.raw`
       }
       $('startupCover').hidden = true;
     } catch (e) {
-      console.error('Agent Gitu setup could not initialize:', e);
+      console.error('Agent Gitu startup failed (' + startupStage + '): ' + String(e && e.name || 'Error') + ': ' + String(e && e.message || e));
       $('startupCover').className = 'gitu-opening is-error';
-      $('startupMessage').textContent = 'Could not load your setup. Please try again.';
+      $('startupMessage').textContent = startupStage === 'workspace' ? 'Could not open your workspace. Please try again.' : 'Could not load your setup. Please try again.';
       $('startupReload').hidden = false;
       $('startupReload').onclick = initializeOnboarding;
       $('startupReload').focus();

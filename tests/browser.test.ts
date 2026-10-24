@@ -122,12 +122,12 @@ describe('formatPageDiagnostics', () => {
     expect(clean).not.toContain('PAGE TEXT');
   });
 
-  it('surfaces incomplete loads and caps the text digest', () => {
+  it('surfaces incomplete loads and preserves the available page text', () => {
     const out = formatPageDiagnostics({ loadIncomplete: true, textDigest: 't'.repeat(2000) });
     expect(out).toContain('PAGE LOAD: incomplete');
     expect(out).toContain('PAGE TEXT (digest)');
     const digest = out.split('PAGE TEXT (digest):\n')[1] ?? '';
-    expect(digest.length).toBeLessThanOrEqual(1200);
+    expect(digest).toBe('t'.repeat(2000));
   });
 });
 
@@ -160,7 +160,7 @@ describe('Hermes with in-app browser', () => {
       () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'look at the page', verification: 'screenshot' }] } }),
       () => JSON.stringify({ action: { type: 'tool_call', stepId: 'step-1', tool: 'browse', params: { action: 'screenshot' }, reason: 'verify visually', expected: 'png' } }),
       (_n, messages: LlmMessage[]) => {
-        sawImage = messages.some(
+        sawImage ||= messages.some(
           (m) => Array.isArray(m.content) && m.content.some((p) => p.type === 'image_url'),
         );
         return JSON.stringify({ action: { type: 'request_block', reason: 'done looking' } });
@@ -181,7 +181,7 @@ describe('Hermes with in-app browser', () => {
       () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'look', verification: 'screenshot' }] } }),
       () => JSON.stringify({ action: { type: 'tool_call', stepId: 'step-1', tool: 'browse', params: { action: 'screenshot' }, reason: 'verify', expected: 'png' } }),
       (_n, messages: LlmMessage[]) => {
-        note = messages
+        note += messages
           .filter((m) => typeof m.content === 'string')
           .map((m) => String(m.content))
           .join('\n');

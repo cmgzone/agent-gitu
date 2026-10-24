@@ -33,7 +33,7 @@ function ui() {
   const modals: { className: string; innerHTML: string }[] = [];
   const context = createContext({
     S: { active: 'cowork', cw }, window: { addEventListener: vi.fn() },
-    document: {
+    document: { addEventListener: vi.fn(),
       documentElement: { getAttribute: () => 'light' },
       createElement: () => {
         const element = { className: '', innerHTML: '', querySelector: () => ({ onclick: null }), remove: vi.fn(), appendChild: vi.fn() };

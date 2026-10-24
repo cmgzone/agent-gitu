@@ -12,7 +12,7 @@ afterAll(() => rmSync(root, { recursive: true, force: true }));
 let sequence = 0;
 function fixture(allow = true) {
   const file = path.join(root, `${++sequence}.json`), store = new CoworkStore(file);
-  const agent = store.saveAgent({ name: 'Mimi', systemPrompt: 'Help with useful offers.', allowWrites: true, allowConfig: true });
+  const agent = store.saveAgent({ name: 'Mimi', systemPrompt: 'Help with useful offers.', allowWrites: true, allowConfig: true, personality:{traits:[],communicationStyle:'',proactivity:'proactive'} });
   const conversation = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
   store.assignAppAccount(agent.id, 'shop', 'own');
   if (allow) {
@@ -24,6 +24,13 @@ function fixture(allow = true) {
   return { file, store, agent, conversation, apps, llm: { complete } as unknown as LlmClient, userContext: 'The user regularly needs paper.', complete, now: Date.UTC(2026, 9, 9) };
 }
 describe('Connected-app heartbeat', () => {
+  it('requires the explicit Take initiative preference and records failed checks with a short retry rather than a six-hour success',async()=>{
+    const f=fixture();f.store.saveAgent({...f.agent,personality:{traits:[],communicationStyle:'',proactivity:'suggest'}});
+    expect(await reviewConnectedApps(f)).toBe(0);expect(f.complete).not.toHaveBeenCalled();
+    f.store.saveAgent(f.agent);vi.mocked(f.apps.accounts).mockRejectedValueOnce(Error('Network unavailable'));
+    expect(await reviewConnectedApps(f)).toBe(0);const state=f.store.appReviewState(f.agent.id);expect(state.status).toBe('failed');expect(state.lastSuccessAt).toBeUndefined();expect(Date.parse(state.nextRetryAt!)-f.now).toBe(60000);
+    expect(await reviewConnectedApps({...f,now:f.now+60001})).toBe(1);expect(f.store.appReviewState(f.agent.id)).toMatchObject({status:'healthy',failures:0,lastSuccessAt:new Date(f.now+60001).toISOString()});
+  });
   it('creates a widget and chat notice, deduplicates across restart, and respects dismissal', async () => {
     const f = fixture(); expect(await reviewConnectedApps(f)).toBe(1);
     const widget = f.store.widgets(f.conversation.id)[0]!;

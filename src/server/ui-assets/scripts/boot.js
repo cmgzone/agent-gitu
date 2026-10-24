@@ -1,6 +1,8 @@
 
 
   function boot() {
+    initializeOnboarding();
+    syncCodingPermissions();
     if (S.settings.projectPath) {
       api('/api/browse?path=' + encodeURIComponent(S.settings.projectPath)).catch(function () {
         toast('Stored project path no longer exists — pick a folder', true);
@@ -54,7 +56,6 @@
     var cwWasOpen = false;
     try { cwWasOpen = localStorage.getItem('hermes.cowork') === 'open'; } catch (e) {}
     if (cwWasOpen) openCowork(); else openHome();
-    initializeOnboarding();
 
     // One global Escape: closes the TOPMOST layer (tool panel → settings →
     // browse modal → dynamic modals) and returns focus to where it was.

@@ -9,6 +9,17 @@ export interface CronJob {
   lastRunAt?: string;
   lastRunId?: string;
   createdAt: string;
+  owner?: 'coding' | 'maintenance';
+  status?: 'running' | 'succeeded' | 'failed';
+  lastSuccessAt?: string;
+  nextRetryAt?: string;
+  failures?: number;
+  error?: string;
+}
+
+/** Legacy maintenance IDs retain their owner before the first migration runs. */
+export function cronOwner(job: CronJob): 'coding' | 'maintenance' {
+  return job.id.startsWith('cowork_learn_') ? 'maintenance' : (job.owner ?? 'coding');
 }
 
 export const MIN_CRON_INTERVAL_MS = 5_000;
@@ -56,10 +67,11 @@ export class CronStore {
     writeFileSync(this.file, JSON.stringify({ jobs }, null, 2));
   }
 
-  add(input: { every: string; goal: string }): CronJob {
+  add(input: { every: string; goal: string; owner?: CronJob['owner']; id?: string }): CronJob {
     parseEvery(input.every);
     const job: CronJob = {
-      id: `cron-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4)}`,
+      id: input.id ?? `cron-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4)}`,
+      owner: input.owner ?? 'coding',
       every: input.every.trim(),
       goal: input.goal.trim(),
       enabled: true,
@@ -67,6 +79,7 @@ export class CronStore {
       createdAt: new Date().toISOString(),
     };
     const jobs = this.jobs();
+    if (jobs.some((existing) => existing.id === job.id)) throw Error('Schedule already exists.');
     jobs.push(job);
     this.save(jobs);
     return job;
@@ -92,6 +105,7 @@ export class CronScheduler {
   constructor(
     private readonly store: CronStore,
     private readonly onDue: (job: CronJob) => Promise<string | undefined> | string | undefined,
+    private readonly owner: 'coding' | 'maintenance' = 'coding',
   ) {}
 
   start(tickMs = 15000): void {
@@ -112,7 +126,7 @@ export class CronScheduler {
     try {
       const now = Date.now();
       for (const job of this.store.jobs()) {
-        if (!job.enabled || this.running.has(job.id)) continue;
+        if (cronOwner(job) !== this.owner || !job.enabled || this.running.has(job.id)) continue;
         let interval: number;
         try {
           interval = parseEvery(job.every);
@@ -120,10 +134,11 @@ export class CronScheduler {
           continue;
         }
         const last = job.lastRunAt ? new Date(job.lastRunAt).getTime() : 0;
-        if (now - last < interval) continue;
+        if (job.status === 'running' && now - last < 120_000) continue;
+        if (job.nextRetryAt ? now < Date.parse(job.nextRetryAt) : now - last < interval) continue;
         this.running.add(job.id);
         try {
-          this.store.update(job.id, { lastRunAt: new Date().toISOString() });
+          this.store.update(job.id, { lastRunAt: new Date(now).toISOString(), status: 'running', error: undefined });
         } catch (err) {
           // The job was marked in-flight before the write failed — release it
           // so a later tick can still dispatch it.
@@ -131,9 +146,26 @@ export class CronScheduler {
           console.error(`[hermes] cron update failed for ${job.id}: ${(err as Error).message}`);
           continue;
         }
-        Promise.resolve(this.onDue(job))
+        Promise.resolve()
+          .then(() => this.onDue(job))
           .then((runId) => {
-            if (runId) this.store.update(job.id, { lastRunId: runId });
+            this.store.update(job.id, {
+              ...(runId ? { lastRunId: runId } : {}),
+              status: 'succeeded',
+              lastSuccessAt: new Date().toISOString(),
+              failures: 0,
+              nextRetryAt: undefined,
+              error: undefined,
+            });
+          })
+          .catch((error: unknown) => {
+            const failures = (job.failures ?? 0) + 1;
+            this.store.update(job.id, {
+              status: 'failed',
+              failures,
+              error: error instanceof Error ? error.message.slice(0, 300) : 'Background job failed',
+              nextRetryAt: new Date(Date.now() + Math.min(30 * 60_000, 60_000 * 2 ** Math.min(failures - 1, 5))).toISOString(),
+            });
           })
           .catch(() => undefined)
           .finally(() => this.running.delete(job.id));

@@ -1,8 +1,9 @@
-const { app, BrowserWindow, shell, nativeTheme,Tray,Menu,nativeImage,crashReporter } = require('electron');
+const { app, BrowserWindow, shell, nativeTheme,Tray,Menu,nativeImage,crashReporter,clipboard } = require('electron');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
+const { phoneAddresses, registerPhoneAccess, ensurePhoneFirewall } = require('./phone-access.cjs');
 
 const APP_ICON_PATH = path.join(__dirname, '..', 'assets', 'agent-gitu-icon.png');
 // Keep native crash dumps on this computer; never submit them to a service.
@@ -25,8 +26,30 @@ let quitting = false;
 let runtimeStopped = false;
 let stoppingEngine = false;
 let keepEngineRunning = false;
+let phoneFirewall = { allowed: false, pending: true };
+function phoneAccessStatus() {
+  const enabled = process.env.AGENT_GITU_DESKTOP_PHONE_ACCESS !== '0';
+  return { enabled, addresses: enabled ? phoneAddresses(boundPort) : [], ...phoneFirewall };
+}
+async function allowPhoneAccess(force = false) {
+  if (!boundPort || !engine || process.env.AGENT_GITU_DESKTOP_PHONE_ACCESS === '0') return { enabled: false, addresses: [] };
+  phoneFirewall = { allowed: false, pending: true };
+  const result = await ensurePhoneFirewall({ home: engine.paths.home, port: boundPort, force });
+  phoneFirewall = { ...result, pending: false };
+  updateRuntimeTray();
+  return phoneAccessStatus();
+}
+function updateRuntimeTray() {
+  if (!runtimeTray) return;
+  const status = phoneAccessStatus();
+  const phoneItems = status.addresses.map(address => ({ label: 'Copy ' + address, click: () => clipboard.writeText(address) }));
+  if (!phoneItems.length) phoneItems.push({ label: status.enabled ? 'Connect this computer to Wi-Fi' : 'Phone access disabled', enabled: false });
+  phoneItems.push({ label: 'Same Wi-Fi · use your Gitu email and password', enabled: false });
+  if (status.enabled && process.platform === 'win32') phoneItems.push({ label: 'Allow phone access through Windows Firewall', click: () => { void allowPhoneAccess(true); } });
+  runtimeTray.setContextMenu(Menu.buildFromTemplate([{label:'Open Agent Gitu',click:showWorkspace},{label:'Connect Android phone',submenu:phoneItems},{type:'separator'},{label:'Exit interface (keep agents running)',click:()=>{keepEngineRunning=true;app.quit();}},{label:'Quit Agent Gitu and stop agents',click:()=>{keepEngineRunning=false;app.quit();}}]));
+}
 function showWorkspace(){if(mainWindow&&!mainWindow.isDestroyed()){mainWindow.show();if(mainWindow.isMinimized())mainWindow.restore();mainWindow.focus();}else if(boundPort)createMainWindow();}
-function createRuntimeTray(){if(runtimeTray)return;const icon=nativeImage.createFromPath(APP_ICON_PATH).resize({width:24,height:24});runtimeTray=new Tray(icon);runtimeTray.setToolTip('Agent Gitu — agent engine running independently');runtimeTray.setContextMenu(Menu.buildFromTemplate([{label:'Open Agent Gitu',click:showWorkspace},{type:'separator'},{label:'Exit interface (keep agents running)',click:()=>{keepEngineRunning=true;app.quit();}},{label:'Quit Agent Gitu and stop agents',click:()=>{keepEngineRunning=false;app.quit();}}]));runtimeTray.on('double-click',showWorkspace);}
+function createRuntimeTray(){if(runtimeTray)return;const icon=nativeImage.createFromPath(APP_ICON_PATH).resize({width:24,height:24});runtimeTray=new Tray(icon);runtimeTray.setToolTip('Agent Gitu — agent engine running independently');updateRuntimeTray();runtimeTray.on('right-click',updateRuntimeTray);runtimeTray.on('double-click',showWorkspace);}
 
 async function showStartupWindow() {
   if (startupWindow && !startupWindow.isDestroyed()) { startupWindow.show(); return; }
@@ -645,7 +668,9 @@ function createMainWindow() {
   let revealed = false;
   const appUrl = `http://127.0.0.1:${boundPort}`;
   const themedWindow = mainWindow;
+  require('./project-folder.cjs').registerProjectFolder(themedWindow.webContents, appUrl, (folderPath) => shell.openPath(folderPath));
   require('./app-sign-in.cjs').registerAppSignIn(themedWindow.webContents, appUrl, (url) => shell.openExternal(url));
+    registerPhoneAccess(themedWindow.webContents, appUrl, phoneAccessStatus, () => allowPhoneAccess(true));
   themedWindow.webContents.ipc.on('gitu:theme', (event, theme) => {
     if (themedWindow.isDestroyed() || event.senderFrame !== themedWindow.webContents.mainFrame) return;
     if (theme !== 'light' && theme !== 'dark') return;
@@ -886,6 +911,8 @@ async function start() {
     }
     createMainWindow();
     log('main window created');
+    updateRuntimeTray();
+    void allowPhoneAccess().catch(() => { phoneFirewall = { allowed: false, pending: false, message: 'Use Phone access in Settings to allow the Windows permission request.' }; });
 
   } catch (err) {
     log(`start() fatal error: ${err && err.stack ? err.stack : err}`);

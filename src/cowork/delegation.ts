@@ -52,6 +52,10 @@ export interface DelegationScope {
    *  delegation draws its money from the mission's envelope when set. */
   missionId?: string;
   signal?: AbortSignal;
+  background?: boolean;
+  /** Host-bound private execution bridge; never a transport chosen by the model. */
+  subAgents?: { run(params: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> };
+  taggedFolders?: string[];
 }
 
 export interface DelegationRunOptions {
@@ -100,7 +104,7 @@ export interface DelegationSessionInput {
 export interface CoworkDelegationDeps {
   /** The workspace a delegated run executes against — `host` for a teammate
    *  working on the user's machine. */
-  workspaceFor: (scope: DelegationScope) => WorkspaceRef;
+  workspaceFor: (scope: DelegationScope, projectPath?: string, goal?: string) => WorkspaceRef;
   /**
    * The account a delegation draws from, for this scope.
    *
@@ -120,7 +124,7 @@ export interface CoworkDelegationDeps {
    * here is exactly the window in which a gate would have no session to answer
    * through.
    */
-  createSession: (input: DelegationSessionInput) => CodingSession;
+  createSession: (input: DelegationSessionInput, scope: DelegationScope) => CodingSession;
   /**
    * Surfaces a runtime-owned gate as a cowork request card. Returns the card's
    * id, which is what the resolution hook is keyed by — never "whatever gate is
@@ -128,9 +132,13 @@ export interface CoworkDelegationDeps {
    */
   openRequest: (input: { scope: DelegationScope; title: string; detail: string; options: string[] }) => { id: string };
   /** Closes a card whose runtime gate ended before anyone answered it. */
-  closeRequest?: (requestId: string) => void;
+  closeRequest?: (requestId: string, resolution?: DelegationResolution) => void;
   /** Release per-session host resources (MCP clients, …) once a run settles. */
   sessionSettled?: (sessionId: string) => void;
+  backgroundSettled?: (scope: DelegationScope, sessionId: string, result: ToolResult) => void;
+  retryCoding?: (scope: DelegationScope, params: Record<string,unknown>) => Promise<ToolResult>;
+  reviewCoding?: (scope:DelegationScope,params:Record<string,unknown>)=>Promise<ToolResult>;
+  defaultReviewOf?: (scope:DelegationScope)=>string|undefined;
   /** Liveness line for the delegating conversation's progress area. */
   progress: (input: { conversationId: string; agentId: string; text: string }) => void;
   /** Called after a delegation card is resolved, so subscribers re-render. */
@@ -201,9 +209,7 @@ export function parseDelegationParams(params: Record<string, unknown>): { ok: tr
   }
   return {
     ok: true,
-    // The model is the teammate's own, resolved by the host: a delegated session
-    // speaks with the same provider the delegating agent does, so accepting a
-    // `provider`/`model` here would let the caller silently switch it.
+    // Main-agent model selection belongs to the host, never the delegating model.
     value: {
       goal,
       mode,
@@ -312,6 +318,19 @@ export class CoworkDelegation {
    * teammate waiting: gates surface as request cards and are answered through
    * the runtime, never by this module faking a decision.
    */
+  start(scope: DelegationScope, params: Record<string, unknown>, internalReviewDispatch=false): Promise<ToolResult> {
+    if(scope.signal?.aborted)return Promise.resolve({ok:false,output:'Coding handoff cancelled before it started.'});
+    const reviewOf=params['reviewOf']??(!internalReviewDispatch?this.deps.defaultReviewOf?.(scope):undefined);
+    if(reviewOf&&!internalReviewDispatch)return this.deps.reviewCoding?.(scope,{...params,reviewOf})??Promise.resolve({ok:false,output:'Review repair is unavailable.'});
+    if(params['retryOf'])return this.deps.retryCoding?.(scope,params)??Promise.resolve({ok:false,output:'Coding recovery is unavailable.'});
+    const before=new Set(this.runs.keys());
+    const completion=this.run({...scope,signal:undefined,background:true},params);
+    const started=[...this.runs.values()].find(run=>!before.has(run.session.id));
+    if(!started)return completion;
+    void completion.then(result=>this.deps.backgroundSettled?.(scope,started.session.id,result)).catch(()=>undefined);
+    return Promise.resolve({ok:true,output:JSON.stringify({status:'running',runId:started.session.id,message:'Main Agent Gitu is coding in the background. Remain available for other work. A verified result will return to this conversation; do not wait, poll repeatedly or claim completion now.'})});
+  }
+
   async run(scope: DelegationScope, params: Record<string, unknown>): Promise<ToolResult> {
     // Refused before anything is created: an already-stopped conversation must
     // not start a new paid run that nothing is waiting for. The listener below
@@ -335,7 +354,7 @@ export class CoworkDelegation {
     try {
       session = this.deps.createSession({
         goal,
-        workspace: this.deps.workspaceFor(scope),
+        workspace: this.deps.workspaceFor(scope, typeof params['projectPath'] === 'string' ? params['projectPath'] : undefined, goal),
         agentId: scope.agent.id,
         requestedBy: scope.agent.name,
         runOptions,
@@ -370,7 +389,7 @@ export class CoworkDelegation {
             requestId: questions.id,
           });
         },
-      });
+      }, scope);
     } catch (err) {
       // The runtime refuses a workspace it has no transport for, and says why.
       return { ok: false, output: `gitu_task could not start: ${(err as Error).message}` };
@@ -437,8 +456,8 @@ export class CoworkDelegation {
     };
     if (gate.kind === 'approval') {
       const approved = isAffirmative(action, response);
-      session.approve(gate.requestId, approved);
       settle();
+      session.approve(gate.requestId, approved);
       return { ok: true, resolution: { status: approved ? 'approved' : 'denied', answer: approved ? 'Approved' : 'Denied' } };
     }
     if (gate.kind === 'plan_review') {
@@ -451,16 +470,16 @@ export class CoworkDelegation {
         : isBareRejection(action, note)
           ? { approved: false }
           : { approved: false, note };
-      session.approvePlan(gate.requestId, decision);
       settle();
+      session.approvePlan(gate.requestId, decision);
       return { ok: true, resolution: { status: decision.approved ? 'approved' : 'denied', answer: note || (decision.approved ? 'Approved' : 'Rejected') } };
     }
     // Only the typed answer counts. Falling back to the action verb would turn
     // the literal word "answer" into the reply to a question.
     const answer = response.trim();
     if (!answer) return { ok: false, error: 'an answer is required' };
-    session.answerQuestions(gate.requestId, answer);
     settle();
+    session.answerQuestions(gate.requestId, answer);
     return { ok: true, resolution: { status: 'answered', answer } };
   }
 
@@ -495,7 +514,10 @@ export class CoworkDelegation {
       if (gate.requestId !== requestId) continue;
       run.gates.delete(cardId);
       this.gates.delete(cardId);
-      this.deps.closeRequest?.(cardId);
+      this.deps.closeRequest?.(cardId, event.type==='approval_resolved'
+        ?{status:event.approved?'approved':'denied',answer:event.approved?'Approved in coding chat.':'Denied in coding chat.'}
+        :event.type==='plan_review_resolved'?{status:event.decision==='approved'?'approved':'denied',answer:event.decision==='approved'?'Plan approved in coding chat.':'Plan '+event.decision+' in coding chat.'}
+        :{status:'answered',answer:'Answered in coding chat.'});
     }
   }
 

@@ -81,8 +81,12 @@ export function executeWorkflowTool(service: CompanyWorkflows, agentId: string, 
     case 'save':
       value = service.save(actor, args['input'] as never);
       break;
+    case 'create':
+    case 'propose':
+      value = service.propose(actor, args['input'] as never, createHash('sha256').update(canonicalAction({ agentId, invocation, input:args['input'] })).digest('hex'));
+      break;
     case 'validate':
-      value = service.validate(service.version(actor, String(args['id']), Number(args['version'])));
+      value = service.validate(service.version(actor, String(args['id']), Number(args['version'])), args['input']);
       break;
     case 'simulate':
       value = service.simulate(actor, String(args['id']), Number(args['version']), args['input'] ?? {}, (args['samples'] ?? {}) as Record<string, unknown>);
@@ -102,7 +106,7 @@ export function executeWorkflowTool(service: CompanyWorkflows, agentId: string, 
       value = service.run(actor, String(args['id']));
       break;
     default:
-      throw new Error('Choose list, read, save, validate, simulate, start or run. Director approval remains separate.');
+      throw new Error('Choose list, read, propose, save, validate, simulate, start or run. Director approval remains separate.');
   }
   return { ok: true, output: JSON.stringify(value) };
 }

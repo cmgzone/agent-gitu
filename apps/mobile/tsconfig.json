@@ -7,5 +7,5 @@
     "lib": ["ES2022", "DOM"],
     "allowImportingTsExtensions": true
   },
-  "include": ["App.tsx", "src/gitu/**/*.ts", "src/gitu/**/*.tsx", "src/ui.tsx"]
+  "include": ["App.tsx", "App.android.tsx", "src/gitu/**/*.ts", "src/gitu/**/*.tsx", "src/ui.tsx"]
 }

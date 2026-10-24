@@ -123,6 +123,21 @@ describe('cowork glass widget cards and mobile tray', () => {
     expect(nodes['cwWidgetCards']!.innerHTML).not.toContain('Launch review');
   });
 
+  it('updates sandboxed app visibility without blocking workspace rendering', () => {
+    const { helpers, nodes, state } = load(1440);
+    const postMessage = vi.fn((_message: unknown, origin: string) => {
+      if (origin === 'null') throw new SyntaxError('Invalid target origin');
+    });
+    const frame = { contentWindow: { postMessage } };
+    nodes['cwWidgetLane']!.querySelectorAll.mockImplementation(() => [frame] as any);
+    state.widgets = [widget];
+    expect(() => helpers.cwRenderWidgets()).not.toThrow();
+    expect(postMessage).toHaveBeenLastCalledWith({ type: 'gitu-widget-visibility', visible: true }, '*');
+    state.widgetsOpen = false;
+    helpers.cwRenderWidgets();
+    expect(postMessage).toHaveBeenLastCalledWith({ type: 'gitu-widget-visibility', visible: false }, '*');
+  });
+
   it('saves desktop placement and restores the overlay choice without remounting cards', () => {
     const { helpers, nodes, state, localStorage } = load(1440);
     state.widgets = [widget]; helpers.cwRenderWidgets();

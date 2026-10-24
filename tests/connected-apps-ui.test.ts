@@ -97,6 +97,115 @@ function fixture() {
 }
 
 describe('account and Connections UI', () => {
+  it('loads saved native mailboxes and health from the API even without an OAuth provider', async () => {
+    const f=fixture();f.cw.connectionsOpen=true;
+    f.api.mockResolvedValue({configured:false,canConfigure:true,mail:{accounts:[{id:'native',label:'Support',address:'support@example.test',mailHealth:{imap:{state:'timeout',message:'Incoming IMAP timed out.'},smtp:{state:'ok',message:'Outgoing SMTP verified.'}}}],available:[],providers:[]}});
+    await f.context.cwLoadServices('',false);
+    expect(f.content.innerHTML).toContain('support@example.test');
+    expect(f.content.innerHTML).toContain('data-cwmailcheck="native"');
+    expect(f.content.innerHTML).toContain('Incoming IMAP timed out.');
+    expect(f.content.innerHTML).toContain('Outgoing SMTP verified.');
+  });
+  it('shows native incoming and outgoing health separately and distinguishes assignment from live connectivity', () => {
+    const f=fixture();
+    f.cw.mail={accounts:[{id:'native',label:'Support',address:'support@example.test',mailHealth:{checkedAt:'2026-10-21T00:00:00Z',imap:{state:'timeout',message:'Incoming IMAP connection timed out; credentials were not verified.'},smtp:{state:'ok',message:'Outgoing SMTP sign-in verified. No email was sent.'}}}] as never,available:[],providers:[]};
+    const html=f.context.cwMailSectionHtml('writer');
+    expect(html).toContain('data-cwmailcheck="native"');
+    expect(html).toContain('Assigned to this teammate');
+    expect(html).toContain('Incoming IMAP connection timed out');expect(html).toContain('Outgoing SMTP sign-in verified');
+    expect(html).not.toContain('credentials expired');
+  });
+  it('runs the native connection check without sending or replacing mailbox settings', async () => {
+    const f=fixture(),button={disabled:false,getAttribute:()=> 'native',setAttribute:vi.fn(),removeAttribute:vi.fn(),onclick:undefined as undefined|(()=>Promise<void>)};
+    f.context.cwLoadServices=vi.fn();
+    f.api.mockResolvedValue({imap:{state:'timeout'},smtp:{state:'ok'}});
+    f.context.cwBindMail({querySelectorAll:(selector:string)=>selector==='[data-cwmailcheck]'?[button]:[]},'writer');
+    await button.onclick!();
+    expect(f.api).toHaveBeenCalledExactlyOnceWith('/api/connected-apps/mail/check',expect.objectContaining({body:JSON.stringify({accountId:'native'})}));
+    expect(f.context.cwLoadServices).toHaveBeenCalledOnce();expect(button.disabled).toBe(false);
+    expect(f.context.toast).toHaveBeenCalledWith('Mailbox check completed. Review incoming and outgoing results.',true);
+  });
+  it('offers fresh sign-in beside expired accounts while keeping active accounts usable and accurately counted', async () => {
+    const f=fixture();f.cw.connectionsOpen=true;f.cw.servicesTab='connected';
+    f.api.mockResolvedValue({configured:true,services:[{slug:'gmail',name:'Gmail'}],accounts:[
+      {id:'old',toolkit:'gmail',status:'EXPIRED',disabled:false,connectionIssue:'sign-in-expired'},
+      {id:'live',toolkit:'gmail',status:'ACTIVE',disabled:false},
+    ]});
+    await f.context.cwLoadServices('',false);
+    expect(f.content.innerHTML).toContain('Sign-in link expired · sign-in was not completed');
+    expect(f.content.innerHTML).toContain('data-cwconnect="gmail"');
+    expect(f.content.innerHTML).toContain('aria-label="Sign in again to Gmail"');
+    expect(f.content.innerHTML).toContain('data-cwdisconnect="old"');
+    expect(f.content.innerHTML).toContain('data-cwdisconnect="live"');
+    expect(f.elements.cwServicesCount.textContent).toBe('1');
+  });
+  it('starts a fresh browser sign-in and automatically watches the exact new account', async () => {
+    const f=fixture();f.cw.connectionsOpen=true;
+    const openAppSignIn=vi.fn(async()=>true);f.context.window={gituDesktop:{openAppSignIn}};
+    const button={disabled:false,getAttribute:()=> 'gmail',onclick:undefined as undefined|(()=>Promise<void>)};
+    f.context.cwRenderServices=vi.fn();
+    f.api.mockResolvedValue({url:'https://connect.composio.dev/fresh',accountId:'new-account'});
+    f.context.cwBindServiceActions({querySelectorAll:(selector:string)=>selector==='[data-cwconnect]'?[button]:[]},'writer');
+    await button.onclick!();
+    expect(openAppSignIn).toHaveBeenCalledWith('https://connect.composio.dev/fresh');
+    expect(f.context.cwEnsure().serviceSignIn).toMatchObject({agentId:'writer',service:'gmail',accountId:'new-account'});
+    expect(f.context.setTimeout).toHaveBeenCalledWith(expect.any(Function),2500);
+    expect(f.context.cwServiceSignInHtml('writer')).toContain('Continue sign-in');
+    expect(f.context.cwServiceSignInHtml('other')).toBe('');
+  });
+  it('waits for the newly linked account rather than accepting a different active mailbox', async () => {
+    const f=fixture();f.cw.connectionsOpen=true;
+    const flow={agentId:'writer',service:'gmail',accountId:'new',url:'https://connect.composio.dev/fresh',expiresAt:Date.now()+600000};
+    f.context.cwEnsure().serviceSignIn=flow;f.context.cwRenderServices=vi.fn();
+    f.api.mockResolvedValueOnce({configured:true,accounts:[{id:'other',toolkit:'gmail',status:'ACTIVE',disabled:false},{id:'new',toolkit:'gmail',status:'INITIATED',disabled:false}]});
+    await f.context.cwRefreshServiceSignIn(flow);
+    expect(f.context.cwEnsure().serviceSignIn).toBe(flow);
+    expect(f.context.toast).not.toHaveBeenCalled();
+    f.api.mockResolvedValueOnce({configured:true,accounts:[{id:'new',toolkit:'gmail',status:'ACTIVE',disabled:false}]});
+    await f.context.cwRefreshServiceSignIn(flow);
+    expect(f.context.cwEnsure().serviceSignIn).toBe(null);
+    expect(f.context.toast).toHaveBeenCalledWith('Account connected for this teammate.');
+    expect(f.context.cwEnsure().appAccountStates.writer.accounts[0].id).toBe('new');
+  });
+  it('replaces timed-out links with a fresh sign-in action and stops polling after closing', async () => {
+    const f=fixture();f.cw.connectionsOpen=true;
+    const flow={agentId:'writer',service:'gmail',accountId:'new',url:'https://connect.composio.dev/old',expiresAt:Date.now()-1};
+    f.context.cwEnsure().serviceSignIn=flow;f.context.cwRenderServices=vi.fn();
+    await f.context.cwRefreshServiceSignIn(flow);
+    expect(f.api).not.toHaveBeenCalled();
+    expect(f.context.cwServiceSignInHtml('writer')).toContain('Start fresh sign-in');
+    expect(f.context.cwServiceSignInHtml('writer')).not.toContain('href=');
+    f.context.cwCloseConnectionManager();f.context.setTimeout.mockClear();
+    f.context.cwWatchServiceSignIn();
+    expect(f.context.setTimeout).not.toHaveBeenCalled();
+  });
+  it('keeps the current form and keyboard focus when a sign-in poll has no status change', async () => {
+    const f=fixture();f.cw.connectionsOpen=true;
+    const flow={agentId:'writer',service:'gmail',accountId:'new',url:'https://connect.composio.dev/fresh',expiresAt:Date.now()+600000};
+    const data={accounts:[{id:'new',toolkit:'gmail',status:'INITIATED',disabled:false}],availableAccounts:[],appPermissions:[],accountStatusIncomplete:false};
+    f.context.cwEnsure().serviceSignIn=flow;f.context.cwEnsure().servicesData=data;
+    f.context.cwRenderServices=vi.fn();f.api.mockResolvedValue(data);
+    await f.context.cwRefreshServiceSignIn(flow);
+    expect(f.context.cwRenderServices).not.toHaveBeenCalled();
+    expect(f.context.setTimeout).toHaveBeenCalledWith(expect.any(Function),2500);
+  });
+  it('preserves connection status across temporary failures and ignores late sign-in results for another teammate', async () => {
+    const f=fixture();f.cw.connectionsOpen=true;
+    const flow={agentId:'writer',service:'gmail',accountId:'new',url:'https://connect.composio.dev/fresh',expiresAt:Date.now()+600000};
+    f.context.cwEnsure().serviceSignIn=flow;f.context.cwRenderServices=vi.fn();
+    f.api.mockRejectedValueOnce(new Error('provider credentials must not appear'));
+    await f.context.cwRefreshServiceSignIn(flow);
+    expect(f.context.cwServiceSignInHtml('writer')).toContain('Retrying automatically');
+    expect(f.context.cwServiceSignInHtml('writer')).not.toContain('credentials');
+    expect(f.context.cwEnsure().serviceSignIn.expired).not.toBe(true);
+    let finish!:(data:unknown)=>void;f.api.mockReturnValueOnce(new Promise(resolve=>{finish=resolve;}));
+    const pending=f.context.cwRefreshServiceSignIn(flow);
+    f.cw.connectionsAgentId='another';
+    finish({accounts:[{id:'new',toolkit:'gmail',status:'ACTIVE',disabled:false}]});
+    await pending;
+    expect(f.context.cwEnsure().serviceSignIn).toBe(flow);
+    expect(f.context.toast).not.toHaveBeenCalled();
+  });
   it('opens one workspace manager in Settings without switching modes', () => {
     const f = fixture();
     f.context.cwOpenWorkspaceConnections();

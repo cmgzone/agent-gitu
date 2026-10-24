@@ -67,6 +67,7 @@ import { toolCreateDocument } from '../tools/productivity.js';
 import type { FileDiff } from '../tools/diff.js';
 import { toolScheduleManage } from '../cron/tools.js';
 import { isObservationTool } from '../agent/agent-workflow.js';
+import { isDeploymentAction, DEPLOYMENT_OWNERSHIP } from '../coding/deployment-authority.js';
 
 /** Every tool name this executor dispatches, for "did you mean" suggestions. */
 const EXECUTOR_TOOL_NAMES = [
@@ -161,6 +162,7 @@ export class Executor {
     private readonly runtimeCapabilities?: RuntimeCapabilitySupplier,
     private readonly connections?: ConnectionRegistry,
     options?: {
+      deploymentAllowed?: () => boolean;
       memory?: MemoryStore;
       memoryContext?: MemoryRetrievalContext;
       signal?: () => AbortSignal | undefined;
@@ -170,6 +172,7 @@ export class Executor {
     },
   ) {
     this.memory = options?.memory;
+    this.deploymentAllowed = options?.deploymentAllowed;
     this.memoryContext = options?.memoryContext;
     this.signal = options?.signal;
     this.onCodingEvent = options?.onCodingEvent;
@@ -184,6 +187,7 @@ export class Executor {
   readonly fileKnowledge: FileKnowledgeStore;
 
   private readonly memory?: MemoryStore;
+  private readonly deploymentAllowed?: () => boolean;
   private readonly signal?: () => AbortSignal | undefined;
   private readonly memoryContext?: MemoryRetrievalContext;
   private readonly onCodingEvent?: CodingEventSink;
@@ -306,6 +310,10 @@ export class Executor {
     const paramsHash = hashParams(req.tool, req.params);
     const summary = summarizeParams(req.tool, req.params);
     const stepId = req.stepId;
+    if (this.deploymentAllowed?.() === false && isDeploymentAction(req.tool, req.params)) {
+      const record = this.ledger.recordAction({ stepId, tool: req.tool, paramsHash, paramsSummary: summary, status: 'denied', reason: req.reason, expected: req.expected, observation: DEPLOYMENT_OWNERSHIP, durationMs: Date.now() - started });
+      return { record, result: { ok: false, output: DEPLOYMENT_OWNERSHIP }, deniedByPolicy: DEPLOYMENT_OWNERSHIP };
+    }
 
     if (stepId) {
       const step = this.ledger.step(stepId);

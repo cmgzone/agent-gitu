@@ -15,6 +15,7 @@ export interface ConnectedApp {
   toolkit: string;
   status: string;
   disabled: boolean;
+  connectionIssue?: 'sign-in-expired';
 }
 export interface ServiceCard {
   slug: string;
@@ -210,7 +211,11 @@ export class ComposioConnections {
     let pages = 0;
     do {
       const result = await this.client().connectedAccounts.list({ userIds: [owner], accountType: 'PRIVATE', limit: 100, cursor }, { signal: AbortSignal.timeout(15_000) });
-      for (const account of result.items) items.set(account.id, { id: account.id, toolkit: account.toolkit.slug, status: account.status, disabled: account.isDisabled });
+      for (const account of result.items) {
+        // Expose a fixed classification, never the provider's raw reason or credentials.
+        const unfinished = account.status === 'EXPIRED' && /(?:initiation|initial authentication|sign.in).*(?:not complete|timed out)|(?:flow|session).*timed out|did not complete within \d+ minutes/i.test(account.statusReason ?? '');
+        items.set(account.id, { id: account.id, toolkit: account.toolkit.slug, status: account.status, disabled: account.isDisabled, ...(unfinished ? { connectionIssue: 'sign-in-expired' as const } : {}) });
+      }
       cursor = result.nextCursor ?? undefined;
       if (cursor && (cursors.has(cursor) || ++pages >= 10)) throw new Error('The connected account list is incomplete. Refresh Connections before selecting an account.');
       if (cursor) cursors.add(cursor);
@@ -220,8 +225,10 @@ export class ComposioConnections {
   }
   async connect(slug: string): Promise<{ url: string; accountId: string }> {
     if (!/^[a-z0-9_-]{1,100}$/.test(slug)) throw new Error('Invalid service.');
+    const owner = this.owner(), generation = this.generation;
     const session = await this.userSession();
     const request = await session.authorize(slug);
+    if (owner !== this.owner() || generation !== this.generation) throw new Error('Connection setup changed. Refresh and try again.');
     const url = new URL(request.redirectUrl ?? '');
     if (url.protocol !== 'https:' || url.username || url.password || url.port || !['connect.composio.dev', 'backend.composio.dev'].includes(url.hostname)) throw new Error('Composio returned an invalid connection link.');
     if (!request.id) throw new Error('Composio returned no connection identifier.');

@@ -10,6 +10,7 @@
   }
 
   function openToolPanel(kind) {
+    if (kind === 'browser' && $('stream')) { showChatBrowser(); return; }
     var panel = $('toolPanel');
     if (!panel) return;
     if (!panel.hidden && S.panelKind === kind) { closeToolPanel(); return; }
@@ -179,63 +180,15 @@
 
   function stopBrowserPoll() { if (S.bPoll) { clearInterval(S.bPoll); S.bPoll = null; } }
 
-  function startBrowserPoll() {
+  function showBrowserPanel() {
     stopBrowserPoll();
-    S.bPoll = setInterval(refreshBrowserView, 2500);
+    $('sideBody').innerHTML='<iframe title="Workspace browser" src="/api/server-browser/workspace/view" style="width:100%;height:75dvh;border:0;border-radius:12px"></iframe>';
   }
-
-  function refreshBrowserView() {
-    api('/api/browser').then(function (d) {
-      var hint = $('bHint2');
-      if (!hint) return;
-      if (!d.has) {
-        hint.textContent = 'The browser window opens in the desktop app on first use (npm run app).';
-        var im = $('bImg2');
-        if (im) im.removeAttribute('src');
-        return;
-      }
-      hint.textContent = (d.state.title || '(blank page)') + (d.state.driving ? ' — Agent Gitu is driving' : '');
-      var u = $('bUrl2');
-      if (u && document.activeElement !== u) u.value = d.state.url === 'about:blank' ? '' : d.state.url || '';
-      var bb = $('bBack2'), ff = $('bFwd2');
-      if (bb) bb.disabled = !d.state.canBack;
-      if (ff) ff.disabled = !d.state.canForward;
-      var drv = $('bDrive2');
-      if (drv) drv.hidden = !d.state.driving;
-      api('/api/browser/screenshot').then(function (shot) {
-        var img = $('bImg2');
-        if (img && shot.pngBase64) img.src = 'data:image/png;base64,' + shot.pngBase64;
-      }).catch(function () {});
-    }).catch(function () {});
-  }
-
-  function showBrowserPanel(runId) {
-    var body = $('sideBody');
-    body.innerHTML =
-      '<div class="bpanel2">' +
-      '<div class="nav">' +
-      '<button class="ubtn" id="bBack2" title="back" style="width:28px;height:26px">' + icon('back') + '</button>' +
-      '<button class="ubtn" id="bFwd2" title="forward" style="width:28px;height:26px;transform:scaleX(-1)">' + icon('back') + '</button>' +
-      '<button class="ubtn" id="bReload2" title="reload" style="width:28px;height:26px">' + icon('retry') + '</button>' +
-      '<input id="bUrl2" placeholder="Enter address" spellcheck="false">' +
-      '<button class="btn dark" id="bGo2">Go</button>' +
-      '<button class="btn ghost" id="bOpen2" title="open / focus the browser window">Open</button>' +
-      '</div>' +
-      '<div class="bwrap"><div class="bdrive" id="bDrive2" hidden>' + icon('bolt') + ' Agent Gitu is driving the browser</div><img id="bImg2" alt="live browser view"></div>' +
-      '<div class="empty" id="bHint2" style="margin-top:8px"></div></div>';
-    $('bBack2').onclick = function () { api('/api/browser/back', { method: 'POST' }).then(refreshBrowserView).catch(function (e) { toast(e.message, true); }); };
-    $('bFwd2').onclick = function () { api('/api/browser/forward', { method: 'POST' }).then(refreshBrowserView).catch(function (e) { toast(e.message, true); }); };
-    $('bReload2').onclick = function () { api('/api/browser/reload', { method: 'POST' }).then(refreshBrowserView).catch(function (e) { toast(e.message, true); }); };
-    $('bGo2').onclick = function () {
-      var url = clientNormalize($('bUrl2').value);
-      if (!url) return;
-      api('/api/browser/navigate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: url }) })
-        .then(refreshBrowserView).catch(function (e) { toast(e.message, true); });
-    };
-    $('bUrl2').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('bGo2').click(); });
-    $('bOpen2').onclick = function () { api('/api/browser/focus', { method: 'POST' }).then(refreshBrowserView).catch(function (e) { toast(e.message, true); }); };
-    refreshBrowserView();
-    startBrowserPoll();
+  function showChatBrowser() {
+    var stream=$('stream');if(!stream)return;
+    var card=$('chatBrowserCard');
+    if(!card){card=document.createElement('section');card.id='chatBrowserCard';card.className='chat-browser-card';card.setAttribute('aria-label','Workspace browser');card.innerHTML='<header><strong>Browser</strong><span style="flex:1"></span><button type="button" class="btn ghost" data-expand>Expand</button><button type="button" class="btn ghost" data-close>Close</button></header><iframe title="Workspace browser" src="/api/server-browser/workspace/view"></iframe>';stream.appendChild(card);card.querySelector('[data-close]').onclick=function(){card.remove();};card.querySelector('[data-expand]').onclick=function(){card.classList.toggle('is-expanded');this.textContent=card.classList.contains('is-expanded')?'Collapse':'Expand';};}
+    card.scrollIntoView({block:'nearest'});
   }
 
   function reportText(r) {

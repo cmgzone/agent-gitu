@@ -4,6 +4,7 @@ import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ScriptedMockLlm } from '../src/llm/llm.js';
+import { parseModelCatalog, setModelCatalogForTest } from '../src/llm/providers.js';
 import { HermesServer } from '../src/server/server.js';
 import { UI_HTML } from '../src/server/ui.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
@@ -294,6 +295,12 @@ describe('HermesServer', () => {
 
   it('exposes live token limits and prices with the model catalog', async () => {
     const originalFetch = globalThis.fetch;
+    const catalog = {
+      openai: { models: { 'gpt-4.1-mini': { limit: { context: 1_047_576, output: 32_768 }, cost: { input: 0.4, output: 1.6 } } } },
+    };
+    // Earlier server cases may have warmed the catalog or its outage backoff.
+    // Pin this case's provider data so it never depends on the public service.
+    setModelCatalogForTest(parseModelCatalog(catalog));
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
       if (url === 'https://models.dev/api.json') {
@@ -322,6 +329,7 @@ describe('HermesServer', () => {
       expect(publicProvider).toBeTruthy();
     } finally {
       globalThis.fetch = originalFetch;
+      setModelCatalogForTest(undefined);
     }
   });
 

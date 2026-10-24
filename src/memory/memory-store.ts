@@ -139,10 +139,13 @@ export class MemoryStore {
     projectId?: string;
     /** Tier 1 pin: promotes this memory into the protected/active tier. */
     pinned?: boolean;
-  }, options: { explicitRevision?: boolean } = {}): { entry: MemoryEntry; created: boolean } {
+  }, options: { explicitRevision?: boolean; freshCandidate?: boolean } = {}): { entry: MemoryEntry; created: boolean } {
     return this.atomic(() => {
       this.refresh();
       if (options.explicitRevision && (input.sourceType !== 'user_statement' || input.status !== 'verified')) throw new Error('Memory revisions require an explicit user correction.');
+      // A changed source record may report an earlier value again. Preserve its
+      // superseded history and create an unverified observation, never revive it.
+      if (options.freshCandidate && (input.sourceType !== 'model_inference' || input.status !== 'candidate')) throw new Error('Fresh observations must remain unverified candidates.');
       const claim = input.claim.trim().replace(/\s+/g, ' ');
       // Visibility-aware dedupe identity (review fix #2): a specialist's
       // PRIVATE memory and their PUBLISHED mission finding are different
@@ -150,7 +153,7 @@ export class MemoryStore {
       // shareable entry, not collapse into the private one.
       const visibility: MemoryVisibility = input.visibility ?? 'project';
       const key = dedupeKey(input.type, input.scope, claim, input);
-      const existing = this.entries.find((e) => dedupeKey(e.type, e.scope, e.claim, e) === key && (!options.explicitRevision || (e.status !== 'archived' && e.status !== 'superseded')));
+      const existing = this.entries.find((e) => dedupeKey(e.type, e.scope, e.claim, e) === key && (!(options.explicitRevision || options.freshCandidate) || (e.status !== 'archived' && e.status !== 'superseded')));
       if (existing) {
         existing.confidence = Math.min(1, Math.max(existing.confidence, input.confidence ?? 0.7) + 0.05);
         existing.reobservations = (existing.reobservations ?? 0) + 1;

@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { expect, it } from 'vitest';
@@ -43,6 +44,6 @@ it('exposes pending tool-created reminders with recurring schedules and removes 
   } finally {
     await server.stop();
     if (previousHome === undefined) delete process.env['AGENT_GITU_HOME']; else process.env['AGENT_GITU_HOME'] = previousHome;
-    rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    await rm(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }, 20000);

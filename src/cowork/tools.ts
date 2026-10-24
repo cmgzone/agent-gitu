@@ -2,8 +2,9 @@ import { createProject, loadWorkspaceSettings } from '../workspace/home.js';
 import { WIDGET_APP_TOOL_GUIDE } from './widget-app.js';
 import { connectionResponses, redactConnectionData } from '../connections/response-data.js';
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { parseDelegationParams } from './delegation.js';
 import path from 'node:path';
+import { codingAutoApprove } from '../workspace/coding-permissions.js';
+import { isDeploymentAction } from '../coding/deployment-authority.js';
 import type { ToolResult } from '../types.js';
 import type { LlmToolDefinition } from '../llm/llm.js';
 import type { ToolContext } from '../tools/tools.js';
@@ -43,7 +44,7 @@ import { closestNameMatches } from '../util.js';
 import { SCHEDULE_TOOL_DOC } from '../cron/tools.js';
 import { DOCUMENT_TOOL_DOC, toolCreateDocument } from '../tools/productivity.js';
 import { parseSshUrl, SshConnectionRegistry } from '../connections/ssh-connections.js';
-import { ConnectionRegistry } from '../connections/connections.js';
+import { ConnectionInvocationError, ConnectionRegistry } from '../connections/connections.js';
 import { createHash } from 'node:crypto';
 import type { ConnectedAppsProvider } from '../connections/provider.js';
 import { ComposioExecutionUncertainError } from '../connections/composio.js';
@@ -130,6 +131,7 @@ const COMPUTER_ROUTED_TOOLS = [
  */
 export const SUBAGENT_BLOCKED_TOOLS = [
   'company_manage',
+  'app_manage',
   'company_organization',
   'company_boardroom',
   'company_handbook',
@@ -171,15 +173,16 @@ export interface CoworkToolDoc {
 }
 
 export const COWORK_TOOLS: CoworkToolDoc[] = [
-  {name:'company_workflow',gate:undefined,doc:'Company workflows: list/read id; authorized designers save input={id?,revision?,title,inputs:typed schema,parallelism,steps:[{id,name,type:mission|approval,agentId?,goal,criteria,dependsOn,bindings:{field:{source:input|step,stepId?,field?}},inputSchema,outputSchema,tools,skills,connectionIds,accountIds,maxSessions:1..10,maxAttempts:1..3,timeoutMinutes:1..1440}]}. validate/simulate id+version with input and samples by step ID; simulation never executes work. Director approves versions separately. Authorized leaders start id+version+input; run id reads live missions and handoffs. Never claim simulation as live completion or use workflows to enlarge grants.'},
+  {name:'app_manage',gate:'chief',doc:'Manage Gitu app settings and internal work as chief of staff. actions: read_settings; set_model {provider,model} saves the user-selected default used by Main Agent Gitu; set_project {projectPath}; set_settings {input:{theme,mode,autonomy,fallbackModels,coworkLearning}}; list_models; list_tasks; get_task {runId}; stop_task {runId}; send_task {runId,text}; delete_task {runId}; list_checkpoints {runId}; rollback_task {runId,checkpointId}; list_conversations; send_message {conversationId,agentId,text}; delete_conversation {conversationId}; list_agents; delete_agent {agentId}; set_agent_model {agentId,provider,model}; list_companies; delete_company {companyId}. Use exact IDs from list results. Delete only the items the user requests. Company deletion saves a recovery snapshot and retains project files. Changes persist; future coding tasks use the saved selection. Internal messages queue for the intended teammate. Company chiefs remain inside their company. Credentials, security grants and action approvals use their existing secure controls.'},
+  {name:'company_workflow',gate:undefined,doc:'Create durable Company workflows with action=propose (alias create), available to active permanent employees without designer authority. Pass input={id?,revision?,title,inputs:typed schema,parallelism,steps:[{id,name,type:mission|approval,agentId?,goal,criteria,dependsOn,bindings:{field:{source:input|step,stepId?,field?}},inputSchema,outputSchema,tools,skills,connectionIds,accountIds,maxSessions:1..10,maxAttempts:1..3,timeoutMinutes:1..1440}]}. Use company_organization read for actual agent IDs. Proposals appear in Overview and Workflows for director review and cannot execute until approved. Authorized designers may save revisions. list/read id; validate/simulate id+version with input and samples by step ID; simulation never executes work. Authorized leaders start approved id+version+input; run id reads live missions and handoffs. Never claim simulation as live completion or enlarge grants.'},
   { name: 'company_handbook', gate: undefined, doc: 'Company handbook: action=list for approved versions and pending proposal IDs; read with id returns director-approved guidance only. Propose input={id?,revision?,title?,kind:guideline|suggestion,content}; only the director reviews versions. Guidance and suggestions never grant tools, accounts, budgets or policy authority.' },
   { name: 'company_onboarding', gate: undefined, doc: 'Company onboarding: list/read with agentId; your own record is readable. Authorized reporting leaders may orient with revision and input={tools:[],connectionIds:[],accountIds:[],skills:[]}; schedule an onboarding meeting; check tools after a completed meeting with an employee contribution; assess input={goal,criteria,maxTurns?:positive session count}; review input={approved,notes,evidenceMessageIds} using saved assessment messages. Pass current revision at each change. Only the director activates after reviewed evidence; onboarding never expands resource grants.' },
   { name: 'company_organization', gate: undefined, doc: 'Read company roles, departments, reporting relationships and your authority. action=read; authorized leaders may save_department with department={name,purpose,id?}, or update_member with agentId, member={jobTitle,responsibilities,departmentId,managerId}, revision from read. Only the director changes roles, grants or activation. Never infer authority from a job title.' },
-  { name: 'company_boardroom', gate: undefined, doc: 'Company meetings: action=list/read with meetingId. Authorized organizers create using input={title,type,participants:[{agentId}],agenda:[text],startAt?,durationMinutes?,maxTurns?,budgetUsd?}; chair starts/grants/moderates/finishes. Employees raise_hand with input={agendaId,reason,priority?,evidence?,objectionTo?}; contribute only with input={turnId,text,evidence?,objectionTo?} matching the current speaking lease. Chair may moderate input={requestId,response:defer|reject|written,reason}; employee written input={requestId,text}. Propose input={agendaId,title,rationale,requiresDirector?,actionId?}; chair decide input={decisionId,approved}, subject to director approval. Read actual IDs first. Meetings preserve work and cannot grant tools, budgets or external action approval.' },
+  { name: 'company_boardroom', gate: undefined, doc: 'Company meetings: active employees request a meeting themselves with action=request input={title,reason,type?,participants?:[{agentId}],agenda?:[text]}; this saves a visible request in Overview and Boardroom without starting a meeting. requests lists your requests (CEO sees all). CEO/director reviews using review_request input={requestId,revision,approved,reason?}. Authorized organizers create directly using input={title,type,participants:[{agentId}],agenda:[text],startAt?,durationMinutes?,maxTurns?,budgetUsd?}; due meetings run participant discussions automatically. list/read with meetingId returns actual discussions. Chair starts/grants/moderates/finishes. Employees raise_hand with input={agendaId,reason,priority?,evidence?,objectionTo?}; contribute only with input={turnId,text,evidence?,objectionTo?} matching the current speaking lease. Chair may moderate input={requestId,response:defer|reject|written,reason}; employee written input={requestId,text}. Propose input={agendaId,title,rationale,requiresDirector?,actionId?}; chair decide input={decisionId,approved}, subject to director approval. Read actual IDs first. Meetings preserve work and cannot grant tools, budgets or external action approval.' },
   {
     name: 'company_manage',
-    doc: 'Create a Company draft from Cowork chat, or inspect company activity. params: {"action":"create","name":"company name","purpose":"concrete goals","leadName":"optional lead name"} | {"action":"list"} | {"action":"status","id":"company-id"}. A new company clones you as its lead and appears as a company card in this chat. The owner reviews resources, budget and file limits, then selects Start. Never claim a draft is running. Repeating the same creation in this conversation reuses the company. Company agents and temporary helpers cannot create or inspect other companies.',
-    gate: 'config',
+    doc: 'Companies are Cowork workspaces using the same permanent teammates. action=create name/purpose with optional leadId (defaults to you) and memberIds from action=agents; no cloned agent is created. action=list/status(id) reads work; add_agent/remove_agent with id=company-id and agentId links/unlinks an existing Cowork teammate. Creation and membership changes require configuration and write permission; the owner reviews grants and Start. All permanent Cowork agents can remember with id,text or recall with id,query to share company knowledge. inspect with id,section=overview|team|tasks|meetings|workflows|runs|handbook|activity|spending|knowledge,resourceId?,offset?,limit? returns real saved details; search with id,query finds evidence with record IDs. Transcripts retain company membership and attendance rules. boardroom/workflow/organization/onboarding/task with id and input={action,...native tool arguments} operate from Cowork using your target company membership and existing permissions. Call help with query=boardroom|workflow|organization|onboarding|task to see exact native schemas and examples before constructing unfamiliar operations. task input uses mission_manage actions; workflow input uses company_workflow actions. Owner approvals, activation, budgets, resources and company Start remain owner controls. Never claim a tool action succeeded without its saved result. No resource authority is granted by membership or memory. Temporary helpers cannot manage companies.',
+    gate: undefined,
   },
   {
     name: 'mission_manage',
@@ -198,7 +201,7 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
   },
   {
     name: 'connection_execute',
-    doc: 'Invoke an owner-granted, registered API operation. params: {"connectionId":"saved-id","operationId":"registered-operation","body":{},"query":{}}. Includes wallet actions when the granted API exposes them. External writes follow company access policy.',
+    doc: 'Invoke an owner-granted, registered API operation. params: {"connectionId":"saved-id","operationId":"registered-operation","body":{},"query":{}}. Includes wallet actions when the granted API exposes them. Personal deployments run here rather than through gitu_task. External writes follow the owner’s saved access setting and company policy.',
     gate: 'writes',
   },
   { name: 'computer_status', doc: 'Inspect your private virtual computer and its setup status. params: {}', gate: undefined },
@@ -237,7 +240,7 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
   },
   {
     name: 'gitu_task',
-    doc: 'Hand real repository engineering to Agent Gitu — it plans, edits code, runs commands and verifies, in this workspace, as a colleague engineer. params: {"goal":"fix the failing auth tests and explain the cause","mode":"agent|fast|standard","effort":"low|medium|high|max","timeoutMinutes":30,"maxCostUsd":2}. Blocks until the work finishes and returns the completion summary. It asks the user directly (plan review and dangerous-action approvals appear as cards) — it never inherits your permissions, so never promise the user that a dangerous action is already allowed. maxCostUsd is a ceiling for this task, clamped to the user\'s own delegation budget; the task stops when the ceiling is reached.',
+    doc: 'Hand real repository engineering to Agent Gitu — it plans, edits code, runs commands and verifies, in this workspace, as a colleague engineer. params: {"goal":"fix the failing auth tests and explain the cause","mode":"agent|fast|standard","effort":"low|medium|high|max","timeoutMinutes":30,"maxCostUsd":2}. In chats, returns a running task handle immediately so you remain available; a verified result or failure returns separately. Mission execution waits for the result. For an automatic review defect use {"reviewOf":"completed-run-id","goal":"verified defect and acceptance checks"}, after app_manage record_coding_review. Use app_manage list_repositories to find main-agent project scopes. To repair your failed task use {"retryOf":"run-id","goal":"concrete diagnosis and repair"}; at most two recovery attempts are allowed. Coding approvals follow the owner’s shared full-access setting. Delegate coding only; keep deployment work with P.A. maxCostUsd is a ceiling for this task, clamped to the user\'s own delegation budget; the task stops when the ceiling is reached.',
     gate: 'writes',
   },
   {
@@ -292,6 +295,7 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
     gate: 'config',
   },
   { name: 'list_connections', doc: 'List saved API and SSH connections (metadata only, never credentials). params: {}', gate: undefined },
+  { name: 'connection_test', doc: 'Check a saved API connection NOW using its authenticated read-only test route and saved credential. params: {"connectionId":"exact saved id"}. Use once to diagnose authentication before requesting a replacement key. A successful fresh check supersedes older 401 reports; a timeout or route error does not prove an invalid key. REST verification does not configure an MCP server.', gate: undefined },
   {
     name: 'connection_read',
     doc: 'Read a saved API connection. params: {"connectionId":"exact saved id","operationId":"registered read id","query":{"page":2}}. query is optional; use only documented filters/pagination. For a missing read, consult official docs then supply operation:{id,label,capability,method:"GET",path,risk:"read"} and documentationUrl instead of operationId. New documented reads run with the saved credential. Results include a responseId for inspection. Never send credentials, headers, or an absolute URL.',
@@ -312,7 +316,7 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
     doc: 'Run one authorized command through a saved SSH connection. Never include a password in params. params: {"connectionId":"ssh-...","command":"hostname"}. Respect the user\'s requested read-only scope; remote changes need explicit authorization.',
     gate: 'shell',
   },
-  { name: 'update_connection', doc: 'Update a saved connection profile. params: {"connectionId":"...","label":"..."}', gate: 'config' },
+  { name: 'update_connection', doc: 'Update saved connection metadata and remember its documented read AND write operations for future tasks without executing them. params: {"connectionId":"...","label":"optional","documentationUrl":"official docs","discoverCapabilities":true,"operations":[{"id":"deploy","label":"Deploy","capability":"deployments.write","method":"POST","path":"/deploy","risk":"reversible-write"}]}. Catalog discovery retains every supported capability. Credentials and endpoint changes use the secure form.', gate: 'config' },
   { name: 'create_project', doc: 'Create a new project folder in the user\'s Projects area. params: {"name":"landing-page"}', gate: 'config' },
   {
     name: 'schedule_manage',
@@ -379,7 +383,6 @@ export function coworkToolDocs(agent: Pick<CoworkAgent, 'allowShell' | 'allowWri
     (t) =>
       (t.gate === undefined || isGated(t.gate, perms) || (t.name === 'mission_manage' && Boolean(agent.companyId))) &&
       (t.name !== 'mcp_call' || (agent.allowConfig && agent.allowShell && agent.allowWrites)) &&
-      (t.name !== 'company_manage' || (!agent.companyId && agent.allowWrites)) &&
       (!['company_organization', 'company_boardroom', 'company_handbook', 'company_onboarding', 'company_workflow'].includes(t.name) || Boolean(agent.companyId)),
   )
     .map((t) => `- ${t.name} — ${t.doc}`)
@@ -394,7 +397,6 @@ export function coworkNativeTool(agent: Pick<CoworkAgent, 'allowShell' | 'allowW
     (t) =>
       (isGated(t.gate, perms) || (t.name === 'mission_manage' && Boolean(agent.companyId))) &&
       (t.name !== 'mcp_call' || (agent.allowConfig && agent.allowShell && agent.allowWrites)) &&
-      (t.name !== 'company_manage' || (!agent.companyId && agent.allowWrites)) &&
       (!['company_organization', 'company_boardroom', 'company_handbook', 'company_onboarding', 'company_workflow'].includes(t.name) || Boolean(agent.companyId)),
   ).map((t) => t.name);
   return {
@@ -420,7 +422,6 @@ export function coworkNativeTools(agent: Pick<CoworkAgent, 'allowShell' | 'allow
     (tool) =>
       (isGated(tool.gate, perms) || (tool.name === 'mission_manage' && Boolean(agent.companyId))) &&
       (tool.name !== 'mcp_call' || (agent.allowConfig && agent.allowShell && agent.allowWrites)) &&
-      (tool.name !== 'company_manage' || (!agent.companyId && agent.allowWrites)) &&
       (!['company_organization', 'company_boardroom', 'company_handbook', 'company_onboarding', 'company_workflow'].includes(tool.name) || Boolean(agent.companyId)),
   ).map((tool) => ({ name: tool.name, description: tool.doc, parameters: coworkToolSchema(tool.name) }));
 }
@@ -558,27 +559,23 @@ async function executeAuthorizedCoworkTool(ctx: ToolContext, tool: string, param
     const statusRead = tool === 'run_command' && String(params['action'] ?? 'run') === 'status';
     const companyAssignment = tool === 'mission_manage' && Boolean(scope?.agent.companyId) && Boolean(ctx.companyOrganization);
     if (!statusRead && !companyAssignment && !isGated(definition.gate, perms)) return blocked(tool);
+    if (scope?.delegation && !scope.isSubAgent) {
+      const target = String(params['path'] ?? params['file'] ?? params['filePath'] ?? '');
+      const codeFile = /\.(?:[cm]?[jt]sx?|py|go|rs|java|kt|swift|c|cpp|h|hpp|cs|php|rb|vue|svelte|html|css|scss|sql)$/i.test(target)
+        || /(?:^|[/\\])(?:package\.json|tsconfig[^/\\]*\.json|Dockerfile|Cargo\.toml|go\.mod)$/i.test(target);
+      const command = String(params['command'] ?? '');
+      const codeCommand = /\b(?:npm|pnpm|yarn|bun|npx|tsc|vitest|jest|pytest|cargo|gradle|mvn)\b|\bgit\s+(?:commit|apply|checkout|switch|merge|cherry-pick|reset)\b|\bgo\s+(?:build|test|run)\b/i.test(command);
+      if ((['write_file', 'apply_edit'].includes(tool) && codeFile) || (tool === 'run_command' && codeCommand && !isDeploymentAction(tool, params) && !['status', 'stop'].includes(String(params['action'])))) {
+        return { ok: false, output: 'Main Agent Gitu owns repository coding. Call gitu_task with the full task brief and project location; its visible task returns implementation and verification results to you for reporting.' };
+      }
+    }
     // Delegated engineering is not a host tool: it runs its own session, so it
     // must not be routed through the host/computer dispatch below.
     if (tool === 'gitu_task') {
       if (!scope?.conversationId) return { ok: false, output: 'gitu_task requires a conversation.' };
-      if (scope.agent.companyId) {
-        if (scope.isSubAgent) return { ok: false, output: 'Engineering helpers report to their parent and cannot delegate again.' };
-        const parsed = parseDelegationParams(params);
-        if (!parsed.ok) return { ok: false, output: parsed.error };
-        if (!scope.subAgents) return { ok: false, output: 'Private engineering helpers are unavailable. Keep the work paused until the runtime is available.' };
-        return await scope.subAgents.run({
-          role: 'engineering',
-          objective:
-            parsed.value.goal +
-            '\nWork in your isolated private computer. Inspect the repository, implement the changes, run relevant checks, and report evidence and remaining blockers to your parent.',
-          reason: 'Bounded company engineering delegation',
-          budget: params['maxCostUsd'] === undefined ? {} : { maxCostUsd: params['maxCostUsd'] },
-          maxRuntimeMinutes: params['timeoutMinutes'] ?? 30,
-        });
-      }
+      if (scope.isSubAgent) return { ok: false, output: 'Engineering helpers report to their parent and cannot delegate again.' };
       if (!scope.delegation) return { ok: false, output: 'Engineering delegation is unavailable in this session.' };
-      return await scope.delegation.run(scope, params);
+      return await (!scope.missionId&&typeof scope.delegation.start==='function'?scope.delegation.start(scope,params):scope.delegation.run(scope, params));
     }
     // Sub-agent spawning is likewise its own execution path, and like
     // delegation its identity comes from the host-bound bridge, never params.
@@ -665,6 +662,9 @@ async function executeAuthorizedCoworkTool(ctx: ToolContext, tool: string, param
 async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<string, unknown>, perms: CoworkToolPerms, scope?: CoworkToolScope): Promise<ToolResult> {
   {
     switch (tool) {
+      case 'app_manage':
+        if(!scope||scope.isSubAgent||!scope.agent.chiefOfStaff||!ctx.appManagement)return blocked(tool);
+        return await ctx.appManagement(params,{agentId:scope.agent.id,conversationId:scope.conversationId});
       case 'company_handbook':
       case 'company_onboarding': {
         const callback = tool === 'company_handbook' ? ctx.companyHandbook : ctx.companyOnboarding;
@@ -674,7 +674,7 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
       }
       case 'company_workflow':{
         if(!scope?.agent.companyId||scope.isSubAgent||!ctx.companyWorkflow)return blocked(tool);
-        if(!['list','read','validate','run'].includes(String(params['action']))&&!perms.allowWrites)return blocked(tool);
+        if(!['list','read','validate','run','propose','create'].includes(String(params['action']))&&!perms.allowWrites)return blocked(tool);
         return await ctx.companyWorkflow(params,{agentId:scope.agent.id,conversationId:scope.conversationId,threadId:scope.threadId});
       }
       case 'company_organization': {
@@ -687,7 +687,7 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
         return await ctx.companyBoardroom(params, { agentId: scope.agent.id });
       }
       case 'company_manage': {
-        if (!scope?.conversationId || scope.isSubAgent || scope.agent.companyId || !perms.allowConfig || !perms.allowWrites || !ctx.companyManagement) return blocked(tool);
+        if (!scope?.conversationId || scope.isSubAgent || !ctx.companyManagement) return blocked(tool);
         return await ctx.companyManagement(params, { conversationId: scope.conversationId, agentId: scope.agent.id, threadId: scope.threadId });
       }
       case 'mission_manage': {
@@ -701,7 +701,7 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
           const existing = scope.store.missions().find((m) => m.agentId === target.id && m.goal === goal && ['running', 'blocked'].includes(m.status));
           if (existing) return { ok: true, output: JSON.stringify(existing) };
           const cap = ctx.missionSessionLimit?.() ?? Number.MAX_SAFE_INTEGER,
-            requested = Number(params['maxTurns'] ?? cap);
+            requested = Number(params['maxSessions'] ?? cap);
           if (!Number.isInteger(requested) || requested < 1) throw new Error('Choose a positive mission session count.');
           const mission = scope.store.createMission({
             conversationId: scope.conversationId,
@@ -715,6 +715,7 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
         const mission = scope.store.getMission(String(params['id']));
         if (!mission) throw new Error('Company mission not found.');
         if (!['pause', 'resume', 'cancel'].includes(action)) throw new Error('Choose list, create, pause, resume or cancel.');
+        if (['done', 'cancelled'].includes(mission.status)) throw new Error('This mission is already ' + mission.status + '. Create a new task instead.');
         scope.store.updateMission(mission.id, {
           status: action === 'pause' ? 'blocked' : action === 'cancel' ? 'cancelled' : 'running',
           nextWakeAt: action === 'resume' ? new Date().toISOString() : undefined,
@@ -734,7 +735,23 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
         return result;
       }
       case 'connection_execute': {
-        if (!scope?.agent.companyId || !ctx.connections) return blocked('connection_execute');
+        if (!scope || !ctx.connections) return blocked('connection_execute');
+        const profile = ctx.connections.get(String(params['connectionId'] ?? ''));
+        const operation = profile?.operations.find(op => op.id === params['operationId']);
+        if (!operation) return { ok: false, output: 'Use list_connections to select a saved operation, or update_connection to remember its documented definition first.' };
+        if (!scope.agent.companyId && operation.risk !== 'read' && !codingAutoApprove()) {
+          const signature = createHash('sha256').update(JSON.stringify({ agent: scope.agent.id, conversation: scope.conversationId, operation, connectionId: profile!.id, body: params['body'], query: params['query'] })).digest('hex');
+          let approvals = connectionApprovals.get(scope.store);
+          if (!approvals) { approvals = new Map(); connectionApprovals.set(scope.store, approvals); }
+          const existing = approvals.get(signature), card = existing ? scope.store.getRequest(existing) : undefined;
+          if (card?.status === 'approved') approvals.delete(signature);
+          else if (card?.status === 'denied') return { ok: false, output: 'The user denied this operation. Do not retry it.' };
+          else {
+            const pending = card?.status === 'open' ? card : scope.store.addRequest({ conversationId: scope.conversationId!, agentId: scope.agent.id, kind: 'permission', title: operation.label, detail: JSON.stringify({ connection: profile!.label, operation, body: params['body'] }), options: ['Approve', 'Deny'] });
+            approvals.set(signature, pending.id);
+            return { ok: false, output: 'Waiting for approval of ' + pending.id + '. No operation was executed. After approval repeat this exact request.' };
+          }
+        }
         const result = await ctx.connections.invoke(
           String(params['connectionId'] ?? ''),
           String(params['operationId'] ?? ''),
@@ -874,8 +891,23 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
         return toolConfigureMcp(ctx, params);
       case 'list_connections':
         return { ok: true, output: toolListConnections(ctx).output + (scope?.agent.companyId ? '' : `\n${new SshConnectionRegistry().renderForAgent()}`) };
-      case 'connection_read':
-        return toolConnectionRead(ctx, params);
+      case 'connection_test': {
+        const registry = ctx.connections ?? new ConnectionRegistry();
+        const profile = registry.resolveConnectionProfile(String(params['connectionId'] ?? ''));
+        if (!profile) return { ok: false, output: 'Saved API connection not found. Use its exact id from list_connections.' };
+        try {
+          const result = await registry.validate(profile.id);
+          completeVerifiedCredentialRequests(scope, registry, profile.id);
+          return { ok: true, output: JSON.stringify({ connectionId: profile.id, status: 'CONNECTED', httpStatus: result.status, verifiedAt: registry.authStateOf(profile.id).checkedAt, message: 'The saved credential passed a fresh authenticated API read. Earlier authentication failures are superseded. This verifies REST API access, not MCP setup.' }) };
+        } catch (error) {
+          return { ok: false, output: JSON.stringify({ connectionId: profile.id, status: error instanceof ConnectionInvocationError ? error.state : 'CONFIG_INVALID', credentialRejected: error instanceof ConnectionInvocationError && error.authEvident, message: (error as Error).message, guidance: error instanceof ConnectionInvocationError && error.authEvident ? 'The provider rejected this saved credential on its test route. Reconnect through the secure form.' : 'This does not establish an invalid credential. Check the API route or network; do not request a replacement key based on this result.' }) };
+        }
+      }
+      case 'connection_read': {
+        const result = await toolConnectionRead(ctx, params);
+        if (result.ok && ctx.connections) completeVerifiedCredentialRequests(scope, ctx.connections, String(params['connectionId'] ?? ''));
+        return result;
+      }
       case 'inspect_connection_response':
         return toolInspectConnectionResponse(ctx, params);
       case 'connected_apps':
@@ -962,6 +994,7 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
       case 'recommend':
         return coworkRecommend(scope, params);
       case 'team_manage':
+        if(params['action']==='delete'&&scope?.agent.chiefOfStaff&&ctx.appManagement){const target=scope.store.listAgents().find(agent=>agent.name.toLowerCase()===String(params['name']??'').trim().toLowerCase());if(!target)return{ok:false,output:'Teammate not found.'};return await ctx.appManagement({action:'delete_agent',agentId:target.id},{agentId:scope.agent.id});}
         return coworkTeamManage(scope, params);
       case 'folder_manage':
         return coworkFolderManage(scope, params);
@@ -1110,7 +1143,19 @@ function coworkAskUser(scope: CoworkToolScope | undefined, params: Record<string
   }
 }
 
-function coworkRequestCredential(ctx: ToolContext, scope: CoworkToolScope | undefined, params: Record<string, unknown>): ToolResult {
+function completeVerifiedCredentialRequests(scope: CoworkToolScope | undefined, registry: ConnectionRegistry, connectionId: string): void {
+  if (!scope?.conversationId || registry.authStateOf(connectionId).status !== 'valid') return;
+  const profile = registry.get(connectionId);
+  if (!profile || !profile.authState?.checkedAt || Date.now() - Date.parse(profile.authState.checkedAt) >= 60_000) return;
+  for (const request of scope.store.listConversations().filter(conversation => conversation.memberIds.includes(scope.agent.id)).flatMap(conversation => scope.store.requests(conversation.id))) {
+    if (request.status !== 'open' || request.kind !== 'credential' || request.agentId !== scope.agent.id) continue;
+    const target = request.credential;
+    if (target?.connectionId === profile.id || (!target?.connectionId && target?.providerHint === profile.provider && target.baseUrl === profile.baseUrl))
+      scope.store.resolveRequest(request.id, 'provided', 'The saved connection was verified successfully. No replacement credential was needed.');
+  }
+}
+
+async function coworkRequestCredential(ctx: ToolContext, scope: CoworkToolScope | undefined, params: Record<string, unknown>): Promise<ToolResult> {
   if (!scope?.conversationId) return { ok: false, output: 'request_credential requires a conversation.' };
   const prompt = String(params['prompt'] ?? params['question'] ?? '').trim();
   let provider = String(params['provider'] ?? params['providerHint'] ?? '').trim();
@@ -1168,9 +1213,12 @@ function coworkRequestCredential(ctx: ToolContext, scope: CoworkToolScope | unde
           ok: false,
           output: `Multiple saved connections match: ${matches.map((profile) => `${profile.id} (${profile.label}, ${profile.baseUrl})`).join('; ')}. Select the exact connectionId with list_connections and use connection_read before requesting another key.`,
         };
-      const saved = matches[0];
+      let saved = matches[0];
       if (saved) {
+        await registry.recheckAuthentication(saved.id);
+        saved = registry.list().find(profile => profile.id === saved!.id)!;
         if (saved.hasCredential && saved.authState?.status !== 'invalid' && saved.authState?.status !== 'expired') {
+          completeVerifiedCredentialRequests(scope, registry, saved.id);
           const readOperations = saved.operations.filter((operation) => operation.risk === 'read').map((operation) => operation.id);
           return {
             ok: false,
@@ -1269,6 +1317,7 @@ function nextTeammateAvatar(roster: CoworkAgent[]): CoworkAvatar {
 // Company account providers are scoped proxies that can be recreated between turns.
 // Keep approvals with the owning conversation store so a valid review survives that.
 const appApprovals = new WeakMap<CoworkStore, Map<string, { signature: string; expires: number }>>();
+const connectionApprovals = new WeakMap<CoworkStore, Map<string, string>>();
 function connectedAppOutput(value: unknown): string {
   const safe = redactConnectionData(value ?? null);
   const output = JSON.stringify(safe);
@@ -1364,7 +1413,7 @@ async function connectedAppTool(apps: ConnectedAppsProvider | undefined, params:
       if (reviewed && (reviewed.service !== service || reviewed.accountId !== accountId || (reviewedTool !== tool && !(service === 'mail' && tool === 'mail_send' && reviewedTool === 'mail_save_draft')))) return { ok: false, output: 'Invalid reviewed action. Request a fresh review.' };
       return { ok: true, output: connectedAppOutput(await apps.execute(service, reviewedTool, reviewed?.args ?? args as Record<string, unknown>, accountId)) };
     }
-    if (approvalId) return { ok: false, output: 'This review is expired, already used, not accepted, or does not match the original proposal. No action was submitted. Do not automatically retry a send; check its previous result first.' };
+    if (approvalId) return { ok: false, output: 'This action review is expired, already used, not accepted, or does not match the original proposal. No action was submitted. This is an action-review problem, not evidence that the mailbox connection or credentials expired. Do not automatically retry a send; check its previous result first.' };
     const existing = [...pending].find(([id, value]) => value.signature === signature && scope.store.getRequest(id)?.status === 'open');
     if (existing) return { ok: true, output: `Waiting for review ${existing[0]}. Stop and wait for the user.` };
     if (pending.size >= 100) return { ok: false, output: 'Too many actions are waiting for review.' };

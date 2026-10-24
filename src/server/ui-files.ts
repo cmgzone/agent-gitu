@@ -2,7 +2,7 @@ import { FILE_HASH_JS } from './ui-file-hash.js';
 export const FILE_UPLOAD_JS = String.raw`${FILE_HASH_JS}
   var filePolicy={maxFileBytes:null,loaded:false};
   function fileLimitLabel(limit){return limit===null?'Unlimited':humanBytes(limit);}
-  function showFileLimitNear(input){if(!input)return;var parent=input.closest('.cw-composer-wrap')||input.closest('.composer')||input.parentNode,label=parent.querySelector('[data-file-policy-label]');if(!label){label=document.createElement('small');label.dataset.filePolicyLabel='';label.className='meta';label.style.display='block';label.style.marginTop='6px';parent.appendChild(label);}label.textContent='Maximum file size: '+(filePolicy.loaded?fileLimitLabel(filePolicy.maxFileBytes):'Loading…');}
+  function showFileLimitNear(input){if(!input)return;var parent=input.id==='attachInput'&&$('homePlusMenu')?$('homePlusMenu'):input.closest('.cw-composer-wrap')||input.closest('.composer')||input.parentNode,label=parent.querySelector('[data-file-policy-label]');if(!label){label=document.createElement('small');label.dataset.filePolicyLabel='';label.className='meta';label.style.display='block';label.style.marginTop='6px';parent.appendChild(label);}label.textContent='Maximum file size: '+(filePolicy.loaded?fileLimitLabel(filePolicy.maxFileBytes):'Loading…');}
   async function loadFilePolicy(){var result=await api('/api/files/policy');filePolicy={maxFileBytes:result.maxFileBytes,loaded:true};showFileLimitNear($('attachInput'));showFileLimitNear($('cwFile'));return result;}
   function fileBase(companyId){return companyId?'/api/companies/'+encodeURIComponent(companyId)+'/files':'/api/files';}
   async function uploadBinary(file,scope,companyId,onProgress,signal,onRemote,onPhase){

@@ -111,6 +111,14 @@
     renderQuestions(runId, sess.session);
   }
 
+
+  function placeDecisionCards(stream){
+    if(!stream||!stream.querySelectorAll)return;
+    var cards=Array.from(stream.querySelectorAll('.approval,.review-card,.qcard')),anchor=$('working'),focused=document.activeElement,selection=focused&&typeof focused.selectionStart==='number'?{start:focused.selectionStart,end:focused.selectionEnd}:null,moved=false;
+    for(var i=cards.length-1;i>=0;i--){var card=cards[i];if(card.nextElementSibling!==anchor){if(stream.moveBefore&&card.parentNode===stream)stream.moveBefore(card,anchor);else stream.insertBefore(card,anchor);moved=true;}anchor=card;}
+    if(moved&&focused&&focused.isConnected&&cards.some(function(card){return card.contains(focused);})){focused.focus({preventScroll:true});if(selection&&focused.setSelectionRange)focused.setSelectionRange(selection.start,selection.end);}
+  }
+
   function renderApprovals(runId, session) {
     var stream = $('stream');
     if (!stream) return;
@@ -124,16 +132,18 @@
       var div = document.createElement('div');
       div.className = 'approval';
       div.setAttribute('data-aid', a.id);
+      var presentation=cardActionPresentation(a.tool,a.why,a.summary);
       div.innerHTML =
-        '<h3>approval required — ' + esc(a.tool) + '</h3>' +
-        '<div class="meta-line">' + esc(a.why) + '</div>' +
-        '<pre>' + esc(a.summary) + '</pre>' +
+        '<h3>' + esc(presentation.title) + '</h3>' +
+        '<div class="meta-line">' + esc(presentation.detail) + '</div>' +
+        cardTechnicalDetails([a.why,a.summary].filter(Boolean).join('\n\n'),a.id) +
         '<div class="actions"><button class="btn dark" data-appr="' + esc(a.id) + '" data-ok="1">Approve</button>' +
         '<button class="btn red" data-appr="' + esc(a.id) + '" data-ok="0">Deny</button></div>';
       var working = $('working');
       if (working) stream.insertBefore(div, working); else stream.appendChild(div);
       stickScroll(stream, true);
     });
+    placeDecisionCards(stream);
     var olds = stream.querySelectorAll('.approval');
     for (var i = 0; i < olds.length; i++) {
       if (!pending[olds[i].getAttribute('data-aid')]) olds[i].remove();
@@ -165,7 +175,7 @@
       }
       return;
     }
-    if (sess.qShown === q.id) return;
+    if (sess.qShown === q.id) { placeDecisionCards(stream); return; }
     sess.qShown = q.id;
     var old = stream.querySelectorAll('.qcard');
     for (var j = 0; j < old.length; j++) old[j].remove();
@@ -182,7 +192,8 @@
     div.className = 'qcard';
     var html = '<h3>Agent Gitu needs your input</h3>';
     questions.forEach(function (qq, qi) {
-      html += '<div class="q"><div class="qt">' + esc(qq.header ? qq.header + ' — ' : '') + esc(qq.question) + '</div>' + (qq.detail ? '<div class="meta" style="margin:6px 0;overflow-wrap:anywhere">' + esc(qq.detail) + '</div>' : '') + (qq.kind === 'workspace' ? '<button class="btn ghost" data-workspace-controls="1">Open folder access controls</button>' : '') + '<div class="opts">';
+      var title=cardPlainText(qq.question,'The agent needs your decision.',160),detail=cardPlainText(qq.detail,'Open the technical details for more information.');
+      html += '<div class="q"><div class="qt">' + esc(qq.header ? qq.header + ' — ' : '') + esc(title) + '</div>' + (qq.detail ? '<div class="meta" style="margin:6px 0;overflow-wrap:anywhere">' + esc(detail) + '</div>' : '') + cardTechnicalDetails(title!==qq.question||qq.detail&&detail!==qq.detail?[qq.question,qq.detail].filter(Boolean).join('\n\n'):'',q.id+'-'+qi) + (qq.kind === 'workspace' ? '<button class="btn ghost" data-workspace-controls="1">Open folder access controls</button>' : '') + '<div class="opts">';
       qq.options.forEach(function (op, oi) {
         html += '<button class="opt" data-q="' + qi + '" data-o="' + oi + '">' + esc(op) + '</button>';
       });
@@ -230,20 +241,21 @@
       }
       return;
     }
-    if (sess.prShown === pr.id) return;
+    if (sess.prShown === pr.id) { placeDecisionCards(stream); return; }
     sess.prShown = pr.id;
     var old = stream.querySelectorAll('.review-card');
     for (var j = 0; j < old.length; j++) old[j].remove();
     var div = document.createElement('div');
     div.className = 'review-card';
     div.innerHTML =
-      '<h3>plan review — read the plan, edit if needed, then choose</h3>' +
+      '<h3>Review the proposed work</h3><p>Check the plan before the agent makes changes. You can approve it or ask for changes.</p>' +
+      '<div><b>What will happen</b><ul>'+pr.steps.slice(0,3).map(function(step){return '<li>'+esc(cardPlainText(step.description,'Complete a project step and check the result.',140))+'</li>';}).join('')+'</ul></div><details id="prFullDetails"><summary>Technical details and full plan</summary>' +
       '<div class="md-plan" id="prDoc">' +
       (pr.criteria.length ? '<h4>Acceptance criteria</h4><ul>' + pr.criteria.map(function (c) { return '<li>' + esc(c) + '</li>'; }).join('') + '</ul>' : '') +
       '<h4>Plan</h4><ol>' + pr.steps.map(function (s, i2) {
         return '<li><b>Step ' + (i2 + 1) + '.</b> ' + esc(s.description) + '<span class="ver">Verification: ' + esc(s.verification) + '</span></li>';
       }).join('') + '</ol></div>' +
-      '<div id="prEdit" style="display:none">' +
+      '</details><div id="prEdit" style="display:none">' +
       '<label>Acceptance criteria (optional, one per line)</label>' +
       '<textarea id="prCrit" rows="' + Math.max(2, pr.criteria.length) + '">' + esc(pr.criteria.join('\n')) + '</textarea>' +
       '<label>Plan steps (one per line: description | verification)</label>' +
@@ -259,6 +271,7 @@
     var editing = false;
     $('prEditBtn').onclick = function () {
       editing = !editing;
+      $('prFullDetails').open = !editing;
       $('prEdit').style.display = editing ? 'block' : 'none';
       $('prDoc').style.display = editing ? 'none' : 'block';
       $('prEditBtn').textContent = editing ? 'Preview' : 'Edit plan';

@@ -46,7 +46,7 @@ describe('company and file HTTP boundaries', () => {
       expect((await request('/api/companies/' + b.id + '/chat')).data.requests).toEqual([]);
       expect((await request('/api/companies/' + b.id + '/cowork/requests/' + question.id, { action: 'answer', response: 'Retail' })).status).toBe(404);
       expect((await request('/api/companies/' + a.id + '/cowork/requests/' + question.id, { action: 'answer', response: 'Retail' })).status).toBe(200);
-      expect((await request('/api/companies/' + a.id + '/chat')).data.requests).toEqual([]);
+      expect((await request('/api/companies/' + a.id + '/chat')).data.requests).toContainEqual(expect.objectContaining({ id: question.id, status: 'answered', response: 'Retail' }));
       const specialist = cowork.saveAgent({ name: 'Specialist', systemPrompt: 'Help the company' });
       const separate = cowork.saveConversation({ kind: 'dm', memberIds: [specialist.id] });
       const followUp = cowork.addRequest({ conversationId: separate.id, agentId: specialist.id, kind: 'question', title: 'Report format', detail: 'Choose the format' });
@@ -77,7 +77,7 @@ describe('company and file HTTP boundaries', () => {
         b = (await request('/api/companies', 'POST', { name: 'Beta' })).data.company;
       const lead = (await request('/api/companies/' + a.id + '/lead', 'POST', { name: 'Owner lead' })).data.agent;
       expect((await request('/api/companies/' + b.id + '/cowork/agents/' + lead.id + '/computer')).status).toBe(404);
-      expect((await request('/api/cowork/agents')).data.agents).not.toContainEqual(expect.objectContaining({ id: lead.id }));
+      expect((await request('/api/cowork/agents')).data.agents).toContainEqual(expect.objectContaining({ id: lead.id }));
       const bytes = Buffer.alloc(21 * 1024 * 1024, 19),
         checksum = createHash('sha256').update(bytes).digest('hex'),
         base = '/api/companies/' + a.id + '/files/uploads';

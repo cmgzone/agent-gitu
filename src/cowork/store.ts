@@ -25,6 +25,7 @@ class CoworkScopeError extends Error {}
 
 export interface CoworkAgent extends AgentProfileSettings {
   id: string;
+  /** Execution workspace only; canonical Cowork profiles do not belong to one company. */
   companyId?: string;
   name: string;
   /** Saved character and accent color. */
@@ -517,7 +518,16 @@ export interface CoworkBudgetData {
   missions: Record<string, CoworkBudgetRecord>;
 }
 
+export interface AppReviewState {
+  checkedAt: string;
+  findings: {key:string;fingerprint:string;widgetId:string}[];
+  lastAttemptAt?: string; lastSuccessAt?: string; nextRetryAt?: string;
+  status?: 'running'|'healthy'|'blocked'|'failed'; error?: string; failures?: number;
+}
+
 export interface CoworkData {
+  /** Company snapshots contain memberships in the canonical Cowork roster. */
+  sharedRosterVersion?: 1;
   /** Native Codex session ownership; task data, never credentials. */
   nativeCodexSessions?: Record<string, CoworkNativeSession>;
   agents: CoworkAgent[];
@@ -544,7 +554,7 @@ export interface CoworkData {
   /** Spend envelopes, so ceilings survive a restart with their spend. */
   budgets?: CoworkBudgetData;
   contextCheckpoints?: CoworkContextCheckpoint[];
-  appReviewState?: Record<string, { checkedAt: string; findings: { key: string; fingerprint: string; widgetId: string }[] }>;
+  appReviewState?: Record<string, AppReviewState>;
 }
 
 export interface CoworkWorkEntry {
@@ -659,9 +669,11 @@ export class CoworkStore {
    *  durable floor is re-derived from stored messages and tombstones. */
   private changeSeqs = new Map<string, number>();
   /** Process-local roster version; message appends do not change it. */
-  rosterRevision = 0;
+  private localRosterRevision = 0;
+  get usesSharedRoster(): boolean { return Boolean(this.options?.sharedRoster); }
+  get rosterRevision(): number { return this.localRosterRevision + (this.options?.sharedRoster?.rosterRevision ?? 0); }
 
-  constructor(private readonly filePath?: string, private readonly onRosterChange?: () => void, private readonly options?: { companyId?: string; persistence?: { read(): string | undefined; write(data: string): void }; maxFileBytes?: () => number | null;missionSessions?:()=>number }) {}
+  constructor(private readonly filePath?: string, private readonly onRosterChange?: () => void, private readonly options?: { companyId?: string; sharedRoster?: CoworkStore; persistence?: { read(): string | undefined; write(data: string): void }; maxFileBytes?: () => number | null;missionSessions?:()=>number }) {}
 
   private file(): string {
     if (this.filePath) return this.filePath;
@@ -684,6 +696,7 @@ export class CoworkStore {
       if (this.options?.companyId && Array.isArray(parsed.agents) && parsed.agents.some(a => a.companyId && a.companyId !== this.options!.companyId))
         throw new CoworkScopeError('Saved roster belongs to another company. Restore the correct scoped snapshot before continuing.');
       this.data = {
+        sharedRosterVersion: parsed.sharedRosterVersion === 1 ? 1 : undefined,
         nativeCodexSessions: parsed.nativeCodexSessions && typeof parsed.nativeCodexSessions === 'object' && !Array.isArray(parsed.nativeCodexSessions) ? parsed.nativeCodexSessions : {},
         agents: Array.isArray(parsed.agents) ? parsed.agents : [],
         conversations: Array.isArray(parsed.conversations) ? parsed.conversations : [],
@@ -761,9 +774,22 @@ export class CoworkStore {
         }
         this.changeSeqs.set(conversationId, change);
       }
+      if (this.options?.sharedRoster && this.data.sharedRosterVersion !== 1) {
+        // Import legacy employees once, retaining IDs used by meetings, jobs,
+        // artifacts and transcripts. Never resurrect a deleted Cowork profile.
+        for (const member of this.data.agents) {
+          if (this.options.sharedRoster.getAgent(member.id)) continue;
+          let name = member.name;
+          const names = new Set(this.options.sharedRoster.listAgents().map(agent => agent.name.toLowerCase()));
+          for (let suffix = 1; names.has(name.toLowerCase()); suffix++) name = member.name + ' (' + suffix + ')';
+          this.options.sharedRoster.saveAgent({ ...member, id: member.id, name, allowShell: false, allowWrites: false, allowConfig: false, useHostComputer: false, cloudConnectionId: undefined, chiefOfStaff: false, skills: [] });
+        }
+        this.data.sharedRosterVersion = 1;
+        identityChanged = true;
+      }
       if (identityChanged) this.save();
     } catch (error) {
-      if (error instanceof CoworkScopeError) { this.loaded = false; throw error; }
+      if (error instanceof CoworkScopeError || this.options?.sharedRoster) { this.loaded = false; throw error; }
       // A corrupt file must not wipe the team silently: keep defaults in
       // memory; the next successful save replaces the damaged document.
       this.data = emptyCoworkData();
@@ -774,7 +800,7 @@ export class CoworkStore {
   private save(rosterChanged = false): void {
     if (this.options?.persistence) {
       this.options.persistence.write(JSON.stringify(this.data));
-      if (rosterChanged) { this.rosterRevision += 1; this.onRosterChange?.(); }
+      if (rosterChanged) { this.localRosterRevision += 1; this.onRosterChange?.(); }
       return;
     }
     const file = this.file();
@@ -795,7 +821,7 @@ export class CoworkStore {
       }
     }
     if (rosterChanged) {
-      this.rosterRevision += 1;
+      this.localRosterRevision += 1;
       this.onRosterChange?.();
     }
   }
@@ -803,15 +829,58 @@ export class CoworkStore {
   // ---------------------------------------------------------------- agents
 
   listAgents(): CoworkAgent[] {
-    return [...this.load().agents];
+    const members = this.load().agents;
+    if (!this.options?.sharedRoster) return [...members];
+    return members.flatMap(member => {
+      const profile = this.options!.sharedRoster!.getAgent(member.id);
+      return profile ? [{ ...profile, companyId: this.options!.companyId,
+        skills: member.skills, allowShell: member.allowShell, allowWrites: member.allowWrites, allowConfig: member.allowConfig,
+        useHostComputer: member.useHostComputer, cloudConnectionId: member.cloudConnectionId, chiefOfStaff: member.chiefOfStaff,
+      }] : [];
+    });
   }
 
   getAgent(id: string): CoworkAgent | undefined {
-    return this.load().agents.find((a) => a.id === id);
+    return this.listAgents().find((a) => a.id === id);
+  }
+
+  /** Join an existing Cowork identity without copying or changing its profile. */
+  addAgent(agentId: string, settings: Partial<CoworkAgent> = {}): CoworkAgent {
+    const profile = this.options?.sharedRoster?.getAgent(agentId);
+    if (!profile) throw new Error('Choose an existing Cowork teammate.');
+    const data = this.load();
+    if (data.agents.some(agent => agent.id === agentId)) return this.getAgent(agentId)!;
+    data.sharedRosterVersion = 1;
+    data.agents.push({ ...profile, companyId: this.options?.companyId,
+      skills: settings.skills ?? [], allowShell: settings.allowShell ?? false, allowWrites: settings.allowWrites ?? false,
+      allowConfig: settings.allowConfig ?? false, useHostComputer: false, cloudConnectionId: settings.cloudConnectionId,
+      chiefOfStaff: settings.chiefOfStaff ?? false,
+    });
+    this.save(true);
+    return this.getAgent(agentId)!;
   }
 
   saveAgent(input: Partial<Omit<CoworkAgent, 'avatar'>> & { name: string; systemPrompt: string; avatar?: unknown }): CoworkAgent {
     const data = this.load();
+    if (this.options?.sharedRoster) {
+      const roster = this.options.sharedRoster;
+      let profile = input.id ? roster.getAgent(input.id) : undefined;
+      if (!profile) {
+        profile = roster.saveAgent({ ...input, allowShell: false, allowWrites: false, allowConfig: false, useHostComputer: false, cloudConnectionId: undefined, chiefOfStaff: false, skills: [] });
+      } else {
+        // Permission and computer settings belong to this membership. The
+        // identity/personality/model remain the same throughout Cowork.
+        const { companyId: _company, skills: _skills, allowShell: _shell, allowWrites: _writes, allowConfig: _config, useHostComputer: _host, cloudConnectionId: _cloud, chiefOfStaff: _chief, ...identity } = input;
+        if (Object.entries(identity).some(([key, value]) => JSON.stringify((profile as unknown as Record<string,unknown>)[key]) !== JSON.stringify(value))) profile = roster.saveAgent({ ...profile, ...identity });
+      }
+      if (!data.agents.some(agent => agent.id === profile!.id)) this.addAgent(profile.id);
+      const member = data.agents.find(agent => agent.id === profile!.id)!;
+      for (const key of ['skills', 'allowShell', 'allowWrites', 'allowConfig', 'useHostComputer', 'cloudConnectionId', 'chiefOfStaff'] as const) {
+        if (Object.hasOwn(input, key) && (input[key] !== undefined || key === 'cloudConnectionId')) Object.assign(member, { [key]: input[key] });
+      }
+      this.save(true);
+      return this.getAgent(profile.id)!;
+    }
     const name = input.name.trim();
     if (!name) throw new Error('Agent name is required');
     if (!input.systemPrompt.trim()) throw new Error('Agent instructions are required');
@@ -819,7 +888,7 @@ export class CoworkStore {
     if (input.cloudConnectionId && !/^[a-zA-Z0-9_-]{1,120}$/.test(input.cloudConnectionId)) throw new Error('Cloud server selection is invalid.');
     if (data.agents.some((a) => a.id !== existing?.id && a.name.toLowerCase() === name.toLowerCase())) throw new Error('Agent names must be unique so mentions identify one teammate.');
     const agent: CoworkAgent = {
-      id: existing?.id ?? `ca-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4)}`,
+      id: existing?.id ?? (input.id && /^[\w-]+$/.test(input.id) ? input.id : `ca-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4)}`),
       ...(this.options?.companyId ? { companyId: this.options.companyId } : {}),
       name,
       ...sanitizeAgentProfile(input, existing),
@@ -1474,17 +1543,18 @@ export class CoworkStore {
 
   // Follow-ups: an agent's own scheduled wake-ups.
 
-  appReviewState(agentId: string): { checkedAt: string; findings: { key: string; fingerprint: string; widgetId: string }[] } {
+  appReviewState(agentId: string): AppReviewState {
     const state = this.load().appReviewState?.[agentId];
     return {
+      ...state,
       checkedAt: typeof state?.checkedAt === 'string' && Number.isFinite(Date.parse(state.checkedAt)) ? state.checkedAt : '',
       findings: Array.isArray(state?.findings) ? state.findings.filter(item => item && typeof item.key === 'string' && typeof item.fingerprint === 'string' && typeof item.widgetId === 'string') : [],
     };
   }
 
-  saveAppReviewState(agentId: string, state: { checkedAt: string; findings: { key: string; fingerprint: string; widgetId: string }[] }): void {
+  saveAppReviewState(agentId: string, state: AppReviewState): void {
     if (!this.getAgent(agentId)) return;
-    (this.load().appReviewState ??= {})[agentId] = { checkedAt: state.checkedAt, findings: [...state.findings] };
+    (this.load().appReviewState ??= {})[agentId] = { ...state, findings: [...state.findings] };
     this.save();
   }
 

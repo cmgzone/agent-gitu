@@ -40,6 +40,8 @@ export interface WorkflowVersion {
   createdBy: CompanyActor;
   createdAt: string;
   approvedAt?: string;
+  /** Stable native invocation identity; repeating a proposal cannot create duplicate drafts. */
+  proposalKey?: string;
 }
 export interface CompanyWorkflow {
   id: string;

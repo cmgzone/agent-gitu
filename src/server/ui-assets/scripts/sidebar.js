@@ -1,6 +1,7 @@
 
 
   function renderSidebar() {
+    if($('homeProjectCards')){homeLoadProjects();updateTitle();return;}
     api('/api/runs').then(function (sessions) {
       var byProj = {};
       var projPath = {};
@@ -172,8 +173,7 @@
       api('/api/projects', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: name }) })
         .then(function (d) {
           modal.remove();
-          S.settings.projectPath = d.path;
-          persist();
+          homeSelectProject({path:d.path,name:basename(d.path)});
           updateProjChip();
           renderSidebar();
           toast('Project created at ' + d.path);

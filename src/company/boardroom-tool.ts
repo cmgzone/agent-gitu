@@ -10,6 +10,15 @@ export function executeBoardroomTool(room: CompanyBoardroom, actor: CompanyActor
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Provide an input object.');
   let result: unknown;
   switch (action) {
+    case 'request':
+      result = room.request(actor, input as unknown as Parameters<CompanyBoardroom['request']>[1]);
+      break;
+    case 'requests':
+      result = room.requests(actor);
+      break;
+    case 'review_request':
+      result = room.reviewRequest(actor, String(input['requestId'] ?? ''), Number(input['revision']), input['approved'] as boolean, String(input['reason'] ?? ''));
+      break;
     case 'list':
       result = room.list(actor, String(args['query'] ?? '')).map((m) => ({ id: m.id, title: m.title, state: m.state, startAt: m.startAt, chairId: m.chairId }));
       break;

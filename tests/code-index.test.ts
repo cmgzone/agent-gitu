@@ -19,6 +19,8 @@ describe('CodeIndex', () => {
     writeFileSync(path.join(repo, 'src', 'renderer.ts'), 'export const streaming = "webui";');
     writeFileSync(path.join(repo, 'src', 'billing.ts'), 'export const billing = () => 1;');
     writeFileSync(path.join(repo, 'node_modules', 'x', 'junk.js'), 'junk');
+    mkdirSync(path.join(repo, 'browser-profiles', 'Default'), { recursive: true });
+    writeFileSync(path.join(repo, 'browser-profiles', 'Default', 'Preferences.json'), '{"private":"browser state"}');
 
     const idx = new CodeIndex(repo, db);
     const s1 = idx.refresh(repo, ['node_modules']);

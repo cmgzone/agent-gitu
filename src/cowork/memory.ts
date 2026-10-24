@@ -25,17 +25,61 @@ export class CoworkMemory {
   constructor(
     private readonly memory: MemoryStore,
     private readonly scope: string,
+    private readonly sharedRoster = false,
   ) {}
 
-  static forWorkspace(selectedWorkspace?: string): CoworkMemory {
+  static forWorkspace(selectedWorkspace?: string, sharedRoster = false): CoworkMemory {
     const workspace = selectedWorkspace ?? ensureGituHome().workspace;
-    return new CoworkMemory(MemoryStore.forProject(workspace), path.basename(workspace));
+    return new CoworkMemory(MemoryStore.forProject(workspace), path.basename(workspace), sharedRoster);
   }
 
   private ctx(agent: CoworkAgent): MemoryRetrievalContext {
-    return { requestingAgentId: agent.companyId ? agent.id : agent.name, projectId: this.scope };
+    return { requestingAgentId: this.identity(agent), projectId: this.scope };
   }
-  private identity(agent: CoworkAgent): string { return agent.companyId ? agent.id : agent.name; }
+  private identity(agent: CoworkAgent): string { return !this.sharedRoster && agent.companyId ? agent.id : agent.name; }
+
+  /** Company knowledge is ordinary shared Cowork memory, with provenance. */
+  rememberCompany(companyId: string, name: string, text: string): void {
+    if (!text.trim()) throw new Error('Enter a company memory.');
+    this.memory.add({ type: 'fact', claim: 'Company ' + name + ' [' + companyId + ']: ' + text.trim(),
+      scope: this.scope, projectId: this.scope, visibility: 'project', source: 'cowork-company:' + companyId,
+      sourceType: 'model_inference', confidence: 0.7, importance: 0.6 });
+  }
+
+  rememberCompanyOutcome(companyId: string, name: string, record: string, text: string, previousId?: string): string {
+    const source = 'cowork-company-outcome:' + companyId + ':' + record;
+    const claim = 'Company ' + name + ' [' + companyId + ']: ' + text;
+    const existing = this.memory.query().find(entry => entry.source === source && entry.claim === claim.replace(/\s+/g, ' ').trim() && entry.status !== 'superseded');
+    if (existing) return existing.id;
+    const result = this.memory.add({ type: 'fact', claim, scope: this.scope, projectId: this.scope, visibility: 'project',
+      source, sourceType: 'model_inference', confidence: 0.7, importance: 0.65, status: 'candidate' }, { freshCandidate: true });
+    if (previousId && previousId !== result.entry.id) this.memory.supersede(previousId, result.entry.id);
+    return result.entry.id;
+  }
+
+  companyEntries(agent: CoworkAgent, companyId: string, query = ''): MemoryEntry[] {
+    return this.memory.query({ text: query }, this.ctx(agent)).filter(entry =>
+      (entry.source === 'cowork-company:' + companyId || entry.source?.startsWith('cowork-company-outcome:' + companyId + ':') || entry.source?.startsWith('company-migration:' + companyId + ':')) &&
+      entry.visibility !== 'agent' && entry.visibility !== 'mission' && entry.status !== 'archived' && entry.status !== 'superseded');
+  }
+
+  /** One-time, restart-safe import. Existing company files remain recoverable. */
+  importCompany(workspace: string, companyId: string, name: string, agents: CoworkAgent[]): number {
+    if (!existsSync(path.join(workspace, '.hermes', 'memory.json'))) return 0;
+    const previous = MemoryStore.forProject(workspace);
+    let imported = 0;
+    for (const entry of previous.query()) {
+      if (entry.status === 'archived' || entry.status === 'superseded' || entry.visibility === 'mission') continue;
+      const agent = agents.find(item => item.id === entry.agentId || item.name === entry.agentId);
+      if (entry.visibility === 'agent' && !agent) continue;
+      const result = this.memory.add({ ...entry,
+        claim: entry.visibility === 'agent' ? entry.claim : 'Company ' + name + ' [' + companyId + ']: ' + entry.claim,
+        scope: this.scope, projectId: this.scope, agentId: entry.visibility === 'agent' ? this.identity(agent!) : undefined,
+        visibility: entry.visibility === 'agent' ? 'agent' : 'project', source: entry.source?.startsWith('company-handbook:') ? entry.source : 'company-migration:' + companyId + ':' + entry.id });
+      if (result.created) imported++;
+    }
+    return imported;
+  }
 
   remember(agent: CoworkAgent, text: string): number {
     const claim = text.trim();

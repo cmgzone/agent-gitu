@@ -44,7 +44,8 @@ const calendar = new CompanyCalendar(org, {
   }),
   styles = [...UI_HTML.slice(0, UI_HTML.indexOf('</head>')).matchAll(/<style>([\s\S]*?)<\/style>/g)].map((m) => m[1]).join('\n');
 const html = `<!doctype html><html data-theme="light"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${styles}body{padding:24px}#fixture{max-width:1360px;margin:auto}</style></head><body><main id="fixture" class="company-page"></main><script>var Companies={id:${JSON.stringify(company.id)},tab:'Workflows',data:{agents:${JSON.stringify(cowork.listAgents())}}};function esc(v){var el=document.createElement('span');el.textContent=String(v??'');return el.innerHTML.replace(/"/g,'&quot;').replace(/'/g,'&#39;');}function companyUrl(suffix){return '/api/companies/'+Companies.id+suffix;}function shortDate(v){return new Date(v).toLocaleString();}function companyRender(){window.lastNavigation=Companies.tab;}async function api(url,options){var res=await fetch(url,options),data=await res.json();if(!res.ok)throw Error(data.error);return data;}${COMPANY_WORKFLOWS_JS}${COMPANY_CALENDAR_JS}companyWorkflowsMount(document.getElementById('fixture'));</script></body></html>`;
-const browser = await chromium.launch({ channel: 'msedge', headless: true });
+const smokeChannel = process.env['GITU_UI_SMOKE_CHANNEL'] ?? (process.platform === 'win32' ? 'msedge' : undefined);
+const browser = await chromium.launch({ headless: true, ...(smokeChannel ? { channel: smokeChannel } : {}) });
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } }),
     errors: string[] = [];

@@ -4,7 +4,7 @@
     "slug": "agent-gitu",
     "scheme": "agentgitu",
     "icon": "./assets/agent-gitu-icon.png",
-    "version": "0.1.0",
+    "version": "0.1.3",
     "orientation": "default",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
@@ -13,7 +13,9 @@
       "bundleIdentifier": "dev.agentgitu.mobile"
     },
     "android": {
-      "package": "dev.agentgitu.mobile"
+      "package": "dev.agentgitu.mobile",
+      "versionCode": 4,
+      "softwareKeyboardLayoutMode": "resize"
     },
     "web": {
       "bundler": "metro",

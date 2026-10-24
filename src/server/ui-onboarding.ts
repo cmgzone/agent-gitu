@@ -26,7 +26,7 @@ export const ONBOARDING_CSS = String.raw`
   .setup-main .setup-description { color:var(--muted); margin:0 0 28px; font-size:13px; line-height:1.65; }
   .setup-main h2 { font-size: 15px; margin-top: 24px; }
   .setup-main label.setup-field { display: block; font-size: 12px; font-weight: 600; margin: 16px 0 6px; }
-  #setupWizard .setup-main :is(select,input:not([type=radio])) { width:100%; min-width:0; box-sizing:border-box; font:inherit; font-size:13px; padding:12px 14px; border-radius:14px; border:1px solid color-mix(in srgb,var(--border2) 70%,transparent); background:color-mix(in srgb,var(--card) 72%,transparent); color:var(--text); }
+  #setupWizard .setup-main :is(select,input:not([type=radio]):not(.chatgpt-signin-code)) { width:100%; min-width:0; box-sizing:border-box; font:inherit; font-size:13px; padding:12px 14px; border-radius:14px; border:1px solid color-mix(in srgb,var(--border2) 70%,transparent); background:color-mix(in srgb,var(--card) 72%,transparent); color:var(--text); }
   .setup-main :is(select,input):focus-visible { outline:2px solid var(--run); outline-offset:3px; }
   .setup-key-row { display: flex; gap: 8px; }
   .setup-key-row input { flex: 1; }
@@ -130,12 +130,11 @@ export const ONBOARDING_JS = String.raw`
     if ($('setupSignIn')) $('setupSignIn').onclick = function () {
       setupOperation(async function () {
         var result = await api('/api/chatgpt/login', { method: 'POST' });
-        if (result.url) window.open(result.url, '_blank', 'noopener');
-        setupMessage(result.userCode ? 'Enter code ' + result.userCode + ' on the OpenAI sign-in page, then choose Check sign-in.' : 'Complete sign-in in your browser, then choose Check sign-in.');
-        if (result.url) {
-          var link = document.createElement('a'); link.href = result.url; link.target = '_blank'; link.rel = 'noopener'; link.textContent = ' Open sign-in page';
-          $('setupMessage').appendChild(link);
-        }
+        setupMessage('');
+        showChatgptSignIn($('setupMessage'), result, {
+          onConnected: function () { refreshSetupProviders(); },
+          onRetry: function () { $('setupSignIn').click(); }
+        });
       });
     };
     root.querySelectorAll('[name=setupMode]').forEach(function (input) { input.onchange = function () { setupState.mode = input.value; $('setupNext').textContent = 'Open ' + (input.value === 'cowork' ? 'Cowork' : 'Coding'); }; });

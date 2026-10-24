@@ -339,31 +339,12 @@
           cgSignin.textContent = 'Opening sign-in…';
           api('/api/chatgpt/login', { method: 'POST' }).then(function (r) {
             if (r && r.alreadySignedIn) { renderSettings(); return; }
-            if (r && r.url) window.open(r.url, '_blank', 'noopener');
-            var instructions = document.createElement('div');
-            instructions.className = 'hint'; instructions.setAttribute('role', 'status');
-            instructions.textContent = r.userCode ? 'Enter code ' + r.userCode + ' on the OpenAI sign-in page. ' : 'Complete sign-in in your browser. ';
-            if (r.url) {
-              var link = document.createElement('a'); link.href = r.url; link.target = '_blank'; link.rel = 'noopener'; link.textContent = 'Open sign-in page'; instructions.appendChild(link);
-            }
-            cgSignin.parentElement.appendChild(instructions);
             cgSignin.textContent = 'Waiting for sign-in…';
-            var resetSignIn = function () { cgSignin.disabled = false; cgSignin.textContent = 'Sign in with ChatGPT'; instructions.remove(); };
-            var tries = 0;
-            var poll = function () {
-              tries += 1;
-              if (tries > 150) { resetSignIn(); toast('Sign-in timed out. Please try again.', true); return; }
-              api('/api/chatgpt/auth').then(function (st) {
-                if (st && st.loggedIn) {
-                  toast('ChatGPT connected');
-                  renderSettings();
-                  return;
-                }
-                if (st && st.loginPending === false) { resetSignIn(); toast('Sign-in was not completed. Please try again.', true); return; }
-                setTimeout(poll, 2000);
-              }).catch(function () { setTimeout(poll, 2000); });
-            };
-            setTimeout(poll, 1500);
+            showChatgptSignIn(cgSignin.parentElement, r, {
+              onConnected: function () { toast('ChatGPT connected'); renderSettings(); },
+              onEnded: function () { cgSignin.disabled = false; cgSignin.textContent = 'Sign in with ChatGPT'; },
+              onRetry: function () { cgSignin.click(); }
+            });
           }).catch(function (e) {
             cgSignin.disabled = false;
             cgSignin.textContent = 'Sign in with ChatGPT';

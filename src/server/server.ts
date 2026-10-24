@@ -5403,6 +5403,19 @@ export class GituServer {
     }
 
     const requestMatch = path.match(/^\/api\/cowork\/requests\/([\w-]+)$/);
+    if (requestMatch && method === 'DELETE') {
+      const request = store.getRequest(requestMatch[1]!);
+      if (!request) { this.sendJson(res,404,{error:'Request card not found.'});return true; }
+      if (request.status === 'open') {
+        const delegated = this.resolveDelegationCard(request,'deny','Cancelled by the user. Do not execute this proposal or invent an answer.');
+        if (delegated && !delegated.ok && delegated.statusCode !== 409) { this.sendJson(res,delegated.statusCode,{error:delegated.error});return true; }
+      }
+      const wasOpen = request.status === 'open';
+      const removed = store.removeRequestCard(request.id);
+      if (wasOpen) store.appendMessage(request.conversationId,{role:'system',via:'web',text:'The user removed the request card "'+request.title+'". It is cancelled. Do not execute or recreate it unless the user asks.'});
+      this.publishCowork(request.conversationId);
+      this.sendJson(res,200,{ok:true,request:removed});return true;
+    }
     if (requestMatch && method === 'POST') {
       const body = await this.readBody(req);
       const request = store.getRequest(requestMatch[1]!);

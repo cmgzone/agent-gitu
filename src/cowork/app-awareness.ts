@@ -54,10 +54,13 @@ export function connectionQuestion(text: string, history: CoworkMessage[]): { se
   }
   // Only status questions take the immediate path; email work still goes to the agent.
   if (!/\b(?:connected|connection|connections|linked|access)\b/i.test(question) || !/\b(?:are|is|am|do|does|can|check|verify|which|what|show)\b/i.test(question)) return;
-  if (/\b(?:send|write|delete|buy|pay|create)\b/i.test(question)) return;
+  // This is only an exact access-status shortcut, never a keyword router for
+  // conversation, setup, troubleshooting or saved custom API connections.
+  // Unknown service names go to the model, which can inspect list_connections.
+  const words = question.toLowerCase().replace(/[?.!,]/g, '').trim().split(/\s+/);
+  if (!/^(?:please\s+)?(?:are|is|am|do|does|can|check|verify|which|what|show|list)\b/i.test(question) || words.some(word => !/^(?:please|are|is|am|do|does|can|check|verify|which|what|show|list|you|i|we|me|my|your|the|any|all|to|with|and|still|already|currently|now|connected|connection|connections|linked|access|have|has|status|working|available|apps?|accounts?|services?|gmail|outlook|outlookemail|email|e-mail|mail|mailbox|inbox|github|google|drive|calendar|slack|alibaba)$/.test(word))) return;
   const named = aliases.find(([pattern]) => pattern.test(question))?.[1];
-  const other = /\b(?:to|with|my)\s+(?:my\s+)?([a-z][a-z0-9 ]{1,40}?)(?:\s+(?:account|app))?[?.!]*$/i.exec(question)?.[1]?.trim();
-  return { service: named ?? (other && !/^(apps?|accounts?|anything|you)$/i.test(other) ? other.replace(/\s+/g, '').toLowerCase() : undefined) };
+  return { service: named };
 }
 
 export async function connectionReply(input: { text: string; history: CoworkMessage[]; apps?: ConnectedAppsProvider; store: CoworkStore; agentId: string; conversationId: string; awareness: AppAwareness }): Promise<string | undefined> {

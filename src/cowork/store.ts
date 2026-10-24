@@ -498,6 +498,8 @@ export interface CoworkRequest {
   discordNotifiedAt?: string;
   createdAt: string;
   resolvedAt?: string;
+  /** Removed from chat by the owner; keep the decision for audit/history. */
+  hiddenAt?: string;
 }
 
 /**
@@ -2041,6 +2043,20 @@ export class CoworkStore {
     request.status = status;
     request.response = response?.trim() || undefined;
     request.resolvedAt = new Date().toISOString();
+    this.save();
+    return request;
+  }
+
+  removeRequestCard(id: string): CoworkRequest | undefined {
+    const request = this.getRequest(id);
+    if (!request || request.hiddenAt) return request;
+    const now = new Date().toISOString();
+    if (request.status === 'open') {
+      request.status = 'dismissed';
+      request.response = 'Cancelled by the user.';
+      request.resolvedAt = now;
+    }
+    request.hiddenAt = now;
     this.save();
     return request;
   }

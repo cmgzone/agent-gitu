@@ -571,6 +571,11 @@ sidebar. Instead of task runs it gives you a messaging-style team surface:
   the conversation. Configure it per host with `chiefOfStaff: { policy, advisor }`
   (`advisor: false` for policy-only, or supply your own), or `false` to turn the
   chief off (interactive runs keep every gate for you by design).
+- **Remove a request card** — swipe left on a card in Cowork, or use its Remove
+  button. Removing an open card cancels that proposal; it never approves an action
+  or deletes the saved connection. The decision stays recorded and the card stays
+  hidden after a restart. Ordinary discussion about a connection goes to the
+  teammate; only direct access-status questions use the immediate status reply.
 - **Independent desktop engine** — Electron is the interface; a detached process
   owns agents, tools, sessions, and schedules. Reopening the interface reconnects
   to its running engine. The tray offers **Exit interface (keep agents running)**

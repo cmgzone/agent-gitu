@@ -7,6 +7,7 @@ import { COWORK_NOW_CSS, COWORK_NOW_JS } from './ui-cowork-now.js';
 import { COWORK_CLEAN_ACTIVITY_CSS, COWORK_CLEAN_ACTIVITY_JS } from './ui-cowork-activity.js';
 import { COWORK_IMAGES_CSS, COWORK_IMAGES_JS } from './ui-cowork-images.js';
 import { COWORK_COMPUTER_CSS, COWORK_COMPUTER_JS } from './ui-cowork-computer.js';
+import { COWORK_CARD_REMOVAL_CSS, COWORK_CARD_REMOVAL_JS } from './ui-cowork-card-removal.js';
 import { COWORK_WIDGETS_CSS, COWORK_WIDGETS_JS } from './ui-cowork-widgets.js';
 import { WIDGET_APP_RUNTIME_JS } from './ui-widget-app-runtime.js';
 import { COWORK_DIALOGS_JS } from './ui-cowork-dialogs.js';
@@ -597,6 +598,7 @@ export const COWORK_CSS = String.raw`
   ${COWORK_CLEAN_ACTIVITY_CSS}
   ${COWORK_IMAGES_CSS}
   ${COWORK_COMPUTER_CSS}
+  ${COWORK_CARD_REMOVAL_CSS}
   ${COWORK_WIDGETS_CSS}
   ${COWORK_SESSIONS_CSS}
   ${COWORK_CODING_CSS}
@@ -615,6 +617,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
   ${COWORK_CLEAN_ACTIVITY_JS}
   ${COWORK_IMAGES_JS}
   ${COWORK_COMPUTER_JS}
+  ${COWORK_CARD_REMOVAL_JS}
   ${COWORK_WIDGETS_JS}
   ${WIDGET_APP_RUNTIME_JS}
   ${COWORK_DIALOGS_JS}
@@ -1857,6 +1860,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     return { title: actionName, serviceName: serviceName, html: html, valid: Boolean(valid), messageReview: messageReview, nativeSend: nativeSend };
   }
   function cwRequestHtml(request) {
+    if (request.hiddenAt) return '';
     if (request.appConnection) return cwAppConnectionHtml(request);
     var cw = cwEnsure();
     var agent = cwAgentById(request.agentId);
@@ -1904,6 +1908,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
 
   function cwBindRequests(el) {
     var cw = cwEnsure();
+    if (typeof cwBindCardRemoval === 'function') cwBindCardRemoval(el);
     var questionConversation=cw.active;
     chatBindQuestions(el,cw,'cowork:'+questionConversation,async function(id,response){
       var data=await api('/api/cowork/requests/'+encodeURIComponent(id),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'answer',response:response})});

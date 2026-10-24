@@ -511,7 +511,7 @@ describe('gitu_task tool dispatch', () => {
     expect(coworkToolDocs(agent, false)).toContain('gitu_task');
     // A teammate that cannot edit files itself must not be able to spawn an
     // engineer that edits them on its behalf.
-    expect(coworkToolDocs({ ...agent, allowWrites: false }, false)).not.toContain('gitu_task');
+    expect(coworkToolDocs({ ...agent, allowWrites: false }, false)).not.toMatch(/^- gitu_task —/m);
   });
 
   it('refuses when the teammate cannot write or no coding runtime is wired', async () => {

@@ -20,6 +20,22 @@ function fixture() {
   return { store, agent, conversation, apps };
 }
 describe('Immediate teammate app awareness', () => {
+  it.each([
+    'Can we talk about my Gmail connection?',
+    'What I mean is the connection should remember its capabilities.',
+    'My GitHub connection is ready; can you explain the deployment plan?',
+    'Can you rename my Coolify connection?',
+    'Are you connected to Coolify?',
+    'Can you check the application logs through my Coolify connection?',
+    'Show me how to fix the email connection.',
+  ])('leaves normal discussion and custom API work with the agent: %s',async text=>{
+    const f=fixture(),complete=vi.fn(async()=> 'I understand the connection request and will discuss it in context.');
+    expect(connectionQuestion(text,[])).toBeUndefined();
+    const trigger=f.store.appendMessage(f.conversation.id,{role:'user',via:'web',text});
+    const result=await runConversationTurn({conversation:f.conversation,trigger,history:[trigger],deps:{store:f.store,agents:[f.agent],connectedApps:f.apps,resolveLlm:()=>({complete} as unknown as LlmClient),toolContext:vi.fn(),autoLearn:false},append:message=>f.store.appendMessage(f.conversation.id,message)});
+    expect(result.error).toBeUndefined();expect(complete).toHaveBeenCalled();expect(result.messages.at(-1)?.text).toContain('discuss it in context');
+    expect(f.store.openRequests(f.conversation.id)).toHaveLength(0);expect(f.apps.catalog).not.toHaveBeenCalled();
+  });
   it('reports native inbox and outgoing failures separately instead of claiming the mailbox expired', async () => {
     const f=fixture();f.store.assignAppAccount(f.agent.id,'mail','own');
     vi.mocked(f.apps.accounts).mockResolvedValue([{id:'own',toolkit:'mail',status:'ACTIVE',disabled:false,mailHealth:{checkedAt:new Date().toISOString(),imap:{state:'timeout',message:'Incoming IMAP connection timed out; credentials were not verified.'},smtp:{state:'ok',message:'Outgoing SMTP sign-in verified. No email was sent.'}}}]);

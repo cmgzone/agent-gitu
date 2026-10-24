@@ -117,6 +117,12 @@ server address, access key, registered email, and app password form.
 Its default is `http://localhost:8321`. `EXPO_PUBLIC_API_URL` can set a build-time
 default address. It is public configuration; never put a key there.
 
+Android voice calls use the workspace's existing call buttons. Android asks for
+microphone permission when you start your first call; allow it to speak to the
+agent. Use your server's HTTPS address for calls. Plain HTTP LAN connections
+support text workspaces, but Android WebView requires a secure origin for the
+microphone. Incoming call audio plays without an extra tap.
+
 To produce a local Android preview APK after installing Java 17 and the Android SDK:
 
 ```powershell

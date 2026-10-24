@@ -18,7 +18,7 @@ describe('model catalog loading and provider filtering', () => {
       $: () => null, ensureUsableModelSelection: () => {}, syncModelLabel: () => {}, updateModelMeta: () => {},
       providerIsUsable: (p: { usable: boolean }) => p.usable,
       modelSearchText: (p: { id: string }, m: { id: string }) => p.id + ' ' + m.id,
-      esc: String,
+      esc: String, Date,
     };
     const helpers = runInNewContext(UI_MODEL_CATALOG_JS + '\n({ loadModelCatalog, catalogModelGroups, catalogSelectOptions });', context);
     return { context, helpers };
@@ -50,6 +50,20 @@ describe('model catalog loading and provider filtering', () => {
     resolvers[0]!({ providers: [provider(['stale'])] });
     await old;
     expect(context.S.models[0]?.models[0]?.id).toBe('fresh');
+  });
+
+  it('reuses a fresh snapshot, expires it, and still refreshes explicitly', async () => {
+    const api = vi.fn(async () => ({ providers: [provider(['fresh'])] }));
+    const { helpers } = harness(api);
+    await helpers.loadModelCatalog();
+    await helpers.loadModelCatalog();
+    expect(api).toHaveBeenCalledTimes(1);
+    await helpers.loadModelCatalog(true);
+    expect(api).toHaveBeenCalledTimes(2);
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 31000);
+    try { await helpers.loadModelCatalog(); }
+    finally { clock.mockRestore(); }
+    expect(api).toHaveBeenCalledTimes(3);
   });
 
   it('keeps the last catalog on failure and allows retry', async () => {

@@ -3,6 +3,7 @@
 export const UI_MODEL_CATALOG_JS = String.raw`
   var modelCatalogPending = null;
   var modelCatalogGeneration = 0;
+  var modelCatalogLoadedAt = 0;
   var modelSelectionQueue=Promise.resolve(),modelChoiceRevision=0;
   function applyRuntimeSelection(value){
     if(!value||!value.updatedAt||S.savedSelectionAt===value.updatedAt)return;
@@ -22,6 +23,7 @@ export const UI_MODEL_CATALOG_JS = String.raw`
   }
   function loadModelCatalog(force) {
     if (modelCatalogPending && !force) return modelCatalogPending;
+    if (!force && S.modelsLoaded && Date.now() - modelCatalogLoadedAt < 30000) return Promise.resolve(S.models);
     var generation = ++modelCatalogGeneration;
     var selectionRevision=modelChoiceRevision;
     var pending = api('/api/models').then(function (data) {
@@ -30,6 +32,7 @@ export const UI_MODEL_CATALOG_JS = String.raw`
       S.models = data.providers;
       if(selectionRevision===modelChoiceRevision)applyRuntimeSelection(data.selection);
       S.modelsLoaded = true;
+      modelCatalogLoadedAt = Date.now();
       ensureUsableModelSelection();
       var select = $('model');
       if (select) { select.innerHTML = modelOptionsHtml(); select.value = S.sel.model; }

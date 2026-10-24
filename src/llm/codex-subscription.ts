@@ -67,6 +67,8 @@ export interface CodexLoginStart {
 }
 
 let infoCache: { expiresAt: number; value: CodexSubscriptionInfo } | undefined;
+let infoPending: Promise<CodexSubscriptionInfo> | undefined;
+let infoGeneration = 0;
 let loginStart: Promise<CodexLoginStart> | undefined;
 let activeLogin: {
   app: AppServerConnection;
@@ -315,6 +317,15 @@ function appServerModels(value: unknown): CodexSubscriptionModel[] {
 
 export async function codexSubscriptionInfo(refresh = false): Promise<CodexSubscriptionInfo> {
   if (!refresh && infoCache && Date.now() < infoCache.expiresAt) return infoCache.value;
+  if (!refresh && infoPending) return infoPending;
+  const generation = ++infoGeneration;
+  const work = readCodexSubscriptionInfo(generation);
+  infoPending = work;
+  try { return await work; }
+  finally { if (infoPending === work) infoPending = undefined; }
+}
+
+async function readCodexSubscriptionInfo(generation: number): Promise<CodexSubscriptionInfo> {
   if (!codexExecutable()) {
     return { available: false, signedIn: false, models: [], error: 'Codex is not installed.' };
   }
@@ -332,11 +343,11 @@ export async function codexSubscriptionInfo(refresh = false): Promise<CodexSubsc
       planType: accountIsChatGpt(account) && typeof account['planType'] === 'string' ? account['planType'] : undefined,
       models: appServerModels(modelResult),
     };
-    infoCache = { expiresAt: Date.now() + INFO_TTL_MS, value };
+    if (generation === infoGeneration) infoCache = { expiresAt: Date.now() + INFO_TTL_MS, value };
     return value;
   } catch (err) {
     const value: CodexSubscriptionInfo = { available: true, signedIn: false, models: [], error: (err as Error).message };
-    infoCache = { expiresAt: Date.now() + 5_000, value };
+    if (generation === infoGeneration) infoCache = { expiresAt: Date.now() + 5_000, value };
     return value;
   } finally {
     app?.close();
@@ -391,6 +402,8 @@ async function beginCodexSubscriptionLogin(): Promise<CodexLoginStart> {
       const completed = activeLogin;
       activeLogin = undefined;
       infoCache = undefined;
+      infoGeneration++;
+      infoPending = undefined;
       app.close();
       if (completed) {
         clearTimeout(completed.timeout);

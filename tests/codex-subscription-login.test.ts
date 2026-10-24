@@ -30,6 +30,17 @@ afterEach(()=>{
 });
 const complete=(success:boolean)=>runtime.children.at(-1).stdout.write(JSON.stringify({method:'account/login/completed',params:{loginId:'login-fixture',success}})+'\n');
 
+it('shares cold subscription discovery and lets a forced refresh replace the cache',async()=>{
+ const codex=await import('../src/llm/codex-subscription.js');
+ const results=await Promise.all([codex.codexSubscriptionInfo(),codex.codexSubscriptionInfo(),codex.codexSubscriptionInfo()]);
+ expect(results[0]).toEqual(results[1]);
+ expect(runtime.requests.filter(r=>r.method==='account/read')).toHaveLength(1);
+ await codex.codexSubscriptionInfo();
+ expect(runtime.requests.filter(r=>r.method==='account/read')).toHaveLength(1);
+ await codex.codexSubscriptionInfo(true);
+ expect(runtime.requests.filter(r=>r.method==='account/read')).toHaveLength(2);
+});
+
 it('uses device authorization on a hosted app and reuses its pending link and code',async()=>{
  vi.stubEnv('AGENT_GITU_PUBLIC_ORIGIN','https://gitu.example.test');
  const codex=await import('../src/llm/codex-subscription.js');

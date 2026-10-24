@@ -89,6 +89,7 @@ export const VOICE_JS = String.raw`
     if(voiceState.callId){var same=JSON.stringify(voiceState.target)===JSON.stringify(target);await voiceEnd();if(same)return;}
     var generation=++voiceState.generation;voiceState.starting=true;voiceState.target=target;
     try{
+      if(window.isSecureContext===false)throw new Error('Voice calls need a secure connection. Open your Gitu server using its HTTPS address, then try again.');
       var config=await api('/api/voice/config');if(generation!==voiceState.generation)return;
       if(!config.configured){voiceState.starting=false;voiceSetup(config,function(){startGituVoice(target);});return;}
       voiceShowBar('Calling your agent','connecting');

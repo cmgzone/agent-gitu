@@ -34,6 +34,14 @@ function voiceUi(agentPresent = true) {
 }
 
 describe('Live call lifecycle', () => {
+  it('explains HTTPS requirements before starting a worker or asking for a microphone', async () => {
+    const u = voiceUi();
+    u.context.window.isSecureContext = false;
+    await u.context.startGituVoice({ kind: 'cowork', conversationId: 'atlas' });
+    expect(u.elements.voicePhase.textContent).toContain('HTTPS address');
+    expect(u.api).not.toHaveBeenCalled();
+    expect(u.sdk.createLocalAudioTrack).not.toHaveBeenCalled();
+  });
   it('returns speech even if refreshing the conversation throws', async () => {
     const u = voiceUi();
     u.context.cwPoll.mockImplementation(() => { throw new Error('render failed'); });

@@ -198,6 +198,7 @@ function Workspace({ server, close }: { server: string; close: () => void }) {
         javaScriptEnabled
         domStorageEnabled
         cacheEnabled
+        mediaPlaybackRequiresUserAction={false}
         thirdPartyCookiesEnabled={false}
         sharedCookiesEnabled={false}
         allowFileAccess={false}

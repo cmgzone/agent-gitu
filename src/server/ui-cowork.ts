@@ -405,6 +405,8 @@ export const COWORK_CSS = String.raw`
   .cw-request input { flex: 1; min-width: 150px; background: var(--card2); border: 1px solid var(--border2); color: var(--text); border-radius: 7px; padding: 5px 8px; }
 .cw-request .cw-credential-form { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
 .cw-request .cw-credential-form .connection-fields { display: grid; gap: 8px; }
+.cw-credential-target{display:grid;gap:4px;padding:10px 12px;background:var(--card2);border:1px solid var(--border2);border-radius:10px;overflow-wrap:anywhere}.cw-credential-target strong{font-size:13px}.cw-credential-target div,.cw-credential-target small{font-size:11px;color:var(--muted)}
+@media(pointer:coarse){.cw-request .cw-credential-form .connection-field input{font-size:16px;min-height:44px;box-sizing:border-box;max-width:100%}.cw-credential-form button{min-height:44px}}
 .cw-request .cw-credential-form .connection-field { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
 .cw-request .cw-credential-form .connection-field input { background: var(--card2); border: 1px solid var(--border2); color: var(--text); border-radius: 7px; padding: 5px 8px; }
 .cw-request .cw-credential-form .connection-secret-actions { display: flex; align-items: center; gap: 8px; }
@@ -1668,17 +1670,11 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
         '<button type="submit" class="btn dark" data-cwsavessh>Test password and continue</button></form>';
     }
     var reauth = !!cred.connectionId;
-    return '<form class="cw-credential-form connection-form" data-cwcredential="' + esc(request.id) + '"' + (reauth ? ' data-cwreauth="' + esc(cred.connectionId) + '"' : '') + '>' +
-      '<div class="connection-fields">' +
-      (reauth ? '' :
-        connectionInputHtml('label', cred.label || cred.providerHint || '', true) +
-        connectionInputHtml('provider', cred.providerHint || '', true) +
-        connectionInputHtml('baseUrl', cred.baseUrl || '', true) +
-        connectionInputHtml('validationPath', cred.validationPath || '', true) +
-        (typeof connectionAuthFieldsHtml==='function'?connectionAuthFieldsHtml():'')) +
+    return '<form class="cw-credential-form connection-form" data-cwcredential="' + esc(request.id) + '" data-cwcredential-setup="'+esc(JSON.stringify(cred))+'"' + (reauth ? ' data-cwreauth="' + esc(cred.connectionId) + '"' : '') + '>' +
+      '<div class="cw-credential-target"><strong>'+esc(cred.label || cred.providerHint)+'</strong>'+(cred.baseUrl?'<div>'+esc(cred.baseUrl)+'</div>':'')+'<small>Connection settings prepared by your teammate.</small></div><div class="connection-fields">' +
       connectionInputHtml('token', '', true) +
       '</div>' +
-      '<div class="connection-secret-actions"><span class="hint">Saved securely on this device. Never sent to the model or chat history.</span><button class="btn ghost" type="button" data-cwshowkey aria-pressed="false">Show key</button></div>' +
+      '<div class="connection-secret-actions"><span class="hint">Saved securely in Gitu. Never sent to the model or chat history.</span><button class="btn ghost" type="button" data-cwshowkey aria-pressed="false">Show key</button></div>' +
       '<div class="connection-error" role="alert" hidden></div>' +
       '<button type="submit" class="btn dark" data-cwsavecredential>' + (reauth ? 'Update key and continue' : 'Save key and continue') + '</button></form>';
   }
@@ -1767,32 +1763,14 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
           submit.disabled = false;
           submit.textContent = reauth ? 'Update key and continue' : 'Save key and continue';
         };
-        var lookup = reauth
-          ? api('/api/connections').then(function (data) {
-              var existing = (data.connections || []).filter(function (connection) { return connection.id === reauth; })[0];
-              if (!existing) throw new Error('The saved connection is gone — ask the agent to request a new one.');
-              return existing;
-            })
-          : Promise.resolve(null);
-        lookup.then(function (existing) {
-          var profile = existing
-            ? { id: existing.id, label: existing.label, provider: existing.provider, baseUrl: existing.baseUrl, documentationUrl: existing.documentationUrl, capabilities: existing.capabilities, operations: existing.operations, token: values.token }
-            : {
-                label: values.label || values.provider,
-                provider: values.provider,
-                baseUrl: values.baseUrl,
-                capabilities: ['connection.discover'],
-                auth: typeof connectionAuthFromValues==='function'?connectionAuthFromValues(values):undefined,
-                operations: [{ id: 'validate', label: 'Validate saved connection', capability: 'connection.discover', method: 'GET', path: values.validationPath || '/', risk: 'read' }],
-                token: values.token
-              };
-          return api('/api/connections', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(profile) });
-        }).then(function (result) {
+        var key = values.token; values.token = '';
+        form.querySelector('[data-connection-field="token"]').value = '';
+        api('/api/cowork/requests/'+encodeURIComponent(id)+'/credential-save', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:key,setup:form.getAttribute('data-cwcredential-setup')})}).then(function (result) {
           // Only the saved connection id goes back to the request — never the key.
           values.token = '';
           var tokenInput = form.querySelector('[data-connection-field="token"]');
           if (tokenInput) tokenInput.value = '';
-          return api('/api/cowork/requests/' + encodeURIComponent(id), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'provide', connectionId: result.connection.id }) });
+          return api('/api/cowork/requests/' + encodeURIComponent(id), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'provide', connectionId: result.connection.id, setup:form.getAttribute('data-cwcredential-setup') }) });
         }).then(function (d) {
           cw.requests = (cw.requests || []).map(function (request) { return request.id === id ? d.request : request; });
           cwRenderInfo(); cwRenderRail(); cwPoll();
@@ -2662,7 +2640,10 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     });
     wrap.querySelectorAll('[data-cwcredential], [data-cwsshcredential]').forEach(function (form) {
       var id = form.getAttribute('data-cwcredential') || form.getAttribute('data-cwsshcredential');
-      if (credentialForms[id]) form.replaceWith(credentialForms[id]);
+      if (credentialForms[id]) {
+        if (credentialForms[id].getAttribute('data-cwcredential-setup') === form.getAttribute('data-cwcredential-setup')) form.replaceWith(credentialForms[id]);
+        else credentialForms[id].querySelectorAll('input[type=password],input[data-connection-field=token]').forEach(function(input){input.value='';});
+      }
     });
     wrap.querySelectorAll('[data-cwanswer]').forEach(function (input) {
       var id = input.getAttribute('data-cwanswer');

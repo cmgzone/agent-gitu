@@ -5,6 +5,7 @@ import { ensureGituHome } from '../workspace/home.js';
 import { roleAppSuggestions, type AppSuggestion } from './app-recommendations.js';
 import { sanitizeAgentProfile, type AgentProfileSettings } from './profile-config.js';
 import { requiresMessageReview } from '../connections/provider.js';
+import { normalizeConnectionAuth, type ConnectionAuth } from '../connections/connections.js';
 
 /**
  * Cowork mode: a small team of named agent profiles the user chats with
@@ -424,6 +425,8 @@ export interface CoworkRequestCredential {
   label?: string;
   baseUrl?: string;
   validationPath?: string;
+  documentationUrl?: string;
+  auth?: ConnectionAuth;
   /** Existing saved connection to re-authorize instead of creating a new one. */
   connectionId?: string;
 }
@@ -661,7 +664,9 @@ function sanitizeCredentialMeta(input: CoworkRequestCredential | undefined): Cow
   if (!connectionId && !baseUrl) return undefined;
   const label = String(input?.label ?? '').trim() || undefined;
   const validationPath = String(input?.validationPath ?? '').trim() || undefined;
-  return { providerHint, ...(label ? { label } : {}), ...(baseUrl ? { baseUrl } : {}), ...(validationPath ? { validationPath } : {}), ...(connectionId ? { connectionId } : {}) };
+  const documentationUrl = String(input?.documentationUrl ?? '').trim() || undefined;
+  const auth = normalizeConnectionAuth(input?.auth);
+  return { providerHint, ...(label ? { label } : {}), ...(baseUrl ? { baseUrl } : {}), ...(validationPath ? { validationPath } : {}), ...(connectionId ? { connectionId } : {}), ...(documentationUrl ? { documentationUrl } : {}), ...(auth ? { auth } : {}) };
 }
 
 export class CoworkStore {
@@ -1934,6 +1939,17 @@ export class CoworkStore {
       createdAt: new Date().toISOString(),
     };
     data.requests.push(request);
+    this.save();
+    return request;
+  }
+
+  updateCredentialRequest(id: string, agentId: string, conversationId: string, input: { title: string; detail: string; credential: CoworkRequestCredential }): CoworkRequest {
+    const request = this.getRequest(id);
+    if (!request || request.agentId !== agentId || request.conversationId !== conversationId || request.kind !== 'credential' || request.status !== 'open' || request.hiddenAt)
+      throw Error('Select an open credential card belonging to this teammate and conversation.');
+    const credential = sanitizeCredentialMeta(input.credential);
+    if (!credential || !input.title.trim() || !input.detail.trim()) throw Error('Complete the connection settings before updating its card.');
+    request.title = input.title.trim(); request.detail = input.detail.trim(); request.credential = credential;
     this.save();
     return request;
   }

@@ -38,6 +38,33 @@ function setup() {
   return { root, registry, store, conversation, scope, ctx, save, request };
 }
 describe('Cowork saved credential reuse', () => {
+  it('prefills known API settings and edits the same pending card instead of duplicating it', async () => {
+    const s=setup();
+    expect((await s.request({baseUrl:'https://first.example.test',label:'My Coolify'})).ok).toBe(true);
+    const card=s.store.requests(s.conversation.id)[0]!;
+    expect(card.credential).toMatchObject({providerHint:'coolify',baseUrl:'https://first.example.test',validationPath:'/api/v1/servers',documentationUrl:'https://coolify.io/docs/api-reference'});
+    expect((await s.request({baseUrl:'https://first.example.test',label:'Production Coolify'})).output).toContain('updated in place');
+    expect((await s.request({requestId:card.id,baseUrl:'https://correct.example.test',validationPath:'/api/v1/teams/current'})).output).toContain('updated in place');
+    expect(s.store.requests(s.conversation.id)).toHaveLength(1);
+    expect(s.store.getRequest(card.id)?.credential?.baseUrl).toBe('https://correct.example.test');
+    expect(new CoworkStore(path.join(s.root,'cowork.json')).getRequest(card.id)?.credential?.baseUrl).toBe('https://correct.example.test');
+  });
+  it('fills custom authentication metadata and refuses incomplete settings without asking the user to configure them',async()=>{
+    const s=setup();
+    expect((await s.request({provider:'custom',baseUrl:'https://custom.example.test'})).output).toContain('Fill validationPath');
+    expect(s.store.requests(s.conversation.id)).toHaveLength(0);
+    expect((await s.request({provider:'custom',baseUrl:'https://custom.example.test',validationPath:'/me',auth:{type:'header',header:'X-API-Key'},documentationUrl:'https://docs.example.test'})).ok).toBe(true);
+    const card=s.store.requests(s.conversation.id)[0]!;expect(card.credential?.auth).toEqual({type:'header',header:'X-API-Key'});
+    s.store.removeRequestCard(card.id);
+    expect((await s.request({requestId:card.id,baseUrl:'https://other.example.test'})).ok).toBe(false);
+    expect(s.store.requests(s.conversation.id)).toHaveLength(1);
+  });
+  it('does not edit another teammate’s credential card',async()=>{
+    const s=setup();await s.request({baseUrl:'https://first.example.test'});const card=s.store.requests(s.conversation.id)[0]!;
+    const other=s.store.saveAgent({name:'Other',systemPrompt:'Help'});s.scope.agent=other;
+    expect((await s.request({requestId:card.id,baseUrl:'https://other.example.test'})).ok).toBe(false);
+    expect(card.credential?.baseUrl).toBe('https://first.example.test');
+  });
   it('distinguishes an unreachable API from a provider-rejected credential in fresh checks', async () => {
     const s = setup(); s.save();
     const perms = { allowShell: false, allowWrites: false, allowConfig: false, chief: false, browser: false };

@@ -5373,6 +5373,37 @@ export class GituServer {
       return true;
     }
 
+    const apiCredentialMatch = path.match(/^\/api\/cowork\/requests\/([\w-]+)\/credential-save$/);
+    if (apiCredentialMatch && method === 'POST') {
+      const body = await this.readBody(req);
+      const request = store.getRequest(apiCredentialMatch[1]!);
+      const credential = request?.credential;
+      if (!request || request.kind !== 'credential' || request.status !== 'open' || request.hiddenAt || !credential || credential.providerHint === 'ssh' || /^ssh:/i.test(credential.baseUrl ?? '')) {
+        this.sendJson(res,404,{error:'Open API connection card not found.'});return true;
+      }
+      if (body['setup'] !== JSON.stringify(credential)) {
+        this.sendJson(res,409,{error:'The agent updated this connection card. Check its address and enter the key again.'});return true;
+      }
+      try {
+        const token = String(body['token'] ?? '');
+        if (!token.trim()) throw Error('Enter the API key or token.');
+        const existing = credential.connectionId ? this.connections.get(credential.connectionId) : this.connections.list().find(profile => profile.provider === credential.providerHint && profile.baseUrl === credential.baseUrl && profile.label === (credential.label || credential.providerHint));
+        if (credential.connectionId && !existing) throw Error('The saved connection is gone. Ask the agent to correct this card.');
+        const path = credential.validationPath || existing?.operations.find(op => op.id === 'validate')?.path;
+        if (!path) throw Error('Ask the agent to fill in the connection test route on this card.');
+        const saved = this.connections.save({
+          ...(existing ?? {}), label:credential.label || existing?.label || credential.providerHint,
+          provider:credential.providerHint, baseUrl:credential.baseUrl || existing?.baseUrl || '',
+          documentationUrl:credential.documentationUrl || existing?.documentationUrl,
+          auth:credential.auth || existing?.auth, token,
+          capabilities:[...new Set([...(existing?.capabilities ?? []),'connection.discover'])],
+          operations:[...(existing?.operations ?? []).filter(op => op.id !== 'validate'),{id:'validate',label:'Test connection',capability:'connection.discover',method:'GET',path,risk:'read'}],
+        });
+        this.sendJson(res,200,{ok:true,connection:this.connections.rememberCapabilities(saved.id)});
+      } catch (error) { this.sendJson(res,400,{error:(error as Error).message}); }
+      return true;
+    }
+
     const sshCredentialMatch = path.match(/^\/api\/cowork\/requests\/([\w-]+)\/(ssh-host-key|ssh-save)$/);
     if (sshCredentialMatch && method === 'POST') {
       const request = store.getRequest(sshCredentialMatch[1]!);
@@ -5453,16 +5484,22 @@ export class GituServer {
       }
       else if (request.kind === 'credential') {
         // The secret never reaches this endpoint: the card already saved it via
-        // POST /api/connections and only sends the saved connection id back.
+        // The secure connection form only sends the saved connection id back.
         if (action !== 'provide') { this.sendJson(res, 400, { error: 'action must be provide' }); return true; }
+        const setup = JSON.stringify(request.credential);
+        if (body['setup'] !== undefined && body['setup'] !== setup) { this.sendJson(res,409,{error:'The connection card changed. Check the updated settings before continuing.'});return true; }
         const connectionId = String(body['connectionId'] ?? '').trim();
         const ssh = request.credential?.providerHint.toLowerCase() === 'ssh' || /^ssh:/i.test(request.credential?.baseUrl ?? '');
         const profile = connectionId ? (ssh ? new SshConnectionRegistry().get(connectionId) : this.connections.get(connectionId)) : undefined;
         if (!profile) { this.sendJson(res, 400, { error: 'Save the credential through the secure form first — no saved connection was provided.' }); return true; }
+        if (!ssh && (request.credential?.connectionId ? profile.id !== request.credential.connectionId : 'provider' in profile && (profile.provider !== request.credential?.providerHint || profile.baseUrl !== request.credential?.baseUrl))) {
+          this.sendJson(res,409,{error:'This saved connection does not match the connection card.'});return true;
+        }
         if (!ssh) {
           try { await this.connections.validate(profile.id); }
           catch (error) { this.sendJson(res, 400, { error: 'Connection saved, but API verification failed: ' + (error as Error).message }); return true; }
         }
+        if (request.status !== 'open' || request.hiddenAt || JSON.stringify(request.credential) !== setup) { this.sendJson(res,409,{error:'The connection card changed while verification was running.'});return true; }
         credentialConnection = { id: profile.id, label: profile.label };
         status = 'provided';
       }

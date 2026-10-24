@@ -44,7 +44,8 @@ import { closestNameMatches } from '../util.js';
 import { SCHEDULE_TOOL_DOC } from '../cron/tools.js';
 import { DOCUMENT_TOOL_DOC, toolCreateDocument } from '../tools/productivity.js';
 import { parseSshUrl, SshConnectionRegistry } from '../connections/ssh-connections.js';
-import { ConnectionInvocationError, ConnectionRegistry } from '../connections/connections.js';
+import { ConnectionInvocationError, ConnectionRegistry, normalizeConnectionAuth, normalizeConnectionDocumentationUrl } from '../connections/connections.js';
+import { catalogProvider } from '../connections/catalog.js';
 import { createHash } from 'node:crypto';
 import type { ConnectedAppsProvider } from '../connections/provider.js';
 import { ComposioExecutionUncertainError } from '../connections/composio.js';
@@ -357,7 +358,7 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
   },
   {
     name: 'request_credential',
-    doc: 'Check list_connections and reuse saved credentials first. Ask through a private form only when a key is absent or the provider has reported it invalid/expired; a missing operation, 403, 404 or unknown auth state does not mean the key was lost. For a new API token use {"prompt":"...","provider":"github","baseUrl":"https://api.github.com","label":"github","validationPath":"/user"}; to reconnect use the exact saved connectionId. For SSH use {"prompt":"...","provider":"ssh","baseUrl":"ssh://user@host:22","label":"server"}; the user confirms the host key, then the password is tested and saved for ssh_exec. Stop and wait only if a credential request was actually posted. Users can replace a working key directly in Connections.',
+    doc: 'Check list_connections and reuse saved credentials first. Ask privately only when a key is absent or confirmed invalid/expired; missing operations, 403, 404 or unknown auth do not mean a lost key. Fill ALL non-secret settings yourself from the user’s context and official API docs: {"prompt":"Connect service","provider":"custom","baseUrl":"https://api.example.com","label":"My service","validationPath":"/api/me","documentationUrl":"https://docs.example.com","auth":{"type":"header","header":"X-API-Key"}}. Known services supply documented defaults; omit auth for service defaults. The user enters only the key. To CORRECT a pending card, call again with its requestId and complete corrected settings; this edits the SAME card. Open cards for the same service/address are reused automatically. To reconnect use the exact saved connectionId. For SSH use provider:"ssh", baseUrl:"ssh://user@host:22", label; the user confirms the host key and enters a password. Never guess an address or authenticated test route. Stop and wait only when a card was posted/updated. Users can replace working keys directly in Connections.',
     gate: undefined,
   },
   {
@@ -1165,11 +1166,18 @@ function completeVerifiedCredentialRequests(scope: CoworkToolScope | undefined, 
 async function coworkRequestCredential(ctx: ToolContext, scope: CoworkToolScope | undefined, params: Record<string, unknown>): Promise<ToolResult> {
   if (!scope?.conversationId) return { ok: false, output: 'request_credential requires a conversation.' };
   const prompt = String(params['prompt'] ?? params['question'] ?? '').trim();
-  let provider = String(params['provider'] ?? params['providerHint'] ?? '').trim();
+  let provider = String(params['provider'] ?? params['providerHint'] ?? '').trim().toLowerCase();
   if (!prompt) return { ok: false, output: 'request_credential requires "prompt" — what you need and why (never include the secret itself).' };
   if (!provider) return { ok: false, output: 'request_credential requires "provider" — the service slug, e.g. "github".' };
+  const editId = String(params['requestId'] ?? '').trim();
+  if (editId) {
+    const card = scope.store.getRequest(editId);
+    if (!card || card.agentId !== scope.agent.id || card.conversationId !== scope.conversationId || card.kind !== 'credential' || card.status !== 'open' || card.hiddenAt)
+      return {ok:false,output:'Select an open credential card belonging to this teammate and conversation.'};
+  }
   let connectionId = String(params['connectionId'] ?? '').trim();
-  let baseUrl = String(params['baseUrl'] ?? params['base_url'] ?? '').trim();
+  const catalog = catalogProvider(provider);
+  let baseUrl = String(params['baseUrl'] ?? params['base_url'] ?? catalog?.baseUrl ?? '').trim();
   const ssh = provider.toLowerCase() === 'ssh' || /^ssh:/i.test(baseUrl);
   if (baseUrl) {
     if (ssh) {
@@ -1224,7 +1232,7 @@ async function coworkRequestCredential(ctx: ToolContext, scope: CoworkToolScope 
       if (saved) {
         await registry.recheckAuthentication(saved.id);
         saved = registry.list().find(profile => profile.id === saved!.id)!;
-        if (saved.hasCredential && saved.authState?.status !== 'invalid' && saved.authState?.status !== 'expired') {
+        if (!editId && saved.hasCredential && saved.authState?.status !== 'invalid' && saved.authState?.status !== 'expired') {
           completeVerifiedCredentialRequests(scope, registry, saved.id);
           const readOperations = saved.operations.filter((operation) => operation.risk === 'read').map((operation) => operation.id);
           return {
@@ -1248,10 +1256,17 @@ async function coworkRequestCredential(ctx: ToolContext, scope: CoworkToolScope 
       }
     }
     if (!connectionId && !baseUrl) return { ok: false, output: 'request_credential requires "baseUrl" for a new connection (or "connectionId" to re-authorize an existing one).' };
-    const request = scope.store.addRequest({
+    const auth = normalizeConnectionAuth(params['auth']);
+    const documentationUrl = normalizeConnectionDocumentationUrl(params['documentationUrl'] ?? catalog?.documentationUrl);
+    if (!ssh) {
+      validationPath ||= catalog?.operations.find(op => op.method === 'GET' && op.risk === 'read' && !/[:{}]/.test(op.path))?.path ?? '';
+      if (!validationPath || !validationPath.startsWith('/') || validationPath.startsWith('//') || /[?#\r\n]/.test(validationPath))
+        return { ok: false, output: 'Fill validationPath with a documented authenticated GET route before requesting the key. Research the API documentation; do not send the user a technical setup form.' };
+    }
+    const input = {
       conversationId: scope.conversationId,
       agentId: scope.agent.id,
-      kind: 'credential',
+      kind: 'credential' as const,
       title: prompt,
       detail: String(params['detail'] ?? `${provider.toLowerCase() === 'ssh' ? 'SSH password' : 'API key or token'} for ${provider}`).trim() || `Credential for ${provider}`,
       credential: {
@@ -1260,11 +1275,19 @@ async function coworkRequestCredential(ctx: ToolContext, scope: CoworkToolScope 
         ...(baseUrl ? { baseUrl } : {}),
         ...(validationPath ? { validationPath } : {}),
         ...(connectionId ? { connectionId } : {}),
+        ...(auth ? { auth } : {}),
+        ...(documentationUrl ? { documentationUrl } : {}),
       },
-    });
+    };
+    const requestId = String(params['requestId'] ?? '').trim();
+    const pending = requestId ? scope.store.getRequest(requestId) : scope.store.requests(scope.conversationId).find(request =>
+      request.kind === 'credential' && request.status === 'open' && !request.hiddenAt && request.agentId === scope.agent.id &&
+      (connectionId ? request.credential?.connectionId === connectionId : !request.credential?.connectionId && request.credential?.providerHint === provider && request.credential?.baseUrl === baseUrl));
+    if (requestId && !pending) return { ok: false, output: 'That credential card was not found. Select its exact requestId from this conversation.' };
+    const request = pending ? scope.store.updateCredentialRequest(pending.id, scope.agent.id, scope.conversationId, input) : scope.store.addRequest(input);
     return {
       ok: true,
-      output: `Credential request ${request.id} posted. The user enters the credential in a private form; it NEVER appears in chat. Stop working and tell the user you are waiting for the connection — never ask for secrets in plain chat.`,
+      output: `Credential request ${request.id} ${pending ? 'updated in place' : 'posted'}. Connection settings are filled; the user enters only the secret in the private form. It NEVER appears in chat. Stop working and wait for the connection — never ask for secrets in plain chat.`,
     };
   } catch (err) {
     return { ok: false, output: `request_credential failed: ${(err as Error).message}` };

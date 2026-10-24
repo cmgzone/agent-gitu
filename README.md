@@ -576,6 +576,10 @@ sidebar. Instead of task runs it gives you a messaging-style team surface:
   or deletes the saved connection. The decision stays recorded and the card stays
   hidden after a restart. Ordinary discussion about a connection goes to the
   teammate; only direct access-status questions use the immediate status reply.
+- **Simple connection cards** — teammates prepare the service, address,
+  authentication and documented test route. You enter only the API key in a
+  private field. A teammate can correct its pending card in place; changed
+  settings clear private drafts and reject submissions from an older version.
 - **Independent desktop engine** — Electron is the interface; a detached process
   owns agents, tools, sessions, and schedules. Reopening the interface reconnects
   to its running engine. The tray offers **Exit interface (keep agents running)**

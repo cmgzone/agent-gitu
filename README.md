@@ -580,6 +580,11 @@ sidebar. Instead of task runs it gives you a messaging-style team surface:
   authentication and documented test route. You enter only the API key in a
   private field. A teammate can correct its pending card in place; changed
   settings clear private drafts and reject submissions from an older version.
+  New custom API cards fetch their supplied documentation to check the complete
+  test URL and authentication. Documented API prefixes are retained. When an old
+  test route fails with 404, verification can use another registered read and
+  remember the working test; it never retries writes or replaces the key for a
+  route error. Agents can also select a corrected `validationOperationId`.
 - **Independent desktop engine** — Electron is the interface; a detached process
   owns agents, tools, sessions, and schedules. Reopening the interface reconnects
   to its running engine. The tray offers **Exit interface (keep agents running)**

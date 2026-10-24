@@ -75,7 +75,7 @@ const schemas: Record<string, { fields: Fields; required?: string[] }> = {
     required: ['action'],
   },
   ssh_exec: { fields: { connectionId: text, command: text }, required: ['connectionId', 'command'] },
-  update_connection: { fields: { connectionId: text, label: text }, required: ['connectionId'] },
+  update_connection: { fields: { connectionId: text, label: text, documentationUrl: text, operations:{type:'array',items:object}, discoverCapabilities:boolean, validationOperationId:text }, required: ['connectionId'] },
   create_project: { fields: { name: text }, required: ['name'] },
   schedule_manage: { fields: { action: text, id: text, every: text, goal: text, enabled: boolean }, required: ['action'] },
   schedule_followup: { fields: { inMinutes: number, note: text }, required: ['inMinutes', 'note'] },

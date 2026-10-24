@@ -506,7 +506,7 @@ export function validateToolParams(tool: string, params: unknown): ToolValidatio
         if (p['env'] !== undefined)
           return { valid: false, error: 'Configure credentials through secure settings. configure_mcp preserves the saved environment without exposing it.' };
       }
-      if (tool === 'update_connection' && Object.keys(p).some((key) => !['connectionId', 'label', 'documentationUrl', 'operations', 'discoverCapabilities'].includes(key)))
+      if (tool === 'update_connection' && Object.keys(p).some((key) => !['connectionId', 'label', 'documentationUrl', 'operations', 'discoverCapabilities', 'validationOperationId'].includes(key)))
         return {
           valid: false,
           error:
@@ -514,7 +514,8 @@ export function validateToolParams(tool: string, params: unknown): ToolValidatio
         };
       if (tool === 'update_connection' && p['operations'] !== undefined && !Array.isArray(p['operations'])) return { valid: false, error: 'operations must be an array.' };
       if (tool === 'update_connection' && p['discoverCapabilities'] !== undefined && typeof p['discoverCapabilities'] !== 'boolean') return { valid: false, error: 'discoverCapabilities must be a boolean.' };
-      if (tool !== 'configure_mcp' && !fields.some((field) => p[field] !== undefined) && !(tool === 'update_connection' && (p['operations'] !== undefined || p['discoverCapabilities'] === true)))
+      if (tool === 'update_connection' && p['validationOperationId'] !== undefined && (typeof p['validationOperationId'] !== 'string' || !p['validationOperationId'].trim())) return {valid:false,error:'validationOperationId must name a registered GET operation.'};
+      if (tool !== 'configure_mcp' && !fields.some((field) => p[field] !== undefined) && !(tool === 'update_connection' && (p['operations'] !== undefined || p['discoverCapabilities'] === true || p['validationOperationId'] !== undefined)))
         return { valid: false, error: `Provide at least one field to update: ${fields.join(', ')}.` };
       return { valid: true };
     }
@@ -2112,11 +2113,12 @@ export function toolUpdateConnection(ctx: ToolContext, params: Record<string, un
     const profile = registry.get(String(params['connectionId'] ?? ''));
     if (!profile) return fail('Saved connection not found. Call list_connections and use its exact connection id.');
     const remembered = registry.rememberCapabilities(profile.id, params['operations'] as unknown[] | undefined, typeof params['documentationUrl'] === 'string' ? params['documentationUrl'] : undefined);
-    const saved = registry.save({
+    let saved = registry.save({
       ...remembered,
       ...(typeof params['label'] === 'string' ? { label: params['label'] } : {}),
       ...(typeof params['documentationUrl'] === 'string' ? { documentationUrl: params['documentationUrl'] } : {}),
     });
+    if (typeof params['validationOperationId'] === 'string') saved=registry.setValidationOperation(saved.id,params['validationOperationId']);
     return { ok: true, output: JSON.stringify({ id: saved.id, label: saved.label, capabilities: saved.capabilities, operations: saved.operations, message: 'Connection knowledge saved for future tasks. No API operation was executed.' }) };
   } catch (error) {
     return fail(`update_connection failed: ${(error as Error).message}`);

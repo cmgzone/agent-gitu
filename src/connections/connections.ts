@@ -1816,15 +1816,50 @@ export class ConnectionRegistry {
       return { ok: true, status: 200, message: 'Search API is connected.' };
     }
     const candidates = profile.operations.filter(candidate => candidate.risk === 'read' && candidate.method === 'GET' && candidate.path !== '/' && !/(?:^|\/)(?:health|healthz|ready|version)(?:\/|$)/i.test(candidate.path));
-    const operation = candidates.find(candidate => candidate.id === 'validate') ?? candidates[0];
-    if (!operation || operation.risk !== 'read' || operation.method !== 'GET') throw new Error('Configure a documented, authenticated API GET endpoint to verify this connection. A homepage or health page cannot verify credentials.');
-    const result = await this.invoke(profile.id, operation.id);
+    const ordered = [...candidates.filter(candidate => candidate.id === 'validate'),...candidates.filter(candidate => candidate.id !== 'validate')];
+    const paths = new Set<string>();
+    const usable = ordered.filter(candidate => {
+      if (paths.has(candidate.path) || /[:{}]/.test(candidate.path)) return false;
+      paths.add(candidate.path);
+      return !profile.rejectedOperations?.some(rejected => rejected.method === 'GET' && rejected.path === candidate.path && !rejected.paramsHash);
+    });
+    if (!usable.length) throw new ConnectionInvocationError('not-run','Configure a documented authenticated API GET endpoint to verify this connection. Homepage, health and rejected routes cannot verify credentials. Correct the test with update_connection and validationOperationId; reuse the saved key.','CONFIG_INVALID');
+    let result: ConnectionInvocationResult | undefined;
+    let operation: ConnectionOperation | undefined;
+    const attempts=usable.slice(0,3);
+    for (const candidate of attempts) {
+      try { result = await this.invoke(profile.id,candidate.id); operation = candidate; break; }
+      catch (error) {
+        if (!(error instanceof ConnectionInvocationError) || error.state !== 'CONNECTED_MISSING_OPERATION') throw error;
+        // A missing route is a configuration error. Try a different already
+        // registered GET; never invent endpoints or retry a write or a 401.
+        if (candidate === attempts.at(-1)) throw error;
+      }
+    }
+    if (!result || !operation) throw new Error('No registered API test succeeded.');
     if (typeof result.data === 'string' && /<(?:!doctype\s+html|html|head|body|form)\b/i.test(result.data)) {
       this.recordAuth(id, 'unknown', 'Validation returned a web/login page; an authenticated API endpoint is required.', validationToken);
       this.updateValidation(id, 'failed', validationToken);
       throw new ConnectionInvocationError('sent-rejected', 'Validation returned a web/login page. Configure an authenticated API GET endpoint; the credential has not been verified.', 'CONFIG_INVALID');
     }
+    if (operation.id !== 'validate') {
+      const verified = operation;
+      this.withProfile(id,current => {
+        if (loadStoredKeys()[keyRef(id)]?.trim() !== validationToken || current.baseUrl !== profile.baseUrl || JSON.stringify(current.auth) !== JSON.stringify(profile.auth)) return;
+        const initial = profile.operations.find(op => op.id === 'validate'), currentTest = current.operations.find(op => op.id === 'validate');
+        if (JSON.stringify(initial) !== JSON.stringify(currentTest)) return;
+        current.operations = [...current.operations.filter(op => op.id !== 'validate'),{...verified,id:'validate',label:'Test connection'}];
+      });
+      try { const current = this.get(id); if (current) this.syncGlobalSkill(current); } catch { /* verification already succeeded */ }
+    }
     return result;
+  }
+
+  setValidationOperation(id: string, operationId: string): ConnectionProfileView {
+    const profile=this.get(id), operation=profile?.operations.find(op=>op.id===operationId);
+    if (!profile || !operation || operation.method!=='GET' || operation.risk!=='read' || operation.path==='/' || /[:{}]/.test(operation.path) || /(?:^|\/)(?:health|healthz|ready|version)(?:\/|$)/i.test(operation.path)) throw Error('Select a registered authenticated GET operation as the connection test.');
+    if (profile.rejectedOperations?.some(rejected=>rejected.method==='GET'&&rejected.path===operation.path&&!rejected.paramsHash)) throw Error('This route was rejected. Register the corrected documented route before selecting it as the test.');
+    return this.save({...profile,operations:[...profile.operations.filter(op=>op.id!=='validate'),{...operation,id:'validate',label:'Test connection'}]});
   }
 
   /** Retry stale negative evidence once, coalescing concurrent readers. Never replays a write. */

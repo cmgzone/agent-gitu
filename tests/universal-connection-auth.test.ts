@@ -35,6 +35,23 @@ it.each(['custom-api', 'coolify', 'mailcow'])('rechecks stale 401 evidence using
   expect(network).toHaveBeenCalledTimes(2);
 });
 
+it('repairs a rejected test with an existing corrected GET without requesting another key',async()=>{
+ const f=fixture();f.registry.save({...f.draft,operations:[{...f.draft.operations[0]!,path:'/user/tokens/verify'},{...f.draft.operations[1]!,path:'/client/v4/user/tokens/verify'}]});
+ const network=vi.spyOn(globalThis,'fetch').mockImplementation(async(url)=>new Response('{}',{status:String(url).includes('/client/v4/')?200:404}));
+ expect((await f.registry.validate('account')).status).toBe(200);
+ expect(network.mock.calls.map(call=>String(call[0]))).toEqual(['https://api.example.test/user/tokens/verify','https://api.example.test/client/v4/user/tokens/verify']);
+ expect(f.registry.get('account')?.operations.find(op=>op.id==='validate')?.path).toBe('/client/v4/user/tokens/verify');
+ network.mockClear();expect((await f.registry.validate('account')).status).toBe(200);expect(network).toHaveBeenCalledOnce();
+ expect(loadStoredKeys()['GITU_CONNECTION_ACCOUNT']).toBe(f.draft.token);
+});
+
+it('skips previously rejected paths across aliases and never falls back after a 401',async()=>{
+ const f=fixture();const missing={...f.draft.operations[0]!,path:'/wrong'};f.registry.save({...f.draft,operations:[missing,{...missing,id:'wrong-alias'},f.draft.operations[1]!]});
+ f.registry.recordRejectedOperation('account',{operationId:'another-name',method:'GET',path:'/wrong',capability:'account.read',status:404});
+ const network=vi.spyOn(globalThis,'fetch').mockResolvedValue(new Response('{}',{status:401}));
+ await expect(f.registry.validate('account')).rejects.toMatchObject({state:'AUTH_INVALID'});expect(network).toHaveBeenCalledOnce();expect(String(network.mock.calls[0]?.[0])).toBe('https://api.example.test/api/me');
+});
+
 it('coalesces stale authentication checks and does not repeatedly retry a freshly rejected key', async () => {
   const f = fixture(); f.stale();
   const network = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response('{"message":"Unauthenticated"}', { status: 401 }));

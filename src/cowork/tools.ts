@@ -46,6 +46,7 @@ import { DOCUMENT_TOOL_DOC, toolCreateDocument } from '../tools/productivity.js'
 import { parseSshUrl, SshConnectionRegistry } from '../connections/ssh-connections.js';
 import { ConnectionInvocationError, ConnectionRegistry, normalizeConnectionAuth, normalizeConnectionDocumentationUrl } from '../connections/connections.js';
 import { catalogProvider } from '../connections/catalog.js';
+import { connectionSetupAddress, documentedConnectionSetup } from '../connections/setup-research.js';
 import { createHash } from 'node:crypto';
 import type { ConnectedAppsProvider } from '../connections/provider.js';
 import { ComposioExecutionUncertainError } from '../connections/composio.js';
@@ -317,7 +318,7 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
     doc: 'Run one authorized command on a saved SSH server, including reading or editing remote files. Use alongside run_command/file tools on your assigned computer in the SAME task; no computer reassignment is needed. Select the exact saved connectionId from computer_status or list_connections. SSH targets the server filesystem, not a private desktop container or signed-in Chrome session. Never include a password in params. params: {"connectionId":"ssh-...","command":"hostname"}. Respect the user\'s requested read-only scope; remote changes need authorization. Coding work still goes through gitu_task.',
     gate: 'shell',
   },
-  { name: 'update_connection', doc: 'Update saved connection metadata and remember its documented read AND write operations for future tasks without executing them. params: {"connectionId":"...","label":"optional","documentationUrl":"official docs","discoverCapabilities":true,"operations":[{"id":"deploy","label":"Deploy","capability":"deployments.write","method":"POST","path":"/deploy","risk":"reversible-write"}]}. Catalog discovery retains every supported capability. Credentials and endpoint changes use the secure form.', gate: 'config' },
+  { name: 'update_connection', doc: 'Update saved connection metadata and remember documented read AND write operations without executing them. params: {"connectionId":"...","label":"optional","documentationUrl":"official docs","discoverCapabilities":true,"operations":[{"id":"account-check","label":"Check account","capability":"account.read","method":"GET","path":"/api/v2/me","risk":"read"}],"validationOperationId":"account-check"}. When repairing setup, select the corrected registered GET as validationOperationId so the connection card tests the new route. Keep the complete API prefix in operation paths. Read official docs before adding custom operations. Catalog discovery retains supported capabilities. Reuse the saved key; a route error is not a rejected credential.', gate: 'config' },
   { name: 'create_project', doc: 'Create a new project folder in the user\'s Projects area. params: {"name":"landing-page"}', gate: 'config' },
   {
     name: 'schedule_manage',
@@ -1178,6 +1179,7 @@ async function coworkRequestCredential(ctx: ToolContext, scope: CoworkToolScope 
   let connectionId = String(params['connectionId'] ?? '').trim();
   const catalog = catalogProvider(provider);
   let baseUrl = String(params['baseUrl'] ?? params['base_url'] ?? catalog?.baseUrl ?? '').trim();
+  let apiAddress = baseUrl;
   const ssh = provider.toLowerCase() === 'ssh' || /^ssh:/i.test(baseUrl);
   if (baseUrl) {
     if (ssh) {
@@ -1196,8 +1198,8 @@ async function coworkRequestCredential(ctx: ToolContext, scope: CoworkToolScope 
       if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname.toLowerCase()))) {
         return { ok: false, output: 'API connections require HTTPS (or localhost HTTP). For SSH, use provider "ssh" and an ssh://user@host:port address.' };
       }
-      if (url.username || url.password || url.search || url.hash || url.pathname !== '/')
-        return { ok: false, output: 'Use the API origin without credentials, query parameters or an endpoint path.' };
+      if (url.username || url.password || url.search || url.hash)
+        return { ok: false, output: 'Use the API address without credentials or query parameters.' };
       baseUrl = url.origin;
     }
   }
@@ -1243,6 +1245,7 @@ async function coworkRequestCredential(ctx: ToolContext, scope: CoworkToolScope 
         connectionId = saved.id;
         provider = saved.provider;
         baseUrl = saved.baseUrl;
+        apiAddress = baseUrl;
         label ||= saved.label;
         validationPath ||=
           saved.operations.find((operation) => operation.id === 'validate' && operation.risk === 'read')?.path ??
@@ -1262,6 +1265,14 @@ async function coworkRequestCredential(ctx: ToolContext, scope: CoworkToolScope 
       validationPath ||= catalog?.operations.find(op => op.method === 'GET' && op.risk === 'read' && !/[:{}]/.test(op.path))?.path ?? '';
       if (!validationPath || !validationPath.startsWith('/') || validationPath.startsWith('//') || /[?#\r\n]/.test(validationPath))
         return { ok: false, output: 'Fill validationPath with a documented authenticated GET route before requesting the key. Research the API documentation; do not send the user a technical setup form.' };
+      let setup=connectionSetupAddress(apiAddress||baseUrl,validationPath);
+      if(!catalog&&!connectionId){
+        if(!documentationUrl)return {ok:false,output:'Research the official API documentation and supply documentationUrl before requesting a key. Fill the complete API base address, test route and authentication yourself.'};
+        const docs=await toolWebFetch(ctx,{url:documentationUrl});
+        if(!docs.ok)return {ok:false,output:'API setup research could not read the documentation. No key card was posted. '+docs.output};
+        setup=documentedConnectionSetup(apiAddress||baseUrl,validationPath,docs.output,auth);
+      }
+      baseUrl=setup.baseUrl;validationPath=setup.validationPath;
     }
     const input = {
       conversationId: scope.conversationId,

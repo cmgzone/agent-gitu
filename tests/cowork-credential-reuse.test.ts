@@ -53,6 +53,7 @@ describe('Cowork saved credential reuse', () => {
     const s=setup();
     expect((await s.request({provider:'custom',baseUrl:'https://custom.example.test'})).output).toContain('Fill validationPath');
     expect(s.store.requests(s.conversation.id)).toHaveLength(0);
+    globalThis.fetch=(async()=>new Response('curl https://custom.example.test/me -H "X-API-Key: private-key"',{headers:{'content-type':'text/plain'}})) as typeof fetch;
     expect((await s.request({provider:'custom',baseUrl:'https://custom.example.test',validationPath:'/me',auth:{type:'header',header:'X-API-Key'},documentationUrl:'https://docs.example.test'})).ok).toBe(true);
     const card=s.store.requests(s.conversation.id)[0]!;expect(card.credential?.auth).toEqual({type:'header',header:'X-API-Key'});
     s.store.removeRequestCard(card.id);
@@ -64,6 +65,13 @@ describe('Cowork saved credential reuse', () => {
     const other=s.store.saveAgent({name:'Other',systemPrompt:'Help'});s.scope.agent=other;
     expect((await s.request({requestId:card.id,baseUrl:'https://other.example.test'})).ok).toBe(false);
     expect(card.credential?.baseUrl).toBe('https://first.example.test');
+  });
+  it('researches a new custom API before asking for a key and retains the full documented route',async()=>{
+    const s=setup();
+    expect((await s.request({provider:'custom',baseUrl:'https://api.example.test',validationPath:'/me'})).output).toContain('documentationUrl');
+    globalThis.fetch=(async()=>new Response('curl https://api.example.test/client/v4/me -H "Authorization: Bearer YOUR_TOKEN"',{headers:{'content-type':'text/plain'}})) as typeof fetch;
+    expect((await s.request({provider:'custom',baseUrl:'https://api.example.test',validationPath:'/me',documentationUrl:'https://docs.example.test/api'})).ok).toBe(true);
+    expect(s.store.requests(s.conversation.id)[0]?.credential?.validationPath).toBe('/client/v4/me');
   });
   it('distinguishes an unreachable API from a provider-rejected credential in fresh checks', async () => {
     const s = setup(); s.save();

@@ -1,5 +1,6 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { sanitizeBrowserAuth, type BrowserAuthCard } from './browser-auth.js';
 import { sanitizeWidgetApp, widgetState } from './widget-app.js';
 import { ensureGituHome } from '../workspace/home.js';
 import { roleAppSuggestions, type AppSuggestion } from './app-recommendations.js';
@@ -478,7 +479,8 @@ export interface CoworkRequest {
   id: string;
   conversationId: string;
   agentId: string;
-  kind: 'permission' | 'question' | 'recommendation' | 'credential';
+  kind: 'permission' | 'question' | 'recommendation' | 'credential' | 'browser-auth';
+  browserAuth?: BrowserAuthCard;
   title: string;
   detail: string;
   /** Full review payload, separate from the bounded description. */
@@ -1910,7 +1912,7 @@ export class CoworkStore {
     return this.load().requests.find((request) => request.id === id);
   }
 
-  addRequest(input: { conversationId: string; agentId: string; kind: CoworkRequest['kind']; title: string; detail: string; appAction?: CoworkAppAction; appConnection?: AppSuggestion; options?: string[]; permission?: CoworkRequest['permission']; credential?: CoworkRequestCredential; desktopHandoff?: boolean }): CoworkRequest {
+  addRequest(input: { conversationId: string; agentId: string; kind: CoworkRequest['kind']; title: string; detail: string; browserAuth?: BrowserAuthCard; appAction?: CoworkAppAction; appConnection?: AppSuggestion; options?: string[]; permission?: CoworkRequest['permission']; credential?: CoworkRequestCredential; desktopHandoff?: boolean }): CoworkRequest {
     const data = this.load();
     const conversation = data.conversations.find((candidate) => candidate.id === input.conversationId);
     if (!conversation?.memberIds.includes(input.agentId)) throw new Error('Requesting agent is not in this conversation');
@@ -1918,6 +1920,8 @@ export class CoworkStore {
     const detail = input.detail.trim();
     if (!title || !detail) throw new Error('Request title and detail are required');
     if (input.kind === 'permission' && !input.permission) throw new Error('Permission type is required');
+    const browserAuth = input.kind === 'browser-auth' ? sanitizeBrowserAuth(input.browserAuth) : undefined;
+    if (input.kind === 'browser-auth' && !browserAuth) throw new Error('A verified website form is required.');
     const credential = input.kind === 'credential' ? sanitizeCredentialMeta(input.credential) : undefined;
     if (input.kind === 'credential' && !credential) throw new Error('Credential requests need a provider and a base URL (or an existing connection to re-authorize)');
     const appAction = input.appAction === undefined ? undefined : sanitizeAppAction(input.appAction);
@@ -1934,6 +1938,7 @@ export class CoworkStore {
       options: [...new Set((input.options ?? []).map((option) => String(option).trim()).filter(Boolean))],
       permission: input.permission,
       credential,
+      browserAuth,
       desktopHandoff: input.kind === 'question' && input.desktopHandoff === true ? true : undefined,
       status: 'open',
       createdAt: new Date().toISOString(),

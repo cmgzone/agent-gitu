@@ -61,7 +61,7 @@ function service(name: string, processMock?: { spawn: (...args: any[]) => any; k
   });
   const context: any = {
     require: (name: string) =>
-      name === 'node:fs'
+      name === './browser-auth.cjs' ? nodeRequire('../assets/cowork-computer/browser-auth.cjs') : name === 'node:fs'
         ? files
         : name === 'node:path'
           ? path.posix

@@ -222,7 +222,7 @@ export function telegramAgentMessage(agentName: string | undefined, text: string
 function telegramRequestLabel(request: CoworkRequest): string {
   if (request.kind === 'permission') return 'Approval needed';
   if (request.kind === 'recommendation') return 'Recommendation';
-  if (request.kind === 'credential') return 'Credential needed';
+  if ((request.kind === 'credential' || request.kind === 'browser-auth')) return 'Credential needed';
   return 'Question';
 }
 
@@ -242,14 +242,14 @@ export function telegramRequestCardText(request: CoworkRequest, agentName?: stri
   lines.push('', `Request id: ${request.id}`);
   if (request.kind === 'permission') lines.push('Tap Allow or Deny, or reply approve / deny.');
   else if (request.kind === 'recommendation') lines.push('Tap Accept or Dismiss, or reply accept / dismiss.');
-  else if (request.kind === 'credential') lines.push('Never send keys or tokens in chat. Open the Cowork page in the Agent Gitu web app and use the secure credential form on this request.');
+  else if ((request.kind === 'credential' || request.kind === 'browser-auth')) lines.push('Never send passwords, verification codes, keys or tokens in chat. Open the Cowork page in the Agent Gitu web app and use the secure credential form on this request.');
   else lines.push(request.options.length > 0 ? 'Tap an option, reply with the option number, or type your answer.' : 'Reply with your answer.');
   return lines.join('\n');
 }
 
 export function telegramRequestReplyMarkup(request: CoworkRequest): Record<string, unknown> | undefined {
   // Credential requests have no in-chat action: the secure form lives in the web UI.
-  if (request.kind === 'credential') return undefined;
+  if ((request.kind === 'credential' || request.kind === 'browser-auth')) return undefined;
   if (request.kind === 'permission') {
     return { inline_keyboard: [[
       { text: 'Allow', callback_data: `cwreq:${request.id}:approve` },

@@ -30,6 +30,10 @@ import { COWORK_CODING_CSS, COWORK_CODING_JS } from './ui-cowork-coding.js';
 
 export const COWORK_CSS = String.raw`
   ${CHAT_QUESTION_CSS}
+  .cw-credential-form .cw-browser-auth-term { display: flex; align-items: flex-start; gap: 8px; margin: 14px 0; font-size: 12.5px; line-height: 1.6; }
+  .cw-credential-form .cw-browser-auth-term input[type=checkbox] { width: 15px; min-width: 15px; max-width: 15px; min-height: 0; flex: 0 0 15px; margin: 3px 0 0; }
+  .cw-credential-form[data-cwbrowserauth] button[type=submit] { background: var(--dark, #2563eb); color: var(--on-accent, #fff); padding: 10px 16px; border: 0; border-radius: 9px; font-weight: 600; margin-top: 8px; }
+  .cw-credential-form .hint { font-size: 12px; line-height: 1.65; color: var(--muted); }
   .cw-message-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
   .cw-message-more { position: absolute; top: 2px; right: 2px; width: 30px; height: 30px; border: 0; border-radius: 50%; background: transparent; color: var(--muted); font-size: 21px; line-height: 1; cursor: pointer; }
   .cw-message-more:hover, .cw-message-more:focus-visible { color: var(--text); background: var(--hover); }
@@ -1672,11 +1676,11 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     var reauth = !!cred.connectionId;
     return '<form class="cw-credential-form connection-form" data-cwcredential="' + esc(request.id) + '" data-cwcredential-setup="'+esc(JSON.stringify(cred))+'"' + (reauth ? ' data-cwreauth="' + esc(cred.connectionId) + '"' : '') + '>' +
       '<div class="cw-credential-target"><strong>'+esc(cred.label || cred.providerHint)+'</strong>'+(cred.baseUrl?'<div>'+esc(cred.baseUrl)+'</div>':'')+'<small>Connection settings prepared by your teammate.</small></div><div class="connection-fields">' +
-      connectionInputHtml('token', '', true) +
+      (cred.auth && Array.isArray(cred.auth.fields) ? cred.auth.fields.map(function(field){var type=field.secret!==false?'password':field.inputType==='email'?'email':'text';return '<label class="connection-field"><span>'+esc(field.label)+'</span><input data-credential-field="'+esc(field.id)+'" type="'+type+'" autocomplete="off"'+(field.required!==false?' required':'')+' spellcheck="false"></label>';}).join('') : connectionInputHtml('token', '', true)) +
       '</div>' +
-      '<div class="connection-secret-actions"><span class="hint">Saved securely in Gitu. Never sent to the model or chat history.</span><button class="btn ghost" type="button" data-cwshowkey aria-pressed="false">Show key</button></div>' +
+      '<div class="connection-secret-actions"><span class="hint">Saved securely in Gitu. Never sent to the model or chat history.</span>'+(!(cred.auth&&cred.auth.fields)?'<button class="btn ghost" type="button" data-cwshowkey aria-pressed="false">Show key</button>':'')+'</div>' +
       '<div class="connection-error" role="alert" hidden></div>' +
-      '<button type="submit" class="btn dark" data-cwsavecredential>' + (reauth ? 'Update key and continue' : 'Save key and continue') + '</button></form>';
+      '<button type="submit" class="btn dark" data-cwsavecredential>' + (reauth ? 'Update credentials and continue' : 'Connect and continue') + '</button></form>';
   }
 
   function cwBindCredentialForms(el) {
@@ -1755,17 +1759,20 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
         var fail = function (message) { if (error) { error.textContent = message; error.hidden = false; } else toast(message, true); };
         var values = {};
         form.querySelectorAll('[data-connection-field]').forEach(function (input) { values[input.getAttribute('data-connection-field')] = input.value.trim(); });
-        if (!values.token) { fail('Paste the API key or token first.'); return; }
+        var namedFields=form.querySelectorAll('[data-credential-field]'),credentialValues={};
+        namedFields.forEach(function(input){credentialValues[input.getAttribute('data-credential-field')]=input.value;});
+        if (!namedFields.length && !values.token) { fail('Complete the requested credential fields first.'); return; }
         var submit = form.querySelector('[data-cwsavecredential]');
         if (submit) { submit.disabled = true; submit.textContent = 'Saving…'; }
         var resetSubmit = function () {
           if (!submit) return;
           submit.disabled = false;
-          submit.textContent = reauth ? 'Update key and continue' : 'Save key and continue';
+          submit.textContent = reauth ? 'Update credentials and continue' : 'Connect and continue';
         };
         var key = values.token; values.token = '';
-        form.querySelector('[data-connection-field="token"]').value = '';
-        api('/api/cowork/requests/'+encodeURIComponent(id)+'/credential-save', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:key,setup:form.getAttribute('data-cwcredential-setup')})}).then(function (result) {
+        var keyInput=form.querySelector('[data-connection-field="token"]');if(keyInput)keyInput.value='';
+        namedFields.forEach(function(input){input.value='';});
+        api('/api/cowork/requests/'+encodeURIComponent(id)+'/credential-save', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:namedFields.length?undefined:key,values:namedFields.length?credentialValues:undefined,setup:form.getAttribute('data-cwcredential-setup')})}).then(function (result) {
           // Only the saved connection id goes back to the request — never the key.
           values.token = '';
           var tokenInput = form.querySelector('[data-connection-field="token"]');
@@ -1776,6 +1783,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
           cwRenderInfo(); cwRenderRail(); cwPoll();
           toast('Credential saved securely');
         }).catch(function (e) { fail((e && e.message) || 'Could not save the credential'); }).finally(function () {
+          key='';Object.keys(credentialValues).forEach(function(field){credentialValues[field]='';});
           resetSubmit();
         });
       };
@@ -1837,8 +1845,33 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     } else html += '<div class="d">The action details are incomplete. Ask your teammate to create a fresh review.</div>';
     return { title: actionName, serviceName: serviceName, html: html, valid: Boolean(valid), messageReview: messageReview, nativeSend: nativeSend };
   }
+  function cwBrowserAuthHtml(request) {
+    var card=request.browserAuth||{},origin;
+    try{origin=new URL(card.origin);if(origin.protocol!=='https:'||origin.username||origin.password||origin.origin!==card.origin)throw Error('Invalid website');}catch(e){return '';}
+    var title=card.mode==='signup'?'Create account':card.mode==='verify'?'Verify account':'Sign in';
+    var websiteIcon=origin.origin+'/favicon.ico';try{var candidateIcon=new URL(card.iconUrl);if(candidateIcon.origin===origin.origin&&!candidateIcon.username&&!candidateIcon.password)websiteIcon=candidateIcon.href;}catch(e){}
+    var heading='<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px"><span style="display:grid;place-items:center;width:44px;height:44px;border-radius:12px;background:var(--card2);border:1px solid var(--border2);position:relative"><b aria-hidden="true">'+esc(origin.hostname.charAt(0).toUpperCase())+'</b><img src="'+esc(websiteIcon)+'" referrerpolicy="no-referrer" alt="" width="28" height="28" style="position:absolute;background:var(--card2);border-radius:5px" onerror="this.remove()"></span><span><strong>'+esc(title)+' · '+esc(origin.hostname)+'</strong><small style="display:block;margin-top:3px;overflow-wrap:anywhere">'+esc(origin.origin)+'</small></span></div>';
+    var content;
+    if(request.status!=='open')content='<span class="cw-request-result">'+esc(request.response||request.status)+'</span>';
+    else{
+      var expired=card.expiresAt<=Date.now();
+      content='<form class="cw-credential-form connection-form" data-cwbrowserauth="'+esc(request.id)+'" data-cwbrowserauth-setup="'+esc(JSON.stringify(card))+'" autocomplete="off"><div class="connection-fields">'+(card.fields||[]).map(function(field){var type=['text','email','password','tel'].indexOf(field.type)>=0?field.type:'text';return '<label class="connection-field"><span>'+esc(field.label)+'</span><input data-authfield="'+esc(field.id)+'" type="'+type+'" autocomplete="off"'+(field.required?' required':'')+'></label>';}).join('')+'</div>'+(card.terms||[]).map(function(term){var link='';try{var u=new URL(term.url);if(u.protocol==='https:'&&!u.username&&!u.password)link=' <a href="'+esc(u.href)+'" target="_blank" rel="noopener noreferrer">Read terms</a>';}catch(e){}return '<label class="cw-browser-auth-term"><input type="checkbox" data-authterm="'+esc(term.id)+'"'+(term.required?' required':'')+'><span>'+esc(term.label)+link+'</span></label>';}).join('')+'<p class="hint">Submitted to this website in your agent’s private browser. Credentials never enter chat. The agent checks the result and continues.</p><div class="connection-error" role="alert" hidden></div><button class="btn dark" type="submit"'+(expired?' disabled':'')+'>'+(expired?'Card expired':title+' and continue')+'</button></form><button class="btn ghost" data-cwrequest="'+esc(request.id)+'" data-action="dismiss">Cancel</button>';
+    }
+    return '<div class="cw-row cw-request-row" data-cwrequest-row="'+esc(request.id)+'">'+cwAva(cwAgentById(request.agentId))+'<div class="cw-bubble"><div class="cw-request"><div class="k">Secure website '+(card.mode==='signup'?'sign-up':'sign-in')+'</div>'+heading+'<p>'+esc(request.detail||'')+'</p>'+content+'</div></div></div>';
+  }
+  function cwBindBrowserAuth(el){
+    el.querySelectorAll('[data-cwbrowserauth]').forEach(function(form){form.onsubmit=function(event){
+      event.preventDefault();var id=form.getAttribute('data-cwbrowserauth'),button=form.querySelector('button[type=submit]'),error=form.querySelector('.connection-error'),values={},terms=[];
+      form.querySelectorAll('[data-authfield]').forEach(function(input){values[input.getAttribute('data-authfield')]=input.value;input.value='';});
+      form.querySelectorAll('[data-authterm]:checked').forEach(function(input){terms.push(input.getAttribute('data-authterm'));});
+      button.disabled=true;button.textContent='Submitting securely…';error.hidden=true;
+      api('/api/cowork/requests/'+encodeURIComponent(id)+'/browser-auth',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({setup:form.getAttribute('data-cwbrowserauth-setup'),values:values,terms:terms})}).then(function(data){var cw=cwEnsure();cw.requests=(cw.requests||[]).map(function(request){return request.id===id?data.request:request;});cwRenderMsgs();cwPoll();}).catch(function(e){error.textContent=e.message||'Could not submit this website form.';error.hidden=false;cwPoll();}).finally(function(){Object.keys(values).forEach(function(key){values[key]='';});button.disabled=false;button.textContent='Continue securely';});
+    };});
+  }
+
   function cwRequestHtml(request) {
     if (request.hiddenAt) return '';
+    if (request.kind === 'browser-auth') return cwBrowserAuthHtml(request);
     if (request.appConnection) return cwAppConnectionHtml(request);
     var cw = cwEnsure();
     var agent = cwAgentById(request.agentId);
@@ -1942,6 +1975,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       };
     });
     cwBindCredentialForms(el);
+    cwBindBrowserAuth(el);
   }
 
   function cwRenderFolders() {
@@ -2613,8 +2647,8 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     wrap.querySelectorAll('details[data-cwcheckpoint]').forEach(function (details) {
       if (details.open) expandedCheckpoints[details.getAttribute('data-cwcheckpoint')] = true;
     });
-    wrap.querySelectorAll('[data-cwcredential], [data-cwsshcredential]').forEach(function (form) {
-      var id = form.getAttribute('data-cwcredential') || form.getAttribute('data-cwsshcredential');
+    wrap.querySelectorAll('[data-cwcredential], [data-cwsshcredential], [data-cwbrowserauth]').forEach(function (form) {
+      var id = form.getAttribute('data-cwcredential') || form.getAttribute('data-cwsshcredential') || form.getAttribute('data-cwbrowserauth');
       if (id) credentialForms[id] = form;
     });
     wrap.querySelectorAll('[data-cwanswer]').forEach(function (input) {
@@ -2638,10 +2672,10 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     wrap.querySelectorAll('details[data-cwcheckpoint]').forEach(function (details) {
       details.open = !!expandedCheckpoints[details.getAttribute('data-cwcheckpoint')];
     });
-    wrap.querySelectorAll('[data-cwcredential], [data-cwsshcredential]').forEach(function (form) {
-      var id = form.getAttribute('data-cwcredential') || form.getAttribute('data-cwsshcredential');
+    wrap.querySelectorAll('[data-cwcredential], [data-cwsshcredential], [data-cwbrowserauth]').forEach(function (form) {
+      var id = form.getAttribute('data-cwcredential') || form.getAttribute('data-cwsshcredential') || form.getAttribute('data-cwbrowserauth');
       if (credentialForms[id]) {
-        if (credentialForms[id].getAttribute('data-cwcredential-setup') === form.getAttribute('data-cwcredential-setup')) form.replaceWith(credentialForms[id]);
+        if ((credentialForms[id].getAttribute('data-cwcredential-setup') || credentialForms[id].getAttribute('data-cwbrowserauth-setup')) === (form.getAttribute('data-cwcredential-setup') || form.getAttribute('data-cwbrowserauth-setup'))) form.replaceWith(credentialForms[id]);
         else credentialForms[id].querySelectorAll('input[type=password],input[data-connection-field=token]').forEach(function(input){input.value='';});
       }
     });

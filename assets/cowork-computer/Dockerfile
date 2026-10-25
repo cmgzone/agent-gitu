@@ -9,6 +9,7 @@ COPY --from=quota-guard /quota-guard /computer/quota-guard
 RUN npm init -y && npm install --save-exact playwright@1.58.2 && npx playwright install --with-deps chromium
 RUN useradd --create-home --uid 1001 agent && mkdir -p /workspace && chown agent:agent /workspace
 COPY server.cjs /computer/server.cjs
+COPY browser-auth.cjs /computer/browser-auth.cjs
 COPY start-desktop.sh /computer/start-desktop.sh
 COPY open-browser.cjs /computer/open-browser.cjs
 COPY open-agent-browser.cjs /computer/open-agent-browser.cjs

@@ -5,6 +5,7 @@ import type { ToolContext } from '../tools/tools.js';
 import type { ToolResult } from '../types.js';
 import { canonicalJson, sha256 } from '../util.js';
 import { executeCoworkTool, type CoworkToolPerms, type CoworkToolScope } from './tools.js';
+import { ensureQuestionCard } from './question-cards.js';
 import type { CoworkAgent, CoworkNativeSession, CoworkStore } from './store.js';
 import { visibleCoworkText } from './visible-text.js';
 
@@ -128,7 +129,7 @@ export async function runNativeCoworkTurn(input: {
       .join('\n\n') +
     '\n\nNATIVE CODEX EXECUTION: You own the agent loop. Call the provided functions directly through code mode. Use gitu_cowork({tool:"name",params:{...}}) when a newly permitted tool is absent from the saved native catalog. Currently permitted functions: ' +
     [...tools.keys()].join(', ') +
-    ". Do not emit <tool> markers, <cowork_state> tags or Agent Gitu action JSON. Native turn events manage completion; your final response is readable prose. Direct OS tools are disabled; all effects use the permission-gated Gitu functions. When a built-in shell or patch attempt is denied or unavailable, perform the same operation with the listed guarded functions and continue; a denied built-in attempt is not a blocker. Reuse actual tool results, command job IDs and stored todos. A progress statement is not completion. Publish a final response only after doing the requested work or identifying a concrete blocker. On a user question/permission card or app approval, stop work and explain what is awaiting the user. Do not retry unchanged failures. Never use Get-Job with a cmd-N ID; use run_command action=status with that ID.";
+    ". Do not emit <tool> markers, <cowork_state> tags or Agent Gitu action JSON. Native turn events manage completion; your final response is readable prose. Direct OS tools are disabled; all effects use the permission-gated Gitu functions. When a built-in shell or patch attempt is denied or unavailable, perform the same operation with the listed guarded functions and continue; a denied built-in attempt is not a blocker. Reuse actual tool results, command job IDs and stored todos. A progress statement is not completion. Publish a final response only after doing the requested work or identifying a concrete blocker. QUESTION CARDS: When you need an answer or choice from the user, call ask_user with the question and useful options. Do not ask for that answer only in plain prose. For website credentials use request_browser_auth; for service credentials use request_credential. Never collect secrets in a question card. On a user question/permission card or app approval, stop work and explain what is awaiting the user. Do not retry unchanged failures. Never use Get-Job with a cmd-N ID; use run_command action=status with that ID.";
   try {
     const result = await runtime.runTurn({
       cwd,
@@ -226,7 +227,7 @@ export async function runNativeCoworkTurn(input: {
           }
           if (
             result.ok &&
-            (['ask_user', 'request_permission', 'computer_handoff'].includes(tool) ||
+            (['ask_user', 'request_permission', 'computer_handoff', 'request_browser_auth'].includes(tool) ||
               (tool === 'connected_apps' && /^(?:Review \S+ posted\.|Waiting for review \S+\.)/.test(result.output)))
           )
             waiting = true;
@@ -241,6 +242,10 @@ export async function runNativeCoworkTurn(input: {
     });
     if (result.status !== 'completed') throw new LlmError('Native Cowork turn was interrupted; its session is preserved.', { kind: 'aborted' });
     if (!text.trim()) throw new LlmError('Native Cowork returned no final response. Progress is saved; it was not automatically restarted.', { kind: 'protocol_error' });
+    if (!waiting && !input.scope?.isSubAgent) {
+      const question = ensureQuestionCard(input.store,input.conversationId,input.agent.id,text);
+      if (question) { waiting = true; input.onTool?.('ask_user',{question:question.title,options:question.options},{ok:true,output:'Question '+question.id+' posted. Waiting for the user’s answer.'}); }
+    }
     session!.historyKeys = keys;
     persist();
     return { text, waiting };

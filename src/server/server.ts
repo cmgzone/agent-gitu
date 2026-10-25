@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 import { WorkspaceGitBridge } from '../cowork/workspace-git.js';
+import { sanitizeBrowserAuth } from '../cowork/browser-auth.js';
+import { isStructuredAuth, encodeStructuredCredentials } from '../connections/structured-auth.js';
 import { connectedAppsRoutes } from './routes/connected-apps.js';
 import http from 'node:http';
 import { logger, errorMetadata } from './logger.js';
@@ -494,6 +496,7 @@ export class GituServer {
   private stopping = false;
   private readonly connections = new ConnectionRegistry();
   private readonly workspaceGit = new WorkspaceGitBridge();
+  private readonly browserAuthSubmissions = new Map<string, AbortController>();
   /** Runtime-owned session guarantees. Approval resolution authority lives here;
    *  the run path keeps a compatibility mirror for the existing endpoint and UI. */
   private readonly gituRuntime = new GituSessionRuntime();
@@ -1203,6 +1206,8 @@ export class GituServer {
   }
 
   async stop(): Promise<void> {
+    for (const controller of this.browserAuthSubmissions.values()) controller.abort();
+    this.browserAuthSubmissions.clear();
     const companyCoordinator=this.companyCoordinator;companyCoordinator?.stop();this.companyCoordinator=undefined;
     this.stopping = true;
     await this.mailInboxMonitor?.stop();
@@ -3418,7 +3423,7 @@ export class GituServer {
     } else if (request.kind === 'recommendation') {
       if (action !== 'accept' && action !== 'dismiss') return { ok: false, statusCode: 400, error: 'action must be accept or dismiss' };
       status = action === 'accept' ? 'accepted' : 'dismissed';
-    } else if (request.kind === 'credential') {
+    } else if (request.kind === 'credential' || request.kind === 'browser-auth') {
       // Secrets never travel through chat transports or the Chief: only the
       // secure web form (the HTTP route) may provide a credential.
       return { ok: false, statusCode: 400, error: 'Credential requests are provided through the secure form in the web app — the key must never be typed into chat.' };
@@ -5425,6 +5430,31 @@ export class GituServer {
       return true;
     }
 
+    const browserAuthMatch = path.match(/^\/api\/cowork\/requests\/([\w-]+)\/browser-auth$/);
+    if (browserAuthMatch && method === 'POST') {
+      if (!AppAuth.local(req) && (!this.appAuth.secure(req) || !this.appAuth.authenticated(req))) { this.sendJson(res,403,{error:'Submit website credentials through your authenticated HTTPS session.'});return true; }
+      const body = await this.readBody(req), request = store.getRequest(browserAuthMatch[1]!);
+      const card = sanitizeBrowserAuth(request?.browserAuth), agent = request && store.getAgent(request.agentId);
+      if (!request || request.kind !== 'browser-auth' || request.status !== 'open' || request.hiddenAt || !card || !agent || agent.useHostComputer || card.expiresAt <= Date.now()) { this.sendJson(res,409,{error:'This website card expired or its browser changed. Ask the agent for a fresh card.'});return true; }
+      if (body['setup'] !== JSON.stringify(card) || card.mode === 'signup' && !agent.allowWrites) { this.sendJson(res,409,{error:'The website card or agent permissions changed. Request a fresh card.'});return true; }
+      const denied = await this.coworkToolContext(agent).authorizeTool?.('browse',{action:'click',browserAuthRequestId:request.id});
+      if (denied) { this.sendJson(res,403,{error:denied.output});return true; }
+      const computer = this.coworkComputer(agent.id);
+      if (computer.name !== card.computer) { this.sendJson(res,409,{error:'This card belongs to a different private browser.'});return true; }
+      if (this.browserAuthSubmissions.has(request.id)) { this.sendJson(res,409,{error:'This secure form is already being submitted.'});return true; }
+      await computer.refreshStatus();
+      const controller = new AbortController(); this.browserAuthSubmissions.set(request.id,controller);
+      try {
+        const result = await computer.submitBrowserAuth(card.challengeId,body['values'],body['terms'],controller.signal);
+        const resolved = store.resolveRequest(request.id,result.ok?'provided':'answered',result.ok?'Website form submitted securely.':'The website form changed or submission could not be confirmed.');
+        this.publishCowork(request.conversationId);
+        const instruction = result.ok ? 'The user submitted your secure website card for '+card.origin+'. Inspect your private browser to verify the outcome. Do not claim successful sign-in or account creation until verified. Request another secure card for a later verification step; never ask for credentials in chat.' : 'Your secure website card could not be completed. Inspect the private browser before retrying; avoid duplicate account creation. Request a fresh secure card if needed.';
+        if (!this.dispatchAgentWake(request.conversationId,request.agentId,instruction)) store.addFollowUp({conversationId:request.conversationId,agentId:request.agentId,note:instruction,dueAt:new Date().toISOString()});
+        this.sendJson(res,result.ok?200:409,result.ok?{ok:true,request:resolved}:{error:result.output,request:resolved});
+      } finally { this.browserAuthSubmissions.delete(request.id); }
+      return true;
+    }
+
     const apiCredentialMatch = path.match(/^\/api\/cowork\/requests\/([\w-]+)\/credential-save$/);
     if (apiCredentialMatch && method === 'POST') {
       const body = await this.readBody(req);
@@ -5437,8 +5467,8 @@ export class GituServer {
         this.sendJson(res,409,{error:'The agent updated this connection card. Check its address and enter the key again.'});return true;
       }
       try {
-        const token = String(body['token'] ?? '');
-        if (!token.trim()) throw Error('Enter the API key or token.');
+        const token = isStructuredAuth(credential.auth) ? encodeStructuredCredentials(credential.auth,body['values']) : String(body['token'] ?? '');
+        if (!token.trim()) throw Error('Enter the requested secure credential fields.');
         const existing = credential.connectionId ? this.connections.get(credential.connectionId) : this.connections.list().find(profile => profile.provider === credential.providerHint && profile.baseUrl === credential.baseUrl && profile.label === (credential.label || credential.providerHint));
         if (credential.connectionId && !existing) throw Error('The saved connection is gone. Ask the agent to correct this card.');
         const path = credential.validationPath || existing?.operations.find(op => op.id === 'validate')?.path;
@@ -5520,7 +5550,11 @@ export class GituServer {
       }
       let status: 'approved' | 'denied' | 'answered' | 'accepted' | 'dismissed' | 'provided';
       let credentialConnection: { id: string; label: string } | undefined;
-      if (request.kind === 'permission') {
+      if (request.kind === 'browser-auth') {
+        if (action !== 'dismiss') { this.sendJson(res,400,{error:'Use the secure website form to sign in or create an account.'});return true; }
+        this.browserAuthSubmissions.get(request.id)?.abort(); status = 'dismissed';
+      }
+      else if (request.kind === 'permission') {
         if(this.companyScope.getStore()&&request.permission==='host'&&this.companies().get(this.companyScope.getStore()!.id)?.allowHostComputer!==true){this.sendJson(res,400,{error:'Enable Use my computer in Company Resources before approving host access.'});return true;}
         if (action !== 'approve' && action !== 'deny') { this.sendJson(res, 400, { error: 'action must be approve or deny' }); return true; }
         status = action === 'approve' ? 'approved' : 'denied';

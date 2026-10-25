@@ -10,7 +10,7 @@ import {dockerBinary,validateComputerChunk,type ComputerBinary} from './file-tra
 import { QuotaVolumes } from './quota-volumes.js';
 import { gituHomeRoot } from '../workspace/home.js';
 
-export const COWORK_COMPUTER_IMAGE = 'agent-gitu-cowork:9';
+export const COWORK_COMPUTER_IMAGE = 'agent-gitu-cowork:10';
 const IMAGE = COWORK_COMPUTER_IMAGE;
 const ASSETS = fileURLToPath(new URL('../../assets/cowork-computer/', import.meta.url));
 // A 20 MB binary attachment becomes about 27 MB when carried as base64 JSON.
@@ -448,6 +448,13 @@ export class CoworkComputer {
     await this.exec(['exec', '-i', this.name, 'node', '-e', program], config, signal, 15_000);
   }
 
+  /** Called only by the authenticated secure-card endpoint, outside model tools. */
+  async submitBrowserAuth(challengeId: string, values: unknown, terms: unknown, signal?: AbortSignal): Promise<ToolResult> {
+    if (this.state !== 'running' || this.control === 'user') return { ok: false, output: 'Return this running private browser to the agent before continuing.' };
+    try { return await this.request('browser_auth_submit', { challengeId, values, terms }, signal); }
+    catch { return { ok: false, output: 'Secure browser submission could not be confirmed. Request a fresh sign-in card before retrying.' }; }
+  }
+
   async execute(
     tool: string,
     params: Record<string, unknown>,
@@ -460,7 +467,7 @@ export class CoworkComputer {
       if (tool === 'computer_status') return { ok: true, output: JSON.stringify(this.status()) };
       if (this.state === 'stopped' && this.control === 'user') await this.refreshStatus();
       if (this.state === 'sleeping') return { ok: false, output: 'The user put this desktop to sleep. Wait for them to wake it; do not switch computers.' };
-      if (this.control === 'user' && ['desktop_input', 'browse', 'run_command', 'computer_process', 'write_file', 'apply_edit', 'receive_file'].includes(tool)) return { ok: false, output: 'The user has control of this desktop. Wait for the handoff response or ask_user; do not interact with their apps or fall back to another computer.' };
+      if (this.control === 'user' && ['desktop_input', 'browse', 'browser_auth_prepare', 'browser_auth_submit', 'run_command', 'computer_process', 'write_file', 'apply_edit', 'receive_file'].includes(tool)) return { ok: false, output: 'The user has control of this desktop. Wait for the handoff response or ask_user; do not interact with their apps or fall back to another computer.' };
       // A recent provisioning failure is retried only after the cooldown, so
       // callers can fall back to the user's computer without 15s Docker probes
       // on every tool call.

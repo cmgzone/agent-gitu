@@ -11,6 +11,7 @@ const jobs = new Map();
 const processes = new Map();
 const cancelled = new Set();
 let browser;
+const browserAuth = require('./browser-auth.cjs').createBrowserAuth(browserPage);
 let browserQueue = Promise.resolve();
 let screenQueue = Promise.resolve();
 const shareRoots = ['/workspace', ...['Downloads', 'Desktop', 'Documents', 'Pictures', 'Music', 'Videos'].map((folder) => '/home/agent/' + folder)];
@@ -178,10 +179,10 @@ async function command(id, params) {
     });
   });
 }
-async function browse(id, p) {
+async function browserPage(id) {
   if (cancelled.has(id)) throw new Error('Browser operation cancelled.');
   if (!browser) {
-    const context = await chromium.launchPersistentContext('/home/agent/browser', { headless: !process.env.DISPLAY, viewport: { width: 1280, height: 720 } });
+    const context = await chromium.launchPersistentContext('/home/agent/browser', { ...(fs.existsSync('/usr/bin/google-chrome-stable') ? { channel: 'chrome' } : {}), headless: !process.env.DISPLAY, viewport: { width: 1280, height: 720 } });
     browser = context;
     context.on('close', () => { if (browser === context) browser = undefined; });
   }
@@ -192,6 +193,10 @@ async function browse(id, p) {
   }
   const page = browser.pages()[0] || (await browser.newPage());
   page.setDefaultTimeout(15000);
+  return page;
+}
+async function browse(id, p) {
+  const page = await browserPage(id);
   jobs.set(id, () => {
     void browser?.close().catch(() => {});
     browser = undefined;
@@ -248,19 +253,27 @@ async function browse(id, p) {
     return {
       ok: true,
       image,
-      output: JSON.stringify({
+      output: browserAuth.redact(JSON.stringify({
         url: page.url(),
         title: await page.title(),
         text: (await page.locator('body').innerText()).slice(0, 12000),
         controls: page.locator('body').ariaSnapshot ? (await page.locator('body').ariaSnapshot()).slice(0, 8000) : undefined,
         screenshot: p.action === 'screenshot' ? p.path || 'screenshot.png' : undefined,
-      }),
+      })),
     };
   } finally {
     jobs.delete(id);
   }
 }
 async function execute({ id, tool, params: p = {} }) {
+  if (tool === 'browser_auth_prepare' || tool === 'browser_auth_submit') {
+    const next = browserQueue.then(async () => {
+      if (cancelled.has(id)) return { ok: false, output: 'Browser action cancelled.' };
+      jobs.set(id, () => { void browser?.close().catch(() => {}); browser = undefined; });
+      try { return await browserAuth.execute(id, p, tool === 'browser_auth_submit'); } finally { jobs.delete(id); }
+    });
+    browserQueue = next.catch(() => {}); return next;
+  }
   if (tool === 'desktop_screenshot' || tool === 'desktop_input') {
     const next = screenQueue.then(() => {
       if (cancelled.has(id)) throw new Error('Computer operation cancelled.');
@@ -403,7 +416,7 @@ http
         }
         res.end(JSON.stringify(await execute(JSON.parse(body))));
       } catch (e) {
-        res.end(JSON.stringify({ ok: false, output: e.message }));
+        res.end(JSON.stringify({ ok: false, output: browserAuth.redact(e.message) }));
       }
     });
   })

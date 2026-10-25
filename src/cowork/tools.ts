@@ -1,5 +1,6 @@
 import { createProject, loadWorkspaceSettings } from '../workspace/home.js';
 import { WIDGET_APP_TOOL_GUIDE } from './widget-app.js';
+import { sanitizeBrowserAuth } from './browser-auth.js';
 import { connectionResponses, redactConnectionData } from '../connections/response-data.js';
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -144,6 +145,7 @@ export const SUBAGENT_BLOCKED_TOOLS = [
   'spawn_sub_agent',
   'gitu_task',
   'computer_handoff',
+  'request_browser_auth',
   'ask_user',
   'request_credential',
   'request_permission',
@@ -209,6 +211,7 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
     gate: 'writes',
   },
   { name: 'computer_status', doc: 'Identify your assigned host/private/cloud computer and browser. A connected host browser does not prove access to a VPS or the owner’s separate Chrome login. params: {}', gate: undefined },
+  { name: 'request_browser_auth', doc: 'Ask the user to sign in, sign up or enter a verification code securely in chat, using your own persistent private browser. First browse to the actual HTTPS form. params: {"mode":"signin"|"signup"|"verify","reason":"why this website is needed"}. The host reads the visible website form and posts a card with its icon, destination and secure fields. Never include credentials, field values or selectors. Signup requires write access. Stop and wait for the card; after submission verify the result with browse. Use computer_handoff only for a CAPTCHA or another step this secure form cannot complete.', gate: 'browser' },
   {
     name: 'computer_handoff',
     doc: 'Give the user control of your private desktop and pause your task for a human step. params: {"reason":"Please sign in using the regular Browser, then return control."}. Use this for manual login, verification, approval or a step the user must perform. Never include passwords, codes or secrets in the reason. The user can operate the desktop and choose Return to agent when done. Do not keep interacting while waiting.',
@@ -356,12 +359,12 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
   },
   {
     name: 'ask_user',
-    doc: 'Post a real question card and wait for the answer. params: {"question":"Which region?","detail":"Why this is needed","options":["EU","US"]}. Never use this for API keys, tokens or logins — use request_credential so the secret goes into the secure connection store, not chat.',
+    doc: 'Post a real question card and wait for the answer. params: {"question":"Which region?","detail":"Why this is needed","options":["EU","US"]}. Never use this for API keys, tokens, passwords or verification codes. Use request_credential for service connections, or request_browser_auth for website sign-in, signup and verification.',
     gate: undefined,
   },
   {
     name: 'request_credential',
-    doc: 'Check list_connections and reuse saved credentials first. Ask privately only when a key is absent or confirmed invalid/expired; missing operations, 403, 404 or unknown auth do not mean a lost key. Fill ALL non-secret settings yourself from the user’s context and official API docs: {"prompt":"Connect service","provider":"custom","baseUrl":"https://api.example.com","label":"My service","validationPath":"/api/me","documentationUrl":"https://docs.example.com","auth":{"type":"header","header":"X-API-Key"}}. Known services supply documented defaults; omit auth for service defaults. The user enters only the key. To CORRECT a pending card, call again with its requestId and complete corrected settings; this edits the SAME card. Open cards for the same service/address are reused automatically. To reconnect use the exact saved connectionId. For SSH use provider:"ssh", baseUrl:"ssh://user@host:22", label; the user confirms the host key and enters a password. Never guess an address or authenticated test route. Stop and wait only when a card was posted/updated. Users can replace working keys directly in Connections.',
+    doc: 'Check list_connections and reuse saved credentials first. Ask privately only when a key is absent or confirmed invalid/expired; missing operations, 403, 404 or unknown auth do not mean a lost key. Fill ALL non-secret settings yourself from the user’s context and official API docs: {"prompt":"Connect service","provider":"custom","baseUrl":"https://api.example.com","label":"My service","validationPath":"/api/me","documentationUrl":"https://docs.example.com","auth":{"type":"header","header":"X-API-Key"}}. Known services supply documented defaults; omit auth for service defaults. For multiple credential fields set auth.type to basic, headers or oauth2 and provide auth.fields:[{id:"email",label:"Email",secret:false,inputType:"email"},{id:"client_id",label:"Client ID",secret:false},{id:"client_secret",label:"Client secret",secret:true}]. Basic also requires usernameField and passwordField naming its fields. For headers each field needs its documented header and optional prefix. OAuth2 uses client_id, client_secret, optional service parameters such as email, and a documented same-origin tokenPath plus optional scope; the host exchanges these for a Bearer token. Never put field values in tool parameters. The user enters only the requested values in the secure card. To CORRECT a pending card, call again with its requestId and complete corrected settings; this edits the SAME card. Open cards for the same service/address are reused automatically. To reconnect use the exact saved connectionId. For SSH use provider:"ssh", baseUrl:"ssh://user@host:22", label; the user confirms the host key and enters a password. Never guess an address or authenticated test route. Stop and wait only when a card was posted/updated. Users can replace working keys directly in Connections.',
     gate: undefined,
   },
   {
@@ -1002,6 +1005,21 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
       }
       case 'request_credential':
         return coworkRequestCredential(ctx, scope, params);
+      case 'request_browser_auth': {
+        if (!scope?.conversationId || !scope.computerFor || scope.agent.useHostComputer) return { ok: false, output: 'Secure website cards require this agent’s own private browser.' };
+        const mode = String(params['mode'] ?? 'signin');
+        if (!['signin', 'signup', 'verify'].includes(mode)) return { ok: false, output: 'Choose signin, signup or verify.' };
+        if (mode === 'signup' && !perms.allowWrites) return blocked('request_browser_auth');
+        const pending = scope.store.requests(scope.conversationId).find(r => r.agentId === scope.agent.id && r.kind === 'browser-auth' && r.status === 'open' && !r.hiddenAt && r.browserAuth?.mode === mode && r.browserAuth.expiresAt > Date.now());
+        if (pending) return { ok: true, output: `Secure website card ${pending.id} is waiting for the user. Stop and wait.` };
+        const computer = scope.computerFor(scope.agent.id, scope.agent);
+        const prepared = await computer.execute('browser_auth_prepare', { mode }, scope.signal);
+        if (!prepared.ok) return prepared;
+        const browserAuth = sanitizeBrowserAuth({ ...JSON.parse(prepared.output), computer: computer.name });
+        if (!browserAuth) return { ok: false, output: 'The private browser returned an unsupported website form.' };
+        const request = scope.store.addRequest({ conversationId: scope.conversationId, agentId: scope.agent.id, kind: 'browser-auth', browserAuth, title: (mode === 'signup' ? 'Create account at ' : mode === 'verify' ? 'Verify at ' : 'Sign in to ') + new URL(browserAuth.origin).hostname, detail: String(params['reason'] ?? 'Continue the requested task on this website.').slice(0, 1000) });
+        return { ok: true, output: `Secure website card ${request.id} posted for ${browserAuth.origin}. Stop and wait. The user enters credentials only in this card; submission resumes your task without opening the desktop.` };
+      }
       case 'request_permission':
         return coworkRequestPermission(scope, params);
       case 'recommend':
@@ -1149,7 +1167,8 @@ function coworkAskUser(scope: CoworkToolScope | undefined, params: Record<string
     const question = String(params['question'] ?? '').trim();
     const detail = String(params['detail'] ?? question).trim();
     const options = Array.isArray(params['options']) ? params['options'].map(String) : [];
-    const request = scope.store.addRequest({ conversationId: scope.conversationId, agentId: scope.agent.id, kind: 'question', title: question, detail, options });
+    if (/\b(?:enter|paste|share|provide|send|type|what is)\b[\s\S]{0,80}\b(?:password|client secret|api[ -]?key|access[ -]?token|verification code|one.time code|otp)\b/i.test(question+' '+detail)) return {ok:false,output:'Use request_browser_auth for website credentials or verification, or request_credential for service connection fields. Never collect secrets in a question card.'};
+    const request = scope.store.requests(scope.conversationId).find(r=>r.agentId===scope.agent.id&&r.kind==='question'&&r.status==='open'&&!r.hiddenAt&&r.title===question) ?? scope.store.addRequest({ conversationId: scope.conversationId, agentId: scope.agent.id, kind: 'question', title: question, detail, options });
     return { ok: true, output: `Question ${request.id} posted. Stop working and tell the user you are waiting for their answer.` };
   } catch (err) {
     return { ok: false, output: `ask_user failed: ${(err as Error).message}` };
@@ -1263,7 +1282,7 @@ async function coworkRequestCredential(ctx: ToolContext, scope: CoworkToolScope 
       }
     }
     if (!connectionId && !baseUrl) return { ok: false, output: 'request_credential requires "baseUrl" for a new connection (or "connectionId" to re-authorize an existing one).' };
-    const auth = normalizeConnectionAuth(params['auth']);
+    const auth = normalizeConnectionAuth(params['auth'] ?? (connectionId ? ctx.connections?.get(connectionId)?.auth : undefined));
     const documentationUrl = normalizeConnectionDocumentationUrl(params['documentationUrl'] ?? catalog?.documentationUrl);
     if (!ssh) {
       validationPath ||= catalog?.operations.find(op => op.method === 'GET' && op.risk === 'read' && !/[:{}]/.test(op.path))?.path ?? '';

@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { isStructuredAuth, normalizeStructuredAuth, encodeStructuredCredentials, structuredAuthHeaders, structuredSecrets, type StructuredConnectionAuth } from './structured-auth.js';
 import { EnvHttpProxyAgent } from 'undici';
 import { loadStoredKeys, removeStoredKey, setStoredKey } from '../llm/keys.js';
 import { readCredentialJson, updateCredentialJson } from '../llm/credential-file.js';
@@ -69,7 +70,7 @@ export interface ConnectionOperationProposal {
   reason: string;
 }
 
-export type ConnectionAuth = { type: 'bearer' } | { type: 'header'; header: string; prefix?: string };
+export type ConnectionAuth = { type: 'bearer' } | { type: 'header'; header: string; prefix?: string } | StructuredConnectionAuth;
 
 export interface ConnectionProfile {
   id: string;
@@ -447,6 +448,7 @@ export function normalizeConnectionAuth(value: unknown): ConnectionAuth | undefi
   if (value === undefined || value === null) return undefined;
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw Error('Choose Bearer authentication or a named API-key header.');
   const raw = value as Record<string, unknown>;
+  if (['basic', 'headers', 'oauth2'].includes(String(raw['type']))) return normalizeStructuredAuth(raw);
   if (raw['type'] === 'bearer') return { type: 'bearer' };
   const header = typeof raw['header'] === 'string' ? raw['header'].trim() : '';
   const prefix = typeof raw['prefix'] === 'string' ? raw['prefix'].trim() : '';
@@ -457,6 +459,7 @@ export function normalizeConnectionAuth(value: unknown): ConnectionAuth | undefi
 }
 
 function credentialParts(profile: Pick<ConnectionProfile, 'provider' | 'auth'>): { header: string; prefix: string } {
+  if (isStructuredAuth(profile.auth)) return { header: profile.auth.type === 'headers' ? profile.auth.fields.map(f=>f.header).join(', ') : 'authorization', prefix: profile.auth.type === 'basic' ? 'Basic' : profile.auth.type === 'oauth2' ? 'Bearer' : '' };
   if (profile.auth?.type === 'bearer') return { header: 'authorization', prefix: 'Bearer' };
   if (profile.auth?.type === 'header') return { header: profile.auth.header, prefix: profile.auth.prefix ?? '' };
   const header = catalogProvider(profile.provider)?.credentialHeader;
@@ -464,6 +467,7 @@ function credentialParts(profile: Pick<ConnectionProfile, 'provider' | 'auth'>):
 }
 
 function normalizeSavedCredential(value: string, profile: Pick<ConnectionProfile, 'provider' | 'auth'>): string {
+  if (isStructuredAuth(profile.auth)) { try { return encodeStructuredCredentials(profile.auth, JSON.parse(value)); } catch { throw Error('Complete this service’s named credential fields.'); } }
   const { header, prefix } = credentialParts(profile);
   const unwrap = (text: string): string => /^(["']).*\1$/s.test(text) ? text.slice(1, -1).trim() : text;
   let token = unwrap(value.trim());
@@ -475,7 +479,8 @@ function normalizeSavedCredential(value: string, profile: Pick<ConnectionProfile
   return token;
 }
 
-function connectionAuthHeaders(profile: ConnectionProfile, token: string): Record<string, string> {
+function connectionAuthHeaders(profile: ConnectionProfile, token: string, secrets: string[] = []): Record<string, string> | Promise<Record<string, string>> {
+  if (isStructuredAuth(profile.auth)) return structuredAuthHeaders(profile.auth, token, profile.baseUrl, fetchWithApiTransport, secrets);
   const { header, prefix } = credentialParts(profile);
   const value = normalizeSavedCredential(token, profile);
   return { [header]: prefix ? `${prefix} ${value}` : value };
@@ -586,6 +591,7 @@ function scrubKnownConnectionSecrets(text: string, secrets: readonly string[]): 
 
 function storedConnectionSecrets(profile: ConnectionProfile): string[] {
   const token = loadStoredKeys()[keyRef(profile.id)]?.trim();
+  if (token && isStructuredAuth(profile.auth)) return structuredSecrets(profile.auth, token);
   return token ? [token, normalizeSavedCredential(token, profile)] : [];
 }
 
@@ -746,7 +752,7 @@ export class ConnectionRegistry {
 
   /** Git transport is limited to repositories explicitly named by saved API operations. */
   githubGitRepositories(): string[] {
-    return [...new Set(this.list().filter(p => p.hasCredential && p.baseUrl === 'https://api.github.com')
+    return [...new Set(this.list().filter(p => p.hasCredential && p.baseUrl === 'https://api.github.com' && !isStructuredAuth(p.auth))
       .flatMap(p => p.operations.flatMap(op => {
         const match = /^\/repos\/([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+)(?:\/|$)/.exec(op.path);
         return match ? [match[1]!.toLowerCase()] : [];
@@ -1215,13 +1221,16 @@ export class ConnectionRegistry {
       throw new ConnectionInvocationError('not-run', 'Saved connection needs its credential added again.', 'AUTH_INVALID', true);
     }
 
+    let authHeaders: Record<string,string>;
+    try { const prepared = connectionAuthHeaders(profile,token,secrets); authHeaders = prepared instanceof Promise ? await prepared : prepared; }
+    catch { throw new ConnectionInvocationError('not-run','Authentication could not be prepared. Check the documented credential fields and token endpoint. No API operation was sent.','CONFIG_INVALID'); }
     let response: Response | undefined;
     const attempts = operation.method === 'GET' && operation.risk === 'read' ? 2 : 1;
     for (let attempt=0;attempt<attempts;attempt++) {
       try {
         const options: RequestInit = {
         method: operation.method,
-        headers: { ...extraHeaders, accept: 'application/json', ...connectionAuthHeaders(profile, token), ...(encoded ? { 'content-type': 'application/json' } : {}) },
+        headers: { ...extraHeaders, accept: 'application/json', ...authHeaders, ...(encoded ? { 'content-type': 'application/json' } : {}) },
         ...(encoded ? { body: encoded } : {}),
         redirect: 'error',
         signal: AbortSignal.timeout(45_000),
@@ -1357,7 +1366,7 @@ export class ConnectionRegistry {
     const catalogOps = (catalogProvider(profile.provider)?.operations ?? []) as AnnotatedCatalogOperation[];
     const headers: Record<string, string> = {
       accept: 'application/json',
-      ...(token ? connectionAuthHeaders(profile, token) : {}),
+      ...(token ? await connectionAuthHeaders(profile, token, secrets) : {}),
     };
     const fetcher = async ({ baseUrl, path, method, headers: reqHeaders }: { baseUrl: string; path: string; method: string; headers: Record<string, string> }) => {
       const url = new URL(path, `${baseUrl}/`);

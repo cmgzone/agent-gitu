@@ -31,7 +31,7 @@ export function documentedConnectionSetup(address:string,route:string,documentat
     const routeMentioned=new RegExp('(^|[\\s"\'`=])'+escaped+'(?=[\\s"\'`,;]|$)').test(documentation);
     if(!documentation.includes(address.replace(/\/$/,''))||!routeMentioned)throw Error('The fetched documentation does not establish this complete API test URL. Read the API base URL and authenticated endpoint, then correct the same request.');
   }
-  const scheme=auth?.type==='header'?auth.header:'Bearer';
-  if(!documentation.toLowerCase().includes(scheme.toLowerCase()))throw Error('The fetched documentation does not confirm the selected authentication header/scheme. Research authentication before requesting the key.');
+  const schemes=auth?.type==='headers'?auth.fields.map(f=>f.header!):auth?.type==='basic'?['Basic']:auth?.type==='oauth2'?['OAuth',auth.tokenPath!]:[auth?.type==='header'?auth.header:'Bearer'];
+  if(schemes.some(scheme=>!documentation.toLowerCase().includes(scheme.toLowerCase())))throw Error('The fetched documentation does not confirm the selected authentication header/scheme. Research authentication before requesting the credential fields.');
   return setup;
 }

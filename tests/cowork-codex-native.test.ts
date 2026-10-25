@@ -62,6 +62,12 @@ async function finish(input: NativeTaskInput, text = 'Done.'): Promise<void> {
 }
 
 describe('native Cowork execution', () => {
+  it('creates a real question card for a direct unanswered question in a native final',async()=>{
+    const f=fixture(input=>finish(input,'Which region should I use?\n- Europe\n- Africa'));
+    const result=await f.run();
+    expect(result.waiting).toBe(true);expect(f.store.requests(f.conversation.id)).toEqual([expect.objectContaining({kind:'question',title:'Which region should I use?',options:['Europe','Africa']})]);
+    expect(f.onTool).toHaveBeenCalledWith('ask_user',expect.anything(),expect.objectContaining({ok:true}));
+  });
   it('reconciles separate items and authoritative text before the turn closes', async () => {
     const updates: string[] = [];
     const f = fixture(async input => {

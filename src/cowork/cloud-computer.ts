@@ -12,7 +12,7 @@ import { DESKTOP_BRIDGE } from './desktop-stream.js';
 import {binaryArgs,binaryChannel,validateComputerChunk,type ComputerBinary} from './file-transport.js';
 
 const ASSETS = fileURLToPath(new URL('../../assets/cowork-computer/', import.meta.url));
-const ASSET_NAMES = ['Dockerfile', 'server.cjs', 'start-desktop.sh', 'open-browser.cjs', 'open-agent-browser.cjs', 'gitu-wallpaper.svg', 'quota-guard.c'];
+const ASSET_NAMES = ['Dockerfile', 'server.cjs', 'browser-auth.cjs', 'start-desktop.sh', 'open-browser.cjs', 'open-agent-browser.cjs', 'gitu-wallpaper.svg', 'quota-guard.c'];
 const QUOTA_ENTRY = 'const {QuotaVolumes}=await import(process.argv[1]); await new QuotaVolumes(process.argv[2],process.argv[3]).prepare(process.argv[4],Number(process.argv[5])); console.log("quota-ready");';
 type CloudRegistry = Pick<SshConnectionRegistry, 'get' | 'openClient'>;
 

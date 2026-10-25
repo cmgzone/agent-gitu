@@ -267,7 +267,7 @@ export function discordRequestText(request: CoworkRequest, agentName?: string): 
   }
   if (request.kind === 'permission') lines.push('', 'Reply approve or deny.');
   else if (request.kind === 'recommendation') lines.push('', 'Reply accept or dismiss.');
-  else if (request.kind === 'credential') lines.push('', 'Never send keys or tokens in chat. Open the Cowork page in the Agent Gitu web app and use the secure credential form on this request.');
+  else if ((request.kind === 'credential' || request.kind === 'browser-auth')) lines.push('', 'Never send passwords, verification codes, keys or tokens in chat. Open the Cowork page in the Agent Gitu web app and use the secure credential form on this request.');
   else lines.push('', request.options.length > 0 ? 'Reply with the option number, or type your answer.' : 'Reply with your answer.');
   return lines.join('\n');
 }
@@ -313,6 +313,6 @@ export function parseDiscordRequestReply(
 function discordRequestLabel(request: CoworkRequest): string {
   if (request.kind === 'permission') return '**Approval needed**';
   if (request.kind === 'recommendation') return '**Recommendation**';
-  if (request.kind === 'credential') return '**Credential needed**';
+  if ((request.kind === 'credential' || request.kind === 'browser-auth')) return '**Credential needed**';
   return '**Question**';
 }

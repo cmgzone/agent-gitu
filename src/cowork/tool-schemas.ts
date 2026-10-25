@@ -19,6 +19,7 @@ const schemas: Record<string, { fields: Fields; required?: string[] }> = {
   connection_execute: { fields: { connectionId: text, operationId: text, args: object, query: object, body: object }, required: ['connectionId', 'operationId'] },
   computer_status: { fields: {} },
   computer_handoff: { fields: { reason: text }, required: ['reason'] },
+  request_browser_auth: { fields: { mode: { type: 'string', enum: ['signin', 'signup', 'verify'] }, reason: text }, required: ['mode', 'reason'] },
   desktop_screenshot: { fields: {} },
   desktop_input: { fields: { action: text, x: number, y: number, endX: number, endY: number, button: number, text, key: text, delta: number, app: text }, required: ['action'] },
   computer_process: { fields: { action: text, id: text }, required: ['action', 'id'] },

@@ -31,20 +31,28 @@ describe('Cowork coding activity', () => {
     f.context.cwRenderCodingActivity();
     expect(f.host.innerHTML).toContain('Waiting for your response');
     expect(f.host.innerHTML).not.toContain('data-coding-state="working"');
-    for (const [status, label] of [['completed', 'Coding completed'], ['failed', 'Coding failed'], ['aborted', 'Coding stopped'], ['waiting_for_model', 'Waiting for model'], ['blocked', 'Needs attention']]) {
+    for (const [status, label] of [['waiting_for_model', 'Waiting for model']]) {
       f.state.codingTasks[0].status = status;
       f.context.cwRenderCodingActivity();
       expect(f.host.innerHTML).toContain(label);
       expect(f.host.innerHTML).not.toContain('data-coding-state="working"');
     }
+    for (const status of ['completed', 'failed', 'aborted', 'blocked']) {
+      f.state.codingTasks[0].status = status;
+      f.context.cwRenderCodingActivity();
+      expect(f.host.hidden).toBe(true);
+      expect(f.host.innerHTML).toBe('');
+    }
   });
 
-  it('retains every active task, limits old cards and escapes task content', () => {
+  it('shows each active task once, removes completed cards and escapes task content', () => {
     const f = fixture();
     f.state.codingTasks = Array.from({ length: 6 }, (_, i) => ({ runId: 'done-' + i, status: 'completed', goal: 'Earlier task' }));
     f.state.codingTasks.push({ runId: 'active-1', status: 'running', goal: '<img src=x onerror="attack()">' });
+    f.state.codingTasks.push({ runId: 'active-1', status: 'running', goal: 'Duplicate' });
     f.context.cwRenderCodingActivity();
-    expect(f.host.innerHTML.match(/class="cw-coding-card"/g)).toHaveLength(4);
+    expect(f.host.innerHTML.match(/class="cw-coding-card"/g)).toHaveLength(1);
+    expect(f.host.innerHTML).not.toContain('done-');
     expect(f.host.innerHTML).toContain('data-main-coding-task="active-1"');
     expect(f.host.innerHTML).toContain('&lt;img');
     expect(f.host.innerHTML).not.toContain('<img');

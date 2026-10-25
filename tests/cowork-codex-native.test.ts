@@ -15,7 +15,7 @@ afterEach(() => {
   for (const folder of folders.splice(0)) rmSync(folder, { force: true, recursive: true });
 });
 
-function fixture(scenario: (input: NativeTaskInput) => Promise<void>) {
+function fixture(scenario: (input: NativeTaskInput) => Promise<void>, onProgress?: (text: string) => void) {
   const root = mkdtempSync(path.join(tmpdir(), 'gitu-native-cowork-'));
   folders.push(root);
   writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'native-cowork-test', version: '1.0.0' }));
@@ -52,6 +52,7 @@ function fixture(scenario: (input: NativeTaskInput) => Promise<void>) {
       tools: coworkNativeTools(agent, false),
       perms: { allowShell: agent.allowShell, allowWrites: true, allowConfig: false, chief: false, browser: false },
       onTool,
+      onProgress,
     });
   return { root, store, agent, conversation, ctx, runTurn, run, onTool, steer };
 }
@@ -61,6 +62,17 @@ async function finish(input: NativeTaskInput, text = 'Done.'): Promise<void> {
 }
 
 describe('native Cowork execution', () => {
+  it('reconciles separate items and authoritative text before the turn closes', async () => {
+    const updates: string[] = [];
+    const f = fixture(async input => {
+      await input.onEvent('item/agentMessage/delta', { itemId: 'commentary', delta: 'Checking now.' });
+      await input.onEvent('item/agentMessage/delta', { itemId: 'answer', delta: 'The result is ' });
+      await input.onEvent('item/completed', { item: { id: 'commentary', type: 'agentMessage', phase: 'commentary', text: 'Checking now.' } });
+      await input.onEvent('item/completed', { item: { id: 'answer', type: 'agentMessage', phase: 'final_answer', text: 'The result is ready.' } });
+      expect(updates).toEqual(['Checking now.', 'The result is', 'The result is ready.']);
+    }, text => updates.push(text));
+    expect((await f.run()).text).toBe('The result is ready.');
+  });
   it('removes completion metadata from native finals and every streamed marker prefix', async () => {
     const progress: string[] = [];
     const f = fixture(async input => {

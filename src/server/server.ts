@@ -67,7 +67,7 @@ import { ChiefOfStaff, type ChiefAdvisor } from '../chief/chief.js';
 import { modelChiefAdvisor } from '../chief/advisor.js';
 import { resolveAuthorityPolicy, type AuthorityPolicy, type AuthorityPolicyPatch } from '../chief/authority.js';
 import { workspacePath } from '../coding/workspace.js';
-import { projectForCoding } from '../coding/project-selection.js';
+import { projectForCoding, privateProjectForCoding } from '../coding/project-selection.js';
 import { readRuntimeSelection, saveRuntimeSelection } from '../workspace/runtime-selection.js';
 import { workspaceCheckpoint } from '../checkpoint/workspace-checkpoints.js';
 import { codingPermissions, codingAutoApprove, saveCodingPermissions } from '../workspace/coding-permissions.js';
@@ -542,7 +542,7 @@ export class GituServer {
   private readonly budgetsPersisted = new Map<string, string>();
   /** Per-delegated-session teardown (MCP clients), released when the run settles. */
   private readonly delegatedSessionResources = new Map<string, () => void>();
-  private readonly coworkSubscribers = new Map<string, Set<() => void>>();
+  private readonly coworkSubscribers = new Map<string, Set<(progressOnly?: boolean) => void>>();
   private readonly coworkStreams = new Set<http.ServerResponse>();
   /** Live computer cards, keyed by personal/company scope. */
   private readonly computerSubscribers = new Map<string, Set<() => void>>();
@@ -1533,8 +1533,20 @@ export class GituServer {
     });
   }
 
-  private publishCowork(conversationId: string): void {
-    for (const send of this.coworkSubscribers.get(conversationId) ?? []) send();
+  private publishCowork(conversationId: string, progressOnly = false): void {
+    for (const send of this.coworkSubscribers.get(conversationId) ?? []) send(progressOnly);
+  }
+
+  private coworkProgressView(conversationId: string, threadId: string | null) {
+    const run = this.coworkRuns.get(conversationId);
+    const active = Boolean(run?.busy && (run.threadId ?? null) === threadId);
+    return {
+      busy: active,
+      working: active ? run?.working ?? null : null,
+      progress: active ? run?.progress ?? null : null,
+      progresses: active ? Object.values(run?.progresses ?? {}) : [],
+      queued: run?.queue.length ?? 0,
+    };
   }
 
   /** A mission plus its live envelope, so a card can show what is left of it. */
@@ -1764,8 +1776,7 @@ export class GituServer {
         const agent = this.cowork().getAgent(scope.agent.id);
         if (!agent) throw new Error('That teammate no longer exists.');
         if (!agent.useHostComputer) {
-          const selected = nodePath.posix.resolve('/workspace', projectPath ?? '.');
-          if (selected !== '/workspace' && !selected.startsWith('/workspace/')) throw new Error('Private projects must stay inside /workspace.');
+          const selected = privateProjectForCoding(projectPath, goal);
           return { type: 'container', containerId: agent.id, path: selected };
         }
         const base = agent.companyId ? this.coworkToolContext(agent).cwd : this.projectRoot() ?? this.coworkToolContext(agent).cwd;
@@ -1782,7 +1793,7 @@ export class GituServer {
           ? (()=>{const assignment=this.cowork().getAgent(scope.agent.id)!;let first=true;return privateCodingSession(input.goal, input.workspace, (signal,instruction) => {
               const parent=this.cowork().getAgent(scope.agent.id);if(!parent)throw Error('The requesting teammate was removed.');
               if(parent.useHostComputer!==assignment.useHostComputer||parent.cloudConnectionId!==assignment.cloudConnectionId)throw Error('The assigned computer changed. Start a new coding task on the selected computer.');
-              const bridge=first&&!scope.background&&parent.allowWrites===assignment.allowWrites&&parent.allowShell===assignment.allowShell?scope.subAgents:this.codingWorkerBridge(parent,scope.conversationId!,signal,scope.missionId);first=false;
+              const bridge=first&&!scope.background&&input.workspace.path==='/workspace'&&parent.allowWrites===assignment.allowWrites&&parent.allowShell===assignment.allowShell?scope.subAgents:this.codingWorkerBridge(parent,scope.conversationId!,signal,scope.missionId,input.workspace.type==='container'?input.workspace.path:undefined);first=false;
               if (!bridge) throw new Error('The private coding runtime is unavailable. Restore it before continuing this task.');
               return bridge.run({ role: 'Agent Gitu coding', objective: (instruction??input.goal) + '\nProject: ' + input.workspace.path + '\nMain Agent Gitu owns this engineering task. Implement and verify it in the assigned workspace, keeping the company and computer permissions in force. Return concrete evidence and remaining blockers. Do not delegate further.', reason: 'Main-agent coding task', budget: input.budget ?? {}, maxRuntimeMinutes: input.runOptions.timeoutMinutes }, signal);
             },readRuntimeSelection);})()
@@ -2265,7 +2276,7 @@ export class GituServer {
       mode: input.runOptions.mode, taggedFolders: [], writableFolders: [], events: [], nativeFrames: [],
       provider: current.provider, model: current.model, requestedProvider:current.provider, requestedModel:current.model,
       subscribers: new Set(), approvals: new Map(), files: [], runtime,
-      coworkTask: { agentId: scope.agent.id, agentName: scope.agent.name, conversationId: scope.conversationId!, execution,
+      coworkTask: { agentId: scope.agent.id, agentName: scope.agent.name, conversationId: scope.conversationId!, execution, workspacePath: input.workspace.path,
         ...(companyId ? { companyId } : {}), ...(scope.missionId ? { missionId: scope.missionId } : {}) },
     };
     this.sessions.set(runtime.id, task);
@@ -2360,9 +2371,9 @@ export class GituServer {
     this.codingFollowupCards.set(card.id,{runId:session.runId,gateId,kind});this.publishCowork(source.conversationId);
   }
 
-  private codingWorkerBridge(agent: CoworkAgent, conversationId: string, signal?: AbortSignal, missionId?: string) {
+  private codingWorkerBridge(agent: CoworkAgent, conversationId: string, signal?: AbortSignal, missionId?: string, privateWorkingDirectory?: string) {
     return subAgentBridgeFor(agent,conversationId,missionId,{
-      agents:this.cowork().listAgents(),store:this.cowork(),memory:this.coworkMemory(),recall:this.coworkRecallIndex(),
+      agents:this.cowork().listAgents(),store:this.cowork(),memory:this.coworkMemory(),recall:this.coworkRecallIndex(),privateWorkingDirectory,
       resolveLlm:current=>this.coworkLlm(current),toolContext:current=>this.coworkToolContext(current),computerFor:(id,current)=>this.coworkComputer(id,current),
       hostComputerAllowed:current=>!!current.companyId&&this.companies().get(current.companyId)?.allowHostComputer===true,
       browser:true,subAgents:this.subAgents(),subAgentLlm:(current,account,exhausted)=>this.coworkMissionLlm(current,account,exhausted),
@@ -2422,7 +2433,7 @@ export class GituServer {
       const instruction=String(params['goal']??'').trim();if(!instruction)throw Error('Provide a concrete diagnosis and repair instruction.');
       source.recoveryAttempts=(source.recoveryAttempts??0)+1;this.persistSession(task);
       const parent=this.cowork().getAgent(source.agentId);if(!parent)throw Error('The requesting teammate was removed.');
-      const accepted=await this.delegation().start({...scope,missionId:source.missionId??scope.missionId,subAgents:this.codingWorkerBridge(parent,source.conversationId,undefined,source.missionId)},{goal:'Repair the failed coding task '+task.runId+': '+task.goal+'\nRecorded failure: '+task.error+'\nConcrete repair: '+instruction,projectPath:task.worktreePath??task.projectPath,mode:task.mode==='fast'?'fast':'agent'});
+      const accepted=await this.delegation().start({...scope,missionId:source.missionId??scope.missionId,subAgents:this.codingWorkerBridge(parent,source.conversationId,undefined,source.missionId)},{goal:'Repair the failed coding task '+task.runId+': '+task.goal+'\nRecorded failure: '+task.error+'\nConcrete repair: '+instruction,projectPath:task.worktreePath??task.projectPath??source.workspacePath,mode:task.mode==='fast'?'fast':'agent'});
       if(!accepted.ok)throw Error(accepted.output);
       const data=JSON.parse(accepted.output) as {runId:string};const repair=this.sessions.get(data.runId);if(repair?.coworkTask){repair.coworkTask.recoveryAttempts=source.recoveryAttempts;repair.coworkTask.previousFailure=task.error;repair.coworkTask.reviewRootId=source.reviewRootId;this.persistSession(repair);}
       source.recoveryRunId=data.runId;this.persistSession(task);
@@ -4031,7 +4042,7 @@ export class GituServer {
             run.progresses[progress.agentId] = progress;
             run.progress = progress;
             beginStream(progress.agentId)?.update(telegramAgentMessage(progress.agentName, progress.text || 'Working...'));
-            this.publishCowork(conversationId);
+            this.publishCowork(conversationId, true);
           },
           onMessage: async (message) => {
             if (message.agentId && !message.checkpoint) {
@@ -4201,7 +4212,7 @@ export class GituServer {
             if (current?.abort !== abort) return;
             current.progress = progress;
             beginStream()?.update(telegramAgentMessage(progress.agentName, progress.text || 'Working on mission...'));
-            this.publishCowork(conversationId);
+            this.publishCowork(conversationId, true);
           },
           onMessage: async (message) => {
             const current = this.coworkRuns.get(conversationId);
@@ -5118,30 +5129,55 @@ export class GituServer {
       const sinceChange = Math.max(0, Number(streamParams.get('change')) || 0);
       const rawThread = streamParams.get('thread');
       const streamThread: string | null = !rawThread || rawThread === 'main' ? null : rawThread;
+      // Older open tabs retain the full-snapshot protocol until they reload.
+      const compactProgress = streamParams.get('compact') === '1';
       let rosterRevision = -1;
       // Client's message-change cursor: mutations since it arrive as updates.
       let lastChange = sinceChange;
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive', 'x-accel-buffering': 'no' });
       res.flushHeaders();
-      const subscribers = this.coworkSubscribers.get(convId) ?? new Set<() => void>();
+      const subscribers = this.coworkSubscribers.get(convId) ?? new Set<(progressOnly?: boolean) => void>();
       this.coworkSubscribers.set(convId, subscribers);
       this.coworkStreams.add(res);
       const snapshotScope = this.companyScope.getStore();
-      const publish = () => {
+      let progressTimer: ReturnType<typeof setTimeout> | undefined;
+      let lastSentAt = 0;
+      let sentInitial = false;
+      const publish = (progressOnly = false) => {
         if (res.writableEnded || res.destroyed) return;
         // Reconnect slow clients rather than buffering unbounded token updates.
         if (res.writableLength > 1_000_000) { res.destroy(); return; }
-        const snapshot = this.coworkView(convId, after, rosterRevision, streamThread, lastChange);
-        if (snapshot.messages.length) after = snapshot.messages[snapshot.messages.length - 1]!.seq;
-        lastChange = snapshot.messageChangeSeq;
-        rosterRevision = snapshot.rosterRevision;
+        const partial = progressOnly && compactProgress && sentInitial;
+        const snapshot = partial
+          ? { progressOnly: true, ...this.coworkProgressView(convId, streamThread) }
+          : this.coworkView(convId, after, rosterRevision, streamThread, lastChange);
+        if ('messages' in snapshot) {
+          if (snapshot.messages.length) after = snapshot.messages[snapshot.messages.length - 1]!.seq;
+          lastChange = snapshot.messageChangeSeq;
+          rosterRevision = snapshot.rosterRevision;
+        }
+        sentInitial = true;
+        lastSentAt = Date.now();
         // A disconnected viewer must never fail an agent's tool or reply.
         try {
           res.write(`data: ${JSON.stringify(snapshot)}\n\n`);
-          if (snapshot.deleted) res.end();
+          if ('deleted' in snapshot && snapshot.deleted) res.end();
         } catch { res.destroy(); }
       };
-      const send = () => snapshotScope ? this.companyScope.run(snapshotScope,publish) : this.companyScope.exit(publish);
+      const scopedPublish = (progressOnly: boolean) => snapshotScope
+        ? this.companyScope.run(snapshotScope, () => publish(progressOnly))
+        : this.companyScope.exit(() => publish(progressOnly));
+      const send = (progressOnly = false) => {
+        // Text snapshots replace earlier partial text. Send the first chunk
+        // immediately and combine bursts, without delaying messages or tools.
+        if (progressOnly && Date.now() - lastSentAt < 40) {
+          progressTimer ??= setTimeout(() => { progressTimer = undefined; scopedPublish(true); }, Math.max(1, 40 - (Date.now() - lastSentAt)));
+          return;
+        }
+        clearTimeout(progressTimer);
+        progressTimer = undefined;
+        scopedPublish(progressOnly);
+      };
       subscribers.add(send);
       const heartbeat = setInterval(() => {
         if (!res.writableEnded && !res.destroyed) {
@@ -5150,6 +5186,7 @@ export class GituServer {
       }, 15_000);
       const cleanup = () => {
         clearInterval(heartbeat);
+        clearTimeout(progressTimer);
         subscribers.delete(send);
         this.coworkStreams.delete(res);
         if (!subscribers.size) this.coworkSubscribers.delete(convId);

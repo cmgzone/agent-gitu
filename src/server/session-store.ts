@@ -20,7 +20,7 @@ export interface SessionUsage {
 }
 
 export interface StoredSession {
-  coworkTask?: { agentId: string; agentName: string; conversationId: string; companyId?: string; missionId?: string; execution: 'host' | 'private'; recoveryAttempts?:number; previousFailure?:string; recoveryRunId?:string; reviewRootId?:string };
+  coworkTask?: { agentId: string; agentName: string; conversationId: string; companyId?: string; missionId?: string; execution: 'host' | 'private'; workspacePath?: string; recoveryAttempts?:number; previousFailure?:string; recoveryRunId?:string; reviewRootId?:string };
   modelRecovery?: { attempt: number; nextRetryAt: string };
   runId: string;
   taskId?: string;

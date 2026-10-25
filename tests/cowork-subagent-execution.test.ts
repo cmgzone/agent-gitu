@@ -208,6 +208,19 @@ describe('isolated child turn', () => {
     expect(String(llm.seen[1]!.at(-1)!.content)).toContain('cloud-only.txt');
   });
 
+  it('keeps a private coding child on its parent computer and selected project folder', async () => {
+    const { dir, store, marketing, runner, scope } = setup('coding-project-folder');
+    store.saveAgent({ ...marketing, useHostComputer: false });
+    const llm = mockLlm([toolCall('list_files', { path: '.' }), 'REPORT: inspected the assigned project.']);
+    const execute = vi.fn(async () => ({ ok: true, output: 'package.json\nsrc/' }));
+    const computerFor = vi.fn(() => ({ execute }) as unknown as CoworkComputer);
+    const deps = runnerDeps(dir, store, llm, { computerFor, privateWorkingDirectory: '/workspace/merishawschool' });
+    const result = await runner.run(scope(), createSubAgentChildRunner(deps), { role: 'Agent Gitu coding', objective: 'Inspect the selected project.' });
+    expect(result.ok).toBe(true);
+    expect(computerFor.mock.calls[0]?.[0]).toBe(marketing.id);
+    expect(execute.mock.calls[0]?.[1]).toEqual({ path: '/workspace/merishawschool' });
+  });
+
   it('executes tools under the narrowed grant and reports only as a tool result', async () => {
     const { dir, store, conversation, runner, scope } = setup('child-loop');
     const llm = mockLlm([
@@ -478,6 +491,17 @@ describe('execution tree', () => {
     expect(evaluateSubAgentEvidence(instance, manufactured).reasons.some((reason) => reason.includes('manufactures its own output'))).toBe(true);
     const trivial = report({ evidence: [{ id: 'ce-1', tool: 'run_command', command: 'git status', kind: 'command', passed: true, outputExcerpt: 'nothing to commit' }] });
     expect(evaluateSubAgentEvidence(instance, trivial).reasons.some((reason) => reason.includes('no-op'))).toBe(true);
+  });
+
+  it('keeps git inspection as context without rejecting independent passing build evidence', () => {
+    const instance = { ...base, role: 'coder' } as unknown as SubAgentInstance;
+    const observation = { id: 'ce-1', tool: 'run_command', command: 'cd /workspace/merishawschool && git diff --check && git status --short && git diff --stat', kind: 'command' as const, passed: true, outputExcerpt: 'Changed source files' };
+    const build = { id: 'ce-2', tool: 'run_command', command: 'cd /workspace/merishawschool && npm run build', kind: 'command' as const, passed: true, outputExcerpt: 'Build completed, exit 0' };
+    const owned = { instanceId: instance.id, parentAgentId: instance.parentAgentId, depth: instance.depth, role: instance.role, reportSummary: 'Build verified.' };
+    expect(evaluateSubAgentEvidence(instance, { ...owned, evidence: [observation, build] })).toMatchObject({ accepted: true, passedRecords: 1, totalRecords: 2 });
+    expect(evaluateSubAgentEvidence(instance, { ...owned, evidence: [observation, { ...build, passed: false }] }).accepted).toBe(false);
+    expect(evaluateSubAgentEvidence(instance, { ...owned, evidence: [observation] }).accepted).toBe(false);
+    expect(evaluateSubAgentEvidence(instance, { ...owned, evidence: [build, { ...observation, command: 'echo build verified' }] }).accepted).toBe(false);
   });
 
   it('marks a gate-rejected child failed and tells the parent why', async () => {

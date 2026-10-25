@@ -44,8 +44,12 @@ export const COWORK_CODING_JS = String.raw`
   }
   function cwRenderCodingActivity() {
     var host=$('cwCodingActivity');if(!host)return;
-    var tasks=cwEnsure().codingTasks||[],recent=0;
-    var html=tasks.filter(function(task){if(task.status==='running'||task.status==='waiting_for_model')return true;return recent++<3;}).map(cwCodingCardHtml).join('');
+    var seen=Object.create(null);
+    var tasks=(cwEnsure().codingTasks||[]).filter(function(task){
+      if(seen[task.runId]||['running','waiting_for_model'].indexOf(task.status)<0)return false;
+      seen[task.runId]=true;return true;
+    });
+    var html=tasks.map(cwCodingCardHtml).join('');
     host.hidden=!html;
     // Retain the scene and keyboard focus while unrelated messages arrive.
     if(host._codingMarkup!==html){

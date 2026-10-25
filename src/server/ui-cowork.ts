@@ -275,7 +275,7 @@ export const COWORK_CSS = String.raw`
   .cw-live-bubble .cw-meta { margin-bottom: 2px; padding-right: 0; flex-wrap: wrap; gap: 3px 10px; }
   .cw-live-bubble .cw-meta .nm { min-width: 0; overflow-wrap: anywhere; }
   .cw-live-bubble .cw-progress-activity { flex-shrink: 0; }
-  .cw-live-bubble .cw-progress-text { color: var(--text); font-size: 13px; line-height: 1.45; max-height: 7em; overflow-y: auto; }
+  .cw-live-bubble .cw-progress-text { color: var(--text); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
   .cw-live-bubble .cw-live-kicker { display: block; color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 4px; }
   @keyframes cwpulse { 0%, 70%, 100% { opacity: .25; transform: translateY(0); } 35% { opacity: 1; transform: translateY(-2px); } }
   /* The live activity indicator: one small dot whose animation and colour track
@@ -2763,7 +2763,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     var key = JSON.stringify(ps.map(function (p) { var a = cwAgentById(p.agentId); return [p.agentId, p.agentName, a && a.avatar]; }));
     if (live._progressKey !== key) {
       live.innerHTML = ps.map(function (p) {
-        return '<div class="cw-row cw-live-row" hidden>' + cwAva(cwAgentById(p.agentId)) + '<div class="cw-bubble cw-live-bubble"><span class="cw-live-kicker">Current activity</span><div class="cw-meta"><span class="nm">' + esc(p.agentName) + '</span><span class="cw-progress-activity activity-indicator"><span class="cw-phase-dot"></span>${ACTIVITY_MARK_HTML}<span class="cw-tool-ico"></span><span class="wtext"></span></span></div><div class="reasoning-stream" aria-label="Model reasoning" hidden></div><div class="cw-progress-text" style="white-space:pre-wrap"></div></div></div>';
+        return '<div class="cw-row cw-live-row" hidden>' + cwAva(cwAgentById(p.agentId)) + '<div class="cw-bubble cw-live-bubble"><div class="cw-meta"><span class="nm">' + esc(p.agentName) + '</span><span class="cw-progress-activity activity-indicator"><span class="cw-phase-dot"></span>${ACTIVITY_MARK_HTML}<span class="cw-tool-ico"></span><span class="wtext"></span></span></div><div class="reasoning-stream" aria-label="Model reasoning" hidden></div><div class="cw-progress-text"></div></div></div>';
       }).join('');
       live._progressKey = key;
     }
@@ -2793,7 +2793,10 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       if (/^Continuing automatically \(checkpoint \d+\)/.test(streamed)) streamed = '';
       // Keep only public reply text in chat; tools belong in the activity line.
       var text = streamed;
-      if (texts[i].textContent !== text) texts[i].textContent = text;
+      if (texts[i]._replyText !== text) {
+        texts[i]._replyText = text;
+        texts[i].innerHTML = text ? cwBody(text, [], false) : '';
+      }
       texts[i].hidden = !text;
       var row = texts[i].closest && texts[i].closest('.cw-live-row');
       if (row) { var arriving=row.hidden&&text; row.hidden=!text; if(arriving)chatBubbleEntrance(row); }
@@ -3552,7 +3555,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     var cw = cwEnsure();
     if (typeof EventSource !== 'function') return;
     var generation = cw.generation;
-    var stream = new EventSource('/api/cowork/conversations/' + encodeURIComponent(convId) + '/stream?after=' + cw.lastSeq + '&change=' + (cw.lastChange || 0) + '&thread=' + encodeURIComponent(cw.threadId || 'main'));
+    var stream = new EventSource('/api/cowork/conversations/' + encodeURIComponent(convId) + '/stream?after=' + cw.lastSeq + '&change=' + (cw.lastChange || 0) + '&thread=' + encodeURIComponent(cw.threadId || 'main') + '&compact=1');
     cw.stream = stream;
     function current() { return S.active === 'cowork' && cw.active === convId && cw.generation === generation && cw.stream === stream; }
     stream.onopen = function () { if (current()) cw.streamOpen = true; };
@@ -3565,6 +3568,17 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
 
   function cwApplySnapshot(d) {
     var cw = cwEnsure();
+    if (d.progressOnly === true) {
+      cw.busy = Boolean(d.busy);
+      cw.working = d.working || null;
+      cw.progress = d.progress || null;
+      cw.progresses = d.progresses || (d.progress ? [d.progress] : []);
+      cw.queued = d.queued || 0;
+      cwRenderProgress();
+      cwRenderTyping();
+      cwRenderNow();
+      return;
+    }
     if (typeof d.messageChangeSeq === 'number' && d.messageChangeSeq < cw.lastChange) return;
     var rosterChanged = false;
     if (d.roster) {

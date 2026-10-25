@@ -83,6 +83,7 @@ export interface CoworkRunnerDeps {
   /** Whether the in-app browser bridge is connected (enables `browse`). */
   browser?: boolean;
   supportsImagesFor?: (agent: CoworkAgent) => boolean | Promise<boolean>;
+  privateWorkingDirectory?: string;
   acquireHostBrowser?: () => Promise<() => void>;
   /** "About the user" context shared by every teammate. */
   userContext?: string;
@@ -1490,6 +1491,7 @@ export function createSubAgentChildRunner(deps: CoworkRunnerDeps): SubAgentChild
             artifactIds,
             acquireHostBrowser: deps.acquireHostBrowser,
             isSubAgent: true,
+            privateWorkingDirectory: deps.privateWorkingDirectory,
             // No delegation and no subAgents bridge: a child cannot delegate
             // engineering or spawn workers of its own in v1.
           }

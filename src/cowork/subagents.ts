@@ -716,14 +716,19 @@ export function evaluateSubAgentEvidence(
   if (policy.requireReport && !report.reportSummary.trim()) reasons.push('the report is empty');
   const total = report.evidence.length;
   let passedRecords = 0;
+  const observations: string[] = [];
   for (const record of report.evidence) {
     if (!record.passed) continue;
-    // A "passing" record that manufactures its own output or is a no-op is
-    // rejected explicitly — the reason travels to the parent with the verdict.
     const invalid = recordInvalidReason(record);
-    if (invalid) reasons.push(`evidence ${record.id} (${record.tool}): ${invalid}`);
+    // The trail also contains ordinary inspection, not just verification.
+    // Status/diff observations supply context but neither prove completion nor
+    // invalidate independent passing checks. Manufactured proof still fails.
+    if (invalid && record.kind === 'command' && record.command && !isManufacturedEvidenceCommand(record.command) && isTrivialEvidenceCommand(record.command)) {
+      observations.push(`evidence ${record.id} (${record.tool}): ${invalid}`);
+    } else if (invalid) reasons.push(`evidence ${record.id} (${record.tool}): ${invalid}`);
     else passedRecords += 1;
   }
+  if (policy.requirePassedEvidence && passedRecords === 0) reasons.push(...observations);
   if (policy.requirePassedEvidence && total === 0) reasons.push('the child ran no tools, so its report carries no evidence');
   if (policy.requirePassedEvidence && total > 0 && passedRecords === 0) reasons.push('no evidence record passed; an unverified report is not completion');
   return { accepted: reasons.length === 0, reasons, passedRecords, totalRecords: total };

@@ -81,6 +81,7 @@ export async function runNativeCoworkTurn(input: {
     waiting = false,
     narration = '',
     reasoning = '';
+  let messageId: string | undefined;
   const persist = (): void => {
     if (session) {
       session.admittedCalls = [...admitted];
@@ -153,6 +154,9 @@ export async function runNativeCoworkTurn(input: {
         const guidance = input.takeSteering?.() ?? [];
         if (guidance.length) await runtime.steer?.(guidance.join('\n\n'));
         if (method === 'item/agentMessage/delta') {
+          const id = typeof params['itemId'] === 'string' ? params['itemId'] : undefined;
+          if (id && messageId && id !== messageId) narration = '';
+          if (id) messageId = id;
           narration += String(params['delta'] ?? '');
           input.onProgress?.(visibleCoworkText(narration, true));
         }
@@ -160,11 +164,23 @@ export async function runNativeCoworkTurn(input: {
           reasoning += params['delta'];
           input.onProgress?.(visibleCoworkText(narration, true), undefined, undefined, undefined, reasoning);
         }
-        if (method === 'item/started' || method === 'item/completed') await denyBuiltinOSItem(record(params['item']));
+        if (method === 'item/started' || method === 'item/completed') {
+          const item = record(params['item']);
+          if (method === 'item/started' && item['type'] === 'agentMessage') {
+            messageId = typeof item['id'] === 'string' ? item['id'] : undefined;
+            narration = '';
+            reasoning = '';
+          }
+          await denyBuiltinOSItem(item);
+        }
         if (method === 'item/completed') {
           const item = record(params['item']);
           if (item['type'] === 'agentMessage') {
-            if (item['phase'] !== 'commentary') text = visibleCoworkText(String(item['text'] ?? ''));
+            // A late completion for commentary must not replace a newer item.
+            if (messageId && typeof item['id'] === 'string' && item['id'] !== messageId) return;
+            const completeText = visibleCoworkText(String(item['text'] ?? ''));
+            if (item['phase'] !== 'commentary') text = completeText;
+            if (completeText) input.onProgress?.(completeText);
             narration = '';
             reasoning = '';
           }

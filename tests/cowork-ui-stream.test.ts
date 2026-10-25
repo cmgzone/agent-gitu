@@ -299,7 +299,7 @@ describe('Cowork UI live updates', () => {
     const u = ui();
     // The contextual computer card has a separate DOM fixture and lifecycle tests.
     u.context.cwRenderComputerActivity = vi.fn();
-    const text = { textContent: '', hidden: false };
+    const text = { innerHTML: '', hidden: false };
     const reasoning = { textContent: '', hidden: true, scrollHeight: 0, scrollTop: 0, clientHeight: 0 };
     const label = { textContent: '' };
     const indicator = { className: 'activity-indicator' };
@@ -316,13 +316,13 @@ describe('Cowork UI live updates', () => {
     u.cw.busy = true;
     u.cw.progresses = [{ agentId: 'chief', agentName: 'Chief', tool: 'run_command', text: 'Verifying the client integration.' }];
     u.renderProgress();
-    expect(text.textContent).toBe('Verifying the client integration.');
+    expect(text.innerHTML).toContain('Verifying the client integration.');
     expect(toggle).toHaveBeenLastCalledWith('has-tool', true);
     u.cw.progresses[0].tool = '';
     u.cw.progresses[0].text = 'Continuing automatically (checkpoint 11)…';
     u.cw.todos = [{ agentId: 'chief', status: 'in_progress', text: 'Verifying client integration' }];
     u.renderProgress();
-    expect(text.textContent).toBe('');
+    expect(text.innerHTML).toBe('');
     expect(text.hidden).toBe(true);
     expect(toggle).toHaveBeenLastCalledWith('has-tool', false);
     u.cw.progresses[0].reasoning = 'Reviewing the connection evidence.';
@@ -333,6 +333,28 @@ describe('Cowork UI live updates', () => {
     u.cw.progresses[0].reasoning = '';
     u.renderProgress();
     expect(reasoning.hidden).toBe(true);
+    u.cw.progresses[0].text = '**Result:** safe <script>alert(1)</script>';
+    u.context.esc = (value: unknown) => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+    u.renderProgress();
+    expect(text.innerHTML).toContain('<b>Result:</b>');
+    expect(text.innerHTML).not.toContain('<script>');
+  });
+
+  it('updates compact text frames without clearing messages, cards, or the composer', () => {
+    const u = ui();
+    u.context.cwStartStream('group');
+    expect(u.streams[0]!.url).toContain('compact=1');
+    u.streams[0]!.receive({ busy: true, messages: [{ seq: 1, text: 'Question' }], artifacts: [{ id: 'file' }], requests: [{ id: 'approval' }], messageChangeSeq: 3 });
+    u.streams[0]!.receive({ progressOnly: true, busy: true, progress: { agentId: 'chief', text: 'Partial answer' }, progresses: [{ agentId: 'chief', text: 'Partial answer' }], queued: 1 });
+    expect(u.cw.msgs).toHaveLength(1);
+    expect(u.cw.artifacts).toEqual([{ id: 'file' }]);
+    expect(u.cw.requests).toEqual([{ id: 'approval' }]);
+    expect(u.cw.lastChange).toBe(3);
+    expect(u.cw.progress.text).toBe('Partial answer');
+    expect(u.input.value).toBe('Unsent draft');
+    u.streams[0]!.receive({ busy: false, messages: [{ seq: 2, text: 'Final answer' }], messageChangeSeq: 4 });
+    expect(u.cw.msgs.map((m: any) => m.text)).toEqual(['Question', 'Final answer']);
+    expect(u.cw.progress).toBeNull();
   });
 
   it('shows repeated continuation checkpoints as one expandable history entry', () => {

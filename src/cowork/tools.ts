@@ -3,6 +3,7 @@ import { WIDGET_APP_TOOL_GUIDE } from './widget-app.js';
 import { connectionResponses, redactConnectionData } from '../connections/response-data.js';
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { privateCodingToolParams } from '../coding/project-selection.js';
 import { codingAutoApprove } from '../workspace/coding-permissions.js';
 import { isDeploymentAction } from '../coding/deployment-authority.js';
 import type { ToolResult } from '../types.js';
@@ -72,6 +73,7 @@ export interface CoworkToolPerms {
 
 /** Runtime context the cowork-specific tools need beyond the shared ToolContext. */
 export interface CoworkToolScope {
+  privateWorkingDirectory?: string;
   creationKind?: import('./live-messages.js').AgentCreationKind;
   store: CoworkStore;
   agent: CoworkAgent;
@@ -629,6 +631,7 @@ async function executeAuthorizedCoworkTool(ctx: ToolContext, tool: string, param
     }
     if (scope?.computerFor && COMPUTER_ROUTED_TOOLS.includes(tool)) {
       const computer = scope.computerFor(scope.agent.id, scope.agent);
+      if (scope.privateWorkingDirectory) params = privateCodingToolParams(scope.privateWorkingDirectory, tool, params);
       const result = await computer.execute(tool, params, scope.signal, scope.conversationId, (file) => {
         if (!scope.conversationId) throw new Error('File sharing requires a conversation.');
         const artifact = file.sourcePath
@@ -641,6 +644,7 @@ async function executeAuthorizedCoworkTool(ctx: ToolContext, tool: string, param
       const companyHostGranted = Boolean(scope.agent.companyId && ctx.companyHostComputer?.() === true);
       if (
         result.ok ||
+        Boolean(scope.privateWorkingDirectory) ||
         computerOnly ||
         (scope.agent.companyId && !companyHostGranted) ||
         (scope.agent.cloudConnectionId && !companyHostGranted) ||

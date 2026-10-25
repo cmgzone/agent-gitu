@@ -1638,17 +1638,15 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
   function cwPreviewFile(id) {
     var file = cwArtifact(id);
     if (!file) { toast('That file is no longer available', true); return; }
-    // Chrome and Electron draw PDFs with the built-in viewer, and a bare sandbox
-    // attribute blocks that plugin, so PDFs load unsandboxed. Everything else
-    // stays sandboxed (allow-downloads keeps the fallback page's download link
-    // working) on top of the server's Content-Security-Policy.
+    // Only the trusted PDF canvas viewer needs scripts and same-origin fetches.
+    // Other document previews remain inert under their stricter server policy.
     var isPdf = /^application\/pdf/i.test(file.mime || '') || /\.pdf$/i.test(file.name || '');
     var theme = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
     var modal = document.createElement('div');
     modal.className = 'modal cw-modal cw-doc-modal';
     modal.innerHTML = '<div class="box" style="display:flex;flex-direction:column"><div class="bar"><span>' + esc(file.name) + '</span><span style="flex:1"></span>' +
       '<a class="btn ghost" href="/api/cowork/artifacts/' + encodeURIComponent(file.id) + '" download>Download</a><button class="btn ghost" data-close>Close</button></div>' +
-      '<iframe class="cw-doc-frame" title="Document preview"' + (isPdf ? '' : ' sandbox="allow-downloads allow-popups allow-popups-to-escape-sandbox"') + ' src="/api/cowork/artifacts/' + encodeURIComponent(file.id) + '/preview?theme=' + theme + '&amp;embedded=1"></iframe></div>';
+      '<iframe class="cw-doc-frame" title="Document preview" sandbox="' + (isPdf ? 'allow-scripts allow-same-origin allow-downloads' : 'allow-downloads allow-popups allow-popups-to-escape-sandbox') + '" src="/api/cowork/artifacts/' + encodeURIComponent(file.id) + '/preview?theme=' + theme + '&amp;embedded=1"></iframe></div>';
     document.body.appendChild(modal);
     modal.querySelector('[data-close]').onclick = function () { modal.remove(); };
   }

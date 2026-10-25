@@ -4,6 +4,7 @@ import { strFromU8, unzipSync } from 'fflate';
 import { Marked } from 'marked';
 import { isTextLikeFile } from '../server/static-assets.js';
 import type { CoworkArtifact } from './store.js';
+import { pdfPreviewHtml } from './pdf-preview.js';
 
 /** Inline previews never embed more than the Cowork artifact limit. */
 const MAX_INLINE_BYTES = 2_000_000;
@@ -280,6 +281,7 @@ function markdownHtml(filePath: string): string {
 export interface DocumentPreviewOptions {
   theme?: 'light' | 'dark';
   embedded?: boolean;
+  artifactUrl?: string;
 }
 
 /** SVG runs scripts as a standalone document but never inside an <img> data URL,
@@ -302,13 +304,13 @@ function unsupportedHtml(artifact: CoworkArtifact, reason: string): string {
   );
 }
 
-/** Safe standalone preview page. Text and Office documents render from their own
- *  bytes, SVG renders as an inert <img>, and every other type gets an identity
- *  card with a download link — macros, scripts, external resources and embedded
- *  objects never execute. */
+/** Text and Office documents render as inert HTML, SVG as an image, and PDFs
+ *  through the bundled canvas viewer. Unsupported formats get a download card.
+ *  Document scripts, macros and embedded objects never execute. */
 export function coworkDocumentPreview(filePath: string, artifact: CoworkArtifact, options: DocumentPreviewOptions = {}): string {
   const ext = path.extname(artifact.name).toLowerCase();
   const mime = String(artifact.mime ?? '').toLowerCase();
+  if (ext === '.pdf' || /^application\/pdf\b/i.test(mime)) return pdfPreviewHtml(artifact, options.theme, options.embedded, options.artifactUrl);
   let body: string;
   let inlineImage = false;
   try {
@@ -322,7 +324,6 @@ export function coworkDocumentPreview(filePath: string, artifact: CoworkArtifact
     else if (ext === '.pptx') body = pptxHtml(filePath);
     else if (['.md', '.markdown'].includes(ext) || /^text\/(?:x-)?markdown\b/.test(mime)) body = markdownHtml(filePath);
     else if (isTextLikeFile(artifact.name, artifact.mime)) body = textHtml(filePath);
-    else if (/^application\/pdf\b/i.test(mime)) body = unsupportedHtml(artifact, 'Open the download below to read this PDF in your PDF viewer.');
     else if (['.doc', '.xls', '.ppt'].includes(ext))
       body = unsupportedHtml(artifact, 'This legacy Office format cannot be read safely — download it, or ask for a .docx/.xlsx/.pptx version.');
     else if (/^image\//i.test(mime)) body = unsupportedHtml(artifact, 'This image format cannot be drawn inline.');

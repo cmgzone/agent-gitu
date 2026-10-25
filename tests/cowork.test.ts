@@ -1264,12 +1264,11 @@ describe('cowork server routes', () => {
     expect(embeddedHtml).not.toContain('<header>');
     expect(embeddedPreview.headers.get('content-security-policy')).toContain("default-src 'none'");
 
-    // PDFs go to the browser's own viewer: inline bytes, not the HTML page.
+    // PDFs use the bundled viewer even when no native browser plugin exists.
     const pdfPreview = await fetch(`${base}/api/cowork/artifacts/${report.id}/preview`);
     expect(pdfPreview.status).toBe(200);
-    expect(pdfPreview.headers.get('content-type')).toContain('application/pdf');
-    expect(pdfPreview.headers.get('content-disposition')).toContain('inline');
-    expect(await pdfPreview.text()).toContain('%PDF-1.4');
+    expect(pdfPreview.headers.get('content-type')).toContain('text/html');
+    expect(await pdfPreview.text()).toContain('/vendor/gitu-pdf-preview.js');
 
     // Files the previewer cannot render still answer 200 with a download card.
     const zipPreview = await fetch(`${base}/api/cowork/artifacts/${bundle.id}/preview`);

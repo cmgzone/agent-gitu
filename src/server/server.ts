@@ -109,6 +109,7 @@ import { CoworkBrowserLease } from '../cowork/browser-lease.js';
 import { DiscordGateway, recentDiscordChannels, recentDiscordGuilds, sendDiscordMessage, sendDiscordRequestCard, parseDiscordRequestReply, type DiscordFetch, type DiscordWebSocketFactory } from '../cowork/discord.js';
 import { TelegramPoller, TelegramReplyStream, TelegramTypingIndicator, cleanTelegramText, parseTelegramRequestAction, recentTelegramChats, sendTelegramArtifact, sendTelegramMessage, sendTelegramRequestCard, telegramAgentMessage, type TelegramFetch } from '../cowork/telegram.js';
 import { coworkDocumentPreview } from '../cowork/document-preview.js';
+import { PDF_PREVIEW_CSP, PDF_PREVIEW_JS, pdfPreviewAsset } from '../cowork/pdf-preview.js';
 import { fetchWidgetSource, widgetAppDocument, WIDGET_APP_CSP, widgetState } from '../cowork/widget-app.js';
 import { readOnboarding, saveOnboarding } from './onboarding.js';
 import { evaluateChiefAuthority, type ChiefAuthorityPolicy, type ChiefResolverContext } from '../cowork/chief-resolver.js';
@@ -5634,31 +5635,32 @@ export class GituServer {
       const artifact = store.getArtifact(artifactPreviewMatch[1]!);
       const filePath = store.artifactPath(artifactPreviewMatch[1]!);
       if (!artifact || !filePath) { this.sendJson(res, 404, { error: 'artifact not found' }); return true; }
-      // PDFs, raster images, audio and video are handed straight to the browser's
-      // own viewer/player. SVG is not: a standalone SVG document can run scripts,
-      // so it goes through the inert <img> preview page instead.
-      const rawViewer = /^application\/pdf\b/i.test(artifact.mime)
-        || (/^image\//i.test(artifact.mime) && !/^image\/svg\+xml/i.test(artifact.mime))
-        || /^(audio|video)\//i.test(artifact.mime);
+      const isPdf = /^application\/pdf\b/i.test(artifact.mime) || /\.pdf$/i.test(artifact.name);
+      // PDFs use our canvas viewer, including on browsers without a native PDF
+      // plugin. SVG stays an inert image; other media uses the native player.
+      const rawViewer = !isPdf && ((/^image\//i.test(artifact.mime) && !/^image\/svg\+xml/i.test(artifact.mime))
+        || /^(audio|video)\//i.test(artifact.mime));
       if (rawViewer) {
         this.sendLocalFile(res, filePath, artifact.name, artifact.mime, true,method==='HEAD',req.headers.range);
         return true;
       }
       try {
         const previewOptions = new URL(req.url ?? '/', 'http://localhost').searchParams;
+        const companyId = this.companyScope.getStore()?.id;
         const html = coworkDocumentPreview(filePath, artifact, {
           theme: previewOptions.get('theme') === 'light' ? 'light' : 'dark',
           embedded: previewOptions.get('embedded') === '1',
+          artifactUrl: `/api/${companyId ? 'companies/' + encodeURIComponent(companyId) + '/' : ''}cowork/artifacts/${encodeURIComponent(artifact.id)}`,
         });
-        // img-src data: lets the SVG preview draw its inert data URL; everything
-        // else (scripts, frames, network) stays blocked by default-src 'none'.
+        // Only the generated PDF viewer loads bundled scripts and same-origin
+        // bytes. All other previews keep the inert document policy.
         res.writeHead(200, {
           'content-type': 'text/html; charset=utf-8',
           'cache-control': 'private, no-store',
-          'content-security-policy': "default-src 'none'; img-src data:; style-src 'unsafe-inline'",
+          'content-security-policy': isPdf ? PDF_PREVIEW_CSP : "default-src 'none'; img-src data:; style-src 'unsafe-inline'",
           'x-content-type-options': 'nosniff',
         });
-        res.end(html);
+        res.end(method === 'HEAD' ? undefined : html);
       } catch (err) {
         this.sendJson(res, 422, { error: `document preview failed: ${(err as Error).message}` });
       }
@@ -6539,6 +6541,18 @@ export class GituServer {
       if (!existsSync(file)) { this.sendJson(res, 503, { error: 'LiveKit client is not installed.' }); return; }
       res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'private, max-age=3600', 'x-content-type-options': 'nosniff' });
       this.pipeFile(res, file); return;
+    }
+
+    if ((method === 'GET' || method === 'HEAD') && path === '/vendor/gitu-pdf-preview.js') {
+      res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-cache', 'x-content-type-options': 'nosniff' });
+      res.end(method === 'HEAD' ? undefined : PDF_PREVIEW_JS); return;
+    }
+    if ((method === 'GET' || method === 'HEAD') && path.startsWith('/vendor/pdfjs/')) {
+      const asset = pdfPreviewAsset(path);
+      if (!asset || !existsSync(asset.path)) { this.sendJson(res, 404, { error: 'PDF viewer asset not found' }); return; }
+      res.writeHead(200, { 'content-type': asset.mime, 'cache-control': 'no-cache', 'x-content-type-options': 'nosniff' });
+      if (method === 'HEAD') res.end(); else this.pipeFile(res, asset.path);
+      return;
     }
 
     if (method === 'GET' && path === '/api/mobile/status') {

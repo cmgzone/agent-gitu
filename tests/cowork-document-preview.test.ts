@@ -119,7 +119,7 @@ describe('Cowork document preview', () => {
 
     const pdf = path.join(root, 'report.pdf');
     writeFileSync(pdf, '%PDF-1.4');
-    expect(coworkDocumentPreview(pdf, artifact('report.pdf', 'application/pdf'))).toContain('Download this file');
+    expect(coworkDocumentPreview(pdf, artifact('report.pdf', 'application/pdf'))).toContain('Download PDF');
   });
 
   it('still returns a useful page when a document is damaged', () => {

@@ -700,13 +700,13 @@ describe('Cowork UI live updates', () => {
     expect(u.cw.msgs.map((m: any) => m.text)).toEqual(['Current reply']);
   });
 
-  it('opens PDF previews without the sandbox attribute that blocks the built-in viewer', () => {
+  it('allows the bundled PDF canvas viewer to run and fetch its authenticated file', () => {
     const u = ui();
     u.cw.artifacts = [{ id: 'cf-pdf', name: 'report.pdf', mime: 'application/pdf', size: 2048 }];
     u.context.cwPreviewFile('cf-pdf');
     const modal = u.modals.at(-1)!;
     expect(modal.innerHTML).toContain('/api/cowork/artifacts/cf-pdf/preview');
-    expect(modal.innerHTML).not.toContain('sandbox');
+    expect(modal.innerHTML).toContain('sandbox="allow-scripts allow-same-origin allow-downloads"');
   });
 
   it('keeps other previews sandboxed and offers Open for every file type', () => {

@@ -750,14 +750,14 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
         const operation = profile?.operations.find(op => op.id === params['operationId']);
         if (!operation) return { ok: false, output: 'Use list_connections to select a saved operation, or update_connection to remember its documented definition first.' };
         if (!scope.agent.companyId && operation.risk !== 'read' && !codingAutoApprove()) {
-          const signature = createHash('sha256').update(JSON.stringify({ agent: scope.agent.id, conversation: scope.conversationId, operation, connectionId: profile!.id, body: params['body'], query: params['query'] })).digest('hex');
+          const signature = createHash('sha256').update(JSON.stringify({ agent: scope.agent.id, conversation: scope.conversationId, thread: scope.threadId, operation, connectionId: profile!.id, baseUrl: profile!.baseUrl, body: params['body'], query: params['query'] })).digest('hex');
           let approvals = connectionApprovals.get(scope.store);
           if (!approvals) { approvals = new Map(); connectionApprovals.set(scope.store, approvals); }
           const existing = approvals.get(signature), card = existing ? scope.store.getRequest(existing) : undefined;
-          if (card?.status === 'approved') approvals.delete(signature);
-          else if (card?.status === 'denied') return { ok: false, output: 'The user denied this operation. Do not retry it.' };
+          if (card?.status === 'accepted') approvals.delete(signature);
+          else if (card?.status === 'denied' || card?.status === 'dismissed') return { ok: false, output: 'The user denied this operation. Do not retry it.' };
           else {
-            const pending = card?.status === 'open' ? card : scope.store.addRequest({ conversationId: scope.conversationId!, agentId: scope.agent.id, kind: 'permission', title: operation.label, detail: JSON.stringify({ connection: profile!.label, operation, body: params['body'] }), options: ['Approve', 'Deny'] });
+            const pending = card?.status === 'open' ? card : scope.store.addRequest({ conversationId: scope.conversationId!, agentId: scope.agent.id, kind: 'recommendation', title: operation.label, detail: JSON.stringify({ connection: profile!.label, operation, body: params['body'], query: params['query'] }) + '\n\nAccept to run this exact operation once.' });
             approvals.set(signature, pending.id);
             return { ok: false, output: 'Waiting for approval of ' + pending.id + '. No operation was executed. After approval repeat this exact request.' };
           }

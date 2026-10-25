@@ -25,10 +25,31 @@ are saved in connection and request metadata. Supported transports:
 
 - `basic`: `usernameField` and `passwordField` select the named fields.
 - `headers`: each field specifies its documented `header` and optional `prefix`.
-- `oauth2`: `client_id`, `client_secret`, optional service fields such as `email`,
-  a documented same-origin `tokenPath`, and optional `scope`. The host performs
-  a client-credentials exchange; neither client secrets nor access tokens enter
-  model-visible responses. Existing API-key/Bearer connections keep working.
+- `oauth2`: `client_id`, `client_secret`, a documented same-origin `tokenPath`
+  or explicit HTTPS `tokenUrl`, and optional `scope`. `grantType` defaults to
+  `client_credentials`; `password` also needs API username and password fields
+  (mapped with `usernameField`/`passwordField` when their IDs differ). Client
+  authentication defaults to form fields; `clientAuthentication: "basic"` uses
+  the documented Basic client scheme. Requests are form-urlencoded. The host
+  caches tokens only until their declared expiry, refreshes when possible, and
+  otherwise reauthenticates from the encrypted vault. Tokens stay in bounded,
+  account-scoped memory. Neither secrets nor token response bodies enter chat.
+  Read requests may refresh a rejected token once; writes are never replayed.
+  Existing API-key/Bearer connections keep working.
+
+Contabo's existing OAuth profiles are corrected in place to its documented
+password grant and `https://auth.contabo.com/auth/realms/contabo/protocol/openid-connect/token`.
+Their field IDs, vault entries, connection IDs, operations and grants are
+preserved. The required values are client ID, client secret, API username and
+the separate **API password**, not a server SSH password. Verification uses
+`GET https://api.contabo.com/v1/compute/instances` with a fresh `x-request-id`.
+See the [official Contabo API documentation](https://api.contabo.com/).
+
+Token failures report sanitized categories: invalid credentials, invalid
+configuration, network failure, token endpoint failure, or invalid token
+response. Provider error descriptions and response bodies are never included.
+New identity-provider token URLs must be established by official setup docs;
+redirects never forward credentials to another destination.
 
 Example metadata (values are entered only in the secure card):
 

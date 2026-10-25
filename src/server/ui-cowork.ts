@@ -1673,7 +1673,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     }
     var reauth = !!cred.connectionId;
     return '<form class="cw-credential-form connection-form" data-cwcredential="' + esc(request.id) + '" data-cwcredential-setup="'+esc(JSON.stringify(cred))+'"' + (reauth ? ' data-cwreauth="' + esc(cred.connectionId) + '"' : '') + '>' +
-      '<div class="cw-credential-target"><strong>'+esc(cred.label || cred.providerHint)+'</strong>'+(cred.baseUrl?'<div>'+esc(cred.baseUrl)+'</div>':'')+'<small>Connection settings prepared by your teammate.</small></div><div class="connection-fields">' +
+      '<div class="cw-credential-target"><strong>'+esc(cred.label || cred.providerHint)+'</strong>'+(cred.baseUrl?'<div>'+esc(cred.baseUrl)+'</div>':'')+(cred.auth&&cred.auth.type==='oauth2'&&cred.auth.tokenUrl?'<small>Authentication service: '+esc(cred.auth.tokenUrl)+'</small>':'')+'<small>Connection settings prepared by your teammate.</small></div><div class="connection-fields">' +
       (cred.auth && Array.isArray(cred.auth.fields) ? cred.auth.fields.map(function(field){var type=field.secret!==false?'password':field.inputType==='email'?'email':'text';return '<label class="connection-field"><span>'+esc(field.label)+'</span><input data-credential-field="'+esc(field.id)+'" type="'+type+'" autocomplete="off"'+(field.required!==false?' required':'')+' spellcheck="false"></label>';}).join('') : connectionInputHtml('token', '', true)) +
       '</div>' +
       '<div class="connection-secret-actions"><span class="hint">Saved securely in Gitu. Never sent to the model or chat history.</span>'+(!(cred.auth&&cred.auth.fields)?'<button class="btn ghost" type="button" data-cwshowkey aria-pressed="false">Show key</button>':'')+'</div>' +

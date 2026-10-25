@@ -1,5 +1,6 @@
 import path from 'node:path';
-import { isStructuredAuth, normalizeStructuredAuth, encodeStructuredCredentials, structuredAuthHeaders, structuredSecrets, type StructuredConnectionAuth } from './structured-auth.js';
+import { randomUUID } from 'node:crypto';
+import { isStructuredAuth, normalizeStructuredAuth, encodeStructuredCredentials, structuredAuthHeaders, structuredSecrets, providerAuthConfiguration, invalidateStructuredAuth, ConnectionAuthenticationError, type StructuredConnectionAuth } from './structured-auth.js';
 import { EnvHttpProxyAgent } from 'undici';
 import { loadStoredKeys, removeStoredKey, setStoredKey } from '../llm/keys.js';
 import { readCredentialJson, updateCredentialJson } from '../llm/credential-file.js';
@@ -467,6 +468,7 @@ function credentialParts(profile: Pick<ConnectionProfile, 'provider' | 'auth'>):
 }
 
 function normalizeSavedCredential(value: string, profile: Pick<ConnectionProfile, 'provider' | 'auth'>): string {
+  if (!value.trim()) return '';
   if (isStructuredAuth(profile.auth)) { try { return encodeStructuredCredentials(profile.auth, JSON.parse(value)); } catch { throw Error('Complete this service’s named credential fields.'); } }
   const { header, prefix } = credentialParts(profile);
   const unwrap = (text: string): string => /^(["']).*\1$/s.test(text) ? text.slice(1, -1).trim() : text;
@@ -480,7 +482,7 @@ function normalizeSavedCredential(value: string, profile: Pick<ConnectionProfile
 }
 
 function connectionAuthHeaders(profile: ConnectionProfile, token: string, secrets: string[] = []): Record<string, string> | Promise<Record<string, string>> {
-  if (isStructuredAuth(profile.auth)) return structuredAuthHeaders(profile.auth, token, profile.baseUrl, fetchWithApiTransport, secrets);
+  if (isStructuredAuth(profile.auth)) return structuredAuthHeaders(profile.auth, token, profile.baseUrl, fetchWithApiTransport, secrets, connectionFile() + ':' + profile.id);
   const { header, prefix } = credentialParts(profile);
   const value = normalizeSavedCredential(token, profile);
   return { [header]: prefix ? `${prefix} ${value}` : value };
@@ -578,6 +580,14 @@ export class ConnectionInvocationError extends Error {
   }
 }
 
+function authenticationFailure(error: unknown): ConnectionInvocationError {
+  if (error instanceof ConnectionAuthenticationError) {
+    const state = error.code === 'INVALID_CREDENTIALS' ? 'AUTH_INVALID' : ['NETWORK_ERROR', 'TOKEN_ENDPOINT_FAILED'].includes(error.code) ? 'PROVIDER_UNREACHABLE' : 'CONFIG_INVALID';
+    return new ConnectionInvocationError('not-run', `[${error.code}] ${error.message} No API operation was sent.`, state, error.code === 'INVALID_CREDENTIALS');
+  }
+  return new ConnectionInvocationError('not-run', '[CONFIG_INVALID] Authentication could not be prepared. Check the documented credential fields and token endpoint. No API operation was sent.', 'CONFIG_INVALID');
+}
+
 /** Replace the exact credential submitted to this connection before provider
  * text can become an error, persisted state, event, or model-facing result.
  * Sort longest-first so overlapping credentials cannot leave a suffix behind. */
@@ -610,7 +620,7 @@ function profileFromUnknown(value: unknown): ConnectionProfile | undefined {
   const createdAt = typeof raw['createdAt'] === 'string' ? raw['createdAt'].slice(0, 80) : nowIso();
   const updatedAt = typeof raw['updatedAt'] === 'string' ? raw['updatedAt'].slice(0, 80) : createdAt;
   const documentationUrl = normalizeConnectionDocumentationUrl(raw['documentationUrl']);
-  const auth = normalizeConnectionAuth(raw['auth']);
+  const auth = normalizeConnectionAuth(providerAuthConfiguration(baseUrl, raw['auth']));
   const lastValidatedAt = typeof raw['lastValidatedAt'] === 'string' ? raw['lastValidatedAt'].slice(0, 80) : undefined;
   const lastValidationStatus = raw['lastValidationStatus'] === 'ok' || raw['lastValidationStatus'] === 'failed' ? raw['lastValidationStatus'] : undefined;
   const authState = normalizeAuthState(raw['authState']);
@@ -936,7 +946,7 @@ export class ConnectionRegistry {
         }
       }
       const existing = profiles.find((candidate) => candidate.id === id);
-      const auth = draft.auth === undefined ? existing?.auth : normalizeConnectionAuth(draft.auth);
+      const auth = draft.auth === undefined ? existing?.auth : normalizeConnectionAuth(providerAuthConfiguration(baseUrl, draft.auth));
       token = normalizeSavedCredential(token, { provider, auth });
       const configChanged = Boolean(existing && (existing.baseUrl !== baseUrl || existing.provider !== provider || JSON.stringify(existing.auth) !== JSON.stringify(auth)));
       if (!token && !loadStoredKeys()[keyRef(id)]?.trim()) throw new Error('An API key or token is required for a new connection.');
@@ -1214,7 +1224,8 @@ export class ConnectionRegistry {
       );
     }
 
-    const secrets = storedConnectionSecrets(profile);
+    let secrets: string[];
+    try { secrets = storedConnectionSecrets(profile); } catch (error) { throw authenticationFailure(error); }
     const token = secrets[0];
     if (!token) {
       this.recordAuth(profile.id, 'invalid', 'The saved credential is missing.');
@@ -1223,20 +1234,34 @@ export class ConnectionRegistry {
 
     let authHeaders: Record<string,string>;
     try { const prepared = connectionAuthHeaders(profile,token,secrets); authHeaders = prepared instanceof Promise ? await prepared : prepared; }
-    catch { throw new ConnectionInvocationError('not-run','Authentication could not be prepared. Check the documented credential fields and token endpoint. No API operation was sent.','CONFIG_INVALID'); }
+    catch (error) {
+      const failure = authenticationFailure(error);
+      this.updateValidation(profile.id, 'failed', token);
+      if (failure.state === 'AUTH_INVALID') this.recordAuth(profile.id, 'invalid', failure.message, token);
+      throw failure;
+    }
     let response: Response | undefined;
     const attempts = operation.method === 'GET' && operation.risk === 'read' ? 2 : 1;
     for (let attempt=0;attempt<attempts;attempt++) {
       try {
         const options: RequestInit = {
         method: operation.method,
-        headers: { ...extraHeaders, accept: 'application/json', ...authHeaders, ...(encoded ? { 'content-type': 'application/json' } : {}) },
+        headers: { ...extraHeaders, accept: 'application/json', ...authHeaders, ...(profile.baseUrl === 'https://api.contabo.com' ? { 'x-request-id': randomUUID() } : {}), ...(encoded ? { 'content-type': 'application/json' } : {}) },
         ...(encoded ? { body: encoded } : {}),
         redirect: 'error',
         signal: AbortSignal.timeout(45_000),
         };
-        response = await fetchWithApiTransport(url,options);break;
+        response = await fetchWithApiTransport(url,options);
+        if (response.status === 401 && attempt + 1 < attempts && isStructuredAuth(profile.auth) && profile.auth.type === 'oauth2') {
+          await response.body?.cancel();
+          invalidateStructuredAuth(profile.auth, token, profile.baseUrl, connectionFile() + ':' + profile.id, authHeaders.authorization);
+          try { authHeaders = await connectionAuthHeaders(profile, token, secrets); }
+          catch (error) { throw authenticationFailure(error); }
+          continue;
+        }
+        break;
       } catch (error) {
+        if (error instanceof ConnectionInvocationError) throw error;
         const code=(error as {cause?:{code?:string}})?.cause?.code;
         const current=this.get(id);
         if (attempt+1<attempts && ['UND_ERR_CONNECT_TIMEOUT','ECONNRESET','EAI_AGAIN','ETIMEDOUT'].includes(code??'') && current?.baseUrl===profile.baseUrl && JSON.stringify(current.auth)===JSON.stringify(profile.auth) && loadStoredKeys()[keyRef(id)]?.trim()===token) continue;
@@ -1256,7 +1281,8 @@ export class ConnectionRegistry {
       const detailText = detail === undefined ? '' : ` Provider said: ${JSON.stringify(detail).slice(0, 4_000)}`;
 
       if (response.status === 401) {
-        const expired = /expired|revoked/i.test(detailText.toLowerCase());
+        if (isStructuredAuth(profile.auth) && profile.auth.type === 'oauth2') invalidateStructuredAuth(profile.auth, token, profile.baseUrl, connectionFile() + ':' + profile.id, authHeaders.authorization);
+        const expired = isStructuredAuth(profile.auth) && profile.auth.type === 'oauth2' || /expired|revoked/i.test(detailText.toLowerCase());
         const state = expired ? 'AUTH_EXPIRED' : 'AUTH_INVALID';
         const statusLabel = expired ? 'Authentication or token is expired/revoked' : 'Authentication was rejected';
         this.recordAuth(profile.id, expired ? 'expired' : 'invalid', `HTTP 401${detailText}`.slice(0, 300), token);
@@ -1361,18 +1387,18 @@ export class ConnectionRegistry {
         truncated: false,
       };
     }
-    const secrets = storedConnectionSecrets(profile);
+    let secrets: string[];
+    try { secrets = storedConnectionSecrets(profile); } catch (error) { throw authenticationFailure(error); }
     const token = secrets[0];
     const catalogOps = (catalogProvider(profile.provider)?.operations ?? []) as AnnotatedCatalogOperation[];
-    const headers: Record<string, string> = {
-      accept: 'application/json',
-      ...(token ? await connectionAuthHeaders(profile, token, secrets) : {}),
-    };
+    let headers: Record<string, string>;
+    try { headers = { accept: 'application/json', ...(token ? await connectionAuthHeaders(profile, token, secrets) : {}) }; }
+    catch (error) { throw authenticationFailure(error); }
     const fetcher = async ({ baseUrl, path, method, headers: reqHeaders }: { baseUrl: string; path: string; method: string; headers: Record<string, string> }) => {
       const url = new URL(path, `${baseUrl}/`);
-      const response = await fetch(url, {
+      const response = await fetchWithApiTransport(url, {
         method,
-        headers: reqHeaders,
+        headers: { ...reqHeaders, ...(profile.baseUrl === 'https://api.contabo.com' ? { 'x-request-id': randomUUID() } : {}) },
         redirect: 'error',
         signal: AbortSignal.timeout(15_000),
       });

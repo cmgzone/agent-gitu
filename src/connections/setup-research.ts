@@ -31,7 +31,11 @@ export function documentedConnectionSetup(address:string,route:string,documentat
     const routeMentioned=new RegExp('(^|[\\s"\'`=])'+escaped+'(?=[\\s"\'`,;]|$)').test(documentation);
     if(!documentation.includes(address.replace(/\/$/,''))||!routeMentioned)throw Error('The fetched documentation does not establish this complete API test URL. Read the API base URL and authenticated endpoint, then correct the same request.');
   }
-  const schemes=auth?.type==='headers'?auth.fields.map(f=>f.header!):auth?.type==='basic'?['Basic']:auth?.type==='oauth2'?['OAuth',auth.tokenPath!]:[auth?.type==='header'?auth.header:'Bearer'];
+  const schemes=auth?.type==='headers'?auth.fields.map(f=>f.header!):auth?.type==='basic'?['Basic']:auth?.type==='oauth2'?['OAuth',auth.tokenUrl??auth.tokenPath!]:[auth?.type==='header'?auth.header:'Bearer'];
   if(schemes.some(scheme=>!documentation.toLowerCase().includes(scheme.toLowerCase())))throw Error('The fetched documentation does not confirm the selected authentication header/scheme. Research authentication before requesting the credential fields.');
+  if(auth?.type==='oauth2'&&auth.tokenUrl){
+    const urls=(documentation.match(/https?:\/\/[^\s"'<>`\\]+/g)??[]).map(value=>{try{return new URL(value.replace(/[),;]+$/,'')).href;}catch{return '';}});
+    if(!urls.includes(auth.tokenUrl))throw Error('The documentation must establish the exact OAuth token URL before credentials can be sent to that authentication service.');
+  }
   return setup;
 }

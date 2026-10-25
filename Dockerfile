@@ -27,6 +27,7 @@ COPY voice-worker/agent.mjs voice-worker/package.json voice-worker/package-lock.
 COPY deploy/nginx.conf /etc/nginx/nginx.conf
 COPY deploy/start.sh /usr/local/bin/start-gitu
 COPY deploy/verify-hosted-runtime.mjs ./deploy/verify-hosted-runtime.mjs
+COPY deploy/verify-contabo-connection.mjs ./deploy/verify-contabo-connection.mjs
 COPY deploy/company-container-smoke.mjs ./deploy/company-container-smoke.mjs
 RUN chmod +x /usr/local/bin/start-gitu && mkdir -p /data && chown node:node /data
 EXPOSE 8080

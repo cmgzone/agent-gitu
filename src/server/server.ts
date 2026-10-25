@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { WorkspaceGitBridge } from '../cowork/workspace-git.js';
 import { connectedAppsRoutes } from './routes/connected-apps.js';
 import http from 'node:http';
 import { logger, errorMetadata } from './logger.js';
@@ -492,6 +493,7 @@ export class GituServer {
   private readonly modelRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private stopping = false;
   private readonly connections = new ConnectionRegistry();
+  private readonly workspaceGit = new WorkspaceGitBridge();
   /** Runtime-owned session guarantees. Approval resolution authority lives here;
    *  the run path keeps a compatibility mirror for the existing endpoint and UI. */
   private readonly gituRuntime = new GituSessionRuntime();
@@ -1664,10 +1666,23 @@ export class GituServer {
     }
     if (!computer) {
       const root = agent?.companyId?nodePath.join(this.companies().root,agent.companyId):nodePath.join(ensureGituHome().root, 'Cowork');
+      const gitStore = this.cowork(), companyId = agent?.companyId;
+      const prepareGit = async (target: CoworkComputer, signal?: AbortSignal) => {
+        const origin = process.env['AGENT_GITU_PUBLIC_URL'] || process.env['AGENT_GITU_PUBLIC_ORIGIN'] || this.googleSignIn.publicOrigin;
+        if (!origin) return;
+        await this.workspaceGit.prepare(target, origin, () => {
+          const current = gitStore.getAgent(agentId);
+          if (!current?.allowShell || current.useHostComputer || current.cloudConnectionId !== cloudId) return undefined;
+          if (!companyId) return { connections: this.connections, write: current.allowWrites };
+          const company = this.companies().get(companyId), organization = this.companyOrganization(companyId);
+          if (company?.state !== 'running' || company.access !== 'full' || organization.authorizeTool(agentId, 'run_command', {})) return undefined;
+          return { connections: this.connections.scoped(id => this.companies().get(companyId)?.connectionIds.includes(id) === true && !organization.authorizeTool(agentId, 'connection_read', { connectionId: id })), write: current.allowWrites };
+        }, signal);
+      };
       const store=this.cowork(),scopeKey=agent?.companyId?'company:'+agent.companyId:'personal',transfer={beforeStart:agent?.companyId?()=>this.companies().reserveComputer(agent.companyId!,agentId,cloudId):undefined,onState:(state:string)=>{if(agent?.companyId)this.companies().computerState(agent.companyId,agentId,state);this.publishComputers(scopeKey);},onControl:()=>this.publishComputers(scopeKey),limits:agent?.companyId?()=>{const c=this.companies().get(agent.companyId!)!;return{cpu:c.cpu,memoryMb:c.memoryMb,diskMb:c.diskMb};}:undefined,maxFileBytes:()=>this.selectedFileLimit(agent?.companyId),resolveArtifact:(id:string,conversationId:string)=>{const artifact=store.getArtifact(id);return artifact?.conversationId===conversationId?store.artifactPath(id):undefined;}};
       computer = cloudId && cloudId !== 'hosted'
-        ? new CoworkComputer(agentId, nodePath.join(root, 'cloud', cloudId), this.cloudComputer(cloudId).execute, { key: 'ssh:' + cloudId, cloud: true,...transfer })
-        : new CoworkComputer(agentId, root, cloudId === 'hosted' ? hostedComputerExec : undefined, { key: 'default', cloud: cloudId === 'hosted',...transfer });
+        ? new CoworkComputer(agentId, nodePath.join(root, 'cloud', cloudId), this.cloudComputer(cloudId).execute, { key: 'ssh:' + cloudId, cloud: true, prepareGit,...transfer })
+        : new CoworkComputer(agentId, root, cloudId === 'hosted' ? hostedComputerExec : undefined, { key: 'default', cloud: cloudId === 'hosted', prepareGit,...transfer });
       this.coworkComputers.set(this.coworkRuntimeKey(agentId), computer);
       this.coworkComputerTargets.set(this.coworkRuntimeKey(agentId), target);
     }
@@ -6291,6 +6306,8 @@ export class GituServer {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const path = url.pathname;
     const method = req.method ?? 'GET';
+
+    if (await this.workspaceGit.route(req, res)) return;
 
     if (healthRoute(req, res, path)) return;
 

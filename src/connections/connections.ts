@@ -744,6 +744,28 @@ export class ConnectionRegistry {
     return normalized ? this.profiles().find((profile) => profile.id === normalized) : undefined;
   }
 
+  /** Git transport is limited to repositories explicitly named by saved API operations. */
+  githubGitRepositories(): string[] {
+    return [...new Set(this.list().filter(p => p.hasCredential && p.baseUrl === 'https://api.github.com')
+      .flatMap(p => p.operations.flatMap(op => {
+        const match = /^\/repos\/([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+)(?:\/|$)/.exec(op.path);
+        return match ? [match[1]!.toLowerCase()] : [];
+      })))];
+  }
+
+  /** Host-only smart HTTP request; the saved GitHub token never enters the computer. */
+  async githubGitRequest(repository: string, suffix: string, init: RequestInit): Promise<Response> {
+    const profile = this.list().find(p => p.hasCredential && p.baseUrl === 'https://api.github.com'
+      && p.operations.some(op => op.path.toLowerCase() === '/repos/' + repository || op.path.toLowerCase().startsWith('/repos/' + repository + '/')));
+    if (!profile || !/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(repository)
+      || !/^(?:info\/refs\?service=git-(?:upload|receive)-pack|git-(?:upload|receive)-pack)$/.test(suffix)) throw new Error('GitHub repository is not assigned to this workspace.');
+    const token = loadStoredKeys()[keyRef(profile.id)]?.trim();
+    if (!token) throw new Error('GitHub connection is unavailable.');
+    const headers = new Headers(init.headers);
+    headers.set('authorization', 'Basic ' + Buffer.from('x-access-token:' + normalizeSavedCredential(token, profile)).toString('base64'));
+    return fetchWithApiTransport(`https://github.com/${repository}.git/${suffix}`, { ...init, headers, redirect: 'manual' });
+  }
+
   async webSearch(id: string, query: string, count = 8, signal?: AbortSignal) {
     const profile = this.get(id);
     if (!profile) throw new Error('Search connection is not available in this workspace or company.');

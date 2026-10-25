@@ -183,6 +183,8 @@ function classifyUnavailable(message: string): ComputerUnavailableReason {
 /** One persistent container and volume per stable agent id, scoped to this Gitu home. */
 export class CoworkComputer {
   readonly name: string;
+  private generation = 0;
+  get runtimeGeneration(): number { return this.generation; }
   private _state: ComputerStatus['state'] = 'stopped';
   private get state():ComputerStatus['state']{return this._state;}
   private set state(value:ComputerStatus['state']){this._state=value;this.runtime.onState?.(value);}
@@ -206,7 +208,7 @@ export class CoworkComputer {
     readonly agentId: string,
     private readonly root: string,
     private readonly exec: ComputerExec = computerExec,
-    private readonly runtime: { key: string; cloud?: boolean; beforeStart?:()=>void;onState?:(state:ComputerStatus['state'])=>void;onControl?:()=>void;limits?:()=>{cpu:number;memoryMb:number;diskMb:number};maxFileBytes?: () => number|null; resolveArtifact?: (id:string,conversationId:string)=>string|undefined } = { key: 'default' },
+    private readonly runtime: { key: string; cloud?: boolean; prepareGit?:(computer:CoworkComputer,signal?:AbortSignal)=>Promise<void>; beforeStart?:()=>void;onState?:(state:ComputerStatus['state'])=>void;onControl?:()=>void;limits?:()=>{cpu:number;memoryMb:number;diskMb:number};maxFileBytes?: () => number|null; resolveArtifact?: (id:string,conversationId:string)=>string|undefined } = { key: 'default' },
   ) {
     const key = createHash('sha256')
       .update(`${path.resolve(root)}:${agentId}`)
@@ -331,8 +333,10 @@ export class CoworkComputer {
         await this.exec(['stop', '--time', '2', this.name], undefined, signal);
       }
       await this.exec(['start', this.name], undefined, signal);
+      this.generation++;
       this.state = 'running';
       this.clearSleepingHandoff();
+      await this.runtime.prepareGit?.(this, signal);
       this.lastFailure = undefined;
     } catch (err) {
       this.state = 'unavailable';
@@ -438,6 +442,12 @@ export class CoworkComputer {
     }
   }
 
+  /** Install only host-authored Git settings, with capability data passed on stdin. */
+  async configureGit(config: string, signal?: AbortSignal): Promise<void> {
+    const program = `let data='';process.stdin.on('data',d=>data+=d);process.stdin.on('end',()=>{const fs=require('node:fs'),cp=require('node:child_process'),file='/tmp/gitu-github-config';fs.writeFileSync(file+'.tmp',data,{mode:0o600});fs.renameSync(file+'.tmp',file);const r=cp.spawnSync('git',['config','--global','--get-all','include.path'],{encoding:'utf8'});if(r.status!==0&&r.status!==1)process.exit(1);if(!r.stdout.split('\\n').includes(file)){const a=cp.spawnSync('git',['config','--global','--add','include.path',file]);if(a.status!==0)process.exit(1);}});`;
+    await this.exec(['exec', '-i', this.name, 'node', '-e', program], config, signal, 15_000);
+  }
+
   async execute(
     tool: string,
     params: Record<string, unknown>,
@@ -458,6 +468,7 @@ export class CoworkComputer {
         throw new Error(this.lastFailure.message);
       }
       await this.start(signal);
+      if (tool === 'run_command') await this.runtime.prepareGit?.(this, signal);
       if (tool === 'share_file' || tool === 'receive_file') {
         if (!conversationId || !/^[\w-]+$/.test(conversationId)) throw new Error('File sharing requires a conversation.');
         const folder = path.join(this.root, 'artifacts', conversationId);

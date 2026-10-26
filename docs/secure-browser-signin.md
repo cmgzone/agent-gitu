@@ -51,6 +51,16 @@ response. Provider error descriptions and response bodies are never included.
 New identity-provider token URLs must be established by official setup docs;
 redirects never forward credentials to another destination.
 
+Cowork repairs documented settings and operation routes with the existing
+connection. A confirmed unsupported authentication scheme, grant or client
+method returns `CONNECTOR_CODE_REQUIRED` with a sanitized `gitu_task` brief.
+Main Agent Gitu implements and tests the connector change using synthetic data;
+Cowork coordinates authorized deployment and verifies a safe read afterward.
+Credentials and vault files never enter the coding handoff. A missing,
+ambiguous or mismatched project folder produces a question card before a coding
+session starts. The user must choose the correct folder; the previous project
+is never silently substituted.
+
 Example metadata (values are entered only in the secure card):
 
 ```json

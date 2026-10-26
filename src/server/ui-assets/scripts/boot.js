@@ -101,3 +101,17 @@
   /* GITU_BINDING_ONBOARDING_JS */
   /* GITU_BINDING_UI_BUTTON_JS */
   boot();
+  window.gituOpenPushTarget = async function (target) {
+    if (!target || !['run','cowork','home'].includes(target.target)) throw new Error('Invalid notification destination.');
+    if (target.target !== 'home' && !/^[\w-]{1,150}$/.test(target.targetId || '')) throw new Error('Invalid notification destination.');
+    if (target.companyId && !/^[\w-]{1,150}$/.test(target.companyId)) throw new Error('Invalid company destination.');
+    closeSettings();
+    if (target.target === 'run') { openRun(target.targetId); return; }
+    if (target.target === 'cowork' && target.companyId) { await companyOpen(target.companyId); Companies.tab = 'Chat'; companyRender(); return; }
+    if (target.target === 'cowork') {
+      openCowork(); await cwLoad(false);
+      if (!cwEnsure().convs.some(function (conversation) { return conversation.id === target.targetId; })) throw new Error('This conversation is no longer available.');
+      cwOpenConv(target.targetId); return;
+    }
+    openHome();
+  };

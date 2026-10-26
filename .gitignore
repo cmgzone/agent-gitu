@@ -23,6 +23,8 @@ web-build/
 apps/mobile/dist/
 apps/mobile/android/
 apps/mobile/ios/
+apps/mobile/google-services.json
+*firebase-adminsdk*.json
 *.tsbuildinfo
 
 release-new/

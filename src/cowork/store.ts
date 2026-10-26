@@ -682,7 +682,7 @@ export class CoworkStore {
   get usesSharedRoster(): boolean { return Boolean(this.options?.sharedRoster); }
   get rosterRevision(): number { return this.localRosterRevision + (this.options?.sharedRoster?.rosterRevision ?? 0); }
 
-  constructor(private readonly filePath?: string, private readonly onRosterChange?: () => void, private readonly options?: { companyId?: string; sharedRoster?: CoworkStore; persistence?: { read(): string | undefined; write(data: string): void }; maxFileBytes?: () => number | null;missionSessions?:()=>number }) {}
+  constructor(private readonly filePath?: string, private readonly onRosterChange?: () => void, private readonly options?: { companyId?: string; sharedRoster?: CoworkStore; persistence?: { read(): string | undefined; write(data: string): void }; maxFileBytes?: () => number | null;missionSessions?:()=>number;onNotification?:(conversationId:string)=>void }) {}
 
   private file(): string {
     if (this.filePath) return this.filePath;
@@ -1945,6 +1945,8 @@ export class CoworkStore {
     };
     data.requests.push(request);
     this.save();
+    // Wake background phones even when no foreground stream is subscribed.
+    try { this.options?.onNotification?.(request.conversationId); } catch { /* notification failure cannot undo a saved request */ }
     return request;
   }
 
@@ -2149,6 +2151,9 @@ export class CoworkStore {
     const conv = data.conversations.find((c) => c.id === conversationId);
     if (conv) conv.updatedAt = stored.ts;
     this.save();
+    if (stored.role === 'agent') {
+      try { this.options?.onNotification?.(conversationId); } catch { /* notification failure cannot undo a saved reply */ }
+    }
     return stored;
   }
 }

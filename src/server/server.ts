@@ -43,6 +43,7 @@ import { bridgeDesktop, connectDesktopStream, localDesktopStream } from '../cowo
 import { CloudComputerTransport } from '../cowork/cloud-computer.js';
 import { desktopAsset, desktopView } from './desktop-view.js';
 import { MobileAccess } from './mobile-access.js';
+import { FcmPushSender, MobilePush, type PushSender } from './mobile-push.js';
 import { AppAuth } from './app-auth.js';
 import { GoogleSignIn } from './google-sign-in.js';
 import { authPage } from './ui-auth.js';
@@ -333,6 +334,8 @@ export interface GituServerConfig {
   host?: string;
   /** Opt-in native/mobile access; never accepted from a query string. */
   accessKey?: string;
+  /** Optional sender injection for notification delivery tests. */
+  pushSender?: PushSender;
   /** Explicit opt-out for trusted embedded servers and isolated test fixtures. */
   passwordRequired?: boolean;
   connectedApps?: ComposioConnections;
@@ -483,6 +486,7 @@ export class GituServer {
   private readonly indexWatchers = new Map<string, CodeIndex>();
   private readonly config: GituServerConfig;
   private readonly mobileAccess: MobileAccess;
+  private readonly mobilePush: MobilePush;
   private readonly appAuth: AppAuth;
   private readonly googleSignIn = new GoogleSignIn(undefined, nodePath.join(ensureGituHome().settings, 'google-sign-in.json'));
   private desktopSockets?: WebSocketServer;
@@ -777,6 +781,8 @@ export class GituServer {
     }
     this.mobileAccess = new MobileAccess(config.accessKey ?? process.env['AGENT_GITU_ACCESS_KEY']);
     this.appAuth = new AppAuth(nodePath.join(ensureGituHome().settings, 'app-password.json'), config.passwordRequired !== false, process.env['AGENT_GITU_TRUST_LOCAL_PROXY'] === '1', process.env['AGENT_GITU_REGISTRATION_TOKEN'], this.mobileAccess.enabled && process.env['AGENT_GITU_ALLOW_LAN_LOGIN'] === '1');
+    const pushProject = process.env['AGENT_GITU_FCM_PROJECT_ID'];
+    this.mobilePush = new MobilePush(ensureGituHome().settings, () => this.appAuth.userId, config.pushSender ?? (pushProject ? new FcmPushSender(pushProject) : undefined));
     this.connectedApps = config.connectedApps ?? new ComposioConnections(() => this.appAuth.userId);
     this.mailConnections = config.mailConnections ?? new MailConnections();
     this.appHub = new ConnectionsHub(this.connectedApps, this.mailConnections);
@@ -1212,6 +1218,7 @@ export class GituServer {
     const companyCoordinator=this.companyCoordinator;companyCoordinator?.stop();this.companyCoordinator=undefined;
     this.stopping = true;
     await this.mailInboxMonitor?.stop();
+    await this.mobilePush.close();
     this.mailInboxMonitor = undefined;
     for (const run of this.coworkRuns.values()) run.abort.abort(new Error('Application stopping.'));
     for(const run of this.companyQuestionRuns.values())run.abort.abort();
@@ -1467,7 +1474,7 @@ export class GituServer {
     const companyId=this.companyScope.getStore()?.id;
     if(companyId){
       let store=this.companyCowork.get(companyId);
-      if(!store){store=new CoworkStore(nodePath.join(this.companies().root,companyId,'cowork.json'),()=>{for(const id of this.coworkSubscribers.keys())this.publishCowork(id);},{companyId,sharedRoster:this.companyScope.exit(()=>this.cowork()),persistence:this.companies().snapshot(companyId),missionSessions:()=>this.companies().get(companyId)?.missionSessions??12,maxFileBytes:()=>this.selectedFileLimit(companyId)});this.companyCowork.set(companyId,store);
+      if(!store){store=new CoworkStore(nodePath.join(this.companies().root,companyId,'cowork.json'),()=>{for(const id of this.coworkSubscribers.keys())this.publishCowork(id);},{companyId,sharedRoster:this.companyScope.exit(()=>this.cowork()),persistence:this.companies().snapshot(companyId),missionSessions:()=>this.companies().get(companyId)?.missionSessions??12,maxFileBytes:()=>this.selectedFileLimit(companyId),onNotification:id=>this.publishCowork(id)});this.companyCowork.set(companyId,store);
         const company=this.companies().get(companyId)!;
         const agents=store.listAgents();
         if(!this.companies().read('cowork-company','memory-v1:'+companyId)){
@@ -1479,7 +1486,7 @@ export class GituServer {
     }
     if (!this.coworkStore) this.coworkStore = new CoworkStore(undefined, () => {
       for (const id of this.coworkSubscribers.keys()) this.publishCowork(id);
-    },{maxFileBytes:()=>this.selectedFileLimit()});
+    },{maxFileBytes:()=>this.selectedFileLimit(),onNotification:id=>this.publishCowork(id)});
     return this.coworkStore;
   }
 
@@ -1543,6 +1550,17 @@ export class GituServer {
 
   private publishCowork(conversationId: string, progressOnly = false): void {
     for (const send of this.coworkSubscribers.get(conversationId) ?? []) send(progressOnly);
+    if (progressOnly || this.stopping || !this.appAuth.configured) return;
+    try {
+      if (!this.mobilePush.hasDevices) return;
+      const store = this.cowork(), companyId = this.companyScope.getStore()?.id;
+      const target = { target: 'cowork' as const, targetId: conversationId, ...(companyId ? { companyId } : {}) };
+      for (const request of store.requests(conversationId).filter(item => item.status === 'open' && !item.hiddenAt)) {
+        this.mobilePush.notify({ ...target, id: 'request:' + request.id, at: Date.parse(request.createdAt), kind: 'attention' });
+      }
+      const message = store.messages(conversationId).filter(item => item.role === 'agent').at(-1);
+      if (message) this.mobilePush.notify({ ...target, id: 'message:' + message.id, at: Date.parse(message.ts), kind: 'reply' });
+    } catch { logger.warn({ subsystem: 'push' }, 'Conversation notification unavailable'); }
   }
 
   private coworkProgressView(conversationId: string, threadId: string | null) {
@@ -1802,7 +1820,7 @@ export class GituServer {
         }
         const base = agent.companyId ? this.coworkToolContext(agent).cwd : this.projectRoot() ?? this.coworkToolContext(agent).cwd;
         const preferred=!agent.companyId?readRuntimeSelection().projectPath:undefined;
-        const selected = realpathSync(projectPath?nodePath.resolve(base,projectPath):projectForCoding(base,goal??'',preferred));
+        const selected = realpathSync(projectForCoding(base,goal??'',projectPath?nodePath.resolve(base,projectPath):preferred));
         const ownedWorktrees=[...this.sessions.values()].filter(task=>task.coworkTask?.agentId===agent.id&&task.coworkTask.conversationId===scope.conversationId&&!task.coworkTask.companyId).flatMap(task=>task.worktreePath?[task.worktreePath]:[]);
         const roots = agent.companyId ? [this.companies().workspace(agent.companyId)] : [base,...(preferred?[preferred]:[]), ...ownedWorktrees,...(agent.id===this.proactivity().status().assistantId?this.mainAgentRepositories().map(repository=>repository.path):[]), ...(scope.taggedFolders ?? []), ...listProjects().map(project => project.path)];
         if (!roots.some(root => { try {const relative = nodePath.relative(realpathSync(root), selected); return relative === '' || (relative !== '..' && !relative.startsWith('..' + nodePath.sep) && !nodePath.isAbsolute(relative));}catch{return false;} })) throw new Error('Choose this workspace, a saved project, or a folder attached to the conversation.');
@@ -1816,7 +1834,7 @@ export class GituServer {
               if(parent.useHostComputer!==assignment.useHostComputer||parent.cloudConnectionId!==assignment.cloudConnectionId)throw Error('The assigned computer changed. Start a new coding task on the selected computer.');
               const bridge=first&&!scope.background&&input.workspace.path==='/workspace'&&parent.allowWrites===assignment.allowWrites&&parent.allowShell===assignment.allowShell?scope.subAgents:this.codingWorkerBridge(parent,scope.conversationId!,signal,scope.missionId,input.workspace.type==='container'?input.workspace.path:undefined);first=false;
               if (!bridge) throw new Error('The private coding runtime is unavailable. Restore it before continuing this task.');
-              return bridge.run({ role: 'Agent Gitu coding', objective: (instruction??input.goal) + '\nProject: ' + input.workspace.path + '\nMain Agent Gitu owns this engineering task. Implement and verify it in the assigned workspace, keeping the company and computer permissions in force. Return concrete evidence and remaining blockers. Do not delegate further.', reason: 'Main-agent coding task', budget: input.budget ?? {}, maxRuntimeMinutes: input.runOptions.timeoutMinutes }, signal);
+              return bridge.run({ role: 'Agent Gitu coding', objective: (instruction??input.goal) + '\nProject: ' + input.workspace.path + '\nMain Agent Gitu owns this engineering task. Before editing, verify that the folder and actual repository identity match the requested project. If missing, ambiguous or mismatched, stop and report that the user must choose the correct folder. Do not reuse another project, silently switch folders or continue editing. Implement and verify only in the confirmed workspace, keeping company and computer permissions in force. Return concrete evidence and remaining blockers. Do not delegate further.', reason: 'Main-agent coding task', budget: input.budget ?? {}, maxRuntimeMinutes: input.runOptions.timeoutMinutes }, signal);
             },readRuntimeSelection);})()
           : this.createDelegatedSession(input);
         this.trackCoworkCodingSession(runtime, input, scope);
@@ -6096,6 +6114,14 @@ export class GituServer {
       }
     }
     this.recordEvent(s, text, persistDb, typed);
+    if (!this.stopping && this.appAuth.configured) {
+      const gateId = /^approval-required ([\w-]+)/.exec(text)?.[1]
+        ?? (text.startsWith('plan-review ') ? s.planReview?.id : text.startsWith('ask-user waiting') ? s.questions?.id : undefined);
+      if (gateId) this.mobilePush.notify({ id: 'run-gate:' + s.runId + ':' + gateId, at: Date.now(), kind: 'attention', target: 'run', targetId: s.runId });
+      if (text.startsWith('run finished:') && ['completed', 'failed', 'blocked', 'stalled'].includes(s.status)) {
+        this.mobilePush.notify({ id: 'run:' + s.runId + ':' + s.status + ':' + (s.finishedAt ?? s.startedAt), at: Date.now(), kind: s.status === 'completed' ? 'completed' : 'failed', target: 'run', targetId: s.runId });
+      }
+    }
   }
 
   /**
@@ -6417,6 +6443,21 @@ export class GituServer {
     }
     this.appAuth.track(req, res);
     if (this.appAuth.enabled) res.setHeader('Cache-Control', 'no-store');
+
+    if (path === '/api/mobile/push' || path === '/api/mobile/push/test') {
+      if (!this.appAuth.authenticated(req)) { this.sendJson(res, 401, { error: 'Sign in to manage Android notifications.' }); return; }
+      if (!this.isSameOrigin(req)) { this.sendJson(res, 403, { error: 'cross-origin request rejected' }); return; }
+      try {
+        if (path === '/api/mobile/push' && method === 'GET') this.sendJson(res, 200, this.mobilePush.status(url.searchParams.get('deviceId')));
+        else if (method === 'POST' || method === 'DELETE' && path === '/api/mobile/push') {
+          const body = await this.readBody(req, 8192);
+          if (path.endsWith('/test')) { await this.mobilePush.test(body['deviceId']); this.sendJson(res, 200, { ok: true }); }
+          else if (method === 'DELETE') { this.mobilePush.unregister(body['deviceId']); this.sendJson(res, 200, this.mobilePush.status(body['deviceId'])); }
+          else this.sendJson(res, 200, this.mobilePush.register(body['deviceId'], body['token']));
+        } else this.sendJson(res, 405, { error: 'Method not allowed.' });
+      } catch { this.sendJson(res, 400, { error: 'Could not update notifications. Check the device permission and server Firebase configuration.' }); }
+      return;
+    }
 
     if (path==='/api/chrome-profile'||path==='/api/chrome-profile/view'||path==='/api/chrome-profile/screen') {
       if(!this.appAuth.authenticated(req)){this.sendJson(res,401,{error:'Sign in to use your private Chrome profile.'});return;}

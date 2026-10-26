@@ -105,6 +105,25 @@
       }).catch(function () {});
       b.insertAdjacentHTML('beforeend', '<h2>Getting started</h2><p class="appearance-description">Choose your theme, connect a provider, and pick a workspace.</p><button class="btn ghost" id="setupAgain">Open setup wizard</button>');
       $('setupAgain').onclick = function () { closeSettings(); openSetupWizard(); };
+      if (window.gituAndroidPush) {
+        b.insertAdjacentHTML('beforeend', '<h2>Android notifications</h2><div class="setcard" id="androidPushCard"><div class="setrow"><div class="grow"><div class="t">Task updates on this phone</div><div class="d" id="androidPushStatus">Checking notification settings…</div></div><button class="btn ghost" id="androidPushToggle" disabled>Enable</button><button class="btn ghost" id="androidPushTest" disabled>Send test</button></div></div>');
+        var pushState;
+        var renderPush = function (status) {
+          if (S.setSection !== 'general' || !$('androidPushStatus')) return;
+          pushState = status;
+          $('androidPushStatus').textContent = !status.supported ? 'This APK needs Firebase configuration. Ask the server owner for the updated Android build.' : !status.available ? 'The server owner must configure Firebase notifications.' : status.enabled && status.permission === 'granted' ? 'On: completed tasks, questions, approvals, and teammate replies. Message contents stay out of notifications.' : status.enabled ? 'Android notification permission is off. Enable it in Android Settings.' : 'Receive task updates while the app is in the background.';
+          $('androidPushToggle').textContent = status.enabled ? 'Disable' : 'Enable';
+          $('androidPushToggle').disabled = !status.enabled && (!status.supported || !status.available);
+          $('androidPushTest').disabled = !status.enabled || !status.available || status.permission !== 'granted';
+        };
+        var refreshPush = function () { return window.gituAndroidPush.status().then(renderPush); };
+        $('androidPushToggle').onclick = function () {
+          var button = this; button.disabled = true;
+          (pushState && pushState.enabled ? window.gituAndroidPush.disable() : window.gituAndroidPush.enable()).then(refreshPush).catch(function (error) { toast(error.message, true); return refreshPush(); });
+        };
+        $('androidPushTest').onclick = function () { var button=this; button.disabled=true; window.gituAndroidPush.test().then(function () { toast('Test notification sent to Firebase'); }).catch(function (error) { toast(error.message, true); }).finally(refreshPush); };
+        refreshPush().catch(function () { if ($('androidPushStatus')) $('androidPushStatus').textContent = 'Could not read notification settings. Reopen Settings to retry.'; });
+      }
       if (window.gituDesktop && typeof window.gituDesktop.phoneAccess === 'function') {
         b.insertAdjacentHTML('beforeend', '<h2>Phone access</h2><div class="setcard" id="phoneAccessCard"><div class="setrow"><div class="grow"><div class="t">Connect your Android phone</div><div class="d">Checking your Wi-Fi address…</div></div></div></div>');
         var renderPhoneAccess = function (status) {

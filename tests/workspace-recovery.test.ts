@@ -9,7 +9,7 @@ import { ProjectGuard } from '../src/guard/project-guard.js';
 import { TaskLedger } from '../src/ledger/task-ledger.js';
 import { ScriptedMockLlm } from '../src/llm/llm.js';
 import { CapabilityAwareResolver } from '../src/recovery/prerequisites.js';
-import { inspectWorkspace, workspaceQuestionOptions } from '../src/recovery/workspace.js';
+import { inspectWorkspace, workspaceQuestionOptions, isWorkspaceIdentityQuestion } from '../src/recovery/workspace.js';
 import type { MissingPrerequisite } from '../src/types.js';
 
 vi.mock('node:fs/promises', async (original) => {
@@ -42,6 +42,26 @@ const review = () => 'VERDICT: PASS\nFEEDBACK: Verified the requested wording.';
 const gatedCommand = action({ type: 'tool_call', tool: 'run_command', params: { command: 'echo approved > permission.txt' }, reason: 'Create the requested local approval marker', expected: 'Marker file exists' });
 
 describe('selected workspace recovery', () => {
+  it('asks about a wrong project even when the selected folder is writable, and waits for explicit confirmation', async () => {
+    const root = project();
+    const ask = vi.fn(async () => { expect(readFileSync(path.join(root, 'README.md'), 'utf8')).toBe('Before\n'); return root; });
+    const result = await new Gitu({ cwd: root, mode: 'agent', autoLearn: false, askUserHandler: ask, approver: async () => true,
+      llm: new ScriptedMockLlm([read, action({ type: 'ask_user', questions: [{ kind: 'workspace', question: 'The current folder appears to contain the wrong project. Which folder should I use?', options: [root] }] }), edit, check, done, review]),
+    }).run('Change README.md from Before to After and check it');
+    expect(ask).toHaveBeenCalledOnce(); expect(result.report.status).toBe('complete');
+    expect(readFileSync(path.join(root, 'README.md'), 'utf8')).toBe('After\n');
+  }, 60000);
+
+  it('blocks a wrong-folder question when no user handler is available instead of assuming and editing', async () => {
+    const root = project();
+    expect(isWorkspaceIdentityQuestion({ question: 'The workspace repository does not match the requested project.' })).toBe(true);
+    const result = await new Gitu({ cwd: root, mode: 'agent', autoLearn: false,
+      llm: new ScriptedMockLlm([read, action({ type: 'ask_user', questions: [{ kind: 'workspace', question: 'The selected folder is the wrong project. Which folder is intended?', options: [root] }] }), edit, check, done, review]),
+    }).run('Change README.md from Before to After and check it');
+    expect(result.report.status).toBe('blocked'); expect(readFileSync(path.join(root, 'README.md'), 'utf8')).toBe('Before\n');
+    expect(result.ledger.data.actions.filter(item => item.tool === 'write_file')).toHaveLength(0);
+  }, 60000);
+
   it('reuses the actual authorized checkout, even on repeated blocks, without connector discovery or questions', async () => {
     const root = project();
     const discover = vi.fn();

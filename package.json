@@ -127,8 +127,8 @@
     "vitest": "^3.0.0"
   },
   "dependencies": {
-    "@ag-ui/client": "^1.0.0",
-    "@ag-ui/core": "^1.0.0",
+    "@ag-ui/client": "^1.0.3",
+    "@ag-ui/core": "^1.0.3",
     "@aws-sdk/client-s3": "^3.1149.0",
     "@composio/core": "^0.22.0",
     "@modelcontextprotocol/sdk": "^1.32.1",
@@ -137,12 +137,13 @@
     "docx": "^9.7.1",
     "exceljs": "^4.4.0",
     "fflate": "^0.8.3",
+    "firebase-admin": "^14.5.0",
     "imapflow": "^2.2.5",
     "livekit-client": "^2.22.3",
     "livekit-server-sdk": "^2.19.1",
-    "mailparser": "^3.9.36",
+    "mailparser": "^3.12.4",
     "marked": "^18.0.14",
-    "nodemailer": "^7.0.13",
+    "nodemailer": "^10.2.1",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "6.4.299",
     "pino": "^10.4.0",
@@ -152,7 +153,21 @@
     "ssh2": "^1.17.0",
     "three": "^0.185.1",
     "typescript": "^5.6.0",
-    "undici": "^7.30.0",
+    "undici": "^7.30.1",
     "ws": "^8.22.0"
+  },
+  "overrides": {
+    "@ag-ui/client": {
+      "zod": "^4.6.7"
+    },
+    "@ag-ui/proto": {
+      "zod": "^4.6.7"
+    },
+    "exceljs": {
+      "uuid": "^11.1.1"
+    },
+    "pptxgenjs": {
+      "image-size": "^2.0.4"
+    }
   }
 }

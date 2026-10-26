@@ -33,6 +33,12 @@ export type AuthenticationErrorCode = 'INVALID_CREDENTIALS' | 'TOKEN_ENDPOINT_FA
 export class ConnectionAuthenticationError extends Error {
   constructor(readonly code: AuthenticationErrorCode, message: string) { super(message); this.name = 'ConnectionAuthenticationError'; }
 }
+export class UnsupportedConnectionAuthError extends ConnectionAuthenticationError {
+  constructor(readonly feature: 'authentication_scheme' | 'oauth_grant' | 'client_authentication') {
+    super('CONFIG_INVALID', 'This connector authentication feature is not implemented in this Gitu version. A connector code repair is required; changing or replacing credentials will not add support.');
+    this.name = 'UnsupportedConnectionAuthError';
+  }
+}
 const configError = (message: string) => new ConnectionAuthenticationError('CONFIG_INVALID', 'OAuth configuration error: ' + message);
 
 function normalizedTokenUrl(value: string): string {
@@ -64,8 +70,8 @@ export function normalizeStructuredAuth(input: unknown): StructuredConnectionAut
     if (raw.tokenUrl && raw.tokenPath) throw configError('Choose tokenUrl or tokenPath, not both.');
     if (raw.tokenUrl !== undefined) normalizedTokenUrl(raw.tokenUrl);
     else if (typeof raw.tokenPath !== 'string' || !/^\/(?!\/)[a-zA-Z0-9/_.-]+$/.test(raw.tokenPath) || raw.tokenPath.split('/').includes('..')) throw configError('Set a documented tokenPath or HTTPS tokenUrl.');
-    if (raw.grantType !== undefined && !['client_credentials', 'password'].includes(raw.grantType)) throw configError('This OAuth grant is not supported. Choose client_credentials or password.');
-    if (raw.clientAuthentication !== undefined && !['body', 'basic'].includes(raw.clientAuthentication)) throw configError('Choose body or basic client authentication.');
+    if (raw.grantType !== undefined && !['client_credentials', 'password'].includes(raw.grantType)) throw new UnsupportedConnectionAuthError('oauth_grant');
+    if (raw.clientAuthentication !== undefined && !['body', 'basic'].includes(raw.clientAuthentication)) throw new UnsupportedConnectionAuthError('client_authentication');
     if (raw.grantType === 'password' && (!fields.some(f => f.id === (raw.usernameField ?? 'username')) || !fields.some(f => f.id === (raw.passwordField ?? 'password')) || (raw.usernameField ?? 'username') === (raw.passwordField ?? 'password'))) throw configError('Password grant requires API username and API password fields.');
     if (raw.grantType === 'password' && [raw.usernameField ?? 'username', raw.passwordField ?? 'password'].some(id => ['client_id', 'client_secret'].includes(id))) throw configError('API username/password must be separate from client credentials.');
     for (const field of fields) if (['client_id', 'client_secret', ...(raw.grantType === 'password' ? [raw.usernameField ?? 'username', raw.passwordField ?? 'password'] : [])].includes(field.id)) field.required = true;

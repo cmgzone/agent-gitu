@@ -1,12 +1,15 @@
 import { StatusBar } from 'expo-status-bar';
 import * as FileSystem from 'expo-file-system/legacy';
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, BackHandler, KeyboardAvoidingView, Linking, ScrollView, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, AppState, BackHandler, KeyboardAvoidingView, Linking, ScrollView, Text, View } from 'react-native';
+import * as Notifications from 'expo-notifications';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 import { Button, Card, colors, ErrorNotice, Field, Mascot, s } from '../ui';
 import { isLocalServer, workspaceNavigation, workspaceServerUrl, type ConnectionMode } from './server-address';
 import { WORKSPACE_COMPAT_JS, WORKSPACE_LOADED_JS } from './workspace-runtime';
+import { nativePushAction, pushPreferences } from './workspace-push';
+import { pushBridgeScript, pushTarget, type PushTarget } from './push-protocol';
 
 const initialAddress = process.env.EXPO_PUBLIC_API_URL || 'http://10.0.2.2:8321';
 const savedServerFile = FileSystem.documentDirectory && FileSystem.documentDirectory + 'workspace-server.txt';
@@ -19,6 +22,9 @@ function initialMode(): ConnectionMode {
 }
 
 export default function WorkspaceApp() {
+  const pushRequested = useRef(false);
+  const lastNotification = useRef('');
+  const [notificationTarget, setNotificationTarget] = useState<PushTarget>();
   const [server, setServer] = useState<string>();
   const [restoring, setRestoring] = useState(true);
   const [mode, setMode] = useState<ConnectionMode>(initialMode);
@@ -33,7 +39,7 @@ export default function WorkspaceApp() {
         const saved = await FileSystem.readAsStringAsync(savedServerFile);
         const savedMode = isLocalServer(new URL(saved).hostname) ? 'local' : 'remote';
         const normalized = workspaceServerUrl(saved, savedMode);
-        if (!cancelled) {
+        if (!cancelled && !pushRequested.current) {
           setMode(savedMode);
           (savedMode === 'local' ? setLocalAddress : setRemoteAddress)(normalized);
           setServer(normalized);
@@ -42,6 +48,28 @@ export default function WorkspaceApp() {
       finally { if (!cancelled) setRestoring(false); }
     })();
     return () => { cancelled = true; };
+  }, []);
+  useEffect(() => {
+    let cancelled = false;
+    const receive = async (response: Notifications.NotificationResponse) => {
+      const id = response.notification.request.identifier;
+      if (lastNotification.current === id) return;
+      lastNotification.current = id;
+      const saved = await pushPreferences();
+      const target = pushTarget(response.notification.request.content.data, saved.workspaces);
+      if (!target || cancelled) return;
+      const nextMode = isLocalServer(new URL(target.server).hostname) ? 'local' : 'remote';
+      const normalized = workspaceServerUrl(target.server, nextMode);
+      pushRequested.current = true;
+      setMode(nextMode);
+      (nextMode === 'local' ? setLocalAddress : setRemoteAddress)(normalized);
+      setServer(normalized);
+      setNotificationTarget(target);
+      await Notifications.clearLastNotificationResponseAsync();
+    };
+    const listener = Notifications.addNotificationResponseReceivedListener(response => { void receive(response).catch(() => {}); });
+    void Notifications.getLastNotificationResponseAsync().then(response => response && receive(response)).catch(() => {});
+    return () => { cancelled = true; listener.remove(); };
   }, []);
   const address = mode === 'local' ? localAddress : remoteAddress;
   const open = () => {
@@ -63,7 +91,7 @@ export default function WorkspaceApp() {
         style={{ flex: 1, backgroundColor: colors.canvas }}
       >
         {restoring ? <ActivityIndicator color={colors.blueDark} style={{ flex: 1 }} /> : server ? (
-          <Workspace key={server} server={server} close={() => setServer(undefined)} />
+          <Workspace key={server} server={server} close={() => setServer(undefined)} target={notificationTarget} opened={() => setNotificationTarget(undefined)} />
         ) : (
           <KeyboardAvoidingView style={{ flex: 1 }}>
             <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', alignItems: 'center', padding: 24 }}>
@@ -131,11 +159,31 @@ export default function WorkspaceApp() {
   );
 }
 
-function Workspace({ server, close }: { server: string; close: () => void }) {
+function Workspace({ server, close, target, opened }: { server: string; close: () => void; target?: PushTarget; opened: () => void }) {
   const web = useRef<WebView>(null);
   const [canGoBack, setCanGoBack] = useState(false);
   const [error, setError] = useState('');
   const [source] = useState({ uri: server + '/' });
+  const [bridgeNonce] = useState(() => {
+    const bytes = new Uint8Array(32); globalThis.crypto.getRandomValues(bytes);
+    return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+  });
+  const bridgeScript = pushBridgeScript(bridgeNonce);
+  const currentUrl = useRef(source.uri);
+  const openNotification = () => {
+    if (target?.server !== server) return;
+    const payload = JSON.stringify(target).replace(/</g, '\\u003c');
+    web.current?.injectJavaScript(`if (window.gituOpenPushTarget) { Promise.resolve(window.gituOpenPushTarget(${payload})).then(function () { window.ReactNativeWebView.postMessage(JSON.stringify({type:'gitu-push-opened',nonce:${JSON.stringify(bridgeNonce)},targetId:${JSON.stringify(target.targetId)}})); }).catch(function () {}); } true;`);
+  };
+  useEffect(openNotification, [target, server]);
+  useEffect(() => {
+    const sync = () => web.current?.injectJavaScript('if(window.gituAndroidPush)window.gituAndroidPush.sync().catch(function(){}); true;');
+    const state = AppState.addEventListener('change', next => { if (next === 'active') sync(); });
+    const rotation = Notifications.addPushTokenListener(token => {
+      if (token.type === 'android' && typeof token.data === 'string') web.current?.injectJavaScript(`if(window.gituAndroidPush)window.gituAndroidPush.refresh(${JSON.stringify(token.data)}).catch(function(){}); true;`);
+    });
+    return () => { state.remove(); rotation.remove(); };
+  }, []);
   useEffect(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
       if (canGoBack) web.current?.goBack();
@@ -169,7 +217,7 @@ function Workspace({ server, close }: { server: string; close: () => void }) {
         ref={web}
         source={source}
         injectedJavaScriptBeforeContentLoaded={WORKSPACE_COMPAT_JS}
-        injectedJavaScript={WORKSPACE_LOADED_JS}
+        injectedJavaScript={WORKSPACE_LOADED_JS + bridgeScript}
         style={{ flex: 1, backgroundColor: colors.canvas }}
         originWhitelist={['*']}
         showsVerticalScrollIndicator={false}
@@ -184,7 +232,25 @@ function Workspace({ server, close }: { server: string; close: () => void }) {
           if (workspaceNavigation(nativeEvent.targetUrl, server) === 'workspace') navigateWorkspace(nativeEvent.targetUrl);
           else openExternal(nativeEvent.targetUrl);
         }}
-        onNavigationStateChange={(state) => setCanGoBack(state.canGoBack)}
+        onNavigationStateChange={(state) => { currentUrl.current = state.url; setCanGoBack(state.canGoBack); }}
+        onMessage={({ nativeEvent }) => {
+          if (workspaceNavigation(nativeEvent.url, server) !== 'workspace') return;
+          try {
+            if (nativeEvent.data.length > 8192) return;
+            const message = JSON.parse(nativeEvent.data);
+            if (message.nonce !== bridgeNonce) return;
+            if (message.type === 'gitu-push-opened') { if (message.targetId === target?.targetId) opened(); return; }
+            if (message.type !== 'gitu-push' || typeof message.id !== 'string' || !/^[\w-]{1,100}$/.test(message.id) || typeof message.action !== 'string') return;
+            const reply = (result?: Record<string, unknown>, error?: string) => {
+              if (workspaceNavigation(currentUrl.current, server) === 'workspace') web.current?.injectJavaScript(`if(window.__gituPushReply)window.__gituPushReply(${JSON.stringify({ id: message.id, result, error }).replace(/</g, '\\u003c')}); true;`);
+            };
+            void nativePushAction(server, message.action, message.payload ?? {}).then(result => reply(result)).catch(failure => reply(undefined, failure instanceof Error ? failure.message : 'Could not configure notifications.'));
+          } catch { /* Ignore messages from unrelated page widgets. */ }
+        }}
+        onLoadEnd={() => {
+          web.current?.injectJavaScript(bridgeScript + 'if(window.gituAndroidPush)window.gituAndroidPush.sync().catch(function(){}); true;');
+          openNotification();
+        }}
         onLoadStart={() => setError('')}
         onError={() => setError('Could not load your Gitu server. Check its address, network connection, and HTTPS certificate, then reload.')}
         onHttpError={({ nativeEvent }) => {

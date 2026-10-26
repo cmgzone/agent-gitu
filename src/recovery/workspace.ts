@@ -14,8 +14,13 @@ export function isWorkspacePrerequisite(prerequisite: MissingPrerequisite): bool
     && /\b(open|select|choose|access|writ(?:e|able)|read.only|command|execution|outside|available)\b/i.test(prerequisite.description);
 }
 
-export function isWorkspaceQuestion(question: { question: string; header?: string; kind?: string }): boolean {
-  return question.kind === 'workspace' || isWorkspacePrerequisite({ id: 'question', kind: 'target', description: question.question, requiredFor: '' });
+export function isWorkspaceIdentityQuestion(question: { question: string; header?: string; detail?: string }): boolean {
+  const text = [question.header, question.question, question.detail].filter(Boolean).join(' ');
+  return /\b(workspace|folder|directory|cwd)\b/i.test(text) && /\b(wrong|incorrect|mismatch(?:ed)?|different project|different repository|does not match|doesn't match|not the (?:requested|intended))\b/i.test(text);
+}
+
+export function isWorkspaceQuestion(question: { question: string; header?: string; detail?: string; kind?: string }): boolean {
+  return question.kind === 'workspace' || isWorkspaceIdentityQuestion(question) || isWorkspacePrerequisite({ id: 'question', kind: 'target', description: question.question, requiredFor: '' });
 }
 
 export function isWorkspacePath(value: string): boolean {

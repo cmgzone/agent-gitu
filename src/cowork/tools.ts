@@ -48,6 +48,7 @@ import { DOCUMENT_TOOL_DOC, toolCreateDocument } from '../tools/productivity.js'
 import { parseSshUrl, SshConnectionRegistry } from '../connections/ssh-connections.js';
 import { ConnectionInvocationError, ConnectionRegistry, normalizeConnectionAuth, normalizeConnectionDocumentationUrl } from '../connections/connections.js';
 import { providerAuthConfiguration } from '../connections/structured-auth.js';
+import { connectionCodeRepair } from '../connections/connection-repair.js';
 import { catalogProvider } from '../connections/catalog.js';
 import { connectionSetupAddress, documentedConnectionSetup } from '../connections/setup-research.js';
 import { createHash } from 'node:crypto';
@@ -1325,7 +1326,8 @@ async function coworkRequestCredential(ctx: ToolContext, scope: CoworkToolScope 
       output: `Credential request ${request.id} ${pending ? 'updated in place' : 'posted'}. Connection settings are filled; the user enters only the secret in the private form. It NEVER appears in chat. Stop working and wait for the connection — never ask for secrets in plain chat.`,
     };
   } catch (err) {
-    return { ok: false, output: `request_credential failed: ${(err as Error).message}` };
+    const repair = connectionCodeRepair(err, { baseUrl: typeof params['baseUrl'] === 'string' ? params['baseUrl'] : undefined, documentationUrl: typeof params['documentationUrl'] === 'string' ? params['documentationUrl'] : undefined });
+    return { ok: false, output: repair ? JSON.stringify(repair) : `request_credential failed: ${(err as Error).message}` };
   }
 }
 

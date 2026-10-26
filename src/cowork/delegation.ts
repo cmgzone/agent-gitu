@@ -35,6 +35,7 @@ import type { BudgetAccount, RunBudget } from '../coding/budget.js';
 import type { CodingApprovalRequest, CodingPlanReviewDecision, CodingPlanReviewRequest, CodingQuestionsRequest, CodingRunResult, CodingSession } from '../coding/contract.js';
 import type { CodingEvent } from '../coding/events.js';
 import type { WorkspaceRef } from '../coding/workspace.js';
+import { CodingProjectSelectionError } from '../coding/project-selection.js';
 import type { ToolResult } from '../types.js';
 import { formatLineCounts } from '../tools/diff.js';
 import type { CoworkAgent, CoworkRequest, CoworkStore } from './store.js';
@@ -391,6 +392,13 @@ export class CoworkDelegation {
         },
       }, scope);
     } catch (err) {
+      if (err instanceof CodingProjectSelectionError) {
+        const title = 'Which project folder should I use?';
+        const detail = err.message + '\nNo coding session was started. Select the intended project folder before continuing.';
+        const existing = scope.conversationId ? scope.store.requests(scope.conversationId).find(request => request.kind === 'question' && request.status === 'open' && request.agentId === scope.agent.id && request.title === title && request.detail === detail) : undefined;
+        const requestId = existing?.id ?? this.deps.openRequest({ scope, title, detail, options: err.candidates }).id;
+        return { ok: false, output: JSON.stringify({ status: 'waiting_for_project', requestId, message: detail, guidance: 'Wait for the user to choose the correct folder. Do not silently reuse a different project or start another coding run.' }) };
+      }
       // The runtime refuses a workspace it has no transport for, and says why.
       return { ok: false, output: `gitu_task could not start: ${(err as Error).message}` };
     }

@@ -57,7 +57,7 @@ import type {
 import type { DiscoveryRequest, DiscoveryResult, DiscoveryIntent } from '../connections/discovery-engine.js';
 import { catalogOperation } from '../connections/catalog.js';
 import { CapabilityAwareResolver, formatBlockedPrerequisite, inferMissingPrerequisite, type PrerequisiteRecoveryOptions } from '../recovery/prerequisites.js';
-import { inspectWorkspace, isWorkspacePath, isWorkspacePrerequisite, isWorkspaceQuestion, matchesSelectedWorkspace, workspaceAccessSummary, workspaceQuestionOptions, workspaceReady, workspaceUserDetail } from '../recovery/workspace.js';
+import { inspectWorkspace, isWorkspacePath, isWorkspacePrerequisite, isWorkspaceQuestion, isWorkspaceIdentityQuestion, matchesSelectedWorkspace, workspaceAccessSummary, workspaceQuestionOptions, workspaceReady, workspaceUserDetail } from '../recovery/workspace.js';
 import { answerQuestionsOnce } from './question-memory.js';
 import { renderSkillContract, SkillStore, type SkillIdentity } from '../skills/skills.js';
 import type { BrowserBridge } from '../browser/browser.js';
@@ -3528,14 +3528,18 @@ export class Gitu {
                 const options = await workspaceQuestionOptions(question.options, guard, question.question);
                 const current = await inspectWorkspace(guard.activeWritableRoot, guard);
                 const explicitTargets = question.options.some(isWorkspacePath);
-                if (workspaceReady(current, question.question) && (!explicitTargets || options.includes(current.path))) {
+                if (!isWorkspaceIdentityQuestion(question) && workspaceReady(current, question.question) && (!explicitTargets || options.includes(current.path))) {
                   observe(`${workspaceAccessSummary(current)} Continue the authorized task using Gitu tools. Do not request a different workspace because the reasoning transport reports read-only.`);
                   continue;
+                }
+                if (isWorkspaceIdentityQuestion(question)) {
+                  if (workspaceReady(current, question.question) && !options.includes(current.path)) options.push(current.path);
+                  question.options = options;
                 }
                 workspaceQuestions.push(question);
                 validatedQuestions.push({ kind: 'workspace', header: 'Project folder',
                   question: options.length > 0 ? 'Which verified project folder is the intended target?' : 'Can you select or restore access to the intended project folder?',
-                  detail: `${workspaceUserDetail(current)} ${options.length ? 'Choose the intended folder to continue this task.' : 'Review the folder and project controls, then resume after access is restored.'}`, options });
+                  detail: `${isWorkspaceIdentityQuestion(question) ? 'The selected folder may belong to a different project. Confirm the intended folder before any more coding. ' : ''}${workspaceUserDetail(current)} ${options.length ? 'Choose the intended folder to continue this task.' : 'Review the folder and project controls, then resume after access is restored.'}`, options });
               }
               action.questions = validatedQuestions;
               if (action.questions.length === 0) break;
@@ -3572,8 +3576,9 @@ export class Gitu {
                 for (const question of workspaceQuestions) {
                   const options = await workspaceQuestionOptions(question.options, guard, question.question);
                   const current = await inspectWorkspace(guard.activeWritableRoot, guard);
-                  const currentRestored = workspaceReady(current, question.question) && (!question.options.some(isWorkspacePath) || options.includes(current.path));
-                  const selectedVerified = options.some(option => answer.includes(option));
+                  const identityQuestion = isWorkspaceIdentityQuestion(question);
+                  const currentRestored = !identityQuestion && workspaceReady(current, question.question) && (!question.options.some(isWorkspacePath) || options.includes(current.path));
+                  const selectedVerified = options.some(option => answer.includes(option) && (!identityQuestion || matchesSelectedWorkspace(option, current.path)));
                   if (currentRestored || selectedVerified) continue;
                   ledger.addBlocker(`The intended workspace is still unavailable or unselected. ${workspaceAccessSummary(current)} Restore access through the folder controls and resume this task.`);
                   exitReason = 'blocked';
@@ -3582,7 +3587,10 @@ export class Gitu {
                 if (exitReason === 'blocked') break;
                 observe(`User answered your clarifying questions:\n${answer}\n${agentWorkflow ? 'Apply these answers and continue the requested work; create a plan or criteria only when useful.' : 'Use these answers to set criteria and plan.'}`);
               } else {
-                observe('No interactive user is available. State explicit assumptions with set_hypothesis and proceed.');
+                if (workspaceQuestions.length) {
+                  ledger.addBlocker('The intended project folder needs user selection or confirmation. Stop until the user chooses the correct folder; do not assume or reuse another project.');
+                  exitReason = 'blocked';
+                } else observe('No interactive user is available. State explicit assumptions with set_hypothesis and proceed.');
               }
               break;
             }

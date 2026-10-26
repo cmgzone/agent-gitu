@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { isStructuredAuth, normalizeStructuredAuth, encodeStructuredCredentials, structuredAuthHeaders, structuredSecrets, providerAuthConfiguration, invalidateStructuredAuth, ConnectionAuthenticationError, type StructuredConnectionAuth } from './structured-auth.js';
+import { isStructuredAuth, normalizeStructuredAuth, encodeStructuredCredentials, structuredAuthHeaders, structuredSecrets, providerAuthConfiguration, invalidateStructuredAuth, ConnectionAuthenticationError, UnsupportedConnectionAuthError, type StructuredConnectionAuth } from './structured-auth.js';
 import { EnvHttpProxyAgent } from 'undici';
 import { loadStoredKeys, removeStoredKey, setStoredKey } from '../llm/keys.js';
 import { readCredentialJson, updateCredentialJson } from '../llm/credential-file.js';
@@ -449,6 +449,7 @@ export function normalizeConnectionAuth(value: unknown): ConnectionAuth | undefi
   if (value === undefined || value === null) return undefined;
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw Error('Choose Bearer authentication or a named API-key header.');
   const raw = value as Record<string, unknown>;
+  if (typeof raw['type'] === 'string' && !['basic', 'headers', 'oauth2', 'bearer', 'header'].includes(raw['type'])) throw new UnsupportedConnectionAuthError('authentication_scheme');
   if (['basic', 'headers', 'oauth2'].includes(String(raw['type']))) return normalizeStructuredAuth(raw);
   if (raw['type'] === 'bearer') return { type: 'bearer' };
   const header = typeof raw['header'] === 'string' ? raw['header'].trim() : '';

@@ -1,6 +1,10 @@
 import { existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 
+export class CodingProjectSelectionError extends Error {
+  constructor(message: string, readonly candidates: string[]) { super(message); this.name = 'CodingProjectSelectionError'; }
+}
+
 /** Keep an explicit private project consistent across the brief and handoff. */
 export function privateProjectForCoding(projectPath?: string, goal = ''): string {
   const normalize = (value: string): string => {
@@ -13,8 +17,8 @@ export function privateProjectForCoding(projectPath?: string, goal = ''): string
     .map(match => normalize(match[1]!.replace(/[.:]+$/, '')));
   const folders = [...new Set(named)];
   const selected = projectPath ? normalize(projectPath) : '/workspace';
-  if (folders.length > 1 && !projectPath) throw new Error('The task names several project folders. Inspect them and pass the intended projectPath.');
-  if (folders.length === 1 && selected !== '/workspace' && selected !== folders[0]) throw new Error(`Folder mismatch: the task names ${folders[0]}, but projectPath is ${selected}. Confirm the intended repository before coding.`);
+  if (folders.length > 1 && !projectPath) throw new CodingProjectSelectionError('The task names several project folders. Ask the user which project folder to use before coding.', folders);
+  if (folders.length === 1 && selected !== '/workspace' && selected !== folders[0]) throw new CodingProjectSelectionError(`Folder mismatch: the task names ${folders[0]}, but projectPath is ${selected}. Ask the user to confirm the intended repository before coding.`, [folders[0]!, selected]);
   return selected === '/workspace' && folders.length === 1 ? folders[0]! : selected;
 }
 
@@ -31,7 +35,8 @@ export function privateCodingToolParams(folder: string, tool: string, params: Re
   }
   return params;
 }
-/** Match an explicitly named existing project; ambiguous briefs keep their original root. */
+/** Never silently substitute a remembered folder when the task identifies a
+ * different project or several plausible project roots. */
 export function projectForCoding(base: string, goal: string, selected?: string): string {
   const projects = readdirSync(base, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink() && !entry.name.startsWith('.'))
@@ -41,6 +46,10 @@ export function projectForCoding(base: string, goal: string, selected?: string):
       const escaped = entry.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       return new RegExp('(^|[^a-zA-Z0-9_-])' + escaped + '($|[^a-zA-Z0-9_-])', 'i').test(goal);
     });
-  if (projects.length === 1) return realpathSync(path.join(base, projects[0]!.name));
-  return selected && existsSync(selected) && statSync(selected).isDirectory() ? realpathSync(selected) : base;
+  const candidates = projects.map(project => realpathSync(path.join(base, project.name)));
+  if (candidates.length > 1) throw new CodingProjectSelectionError('The task names several project folders. Ask the user to select the intended project before continuing.', candidates);
+  if (selected && (!existsSync(selected) || !statSync(selected).isDirectory())) throw new CodingProjectSelectionError('The remembered or requested project folder is missing. Ask the user to select the correct folder; do not fall back to another project.', candidates);
+  const current = selected ? realpathSync(selected) : undefined;
+  if (candidates.length === 1 && current && candidates[0] !== current) throw new CodingProjectSelectionError(`Folder mismatch: the task identifies ${candidates[0]}, but the selected project is ${current}. Ask the user to choose the correct folder before continuing.`, [candidates[0]!, current]);
+  return candidates[0] ?? current ?? base;
 }

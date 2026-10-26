@@ -73,8 +73,10 @@ The Teams tab connects to desktop Cowork: view/add/edit teammates, open direct
 and group conversations, choose a chief of staff, use topic threads, follow live
 replies and activity, stop work, and answer questions or review permission requests.
 Saved message edits and deletions from desktop are reflected on the phone.
-Provider and connection setup remains in the desktop interface. Push notifications
-and offline task execution are not implemented.
+Provider and connection setup remains in the desktop interface. Android supports
+opt-in FCM push notifications through the full workspace; see
+[Firebase setup](../../docs/android-fcm.md). iOS/web push notifications and offline
+task execution are not implemented.
 
 ## Start the server and web companion
 
@@ -144,11 +146,21 @@ length limit. The Android SDK must include the NDK version selected by React Nat
 You can also map the repository's `apps` directory to an unused drive letter with
 `subst R: C:\path\to\agentgitu\apps`, then build from `R:\mobile\android`.
 Map the parent directory so the mobile package is below the drive root.
-Pass `-Pkotlin.incremental=false` for a mapped-drive build to avoid Kotlin
+In the build shell, set
+`$env:NODE_OPTIONS = '--preserve-symlinks --preserve-symlinks-main'` before
+running Gradle. This keeps Node dependency paths on the mapped drive, matching
+Gradle's paths. Expo can still generate autolinking dependency paths on the
+original drive. If Gradle reports "this and base files have different roots",
+run `node ../scripts/normalize-android-paths.cjs` from the mapped `android`
+directory, then retry Gradle. The helper changes only generated autolinking
+paths inside this mobile project. Repeat it if autolinking is regenerated.
+Set `$env:NODE_ENV = 'production'` for a release build.
+Pass `'-Pkotlin.incremental=false'` for a mapped-drive build to avoid Kotlin
 incremental caches mixing the original and mapped drive paths.
 If the default NDK installation is incomplete, install it using Android SDK
-Manager or select another complete installed NDK with `-PndkVersion=VERSION`.
-Append `-PreactNativeArchitectures=arm64-v8a` for an ARM64-only preview APK.
+Manager or select another complete installed NDK with `'-PndkVersion=VERSION'`.
+Quote the entire argument in PowerShell so the NDK version keeps every component.
+Append `'-PreactNativeArchitectures=arm64-v8a'` for an ARM64-only preview APK.
 Remove the temporary drive mapping with `subst R: /D` when the build finishes.
 
 ## Validation

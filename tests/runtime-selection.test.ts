@@ -35,7 +35,9 @@ it('finds a named existing project instead of the general workspace and does not
     mkdirSync(path.join(home, name));
     writeFileSync(path.join(home, name, 'package.json'), '{}');
   }
-  expect(projectForCoding(home, 'Improve the existing pikiwebsite homepage', path.join(home, 'another'))).toBe(path.join(home, 'pikiwebsite'));
-  expect(projectForCoding(home, 'Compare pikiwebsite and another')).toBe(home);
+  expect(projectForCoding(home, 'Improve the existing pikiwebsite homepage')).toBe(path.join(home, 'pikiwebsite'));
+  expect(() => projectForCoding(home, 'Improve the existing pikiwebsite homepage', path.join(home, 'another'))).toThrow('Folder mismatch');
+  expect(() => projectForCoding(home, 'Compare pikiwebsite and another')).toThrow('Ask the user');
+  expect(() => projectForCoding(home, 'Continue', path.join(home, 'missing-project'))).toThrow('do not fall back');
   expect(projectForCoding(home, 'Continue', path.join(home, 'another'))).toBe(path.join(home, 'another'));
 });

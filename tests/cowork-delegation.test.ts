@@ -16,6 +16,7 @@ import { createBudgetAccount } from '../src/coding/budget.js';
 import { CoworkStore } from '../src/cowork/store.js';
 import { coworkToolDocs, executeCoworkTool, type CoworkToolScope, type CoworkToolPerms } from '../src/cowork/tools.js';
 import type { ToolContext } from '../src/tools/tools.js';
+import { CodingProjectSelectionError } from '../src/coding/project-selection.js';
 import type { CompletionReport } from '../src/types.js';
 
 const root = mkdtempSync(path.join(tmpdir(), 'cowork-delegation-'));
@@ -128,6 +129,20 @@ function setup(name: string) {
 function start(setupResult: ReturnType<typeof setup>, params: Record<string, unknown> = { goal: 'fix the build' }) {
   return setupResult.delegation.run(setupResult.scope, params);
 }
+
+it('asks the user about a mismatched project before creating a coding session and reuses the pending question', async () => {
+  const f = setup('wrong-project-question');
+  vi.spyOn((f.delegation as any).deps, 'workspaceFor').mockImplementation(() => { throw new CodingProjectSelectionError('Folder mismatch: requested project and selected folder differ. Ask the user.', ['/workspace/correct', '/workspace/previous']); });
+  const result = await f.delegation.start(f.scope, { goal: 'Repair the connector', projectPath: '/workspace/previous' });
+  const parsed = JSON.parse(result.output);
+  expect(result.ok).toBe(false); expect(parsed.status).toBe('waiting_for_project');
+  expect(f.inputs).toHaveLength(0); expect(f.delegation.activeSessions).toBe(0);
+  const requests = f.store.requests(f.conversation.id);
+  expect(requests).toHaveLength(1); expect(requests[0]).toMatchObject({ kind: 'question', status: 'open', options: ['/workspace/correct', '/workspace/previous'] });
+  expect(parsed.requestId).toBe(requests[0]!.id);
+  await f.delegation.start(f.scope, { goal: 'Repair the connector', projectPath: '/workspace/previous' });
+  expect(f.store.requests(f.conversation.id)).toHaveLength(1); expect(f.inputs).toHaveLength(0);
+});
 
 describe('gitu_task parameters', () => {
   it('requires a goal and rejects a mode or cap it cannot honour', () => {

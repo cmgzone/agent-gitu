@@ -1,34 +1,29 @@
-# Agent Gitu marketing website
+# Pikpam public website
 
-A static, blue-and-black site for `https://pikpam.com`. No browser framework, package installation, analytics, cookies, or external font requests are required.
+This directory is the committed static website root for `https://pikpam.com`. The site keeps its existing generated HTML/CSS architecture and serves through the included Node runtime on port 3000.
 
-From the repository root:
+## Build and checks
+
+From this directory:
 
 ```sh
 npm run website:build
-npm run website:preview
+npm test
+npm run lint
 ```
 
-The local preview opens at `http://127.0.0.1:8931`. Edit copy in `website/build.cjs`, domain settings in `website/site.config.json`, and presentation in `styles.css` / `script.js`. Rebuild after changing copy or settings. Generated HTML is committed so any static host can serve it directly.
+The website has no dependency install step. `build.cjs` regenerates the committed HTML, `sitemap.xml`, and `robots.txt`.
 
-## Hosting
+## Customer problem support
 
-Publish the contents of `website/` as the public root on your static host. The root must contain `index.html`, all other HTML pages, `styles.css`, `script.js`, `assets/`, `robots.txt`, and `sitemap.xml`. The `CNAME` and `.nojekyll` files support GitHub Pages; other hosts can ignore them. The generator, configuration, and this README do not need to be included in the deployed files.
+Every page includes the **Pikpam Support** problem-intake widget. It accepts only website/service problems and collects a name, contact email, affected product/page, problem description, start time, and safe reproduction details. The UI and `support-ticket.cjs` both reject out-of-scope requests and secrets.
 
-Configure the host for `pikpam.com`, enable HTTPS, and redirect alternate hosts (including `www`) to that canonical domain. Use `404.html` for unknown routes with an HTTP 404 response. The `website` branch owns the site source.
+The server persists sanitized tickets as JSONL and creates one notification event per accepted ticket. Set these non-secret Coolify environment values on the existing website application before accepting production tickets:
 
-### Coolify
+- `SUPPORT_TICKET_DIR=/var/lib/pikpam/support-tickets` and mount that path as persistent storage.
+- `SUPPORT_NOTIFICATION_EMAIL=support@example.com` (replace with the owner’s configured support destination; do not hard-code it).
+- Optional: `SUPPORT_NOTIFICATION_URL=https://internal.example/support-hook` to POST the sanitized notification event to an internal workflow. Without this URL, the event remains in `notifications.jsonl` for the configured support workflow to process.
 
-Use the existing `pikpam.com` website application in Coolify. Keep its server and domain, select repository `https://github.com/cmgzone/agent-gitu`, branch `website`, build pack **Dockerfile**, base directory `/website`, Dockerfile location `/Dockerfile`, and internal port `3000`. The five-line Dockerfile copies the committed static files into Nginx; no dependency installation or application runtime is needed. Nginx serves missing paths with `404.html` and HTTP status 404. Port 3000 preserves the existing website application's routing. Deploy and check the homepage, a product page, an image, `robots.txt`, and `sitemap.xml` over HTTPS.
+If `SUPPORT_NOTIFICATION_EMAIL` is missing, the API returns a temporary-unavailable response and does not report a ticket as accepted. Development and tests use a temporary directory and a non-delivery queued notification; no real email is sent by this code.
 
-If the domain already points to this Coolify server, its DNS can stay as configured. Enable automatic deployment for pushes to the `website` branch through the existing Git source integration or a repository webhook. Coolify pulls and deploys the branch directly, independently of GitHub Actions billing. [Coolify's Dockerfile deployment guide](https://coolify.io/docs/applications/builds/dockerfile) describes these settings. The application runtime and Windows release remain on `main`.
-
-Each of the nine content pages includes unique titles and descriptions, canonical URLs, social preview metadata, and JSON-LD. Home includes SoftwareApplication and visible FAQ markup; the product note includes Article markup. Submit `https://pikpam.com/sitemap.xml` after publication. SEO metadata prepares pages for crawling; it does not guarantee rankings.
-
-## Artwork and motion
-
-`assets/gitu-cowork.png`, `gitu-coding.png`, and `gitu-connections.png` are the user's original dark-theme Windows app screenshots supplied on October 10. Optimized JPEG copies are used on the homepage, product gallery, Cowork, Coding, and Connections pages. The display frame hides the Windows taskbar with CSS; the underlying screenshots are unchanged. Visitors can open the complete images. The gallery switches between real screenshots and does not simulate a live agent. Screenshot edges blend into the page without decorative window bars or borders.
-
-`assets/gitu-signal.png` is original AI-generated editorial artwork; its optimized JPEG is used on the product note. App screenshots appear without borders or window frames, with CSS edge fades that blend into the page. Floating screenshots, quiet widget illustrations, and context flow use CSS motion, with reduced-motion preferences and a pause control. Illustrative widget counts are labeled as examples and never read an actual mailbox.
-
-Until the installer release is published, the download page identifies v0.3.12 as pending and links to the available GitHub releases. After both installer assets are verified and the release is public, set `releasePublished` to `true` in `site.config.json` and rebuild to enable direct Setup and Portable download links. Product copy reflects the source implementation and documents the runtime requirements for background work.
+The API never logs ticket fields. It logs only a stable error code when an unexpected request failure occurs. Do not put credentials, API keys, payment data, one-time codes, private keys, or other secrets in a support report.

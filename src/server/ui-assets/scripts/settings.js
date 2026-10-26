@@ -65,6 +65,20 @@
         '<div class="setrow"><div class="grow"><div class="t">Spend ceiling</div><div class="d">Optional per-run limit in USD. Left empty, a run is never stopped for cost — only by you, or by finishing the task.</div></div><input type="text" id="gSpend" inputmode="decimal" placeholder="none" style="width:96px;background:var(--card2);border:1px solid var(--border2);color:var(--text);border-radius:8px;padding:6px 9px;font:inherit;font-size:13px"></div>' +
         '</div>';
       b.insertAdjacentHTML('beforeend','<h2>Account</h2><div class="setcard" id="googleAccountSettings"><div class="setrow"><div class="grow"><div class="t">Google sign-in</div><div class="d">Checking configuration…</div></div></div></div>');
+      if (window.ReactNativeWebView) {
+        b.insertAdjacentHTML('beforeend', '<h2>Sign out</h2><div class="setcard"><div class="setrow"><div class="grow"><div class="t">Log out of this phone</div><div class="d">Return to the server chooser. Saved conversation copies are removed from this device.</div></div><button class="btn ghost" id="gituAndroidLogout">Log out</button></div></div>');
+        $('gituAndroidLogout').onclick = async function () {
+          var button = this; button.disabled = true;
+          try {
+            await api('/api/auth/logout', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+            for (var index = localStorage.length - 1; index >= 0; index--) {
+              var key = localStorage.key(index);
+              if (key && (key.indexOf('hermes.cowork.offline.') === 0 || key.indexOf('gitu.offline.main-run.') === 0 || key === 'gitu.offline.main-run.active.v1')) localStorage.removeItem(key);
+            }
+            window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'gitu-logout' }));
+          } catch (error) { toast(error.message || 'Could not log out. Check the connection and retry.', true); button.disabled = false; }
+        };
+      }
       api('/api/auth/status').then(function(status){var card=$('googleAccountSettings');if(!card)return;card.querySelector('.d').textContent=status.googleEnabled?(status.googleLinked?'Your Google account is linked. You can use Google on the sign-in screen.':'Link the Google account matching your workspace owner email.'): 'The server owner can enable Google sign-in with a Google OAuth client and an HTTPS public address.';if(status.googleEnabled&&!status.googleLinked){var link=document.createElement('a');link.className='btn';link.href='/auth?link=google';link.textContent='Link Google account';card.querySelector('.setrow').appendChild(link);}}).catch(function(){});
       var googleCard=$('googleAccountSettings'),details=document.createElement('details');
       details.style.padding='12px';details.innerHTML='<summary>Configure Google sign-in</summary><p class="meta">Create a Web application OAuth client in Google Cloud. Register the callback shown below. Your client secret stays on this Gitu server.</p><form id="googleOAuthForm"><label>Public address<input name="origin" type="url" placeholder="https://gitu.example.com" required></label><label>Google client ID<input name="clientId" autocomplete="off" required></label><label>Client secret<input name="clientSecret" type="password" autocomplete="new-password" placeholder="Leave blank to keep saved secret"></label><p data-callback class="meta"></p><button type="submit" class="btn">Save Google configuration</button><p data-result role="status" class="meta"></p></form>';

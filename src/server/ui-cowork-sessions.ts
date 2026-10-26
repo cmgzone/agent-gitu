@@ -46,6 +46,8 @@ export const COWORK_SESSIONS_JS = String.raw`
       var cw=cwEnsure(),wasActive=cw.active===id;
       if(wasActive){cwStopPoll();cw.active=null;cw.threadId=null;cw.msgs=[];cw.threads=[];cw.folders=[];cw.widgets=[];cw.pendingFiles=[];cw.artifacts=[];cw.todos=[];cw.requests=[];cw.workHistory=[];cw.referencedMessageIds=[];cw.widgetRequest=null;cw.working=null;cw.progress=null;cw.progresses=[];cw.queued=0;cw.subAgents={nodes:[]};cw.profileOpen=false;cw.connectionsOpen=false;cw.busy=false;}
       cw.convs=cw.convs.filter(function(conv){return conv.id!==id;});
+      cwPurgeOfflineChat(id);
+      cwPersistOfflineRoster();
       Object.keys(cw.outbox).forEach(function(key){if(cw.outbox[key].conversationId===id)delete cw.outbox[key];});
       if(cw.chatViews)Array.from(cw.chatViews.keys()).forEach(function(key){if(JSON.parse(key)[0]===id)cw.chatViews.delete(key);});
       try { if(typeof localStorage!=='undefined'){

@@ -1,4 +1,59 @@
-
+  var OFFLINE_MAIN_RUN_PREFIX = 'gitu.offline.main-run.v1.';
+  var OFFLINE_MAIN_ACTIVE_KEY = 'gitu.offline.main-run.active.v1';
+  function persistOfflineMainRun(runId) {
+    var sess = S.sessions && S.sessions[runId];
+    if (!sess || !runId) return;
+    if (sess.offlineSaveTimer) clearTimeout(sess.offlineSaveTimer);
+    sess.offlineSaveTimer = setTimeout(function () {
+      sess.offlineSaveTimer = null;
+      try {
+        var session = sess.session || {},
+          snapshot = {
+            runId: runId,
+            chatish: Boolean(sess.chatish),
+            projectPath: sess.projectPath || session.projectPath,
+            session: {
+              runId: session.runId || runId, goal: session.goal, mode: session.mode,
+              status: session.status, startedAt: session.startedAt, finishedAt: session.finishedAt,
+              report: session.report, error: session.error, projectPath: session.projectPath,
+              project: session.project, taskId: session.taskId, provider: session.provider,
+              model: session.model, effort: session.effort, progress: session.progress
+            },
+            events: (sess.events || []).slice(-160).map(function (event) {
+              return { i: event.i, t: event.t, text: event.text, typed: event.typed };
+            })
+          }, value = JSON.stringify(snapshot);
+        while (value.length > 350000 && snapshot.events.length > 1) {
+          snapshot.events.shift(); value = JSON.stringify(snapshot);
+        }
+        localStorage.setItem(OFFLINE_MAIN_RUN_PREFIX + encodeURIComponent(runId), value);
+        localStorage.setItem(OFFLINE_MAIN_ACTIVE_KEY, runId);
+      } catch (error) {}
+    }, 300);
+  }
+  function restoreOfflineMainRun() {
+    try {
+      var runId = localStorage.getItem(OFFLINE_MAIN_ACTIVE_KEY);
+      if (!runId || !/^[\w-]{1,150}$/.test(runId)) return false;
+      var snapshot = JSON.parse(localStorage.getItem(OFFLINE_MAIN_RUN_PREFIX + encodeURIComponent(runId)) || 'null');
+      if (!snapshot || snapshot.runId !== runId || !Array.isArray(snapshot.events)) return false;
+      S.sessions[runId] = {
+        events: snapshot.events, session: snapshot.session || null, chatish: Boolean(snapshot.chatish),
+        projectPath: snapshot.projectPath, side: 'state', nodes: {}, pendingFiles: [],
+        lastIndex: snapshot.events.length ? snapshot.events[snapshot.events.length - 1].i : -1,
+        offlineSnapshot: true
+      };
+      openRun(runId, { chatish: Boolean(snapshot.chatish), projectPath: snapshot.projectPath });
+      setWorking(null);
+      var stream = $('stream');
+      if (stream) {
+        var note = document.createElement('div'); note.className = 'timeline-trim-note';
+        note.textContent = 'Saved conversation · offline copy'; stream.insertBefore(note, stream.firstChild);
+      }
+      toast('Showing the saved Agent conversation offline.');
+      return true;
+    } catch (error) { return false; }
+  }
 
   function startRun() {
     if (S.starting) return;
@@ -99,6 +154,15 @@
     closeToolPanel();
     stopStreams();
     var sess = S.sessions[runId] || (S.sessions[runId] = { events: [], ledger: null, session: null, side: 'state', nodes: {}, pendingFiles: [] });
+    try {
+      var cacheKey = OFFLINE_MAIN_RUN_PREFIX + encodeURIComponent(runId);
+      for (var index = localStorage.length - 1; index >= 0; index--) {
+        var key = localStorage.key(index);
+        if (key && key.indexOf(OFFLINE_MAIN_RUN_PREFIX) === 0 && key !== cacheKey) localStorage.removeItem(key);
+      }
+      localStorage.setItem(OFFLINE_MAIN_ACTIVE_KEY, runId);
+    } catch (error) {}
+    persistOfflineMainRun(runId);
     if(opts&&opts.projectPath)sess.projectPath=opts.projectPath;
     sess.nodes = {};
     resetStreamRenderState(sess);
@@ -236,6 +300,7 @@
       if (ev.i > sess.lastIndex) {
         sess.lastIndex = ev.i;
         sess.events.push(ev);
+        persistOfflineMainRun(runId);
         sess.replaying = Boolean(ev.replay);
         appendEvent(runId, ev);
         sess.replaying = false;

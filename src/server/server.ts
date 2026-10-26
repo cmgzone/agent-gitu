@@ -6640,7 +6640,14 @@ export class GituServer {
     }
 
     if (method === 'GET' && (path === '/' || path === '/index.html')) {
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      // Android's private WebView may reopen this static shell from its own
+      // cache when the workspace server is offline. Keep it private and
+      // immediately stale so connected clients always revalidate it.
+      const webViewShell = /AgentGituMobile/.test(String(req.headers['user-agent'] ?? ''));
+      res.writeHead(200, {
+        'content-type': 'text/html; charset=utf-8',
+        ...(webViewShell ? { 'cache-control': 'private, max-age=0, must-revalidate' } : {}),
+      });
       res.end(UI_HTML);
       return;
     }

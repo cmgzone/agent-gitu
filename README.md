@@ -171,8 +171,9 @@ of at least 15 characters. Registration creates the first workspace owner; then
 sign in with your email and password. Email is a local sign-in identifier; this
 desktop account flow does not send verification or recovery emails. The password gate protects the UI, APIs, previews,
 downloads, and mobile companion. Passwords are stored as salted scrypt hashes;
-sessions use HttpOnly cookies, expire after eight hours, and are revoked by
-**Cowork → Lock app** or a server restart. Five failed logins trigger a
+sessions use persistent HttpOnly cookies and stay signed in until logout. Android
+logout is in **Settings → General**; **Cowork → Lock app** also revokes the current
+session. Five failed logins trigger a
 15-minute cooldown. Keep the password in your password manager.
 
 In **Cowork → Connections**, enter your Composio project API key once, search

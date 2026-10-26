@@ -13,10 +13,10 @@ it wholesale is still paused: `../../docs/ui-v2-migration.md`.
 The companion is served at `/companion/` after `npm run mobile:build:web`.
 
 Android remembers the last server and opens it directly next time. The workspace
-fills the screen without an address toolbar; Android Back navigates web history,
-then offers Reload or Connection settings at the root. Failed connections also
-show Retry and Connection settings. Server sign-in cookies remain subject to the
-server's eight-hour expiry. Mobile chat surfaces use solid backgrounds without
+fills the screen without an address toolbar. Android Back closes Gitu panels and
+returns through Gitu views before using web history; at the root it shows a
+Gitu-styled panel for staying, reloading, or opening connection settings. Failed
+connections also show Retry and Connection settings. Mobile chat surfaces use solid backgrounds without
 glass blur, and LAN HTTP supports sending and copying messages.
 Scroll bars stay hidden while touch scrolling remains available. Widget,
 computer, gallery, and overlay icons follow the selected teammate's color;

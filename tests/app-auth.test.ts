@@ -194,8 +194,9 @@ describe('whole-app authentication', () => {
     }
   }, 60000);
 
-  it('expires sessions and terminates streams when the app is locked', async () => {
-    const auth = new AppAuth(path.join(mkdtempSync(path.join(tmpdir(), 'gitu-auth-')), 'password.json'));
+  it('keeps sessions through time and server restarts until the user logs out', async () => {
+    const authFile = path.join(mkdtempSync(path.join(tmpdir(), 'gitu-auth-')), 'password.json');
+    const auth = new AppAuth(authFile);
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
     const headers: Record<string, string> = {};
     const response = {
@@ -210,17 +211,20 @@ describe('whole-app authentication', () => {
     auth.track(req, stream);
     expect(auth.authenticated(req)).toBe(true);
     vi.advanceTimersByTime(8 * 60 * 60 * 1000);
-    expect(auth.authenticated(req)).toBe(false);
-    expect(stream.destroy).toHaveBeenCalledOnce();
-    delete headers['Set-Cookie']; // The next HTTP response has its own headers.
-    auth.issue(request(), response);
-    const locked = request(headers['Set-Cookie']);
-    const other = { once: vi.fn(), destroy: vi.fn() } as unknown as ServerResponse;
-    auth.track(locked, other);
-    auth.logout(locked, response);
-    expect(auth.authenticated(locked)).toBe(false);
-    expect(other.destroy).toHaveBeenCalledOnce();
+    expect(auth.authenticated(req)).toBe(true);
+    expect(stream.destroy).not.toHaveBeenCalled();
     auth.close();
+    expect(stream.destroy).toHaveBeenCalledOnce();
+    const restarted = new AppAuth(authFile);
+    expect(restarted.authenticated(req)).toBe(true);
+    delete headers['Set-Cookie']; // The next HTTP response has its own headers.
+    const locked = request(req.headers.cookie ?? '');
+    const other = { once: vi.fn(), destroy: vi.fn() } as unknown as ServerResponse;
+    restarted.track(locked, other);
+    restarted.logout(locked, response);
+    expect(restarted.authenticated(locked)).toBe(false);
+    expect(other.destroy).toHaveBeenCalledOnce();
+    restarted.close();
   });
 
   it('fails closed on damaged password files and never permits setup through a proxy host', () => {

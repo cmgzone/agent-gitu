@@ -16,7 +16,10 @@
       updateProjChip();
       renderSidebar();
       if (S.active === 'home') openHome();
-    }).catch(function () { updateProjChip(); });
+    }).catch(function () {
+      updateProjChip();
+      if (S.active === 'home' && typeof restoreOfflineMainRun === 'function') restoreOfflineMainRun();
+    });
     api('/api/home').then(function (h) {
       var heal = function (p) {
         if (!p) return p;
@@ -114,4 +117,21 @@
       cwOpenConv(target.targetId); return;
     }
     openHome();
+  };
+  window.gituAndroidBack = function () {
+    var settings = $('settings');
+    if (settings && !settings.hidden) { closeSettings(); return true; }
+    var modals = document.querySelectorAll('.modal:not([hidden])');
+    for (var i = modals.length - 1; i >= 0; i--) {
+      var modal = modals[i], cancel = modal.querySelector('[data-cancel]') || modal.querySelector('.btn.ghost');
+      if (cancel && cancel.onclick) cancel.click(); else modal.remove();
+      return true;
+    }
+    var shell = document.querySelector('.shell');
+    if (shell && shell.classList.contains('mobile-nav-open')) { toggleMobileNav(false); return true; }
+    var panel = $('cwPanelBackdrop');
+    if (panel && !panel.hidden && typeof cwClosePanels === 'function') { cwClosePanels(); return true; }
+    if (S.active === 'cowork' && typeof cwExit === 'function') { cwExit(); return true; }
+    if (S.active !== 'home') { openHome(); return true; }
+    return false;
   };

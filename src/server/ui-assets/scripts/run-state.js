@@ -142,6 +142,7 @@
       S.pollFailures = 0;
       retainUsageEstimate(sess, session);
       sess.session = session;
+      if (typeof persistOfflineMainRun === 'function') persistOfflineMainRun(runId);
       homeRunProjectLabel();
       renderCoworkCodingSource(session);
       sess.taggedFolders = session.taggedFolders || [];

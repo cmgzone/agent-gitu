@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync, renameSync, unlinkSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
@@ -8,7 +8,7 @@ const derive = (password: string, salt: string): Promise<Buffer> =>
     scrypt(password, salt, 32, { N: 131072, r: 8, p: 1, maxmem: 256 * 1024 * 1024 }, (error, key) => (error ? reject(error) : resolve(key)));
   });
 const COOKIE = 'gitu_session';
-const SESSION_MS = 8 * 60 * 60 * 1000;
+const COOKIE_MAX_AGE_SECONDS = 10 * 365 * 24 * 60 * 60;
 const WINDOW_MS = 15 * 60 * 1000;
 interface PasswordRecord {
   version: 1 | 2;
@@ -20,9 +20,7 @@ interface PasswordRecord {
   googleSubject?: string;
 }
 interface Session {
-  expires: number;
   streams: Set<ServerResponse | Duplex>;
-  timer: NodeJS.Timeout;
 }
 
 /** App authentication is independent from native/mobile API credentials. */
@@ -32,6 +30,7 @@ export class AppAuth {
   private attempts = new Map<string, { count: number; until: number }>();
   private working = 0;
   private settingUp = false;
+  private readonly sessionFile: string;
 
   constructor(
     private readonly file: string,
@@ -40,6 +39,7 @@ export class AppAuth {
     private readonly registrationToken?: string,
     private readonly allowLanLogin = false,
   ) {
+    this.sessionFile = file + '.sessions';
     if (existsSync(file)) {
       const record = JSON.parse(readFileSync(file, 'utf8')) as PasswordRecord;
       if (
@@ -54,6 +54,15 @@ export class AppAuth {
         throw new Error('App password settings are damaged. Restore the password settings file before starting.');
       }
       this.record = record;
+    }
+    if (existsSync(this.sessionFile)) {
+      const saved = JSON.parse(readFileSync(this.sessionFile, 'utf8')) as { version?: number; owner?: unknown; sessions?: unknown };
+      if (saved.version !== 1 || !Array.isArray(saved.sessions) || saved.sessions.length > 100 || saved.sessions.some((key) => typeof key !== 'string' || !/^[a-f0-9]{64}$/.test(key))) {
+        throw new Error('App sessions are damaged. Remove the sessions file to require sign-in again.');
+      }
+      if (saved.owner === (this.record?.userId ?? null)) {
+        for (const key of saved.sessions) this.sessions.set(key as string, { streams: new Set() });
+      }
     }
   }
 
@@ -137,42 +146,70 @@ export class AppAuth {
       ?.slice(COOKIE.length + 1);
   }
 
+  private sessionKey(token: string): string {
+    return createHash('sha256').update(token).digest('hex');
+  }
+
+  private persistSessions(): void {
+    const temporary = this.sessionFile + '.' + randomBytes(8).toString('hex') + '.tmp';
+    try {
+      writeFileSync(temporary, JSON.stringify({ version: 1, owner: this.record?.userId ?? null, sessions: [...this.sessions.keys()] }), { mode: 0o600, flag: 'wx' });
+      renameSync(temporary, this.sessionFile);
+    } finally {
+      if (existsSync(temporary)) unlinkSync(temporary);
+    }
+  }
+
   authenticated(req: IncomingMessage): boolean {
     const token = this.token(req);
-    const session = token ? this.sessions.get(token) : undefined;
-    if (!session) return false;
-    if (session.expires <= Date.now()) {
-      this.drop(token!);
-      return false;
-    }
-    return true;
+    return Boolean(token && this.sessions.has(this.sessionKey(token)));
   }
 
   track(req: IncomingMessage, res: ServerResponse | Duplex): void {
-    const session = this.sessions.get(this.token(req) ?? '');
+    const token = this.token(req);
+    const session = token ? this.sessions.get(this.sessionKey(token)) : undefined;
     if (!session) return;
     session.streams.add(res);
     res.once('close', () => session.streams.delete(res));
   }
 
   private drop(token: string): void {
-    const session = this.sessions.get(token);
+    const key = this.sessionKey(token);
+    const session = this.sessions.get(key);
     if (!session) return;
-    clearTimeout(session.timer);
+    this.sessions.delete(key);
+    try {
+      this.persistSessions();
+    } catch (error) {
+      this.sessions.set(key, session);
+      throw error;
+    }
     for (const response of session.streams) response.destroy();
-    this.sessions.delete(token);
   }
 
   issue(req: IncomingMessage, res: ServerResponse): void {
     const old = this.token(req);
     if (old) this.drop(old);
     const token = randomBytes(32).toString('hex');
-    if (this.sessions.size >= 100) this.drop(this.sessions.keys().next().value!);
-    const timer = setTimeout(() => this.drop(token), SESSION_MS);
-    timer.unref();
-    this.sessions.set(token, { expires: Date.now() + SESSION_MS, streams: new Set(), timer });
+    let evicted: { key: string; session: Session } | undefined;
+    if (this.sessions.size >= 100) {
+      const oldest = this.sessions.keys().next().value!;
+      const session = this.sessions.get(oldest)!;
+      this.sessions.delete(oldest);
+      evicted = { key: oldest, session };
+    }
+    const key = this.sessionKey(token);
+    this.sessions.set(key, { streams: new Set() });
+    try {
+      this.persistSessions();
+    } catch (error) {
+      this.sessions.delete(key);
+      if (evicted) this.sessions.set(evicted.key, evicted.session);
+      throw error;
+    }
+    if (evicted) for (const response of evicted.session.streams) response.destroy();
     const secure = this.secure(req);
-    const cookie = `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_MS / 1000}${secure ? '; Secure' : ''}`;
+    const cookie = `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${COOKIE_MAX_AGE_SECONDS}${secure ? '; Secure' : ''}`;
     const existing = res.getHeader('Set-Cookie');
     res.setHeader('Set-Cookie', existing ? [...(Array.isArray(existing) ? existing.map(String) : [String(existing)]), cookie] : cookie);
     res.setHeader('Cache-Control', 'no-store');
@@ -225,6 +262,7 @@ export class AppAuth {
   }
 
   close(): void {
-    for (const token of this.sessions.keys()) this.drop(token);
+    for (const session of this.sessions.values()) for (const response of session.streams) response.destroy();
+    this.sessions.clear();
   }
 }

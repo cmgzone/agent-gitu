@@ -783,6 +783,49 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     return cw;
   }
   function cwChatKey() { var cw = cwEnsure(); return JSON.stringify([cw.active, cw.threadId || null]); }
+  var CW_OFFLINE_ROSTER_KEY = 'hermes.cowork.offline.roster.v1';
+  var CW_OFFLINE_CHAT_PREFIX = 'hermes.cowork.offline.chat.v1.';
+  function cwOfflineChatKey(conversationId, threadId) {
+    return CW_OFFLINE_CHAT_PREFIX + encodeURIComponent(JSON.stringify([conversationId, threadId || null]));
+  }
+  function cwPersistOfflineRoster() {
+    var cw = cwEnsure();
+    try { localStorage.setItem(CW_OFFLINE_ROSTER_KEY, JSON.stringify({ agents: cw.agents || [], conversations: cw.convs || [], active: cw.active || null })); } catch (error) {}
+  }
+  function cwPersistOfflineChat() {
+    var cw = cwEnsure();
+    if (!cw.active || !Array.isArray(cw.msgs)) return;
+    try {
+      var messages = cw.msgs.slice(-120), value = JSON.stringify(messages);
+      while (value.length > 450000 && messages.length > 1) { messages.shift(); value = JSON.stringify(messages); }
+      localStorage.setItem(cwOfflineChatKey(cw.active, cw.threadId), value);
+      cwPersistOfflineRoster();
+    } catch (error) {}
+  }
+  function cwRestoreOfflineChat() {
+    var cw = cwEnsure();
+    if (!cw.active) return;
+    try {
+      var cached = JSON.parse(localStorage.getItem(cwOfflineChatKey(cw.active, cw.threadId)) || '[]');
+      if (!Array.isArray(cached)) return;
+      var merged = cached.concat(cw.msgs || []), seen = Object.create(null);
+      cw.msgs = merged.filter(function (message) {
+        var key = message && (message.id || (message.seq ? 'seq:' + message.seq : ''));
+        if (!key || seen[key]) return false;
+        seen[key] = true; return true;
+      }).sort(function (a, b) { return (a.seq || Infinity) - (b.seq || Infinity); });
+    } catch (error) {}
+  }
+  function cwPurgeOfflineChat(conversationId) {
+    try {
+      for (var index = localStorage.length - 1; index >= 0; index--) {
+        var key = localStorage.key(index);
+        if (!key || key.indexOf(CW_OFFLINE_CHAT_PREFIX) !== 0) continue;
+        var chat = JSON.parse(decodeURIComponent(key.slice(CW_OFFLINE_CHAT_PREFIX.length)));
+        if (Array.isArray(chat) && chat[0] === conversationId) localStorage.removeItem(key);
+      }
+    } catch (error) {}
+  }
   // Keep a small in-memory window of visited chats. The stream still refreshes
   // their state; this only avoids an empty transcript while the network responds.
   function cwRememberChat() {
@@ -802,6 +845,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     cwLocalMessages().forEach(function (message) {
       if (!cw.removedMessages[cw.active + '/' + message.id] && !cw.msgs.some(function (existing) { return existing.id === message.id; })) cw.msgs.push(message);
     });
+    cwRestoreOfflineChat();
   }
   function cwScrollNodeKey(node) {
     return node.getAttribute('data-cwscroll-key') || node.getAttribute('data-cwworkhistory') || node.getAttribute('data-cwrequest-row') || node.getAttribute('data-cwcheckpoint') || node.getAttribute('data-cwsubagents') || node.getAttribute('data-cwmediagroup');
@@ -1148,12 +1192,28 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       cw.cloudServers = d.cloudServers || [];
       cw.profile = d.profile || {};
       cw.convs = results[1].conversations || [];
+      cwPersistOfflineRoster();
       cwRenderRail();
       if (openFirst && cw.convs.length > 0 && !cwActiveConv()) cwOpenConv(cw.convs[cw.convs.length - 1].id);
       else if (!cw.active) cwRenderChat();
       else { cwRenderMembers(); cwRenderTyping(); cwRenderInfo(); }
       if(cw.homeAction){var action=cw.homeAction;cw.homeAction=null;if(action.kind==='new')cwAgentModal(null);else if(action.kind==='profile')cwOpenProfile(action.agentId);else if(action.kind==='connections')cwOpenConnections(action.agentId);else if(action.agentId)cwOpenDm(action.agentId);}
-    }).catch(function (e) { toast(e.message, true); });
+    }).catch(function (e) {
+      try {
+        var cached = JSON.parse(localStorage.getItem(CW_OFFLINE_ROSTER_KEY) || 'null');
+        if (cached && Array.isArray(cached.agents) && Array.isArray(cached.conversations) && S.active === 'cowork' && cw.loadRevision === revision) {
+          cw.agents = cached.agents; cw.convs = cached.conversations;
+          var active = cached.active && cw.convs.some(function (conversation) { return conversation.id === cached.active; })
+            ? cached.active : cw.convs.length ? cw.convs[cw.convs.length - 1].id : null;
+          cwRenderRail();
+          if (active && openFirst) cwOpenConv(active);
+          else if (!cw.active) cwRenderChat();
+          toast('Showing saved conversations offline. Reconnect to refresh.');
+          return;
+        }
+      } catch (cacheError) {}
+      toast(e.message, true);
+    });
   }
 
   function cwRenderRail() {
@@ -3683,6 +3743,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     if (rosterChanged || foldersChanged || (wasBusy && !cw.busy)) cwRenderInfo();
     cwRenderNow();
     cwShowDesktopHandoffs();
+    cwPersistOfflineChat();
   }
 
   function cwPoll() {
@@ -3766,7 +3827,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     }).then(function (d) {
       if (d.message) {
         delete cw.outbox[id];
-        if (visible()) cwMergeMessage(d.message);
+        if (visible()) { cwMergeMessage(d.message); cwPersistOfflineChat(); }
       }
     }).catch(function (e) {
       // A snapshot may already have confirmed storage despite a lost response.

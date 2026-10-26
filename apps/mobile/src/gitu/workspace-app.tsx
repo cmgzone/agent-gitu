@@ -1,7 +1,7 @@
 import { StatusBar } from 'expo-status-bar';
 import * as FileSystem from 'expo-file-system/legacy';
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, AppState, BackHandler, KeyboardAvoidingView, Linking, ScrollView, Text, View } from 'react-native';
+import { ActivityIndicator, AppState, BackHandler, KeyboardAvoidingView, Linking, ScrollView, Text, View } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
@@ -163,6 +163,9 @@ function Workspace({ server, close, target, opened }: { server: string; close: (
   const web = useRef<WebView>(null);
   const [canGoBack, setCanGoBack] = useState(false);
   const [error, setError] = useState('');
+  const [showRootBack, setShowRootBack] = useState(false);
+  const backTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const backPending = useRef(false);
   const [source] = useState({ uri: server + '/' });
   const [bridgeNonce] = useState(() => {
     const bytes = new Uint8Array(32); globalThis.crypto.getRandomValues(bytes);
@@ -186,16 +189,23 @@ function Workspace({ server, close, target, opened }: { server: string; close: (
   }, []);
   useEffect(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (canGoBack) web.current?.goBack();
-      else Alert.alert('Workspace', 'Connection settings and recovery', [
-        { text: 'Stay', style: 'cancel' },
-        { text: 'Connection settings', onPress: close },
-        { text: 'Reload', onPress: () => web.current?.reload() },
-      ], { cancelable: true });
+      if (showRootBack) { setShowRootBack(false); return true; }
+      backPending.current = true;
+      if (backTimer.current) clearTimeout(backTimer.current);
+      web.current?.injectJavaScript(`(function(){var handled=false;try{handled=!!(window.gituAndroidBack&&window.gituAndroidBack());}catch(e){}if(window.ReactNativeWebView)window.ReactNativeWebView.postMessage(JSON.stringify({type:'gitu-back-result',nonce:${JSON.stringify(bridgeNonce)},handled:handled}));})();true;`);
+      backTimer.current = setTimeout(() => {
+        if (!backPending.current) return;
+        backPending.current = false;
+        if (canGoBack) web.current?.goBack(); else setShowRootBack(true);
+      }, 300);
       return true;
     });
-    return () => subscription.remove();
-  }, [canGoBack, close]);
+    return () => {
+      subscription.remove();
+      backPending.current = false;
+      if (backTimer.current) clearTimeout(backTimer.current);
+    };
+  }, [canGoBack, close, showRootBack, bridgeNonce]);
   const openExternal = (url: string) => {
     if (workspaceNavigation(url, server) === 'external') void Linking.openURL(url).catch(() => setError('Could not open this link in your browser.'));
   };
@@ -240,6 +250,17 @@ function Workspace({ server, close, target, opened }: { server: string; close: (
             const message = JSON.parse(nativeEvent.data);
             if (message.nonce !== bridgeNonce) return;
             if (message.type === 'gitu-push-opened') { if (message.targetId === target?.targetId) opened(); return; }
+            if (message.type === 'gitu-logout') {
+              setShowRootBack(false); setServer(undefined); setNotificationTarget(undefined);
+              if (savedServerFile) void FileSystem.deleteAsync(savedServerFile, { idempotent: true }).catch(() => {});
+              return;
+            }
+            if (message.type === 'gitu-back-result') {
+              backPending.current = false;
+              if (backTimer.current) clearTimeout(backTimer.current);
+              if (message.handled !== true) { if (canGoBack) web.current?.goBack(); else setShowRootBack(true); }
+              return;
+            }
             if (message.type !== 'gitu-push' || typeof message.id !== 'string' || !/^[\w-]{1,100}$/.test(message.id) || typeof message.action !== 'string') return;
             const reply = (result?: Record<string, unknown>, error?: string) => {
               if (workspaceNavigation(currentUrl.current, server) === 'workspace') web.current?.injectJavaScript(`if(window.__gituPushReply)window.__gituPushReply(${JSON.stringify({ id: message.id, result, error }).replace(/</g, '\\u003c')}); true;`);
@@ -264,6 +285,10 @@ function Workspace({ server, close, target, opened }: { server: string; close: (
         javaScriptEnabled
         domStorageEnabled
         cacheEnabled
+        // Keep the last successfully loaded workspace page available when the
+        // server cannot be reached. The UI has its own local conversation cache.
+        cacheMode="LOAD_CACHE_ELSE_NETWORK"
+        applicationNameForUserAgent="AgentGituMobile"
         mediaPlaybackRequiresUserAction={false}
         thirdPartyCookiesEnabled={false}
         sharedCookiesEnabled={false}
@@ -273,6 +298,19 @@ function Workspace({ server, close, target, opened }: { server: string; close: (
         mixedContentMode="never"
         saveFormDataDisabled
       />
+      {showRootBack && (
+        <View style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, backgroundColor: 'rgba(12,20,24,0.56)', justifyContent: 'center', alignItems: 'center', padding: 24 }}>
+          <Card style={{ width: '100%', maxWidth: 380, padding: 22, gap: 14, elevation: 16 }}>
+            <Text style={[s.title, { fontSize: 20 }]}>Workspace</Text>
+            <Text style={s.muted}>You’re at the start of Gitu. Stay here, reconnect to a server, or reload the workspace.</Text>
+            <View style={{ gap: 10, marginTop: 4 }}>
+              <Button primary onPress={() => setShowRootBack(false)}>Stay in Gitu</Button>
+              <Button onPress={() => { setShowRootBack(false); close(); }}>Connection settings</Button>
+              <Button onPress={() => { setShowRootBack(false); web.current?.reload(); }}>Reload workspace</Button>
+            </View>
+          </Card>
+        </View>
+      )}
     </View>
   );
 }

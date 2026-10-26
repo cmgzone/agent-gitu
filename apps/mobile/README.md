@@ -52,9 +52,12 @@ origin. Android must trust the certificate.
 
 Passwords are entered in the server's existing sign-in page, with form saving
 disabled. Sign-in cookies and workspace preferences remain scoped to each
-server; the session still expires after eight hours. Use the workspace's Lock
-action to revoke it. Mobile surfaces avoid glass blur, and LAN HTTP supports
+server; the device stays signed in until logout. On Android, use **Settings →
+General → Log out** to return to the local/remote server chooser. Mobile surfaces avoid glass blur, and LAN HTTP supports
 message sending and Copy. Desktop-only native integrations still depend on the host computer.
+Android keeps a bounded local copy of the most recently opened main Agent run
+and Cowork transcripts for offline reading. Sending messages and running tasks
+still require a reachable server.
 
 Run `npm run mobile:android` to install a development build. The APK instructions
 below also apply to this Android interface. `EXPO_PUBLIC_API_URL` sets the initial

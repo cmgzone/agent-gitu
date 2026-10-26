@@ -43,22 +43,40 @@ Download each account's JSON key and keep it only on the corresponding server,
 outside the repository and Android build. These are privileged credentials:
 never copy them into `apps/mobile`, browser settings, or an APK.
 
-Set these environment variables in the process that runs Gitu:
+Set the project ID and choose one server credential method. For direct JSON
+credentials, set `AGENT_GITU_FCM_SERVICE_ACCOUNT_JSON` to the complete service-
+account JSON value. The server checks that the JSON project matches
+`AGENT_GITU_FCM_PROJECT_ID`.
+
+For Coolify, set `AGENT_GITU_FCM_PROJECT_ID=agent-gitu` and add
+`AGENT_GITU_FCM_SERVICE_ACCOUNT_JSON` as a multiline, runtime-only secret. Paste
+the complete JSON file contents into its value; do not add it as a build
+variable. This option does not need a file mount. Keep the value out of Git,
+build logs, and the Android APK.
+
+For local development, either set the JSON value directly in the process:
+
+```powershell
+$env:AGENT_GITU_FCM_PROJECT_ID = 'agent-gitu'
+$env:AGENT_GITU_FCM_SERVICE_ACCOUNT_JSON = Get-Content -Raw 'C:\private\gitu-firebase-service-account.json'
+```
+
+Or point `GOOGLE_APPLICATION_CREDENTIALS` at a service-account JSON file and
+let Application Default Credentials load it:
 
 ```powershell
 $env:AGENT_GITU_FCM_PROJECT_ID = 'agent-gitu'
 $env:GOOGLE_APPLICATION_CREDENTIALS = 'C:\private\gitu-firebase-service-account.json'
-npm run build
-node dist/cli.js ui
 ```
 
-For Docker/Coolify, mount the service-account JSON read-only as a runtime secret,
-set `GOOGLE_APPLICATION_CREDENTIALS` to its path **inside the container**, and
-set `AGENT_GITU_FCM_PROJECT_ID=agent-gitu` in the runtime environment. Restart
-the existing server. Keep your existing address, HTTPS, account, and phone-access settings.
+For Docker, either pass the JSON environment variable at runtime or mount the
+service-account JSON as a runtime secret and set
+`GOOGLE_APPLICATION_CREDENTIALS` to its path inside the container. Restart or
+redeploy the existing server. Keep your existing address, HTTPS, account, and
+phone-access settings.
 The server needs outbound access to Google authentication and FCM endpoints.
 
-For example, mount the hosted key at `/run/secrets/gitu-fcm-hosted.json` and set:
+For the file-path option, mount the hosted key at `/run/secrets/gitu-fcm-hosted.json` and set:
 
 ```dotenv
 AGENT_GITU_FCM_PROJECT_ID=agent-gitu

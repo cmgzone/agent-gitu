@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
-import type { App } from 'firebase-admin/app';
+import type { App, Credential } from 'firebase-admin/app';
 import { SecretVault } from '../connections/secret-vault.js';
 import { readCredentialJson, updateCredentialJson } from '../llm/credential-file.js';
 import { logger } from './logger.js';
@@ -41,16 +41,38 @@ const description: Record<PushNotice['kind'], string> = {
   test: 'Android notifications are connected.',
 };
 
-/** Firebase credentials are resolved only on the server through ADC. */
+/** Firebase credentials are resolved only on the server through ADC or an env secret. */
 export class FcmPushSender implements PushSender {
   private app?: App;
   constructor(private readonly projectId: string) {
     if (!/^[a-z][a-z0-9-]{4,61}[a-z0-9]$/.test(projectId)) throw Error('Invalid FCM project ID.');
   }
   async send(token: string, workspace: string, notice: PushNotice): Promise<void> {
-    const { initializeApp, applicationDefault } = await import('firebase-admin/app');
+    const { initializeApp, applicationDefault, cert } = await import('firebase-admin/app');
     const { getMessaging } = await import('firebase-admin/messaging');
-    this.app ??= initializeApp({ projectId: this.projectId, credential: applicationDefault() }, 'gitu-push-' + randomUUID());
+    const serviceAccountJson = process.env['AGENT_GITU_FCM_SERVICE_ACCOUNT_JSON']?.trim();
+    let credential: Credential;
+    if (serviceAccountJson) {
+      const serviceAccount = JSON.parse(serviceAccountJson) as {
+        project_id?: unknown;
+        client_email?: unknown;
+        private_key?: unknown;
+      };
+      if (
+        serviceAccount.project_id !== this.projectId ||
+        typeof serviceAccount.client_email !== 'string' ||
+        typeof serviceAccount.private_key !== 'string'
+      )
+        throw Error('Invalid FCM service-account configuration.');
+      credential = cert({
+        projectId: serviceAccount.project_id,
+        clientEmail: serviceAccount.client_email,
+        privateKey: serviceAccount.private_key,
+      });
+    } else {
+      credential = applicationDefault();
+    }
+    this.app ??= initializeApp({ projectId: this.projectId, credential }, 'gitu-push-' + randomUUID());
     const data = { workspaceId: workspace, target: notice.target, targetId: notice.targetId, ...(notice.companyId ? { companyId: notice.companyId } : {}) };
     await getMessaging(this.app).send({
       token,

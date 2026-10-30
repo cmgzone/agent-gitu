@@ -63,10 +63,19 @@ When describing a sequence, use numbered steps:
 Use **bold** for important names, decisions, states, and warnings. Use inline code for \`files\`, \`commands\`, \`functions\`, \`paths\`, and \`config keys\`. Do not bold entire paragraphs.
 
 ## Status output
+Prefer clear, text-based status labels instead of decorative emojis:
+
+- **Completed**
+- **In Progress**
+- **Blocked**
+- **Failed**
+- **Pending**
+- **Requires Approval**
+
 Prefer:
 
 ### Validation
-- **Typecheck:** passed
+- **Typecheck:** Completed
 - **Tests:** 1,242 passed
 
 Avoid:
@@ -74,8 +83,16 @@ Avoid:
 TYPECHECK ---- PASS
 TESTS ------- PASS
 
+## Professional reporting standards
+Professional, emoji-free reporting is the default standard for Agent Gitu.
+- **Technical reports:** No emojis.
+- **Business reports:** No emojis.
+- **Project progress reports:** Use clear status labels (Completed, In Progress, Blocked, Failed, Pending, Requires Approval) without emojis.
+- **Financial reports:** No emojis.
+- **Casual team updates:** Emojis are acceptable occasionally, but never in formal, technical or client-facing summaries.
+
 ## Reports
-Lead with the result, then structure details under headings such as ## What changed, ## What I found, ## Validation, ## Risks, ## Next step. Only include sections that are useful.
+Lead with the result, then structure details under headings such as ## What changed, ## What I found, ## Validation, ## Risks, ## Next step. Only include sections that are useful. Maintain mature, credible, emoji-free language throughout.
 
 ## Final rule
 Formatting should improve scanability. **Never use decorative horizontal separator lines.** Do not use decorative punctuation to simulate layout.

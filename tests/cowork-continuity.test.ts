@@ -105,6 +105,7 @@ describe('Cowork continuity across providers and restarts', () => {
     const s = setup();
     const prompt = buildCoworkMessages(s.agent, s.conversation, [s.agent], [], { agents: [s.agent], resolveLlm: vi.fn(), toolContext: () => s.ctx });
     expect(prompt[0]!.content).toContain('LIVE UPDATES:');
+    expect(prompt[0]!.content).toContain('CONVERSATION STYLE:');
     const frames: { text: string; tool?: string }[] = [];
     let round = 0;
     const llm: LlmClient = {

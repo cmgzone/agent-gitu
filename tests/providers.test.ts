@@ -54,6 +54,7 @@ describe('provider registry', () => {
     expect(deepseek!.keyEnvVars).toEqual(['HERMES_DEEPSEEK_API_KEY', 'DEEPSEEK_API_KEY']);
     expect(deepseek!.defaultModel).toBe('deepseek-flash');
     expect(deepseek!.models).toEqual(expect.arrayContaining(['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp']));
+    expect(deepseek!.modelLabels?.['deepseek-flash']).toBe('DeepSeek V4.1 Flash');
     expect(deepseek!.maxEffort).toBe('distinct');
     expect(deepseek!.capabilities?.streamingTools).toBe(true);
   });

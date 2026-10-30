@@ -35,6 +35,23 @@ describe('resolveModelCatalog', () => {
     const {providers}=await resolveModelCatalog(deps);
     expect(providers[0]?.models[0]).toMatchObject({ownedBy:'new-author',brand:{id:'new-author',kind:'lab',iconUrl:'/api/model-icons/lab/new-author.svg'}});
   });
+  it('labels models from live names, then provider aliases, then the models.dev name, without touching ids', async () => {
+    const deps = dependencies([spec('alpha', { publicModels: true, modelLabels: { 'alpha-flash': 'Alpha V9 Flash', 'alpha-named': 'Stale alias' } })]);
+    deps.cachedLiveModels.mockResolvedValue([{ id: 'alpha-flash' }, { id: 'alpha-named', name: 'Alpha Named Live' }, { id: 'alpha-catalog' }, { id: 'alpha-plain' }]);
+    deps.fetchModelCatalog.mockResolvedValue(parseModelCatalog({
+      alpha: { models: { 'alpha-flash': { name: 'Old Flash', limit: { context: 1 } }, 'alpha-catalog': { name: 'Alpha From Catalog' } } },
+    }));
+    const { providers } = await resolveModelCatalog(deps);
+    const rows = providers[0]!.models;
+    expect(rows.map((m) => [m.id, (m as { label?: string }).label])).toEqual([
+      ['alpha-flash', 'Alpha V9 Flash'],
+      ['alpha-named', 'Alpha Named Live'],
+      ['alpha-catalog', 'Alpha From Catalog'],
+      ['alpha-plain', undefined],
+      ['alpha-default', undefined],
+    ]);
+  });
+
   it('discovers unknown models, replaces seeds and enriches normalized IDs with live modality precedence', async () => {
     const deps = dependencies([spec('alpha', { publicModels: true })]);
     const discovered = [

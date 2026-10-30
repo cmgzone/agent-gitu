@@ -1,5 +1,35 @@
 import type { CoworkStore, CoworkRequest } from './store.js';
 
+const RECOMMENDED_MARK = /\s*(?:[(\[]\s*recommended\s*[)\]]|[-–—:]\s*recommended)\s*$/i;
+const MAX_QUESTION_OPTIONS = 5;
+const MAX_OPTION_LENGTH = 100;
+
+/**
+ * Turn a model's suggested answers into clickable choices only when they are
+ * usable as one: short, distinct, and few. A trailing "(Recommended)" marker is
+ * removed from the label and recorded as the recommendation, which is listed
+ * first. Open-ended questions simply pass no options and get a plain answer box.
+ */
+export function normalizeQuestionOptions(raw: unknown, recommended?: unknown): { options: string[]; recommended?: string } {
+  const list = Array.isArray(raw) ? raw : [];
+  const seen = new Set<string>();
+  const options: string[] = [];
+  let marked: string | undefined;
+  for (const item of list) {
+    let text = String(item ?? '').replace(/\*\*/g, '').trim();
+    const flagged = RECOMMENDED_MARK.test(text);
+    text = text.replace(RECOMMENDED_MARK, '').trim();
+    if (!text || text.length > MAX_OPTION_LENGTH || seen.has(text.toLowerCase())) continue;
+    seen.add(text.toLowerCase());
+    options.push(text);
+    if (flagged && marked === undefined) marked = text;
+  }
+  const wanted = typeof recommended === 'string' ? recommended.replace(RECOMMENDED_MARK, '').trim().toLowerCase() : '';
+  const pick = (wanted && options.find(option => option.toLowerCase() === wanted)) || marked;
+  const ordered = pick ? [pick, ...options.filter(option => option !== pick)] : options;
+  const limited = ordered.slice(0, MAX_QUESTION_OPTIONS);
+  return { options: limited, ...(pick ? { recommended: pick } : {}) };
+}
 /** Preserve a clear unanswered question as a card when a model omits ask_user. */
 export function ensureQuestionCard(store: CoworkStore | undefined, conversationId: string, agentId: string, reply: string): CoworkRequest | undefined {
   if (!store) return undefined;
@@ -21,5 +51,6 @@ export function ensureQuestionCard(store: CoworkStore | undefined, conversationI
     if (!option || options.length >= 6) break;
     options.push(option[1]!.replace(/\*\*/g, ''));
   }
-  return store.addRequest({ conversationId, agentId, kind: 'question', title: question, detail: 'Your teammate needs this answer to continue.', options });
+  const normalized = normalizeQuestionOptions(options);
+  return store.addRequest({ conversationId, agentId, kind: 'question', title: question, detail: 'Your teammate needs this answer to continue.', options: normalized.options, recommended: normalized.recommended });
 }

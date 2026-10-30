@@ -84,7 +84,7 @@ const schemas: Record<string, { fields: Fields; required?: string[] }> = {
   todo_manage: { fields: { action: text, text, id: text, note: text }, required: ['action'] },
   folder_manage: { fields: { action: text, path: text, label: text, id: text }, required: ['action'] },
   widget_manage: { fields: { action: text, id: text, title: text, kind: text, icon: text, data: object }, required: ['action'] },
-  ask_user: { fields: { question: text, detail: text, options: strings }, required: ['question'] },
+  ask_user: { fields: { question: text, detail: text, options: strings, recommended: text }, required: ['question'] },
   request_credential: { fields: { prompt: text, provider: text, requestId: text, connectionId: text, baseUrl: text, label: text, validationPath: text, documentationUrl: text, auth: object }, required: ['prompt', 'provider'] },
   request_permission: { fields: { permission: text, reason: text }, required: ['permission', 'reason'] },
   recommend: { fields: { title: text, reason: text, action: text }, required: ['title', 'reason', 'action'] },

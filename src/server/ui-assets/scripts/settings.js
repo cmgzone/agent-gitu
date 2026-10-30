@@ -451,7 +451,7 @@
               '<div class="mi-top"><span class="mi-prov">' + (m.free ? 'free · no credits needed' : '') + '</span>' +
               '<span class="mi-meta">' + esc(modelMetaText(m)) + '</span>' +
               (val === curVal ? '<span class="mi-cur" title="current default">&#10003;</span>' : '') + '</div>' +
-              '<div class="mi-name">' + modelBrandHtml(val,m) + markMatch(titleCase(m.id), q) + (m.vision ? ' <i class="vmark" title="supports images">&#9672;</i>' : '') + '</div>' +
+              '<div class="mi-name">' + modelBrandHtml(val,m) + markMatch(modelDisplayName(m), q) + (m.vision ? ' <i class="vmark" title="supports images">&#9672;</i>' : '') + '</div>' +
               '</button>';
           }).join('') || '<div class="model-empty">No models match &ldquo;' + esc(q) + '&rdquo;<br><span style="font-size:11px">Try a model name</span></div>';
           var hl = list.querySelector('.model-item');

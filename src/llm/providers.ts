@@ -84,6 +84,8 @@ export interface ProviderSpec {
   toolMode?: 'auto' | 'native' | 'structured_text' | 'text';
   /** Specific capability flags for this provider. */
   capabilities?: ProviderCapabilities;
+  /** Offline display names for ids the provider's endpoints publish no name for. Live names win. */
+  modelLabels?: Record<string, string>;
 }
 
 export const PROVIDERS: Record<string, ProviderSpec> = {
@@ -155,6 +157,14 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     // the tool protocol.
     toolMode: 'auto',
     capabilities: { streamingTools: true },
+    // DeepSeek's /models publishes ids only. `deepseek-flash` always serves the
+    // newest Flash release (V4.1 today), and the older v4-flash names alias it.
+    modelLabels: {
+      'deepseek-flash': 'DeepSeek V4.1 Flash',
+      'deepseek-v4-flash': 'DeepSeek V4.1 Flash (legacy name)',
+      'deepseek-v4-flash-vision-exp': 'DeepSeek V4.1 Flash (legacy name)',
+      'deepseek-v4-pro': 'DeepSeek V4 Pro',
+    },
   },
   gemini: {
     id: 'gemini',
@@ -378,6 +388,8 @@ export function providerSpec(providerId: string): ProviderSpec | undefined {
 export interface ModelInfo {
   id: string;
   ownedBy?: string;
+  /** Human-readable name published by the provider's own /models endpoint, when it has one. */
+  name?: string;
   /** Image-input capability reported by the provider's own /models endpoint.
    *  `undefined` when the endpoint did not publish modality for this model. */
   vision?: boolean;
@@ -387,6 +399,8 @@ export interface ModelInfo {
 export interface ModelMetadata {
   /** Publisher identity from the catalog, independent of the serving provider. */
   canonicalModelId?: string;
+  /** Display name from the live models.dev catalog. */
+  displayName?: string;
   contextTokens?: number;
   inputTokens?: number;
   outputTokens?: number;
@@ -613,6 +627,7 @@ export function parseModelCatalog(value: unknown): ModelCatalog {
       const cost = isRecord(model['cost']) ? model['cost'] : {};
       const metadata: ModelMetadata = {
         ...(typeof model['canonical_model_id'] === 'string' && /^[a-z0-9-]+\/[a-z0-9._:/-]+$/i.test(model['canonical_model_id']) ? { canonicalModelId: model['canonical_model_id'] } : {}),
+        ...(modelNameFromRaw({ ...model, id: modelId }) ? { displayName: modelNameFromRaw({ ...model, id: modelId }) } : {}),
         contextTokens: finiteNumber(limit['context']),
         inputTokens: finiteNumber(limit['input']),
         outputTokens: finiteNumber(limit['output']),
@@ -622,7 +637,7 @@ export function parseModelCatalog(value: unknown): ModelCatalog {
         vision: catalogModelVision(model),
         source: 'models.dev',
       };
-      if (Object.values(metadata).some((v) => typeof v === 'number') || metadata.vision !== undefined || metadata.canonicalModelId) models.set(modelId, metadata);
+      if (Object.values(metadata).some((v) => typeof v === 'number') || metadata.vision !== undefined || metadata.canonicalModelId || metadata.displayName) models.set(modelId, metadata);
     }
     if (models.size > 0) catalog.set(providerId, models);
   }
@@ -696,6 +711,17 @@ export function modelVisionFromRaw(raw: Record<string, unknown>): boolean | unde
   return undefined;
 }
 
+/** A readable name from a raw /models or models.dev entry (never the raw id itself). */
+export function modelNameFromRaw(raw: Record<string, unknown>): string | undefined {
+  for (const key of ['display_name', 'displayName', 'name']) {
+    const value = raw[key];
+    if (typeof value !== 'string') continue;
+    const name = value.trim();
+    if (name && name.length <= 80 && name !== raw['id'] && !/[<>]/.test(name)) return name;
+  }
+  return undefined;
+}
+
 export async function fetchLiveModels(opts: {
   baseUrl: string;
   apiKey: string;
@@ -717,6 +743,7 @@ export async function fetchLiveModels(opts: {
       .map((m) => ({
         id: m['id'] as string,
         ownedBy: typeof m['owned_by'] === 'string' ? (m['owned_by'] as string) : undefined,
+        name: modelNameFromRaw(m),
         vision: modelVisionFromRaw(m),
       }))
       .sort((a, b) => a.id.localeCompare(b.id));

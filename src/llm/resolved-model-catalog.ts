@@ -27,8 +27,8 @@ function normalizeModels(models: readonly ModelInfo[]): ModelInfo[] {
     const id = model.id.trim();
     if (!id) continue;
     const existing = unique.get(id);
-    if (!existing) unique.set(id, { id, vision: model.vision, ...(model.ownedBy ? { ownedBy: model.ownedBy } : {}) });
-    else { if (existing.vision === undefined) existing.vision = model.vision; if (!existing.ownedBy && model.ownedBy) existing.ownedBy = model.ownedBy; }
+    if (!existing) unique.set(id, { id, vision: model.vision, ...(model.ownedBy ? { ownedBy: model.ownedBy } : {}), ...(model.name ? { name: model.name } : {}) });
+    else { if (existing.vision === undefined) existing.vision = model.vision; if (!existing.ownedBy && model.ownedBy) existing.ownedBy = model.ownedBy; if (!existing.name && model.name) existing.name = model.name; }
   }
   return [...unique.values()];
 }
@@ -82,15 +82,23 @@ export async function resolveModelCatalog(deps: Partial<ModelCatalogDependencies
     usable: Boolean(keyInfo) || Boolean(subscription?.signedIn),
     publicModels: Boolean(spec.publicModels),
     live,
-    models: models.map((mi) => ({
-      id: mi.id,
-      ...(mi.ownedBy ? { ownedBy: mi.ownedBy } : {}),
-      brand: modelBrandFor(catalog, spec.id, mi, spec.custom),
-      // Explicit live modality (including false) wins over catalog and heuristic.
-      vision: mi.vision ?? resolveSupportedImages(catalog, spec.id, mi.id),
-      free: isFreeModel(mi.id),
-      metadata: modelMetadataFor(catalog, spec.id, mi.id),
-    })),
+    models: models.map((mi) => {
+      const metadata = modelMetadataFor(catalog, spec.id, mi.id);
+      // The provider's own published name wins, then Gitu's alias knowledge for
+      // ids the provider names nothing for, then the live models.dev name. The
+      // UI humanizes the raw id when none of these exist.
+      const label = mi.name ?? spec.modelLabels?.[mi.id] ?? metadata?.displayName;
+      return {
+        id: mi.id,
+        ...(label ? { label } : {}),
+        ...(mi.ownedBy ? { ownedBy: mi.ownedBy } : {}),
+        brand: modelBrandFor(catalog, spec.id, mi, spec.custom),
+        // Explicit live modality (including false) wins over catalog and heuristic.
+        vision: mi.vision ?? resolveSupportedImages(catalog, spec.id, mi.id),
+        free: isFreeModel(mi.id),
+        metadata,
+      };
+    }),
     effortLevels: spec.effortLevels,
     effortLabels: spec.effortLabels,
     maxEffort: spec.maxEffort ?? 'collapses-to-high',

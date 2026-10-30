@@ -70,6 +70,7 @@ import type { ConnectedAppsProvider } from '../connections/provider.js';
 import { ComposioExecutionUncertainError } from '../connections/composio.js';
 import { isNativeMailRead, isNativeMailTool, requiresMessageReview } from '../connections/provider.js';
 import { coworkToolSchema } from './tool-schemas.js';
+import { normalizeQuestionOptions } from './question-cards.js';
 
 /**
  * Tool surface for cowork chat agents. It reuses the project's audited tool
@@ -347,7 +348,7 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
   },
   {
     name: 'ask_user',
-    doc: 'Post a real question card and wait for the answer. params: {"question":"Which region?","detail":"Why this is needed","options":["EU","US"]}. Never use this for API keys, tokens, passwords or verification codes. Use request_credential for service connections, or request_browser_auth for website sign-in, signup and verification.',
+    doc: 'Post a real question card and wait for the answer. params: {"question":"Which region?","detail":"Why this is needed","options":["EU","US"],"recommended":"EU"}. Provide 2-5 short concrete options and recommend the best one when useful; omit options for open-ended questions. Never use this for API keys, tokens, passwords or verification codes. Use request_credential for service connections, or request_browser_auth for website sign-in, signup and verification.',
   },
   {
     name: 'request_credential',
@@ -1162,9 +1163,9 @@ function coworkAskUser(scope: CoworkToolScope | undefined, params: Record<string
   try {
     const question = String(params['question'] ?? '').trim();
     const detail = String(params['detail'] ?? question).trim();
-    const options = Array.isArray(params['options']) ? params['options'].map(String) : [];
+    const normalized = normalizeQuestionOptions(params['options'], params['recommended']);
     if (/\b(?:enter|paste|share|provide|send|type|what is)\b[\s\S]{0,80}\b(?:password|client secret|api[ -]?key|access[ -]?token|verification code|one.time code|otp)\b/i.test(question+' '+detail)) return {ok:false,output:'Use request_browser_auth for website credentials or verification, or request_credential for service connection fields. Never collect secrets in a question card.'};
-    const request = scope.store.requests(scope.conversationId).find(r=>r.agentId===scope.agent.id&&r.kind==='question'&&r.status==='open'&&!r.hiddenAt&&r.title===question) ?? scope.store.addRequest({ conversationId: scope.conversationId, agentId: scope.agent.id, kind: 'question', title: question, detail, options });
+    const request = scope.store.requests(scope.conversationId).find(r=>r.agentId===scope.agent.id&&r.kind==='question'&&r.status==='open'&&!r.hiddenAt&&r.title===question) ?? scope.store.addRequest({ conversationId: scope.conversationId, agentId: scope.agent.id, kind: 'question', title: question, detail, options: normalized.options, recommended: normalized.recommended });
     return { ok: true, output: `Question ${request.id} posted. Stop working and tell the user you are waiting for their answer.` };
   } catch (err) {
     return { ok: false, output: `ask_user failed: ${(err as Error).message}` };

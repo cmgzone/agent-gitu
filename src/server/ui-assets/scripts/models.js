@@ -165,17 +165,20 @@
     el.setAttribute('aria-label', m ? 'Model details: ' + modelMetaText(m) : 'Model details unavailable');
   }
 
+  function modelDisplayName(m) { return m && m.label ? String(m.label) : titleCase(String(m && m.id || '')); }
   function modelOptionsHtml() {
     var out = '';
     catalogModelGroups(undefined, '', true).forEach(function (g) {
       var p = g.p;
       g.models.forEach(function (m) {
-        out += '<option value="' + esc(p.id + '::' + m.id) + '">' + esc(p.id + ' / ' + titleCase(m.id)) + (m.free ? ' (free)' : '') + ' — ' + esc(modelMetaText(m)) + '</option>';
+        out += '<option value="' + esc(p.id + '::' + m.id) + '">' + esc(p.id + ' / ' + modelDisplayName(m)) + (m.free ? ' (free)' : '') + ' — ' + esc(modelMetaText(m)) + '</option>';
       });
     });
     return out;
   }
   function modelLabelText(value) {
+    var info = modelInfo(value);
+    if (info && info.label) return String(info.label);
     var parts = String(value || '').split('::');
     var mid = parts.slice(1).join('::') || parts[0];
     return prettyModelName(String(mid || '').split('/').pop());
@@ -202,7 +205,7 @@
   // input never references or depends on cost.
   function modelSearchText(p, m) {
     var meta = m.metadata || {};
-    var parts = [p.id, m.id, titleCase(m.id)];
+    var parts = [p.id, m.id, modelDisplayName(m), titleCase(m.id)];
     if (meta.contextTokens) parts.push(formatTokens(meta.contextTokens) + ' context');
     if (m.free) parts.push('free');
     if (m.vision) parts.push('vision images');
@@ -240,7 +243,7 @@
         html += '<button type="button" class="model-item' + (val === cur ? ' cur' : '') + '" data-val="' + esc(val) + '" role="option" aria-selected="' + (val === cur ? 'true' : 'false') + '">' +
           '<div class="mi-top"><span class="mi-prov">' + markMatch(g.p.id, q) + '</span>' +
           '<span class="mi-meta">' + esc(modelMetaText(m)) + '</span></div>' +
-          '<div class="mi-name">' + modelBrandHtml(val,m) + markMatch(titleCase(m.id), q) + (m.vision ? ' <i class="vmark" title="supports images">&#9672;</i>' : '') + '</div>' +
+          '<div class="mi-name">' + modelBrandHtml(val,m) + markMatch(modelDisplayName(m), q) + (m.vision ? ' <i class="vmark" title="supports images">&#9672;</i>' : '') + '</div>' +
           '</button>';
       });
     });

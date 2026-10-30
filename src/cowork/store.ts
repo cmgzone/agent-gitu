@@ -490,6 +490,8 @@ export interface CoworkRequest {
   /** Optional app suggestion, not a blocking question or an execution grant. */
   appConnection?: AppSuggestion;
   options: string[];
+  /** The suggested answer the agent recommends; always one of `options`. */
+  recommended?: string;
   /** Permission requests can enable one existing per-agent capability. */
   permission?: 'shell' | 'writes' | 'config' | 'host';
   /** Credential requests carry connection metadata only — never the secret. */
@@ -1912,7 +1914,7 @@ export class CoworkStore {
     return this.load().requests.find((request) => request.id === id);
   }
 
-  addRequest(input: { conversationId: string; agentId: string; kind: CoworkRequest['kind']; title: string; detail: string; browserAuth?: BrowserAuthCard; appAction?: CoworkAppAction; appConnection?: AppSuggestion; options?: string[]; permission?: CoworkRequest['permission']; credential?: CoworkRequestCredential; desktopHandoff?: boolean }): CoworkRequest {
+  addRequest(input: { conversationId: string; agentId: string; kind: CoworkRequest['kind']; title: string; detail: string; browserAuth?: BrowserAuthCard; appAction?: CoworkAppAction; appConnection?: AppSuggestion; options?: string[]; recommended?: string; permission?: CoworkRequest['permission']; credential?: CoworkRequestCredential; desktopHandoff?: boolean }): CoworkRequest {
     const data = this.load();
     const conversation = data.conversations.find((candidate) => candidate.id === input.conversationId);
     if (!conversation?.memberIds.includes(input.agentId)) throw new Error('Requesting agent is not in this conversation');
@@ -1926,6 +1928,8 @@ export class CoworkStore {
     if (input.kind === 'credential' && !credential) throw new Error('Credential requests need a provider and a base URL (or an existing connection to re-authorize)');
     const appAction = input.appAction === undefined ? undefined : sanitizeAppAction(input.appAction);
     if (input.appAction !== undefined && (input.kind !== 'recommendation' || !appAction)) throw new Error('Invalid app action review');
+    const requestOptions = [...new Set((input.options ?? []).map((option) => String(option).trim()).filter(Boolean))];
+    const recommended = input.kind === 'question' && input.recommended !== undefined && requestOptions.includes(String(input.recommended).trim()) ? String(input.recommended).trim() : undefined;
     const request: CoworkRequest = {
       id: `cr-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e5)}`,
       conversationId: input.conversationId,
@@ -1935,7 +1939,8 @@ export class CoworkStore {
       detail: detail,
       appAction,
       appConnection: input.appConnection,
-      options: [...new Set((input.options ?? []).map((option) => String(option).trim()).filter(Boolean))],
+      options: requestOptions,
+      ...(recommended ? { recommended } : {}),
       permission: input.permission,
       credential,
       browserAuth,

@@ -230,4 +230,38 @@ describe('Company handbook and evidence-gated onboarding', () => {
     expect(meeting.lease?.agentId).toBe(f.ceo.id);
     expect(f.org.authorizeTool(f.ceo.id, 'team_manage', { action: 'create' })?.ok).toBe(false);
   });
+  it('allows the Chief of Staff who created the company to approve handbook rules, train employees and activate onboarding', () => {
+    const f = fixture();
+    expect(f.org.isCreatorChief(f.ceo.id)).toBe(false);
+    f.store.update(f.company.id, { createdByAgentId: f.ceo.id });
+    expect(f.org.isCreatorChief(f.ceo.id)).toBe(true);
+    expect(f.org.isCreatorChief(f.employee.id)).toBe(false);
+
+    const ruleRes = executeHandbookTool(f.handbook, f.ceo.id, {
+      action: 'propose',
+      input: { title: 'Primary Source Rule', content: 'Always verify primary sources before reporting.', approve: true },
+    });
+    expect(ruleRes.ok).toBe(true);
+    const rule = JSON.parse(ruleRes.output);
+    expect(rule.approvedVersion).toBe(1);
+    expect(() => executeHandbookTool(f.handbook, f.employee.id, { action: 'approve', id: rule.id })).toThrow('Director');
+
+    const trained = f.onboarding.train(f.actor, f.employee.id, {
+      jobTitle: 'Field Researcher',
+      responsibilities: ['Interview customers', 'Verify primary sources'],
+      rules: [{ title: 'Privacy Rule', content: 'Redact personal identifiers from transcripts.' }],
+      training: 'Focus on Nairobi small-business owners and follow both handbook rules.',
+      requirements: { tools: ['read_file'] },
+    });
+    expect(trained.stage).toBe('active');
+    expect(trained.orientation?.handbook).toHaveLength(2);
+    expect(f.org.member(f.employee.id).status).toBe('active');
+    expect(f.org.member(f.employee.id).jobTitle).toBe('Field Researcher');
+    expect(f.org.member(f.employee.id).responsibilities).toEqual(['Interview customers', 'Verify primary sources']);
+    expect(() => f.org.assertExecution(f.employee.id)).not.toThrow();
+    const meeting = f.room.read(director, trained.meetingId!);
+    expect(meeting.state).toBe('completed');
+    expect(meeting.contributions.some((c) => c.agentId === f.ceo.id && c.text.includes('Primary Source Rule') && c.text.includes('Privacy Rule'))).toBe(true);
+    expect(meeting.contributions.some((c) => c.agentId === f.employee.id && c.text.includes('Acknowledged onboarding training'))).toBe(true);
+  });
 });

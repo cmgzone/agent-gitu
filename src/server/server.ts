@@ -2836,7 +2836,9 @@ export class GituServer {
         return executeWorkflowTool(this.companyWorkflows(companyId),agent.id,args,task??message??session.conversationId??agent.id);
       },companyOnboarding:async(args,session)=>{
         if(session.agentId!==agent.id)throw new Error('Onboarding actor does not match the running agent.');
-        const service=this.companyOnboarding(companyId),actor={kind:'agent' as const,agentId:agent.id},target=String(args['agentId']??agent.id),revision=Number(args['revision']),input=args['input'] as never;
+        const nested=args['input']&&typeof args['input']==='object'&&!Array.isArray(args['input'])?(args['input'] as Record<string,unknown>):undefined;
+        const payload=nested?{...args,...nested}:args;
+        const service=this.companyOnboarding(companyId),actor={kind:'agent' as const,agentId:agent.id},target=String(payload['agentId']??args['agentId']??agent.id),revision=Number(payload['revision']??args['revision']),input=(nested??args) as never;
         let value;
         switch(args['action']){
           case 'list':value=service.list(actor);break;
@@ -2846,6 +2848,21 @@ export class GituServer {
           case 'check':value=service.check(actor,target,revision,await this.companyOnboardingResources(companyId,service.read(actor,target).requirements));break;
           case 'assess':value=service.assess(actor,target,revision,input);break;
           case 'review':value=service.review(actor,target,revision,input);break;
+          case 'activate':value=service.activate(actor,target,revision,await this.companyOnboardingResources(companyId,service.read(actor,target).requirements));this.ensureCompanyCoordinator();break;
+          case 'train':{
+            const reqs=(payload['requirements']&&typeof payload['requirements']==='object'?payload['requirements']:service.read(actor,target).requirements) as import('../company/management-models.js').CompanyOnboarding['requirements'];
+            const problems=await this.companyOnboardingResources(companyId,{tools:Array.isArray(reqs?.tools)?reqs.tools.map(String):[],connectionIds:Array.isArray(reqs?.connectionIds)?reqs.connectionIds.map(String):[],accountIds:Array.isArray(reqs?.accountIds)?reqs.accountIds.map(String):[],skills:Array.isArray(reqs?.skills)?reqs.skills.map(String):[]});
+            value=service.train(actor,target,payload as never,problems);
+            const trainedAgent=this.cowork().getAgent(target),company=this.companies().get(companyId);
+            if(trainedAgent&&company&&value.orientation){
+              const rules=service.handbook.list({kind:'director'}).filter(e=>e.state==='current'&&e.approvedVersion).map(e=>`${e.title}: ${e.versions.find(v=>v.version===e.approvedVersion)?.content??''}`);
+              const summary=`Onboarded to company ${company.name} [${company.id}] as ${value.orientation.role.jobTitle}. Mission: ${company.purpose}. Responsibilities: ${value.orientation.role.responsibilities.join('; ')}.`+(rules.length?` Company rules: ${rules.join(' | ')}`:'')+(typeof payload['training']==='string'&&payload['training'].trim()?` Training notes: ${payload['training'].trim()}`:'');
+              this.coworkMemory().remember(trainedAgent,summary);
+              this.coworkMemory().rememberCompany(company.id,company.name,`${trainedAgent.name} (${target}) onboarded and trained as ${value.orientation.role.jobTitle}. Responsibilities: ${value.orientation.role.responsibilities.join('; ')}.`);
+            }
+            this.ensureCompanyCoordinator();
+            break;
+          }
           default:throw new Error('Choose a supported onboarding operation; the director retains activation authority.');
         }
         return{ok:true,output:JSON.stringify(value)};
@@ -2895,7 +2912,7 @@ export class GituServer {
 
   /** Forward only named company tools, as the existing membership, never as the owner. */
   private async coworkCompanyOperation(company:Company,agentId:string,tool:string,args:Record<string,unknown>,invocation:string):Promise<ToolResult>{
-    if(!['company_boardroom','company_workflow','company_organization','company_onboarding','mission_manage'].includes(tool))throw new Error('Unsupported company operation.');
+    if(!['company_boardroom','company_workflow','company_organization','company_onboarding','company_handbook','mission_manage'].includes(tool))throw new Error('Unsupported company operation.');
     return this.companyScope.run({id:company.id,version:company.directionVersion},async()=>{
       const store=this.cowork(),agent=store.getAgent(agentId);
       if(!agent||!company.conversationId)throw new Error('Join this company before managing its work.');

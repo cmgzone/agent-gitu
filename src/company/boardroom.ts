@@ -71,7 +71,7 @@ export class CompanyBoardroom {
   private active(meeting: CompanyMeeting): void {
     if (meeting.state !== 'active') throw new Error('This meeting is not active.');
     const company = this.organization.store.get(this.companyId)!;
-    if (company.state !== 'running' || meeting.directionVersion !== company.directionVersion)
+    if ((company.state !== 'running' && !(company.state === 'draft' && meeting.type === 'onboarding')) || meeting.directionVersion !== company.directionVersion)
       throw new Error('Company paused or direction changed. Preserve the meeting and replan before continuing.');
     if (Date.parse(meeting.endAt) <= this.clock()) throw new Error('Meeting time limit reached. Finish and retain outstanding matters.');
   }
@@ -294,7 +294,7 @@ export class CompanyBoardroom {
       if (!['scheduled', 'interrupted'].includes(meeting.state)) throw new Error('This meeting cannot be started again.');
       if (actor.kind !== 'director' && Date.parse(meeting.startAt) > this.clock()) throw new Error('The scheduled meeting has not started yet.');
       const company = this.organization.store.get(this.companyId)!;
-      if (company.state !== 'running') throw new Error('Resume the company before starting a meeting.');
+      if (company.state !== 'running' && !(company.state === 'draft' && meeting.type === 'onboarding')) throw new Error('Resume the company before starting a meeting.');
       if (Date.parse(meeting.endAt) <= this.clock()) throw new Error('Scheduled meeting time has elapsed. Preserve history and schedule a new meeting.');
       meeting.directionVersion = company.directionVersion;
       meeting.state = 'active';
@@ -324,7 +324,8 @@ export class CompanyBoardroom {
     this.chair(actor, meeting);
     if (meeting.state === 'active') return this.read(actor, id);
     if (!['scheduled', 'interrupted'].includes(meeting.state)) throw new Error('This meeting cannot be started again.');
-    if (this.organization.store.get(this.companyId)?.state !== 'running') throw new Error('Resume the company before starting a meeting.');
+    const state = this.organization.store.get(this.companyId)?.state;
+    if (state !== 'running' && !(state === 'draft' && meeting.type === 'onboarding')) throw new Error('Resume the company before starting a meeting.');
     if (Date.parse(meeting.endAt) <= this.clock()) throw new Error('Scheduled meeting time has elapsed.');
     if (actor.kind !== 'director' && Date.parse(meeting.startAt) > this.clock()) throw new Error('The scheduled meeting has not started yet.');
     const conversation = meeting.conversationId ? this.organization.cowork.getConversation(meeting.conversationId) : undefined;

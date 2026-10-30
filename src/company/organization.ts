@@ -166,6 +166,18 @@ export class CompanyOrganization {
     if (member.status !== 'active' || !member.authority.capabilities.includes(capability)) throw new Error('This operation exceeds the agent’s organizational authority.');
     return member;
   }
+  isCreatorChief(agentId: string): boolean {
+    const company = this.store.get(this.companyId);
+    if (!company) return false;
+    const agent = this.cowork.getAgent(agentId);
+    if (!agent?.chiefOfStaff) return false;
+    const member = this.snapshot().members.find((m) => m.agentId === agentId);
+    if (!member || member.status !== 'active') return false;
+    if (company.createdByAgentId === agentId) return true;
+    return this.store
+      .list<{ companyId?: string; agentId?: string }>('cowork-company', this.companyId)
+      .some((r) => r.companyId === this.companyId && r.agentId === agentId);
+  }
   departments(): CompanyDepartment[] {
     return this.store.list<CompanyDepartment>('department', this.companyId);
   }
@@ -236,7 +248,9 @@ export class CompanyOrganization {
     const allowed =
       actor.kind === 'director'
         ? ['role', 'jobTitle', 'departmentId', 'managerId', 'responsibilities', 'authority', 'status']
-        : ['jobTitle', 'departmentId', 'managerId', 'responsibilities'];
+        : actor.kind === 'agent' && this.isCreatorChief(actor.agentId) && agentId !== actor.agentId
+          ? ['role', 'jobTitle', 'departmentId', 'managerId', 'responsibilities']
+          : ['jobTitle', 'departmentId', 'managerId', 'responsibilities'];
     if (Object.keys(patch).some((k) => !allowed.includes(k))) throw new Error('Only the director can change roles, authority or activation status.');
     const manager = actor.kind === 'agent' ? this.require(actor, 'assign-work')! : undefined;
     if (manager && (agentId === manager.agentId || target.role === 'ceo' || (manager.role !== 'ceo' && !this.subordinate(before, manager.agentId, agentId))))
@@ -258,6 +272,9 @@ export class CompanyOrganization {
       (next.departmentId !== manager.departmentId || (next.managerId !== manager.agentId && !this.subordinate(before, manager.agentId, next.managerId!)))
     )
       throw new Error('A team leader cannot move staff outside their reporting department.');
+    if (patch.role && patch.role !== target.role && !patch.authority) {
+      next.authority = { ...target.authority, capabilities: next.role === 'employee' ? [] : [...ROLE_LIMITS[next.role]] };
+    }
     next.authority = this.authority(next.authority, next.role);
     if (!['active', 'onboarding', 'retraining', 'suspended'].includes(next.status)) throw new Error('Invalid employee status.');
     if (next.status === 'onboarding' || next.status === 'retraining') next.onboardingRequired = true;

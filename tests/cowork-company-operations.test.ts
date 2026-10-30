@@ -258,3 +258,113 @@ it('answers a company question through an ordinary Cowork chat using the saved t
     rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }, 45000);
+
+it('lets a Cowork Chief of Staff onboard and train teammates on company mission and rules in a company they created', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'gitu-company-chief-onboard-'));
+  vi.stubEnv('AGENT_GITU_HOME', root);
+  const server = new GituServer({ passwordRequired: false, port: 0, llm: new ScriptedMockLlm([]) });
+  const internal = server as any;
+  try {
+    await server.start();
+    internal.ensureCompanyCoordinator = () => {};
+    const roster = internal.cowork() as CoworkStore;
+    const chief = roster.saveAgent({ name: 'Ari', systemPrompt: 'Lead companies as Chief of Staff.', chiefOfStaff: true, allowWrites: true, allowConfig: true });
+    const analyst = roster.saveAgent({ name: 'Milo', systemPrompt: 'Analyze market data.', allowWrites: true, allowConfig: false });
+    const conversation = roster.saveConversation({ kind: 'dm', memberIds: [chief.id] });
+    const analystConv = roster.saveConversation({ kind: 'dm', memberIds: [analyst.id] });
+    const tool = (agent: CoworkAgent, args: Record<string, unknown>) =>
+      executeCoworkTool(
+        internal.coworkToolContext(agent),
+        'company_manage',
+        args,
+        { allowWrites: agent.allowWrites, allowConfig: agent.allowConfig, allowShell: false, chief: agent.chiefOfStaff, browser: false },
+        { agent, store: roster, memory: internal.coworkMemory(), conversationId: agent.id === chief.id ? conversation.id : analystConv.id },
+      );
+
+    // 1. Chief of Staff creates a company (starts in draft state)
+    const created = await tool(chief, { action: 'create', name: 'Atlas Analytics', purpose: 'Deliver verified market intelligence.' });
+    expect(created.ok, created.output).toBe(true);
+    const companyId = created.companyLink!.id;
+    const company = internal.companies().get(companyId) as Company;
+    expect(company.createdByAgentId).toBe(chief.id);
+    expect(company.state).toBe('draft');
+
+    // 2. Chief of Staff adds a company handbook rule while in draft state
+    const handbookRes = await tool(chief, {
+      action: 'handbook',
+      id: companyId,
+      input: {
+        action: 'propose',
+        title: 'Citation Standard',
+        kind: 'guideline',
+        content: 'Every market claim must cite at least one verified primary source.',
+        approve: true,
+      },
+    });
+    expect(handbookRes.ok, handbookRes.output).toBe(true);
+    expect(JSON.parse(handbookRes.output).approvedVersion).toBe(1);
+
+    // 3. Chief of Staff onboards and trains the analyst on the company and rules
+    const onboardRes = await tool(chief, {
+      action: 'onboard_agent',
+      id: companyId,
+      agentId: analyst.id,
+      input: {
+        jobTitle: 'Market Intelligence Analyst',
+        responsibilities: ['Research competitor pricing', 'Synthesize verified customer interviews'],
+        rules: [{ title: 'Data Hygiene', content: 'Never extrapolate beyond the collected sample without flagging uncertainty.' }],
+        training: 'Welcome to Atlas Analytics. Always apply the Citation Standard and Data Hygiene rules.',
+      },
+    });
+    expect(onboardRes.ok, onboardRes.output).toBe(true);
+    const onboardingRecord = JSON.parse(onboardRes.output);
+    expect(onboardingRecord.stage).toBe('active');
+    expect(onboardingRecord.orientation.handbook).toHaveLength(2);
+
+    // 4. Inspect team and handbook to verify active status and approved rules
+    const teamInspect = JSON.parse((await tool(chief, { action: 'inspect', id: companyId, section: 'team' })).output);
+    const analystMember = teamInspect.items.find((m: { agentId: string }) => m.agentId === analyst.id);
+    expect(analystMember).toMatchObject({
+      agentId: analyst.id,
+      status: 'active',
+      onboardingRequired: false,
+      jobTitle: 'Market Intelligence Analyst',
+      responsibilities: ['Research competitor pricing', 'Synthesize verified customer interviews'],
+    });
+    const handbookInspect = JSON.parse((await tool(chief, { action: 'inspect', id: companyId, section: 'handbook' })).output);
+    expect(handbookInspect.items.map((h: { title: string }) => h.title)).toEqual(expect.arrayContaining(['Citation Standard', 'Data Hygiene']));
+
+    // 5. Verify the analyst's personal memory and shared company memory include the training
+    expect(internal.coworkMemoryFor(analyst)).toContain('Atlas Analytics');
+    expect(internal.coworkMemoryFor(analyst)).toContain('Citation Standard');
+    expect(internal.coworkMemoryFor(analyst)).toContain('Data Hygiene');
+    const sharedRecall = await tool(analyst, { action: 'recall', id: companyId, query: 'Market Intelligence Analyst' });
+    expect(sharedRecall.output).toContain('Market Intelligence Analyst');
+
+    // 6. Non-chief / non-creator cannot approve handbook rules or onboard others
+    expect(
+      (
+        await tool(analyst, {
+          action: 'handbook',
+          id: companyId,
+          input: { action: 'approve', id: handbookInspect.items[0].id },
+        })
+      ).ok,
+    ).toBe(false);
+
+    // 7. Once owner starts the company, the onboarded analyst can immediately receive assigned tasks
+    internal.companies().update(companyId, { monthlyBudgetUsd: null, maxFileBytes: null });
+    internal.companies().transition(companyId, 'running');
+    const assignRes = await tool(chief, {
+      action: 'task',
+      id: companyId,
+      input: { action: 'create', agentId: analyst.id, goal: 'Audit Q3 competitor pricing', criteria: ['Cite primary sources'] },
+    });
+    expect(assignRes.ok, assignRes.output).toBe(true);
+    expect(JSON.parse(assignRes.output).agentId).toBe(analyst.id);
+  } finally {
+    await server.stop();
+    vi.unstubAllEnvs();
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+}, 45000);

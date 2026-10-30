@@ -22,7 +22,8 @@ export function companyPolicy(
   return {
     async authorize(tool, args) {
       const c = store.get(companyId);
-      if (!c || c.state !== 'running') return { ok: false, output: 'Company is paused. Wait for the owner to resume it.' };
+      const draftSetup = c?.state === 'draft' && ['company_organization', 'company_handbook', 'company_onboarding', 'company_boardroom'].includes(tool);
+      if (!c || (c.state !== 'running' && !draftSetup)) return { ok: false, output: 'Company is paused. Wait for the owner to resume it.' };
       if (c.directionVersion !== version) return { ok: false, output: 'The owner changed direction. End this turn and replan using the latest direction.' };
       if (CONFIG.has(tool)) return { ok: false, output: 'Only the owner can change company grants or connections in Company settings.' };
       // Full access leaves command verification/recovery with the agent. The

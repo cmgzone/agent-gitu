@@ -79,7 +79,8 @@ export class CompanyHandbook {
     });
   }
   review(actor: CompanyActor, id: string, version: number, approved: boolean, revision: number, retraining = false): CompanyHandbookEntry {
-    if (actor.kind !== 'director') throw new Error('Only the director approves or rejects handbook revisions. Meetings cannot rewrite enforcement policy.');
+    if (actor.kind !== 'director' && !this.organization.isCreatorChief(actor.agentId))
+      throw new Error('Only the director approves or rejects handbook revisions. Meetings cannot rewrite enforcement policy.');
     const entry = this.organization.audited(actor, undefined, 'handbook.version-reviewed', id, () => {
       const entry = this.raw(id);
       if (entry.revision !== revision) throw new Error('Handbook revision changed.');
@@ -110,7 +111,8 @@ export class CompanyHandbook {
     return this.raw(entry.id);
   }
   archive(actor: CompanyActor, id: string, revision: number): CompanyHandbookEntry {
-    if (actor.kind !== 'director') throw new Error('Only the director archives approved handbook entries.');
+    if (actor.kind !== 'director' && !this.organization.isCreatorChief(actor.agentId))
+      throw new Error('Only the director archives approved handbook entries.');
     const entry = this.organization.audited(actor, undefined, 'handbook.archived', id, () => {
       const entry = this.raw(id);
       if (entry.revision !== revision) throw new Error('Handbook revision changed.');

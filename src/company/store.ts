@@ -15,6 +15,7 @@ export interface Company {
   purpose: string;
   logoArtifactId?: string;
   state: CompanyState;
+  createdByAgentId?: string;
   leadId?: string;
   conversationId?: string;
   access: 'supervised' | 'full';
@@ -299,7 +300,7 @@ export class CompanyStore {
       if (typeof input.allowHostComputer !== 'boolean') throw new Error('Choose whether to grant use of this computer.');
       company.allowHostComputer = input.allowHostComputer;
     }
-    for (const key of ['name', 'purpose', 'timezone', 'computerServerId', 'defaultStorageId', 'logoArtifactId', 'leadId', 'conversationId'] as const) {
+    for (const key of ['name', 'purpose', 'timezone', 'computerServerId', 'defaultStorageId', 'logoArtifactId', 'createdByAgentId', 'leadId', 'conversationId'] as const) {
       if (input[key] !== undefined)
         company[key] = String(input[key])
           .trim();

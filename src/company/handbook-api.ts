@@ -103,7 +103,38 @@ export async function companyHandbookApi(req: IncomingMessage, res: ServerRespon
 
 export function executeHandbookTool(handbook: CompanyHandbook, agentId: string, args: Record<string, unknown>) {
   const actor = { kind: 'agent' as const, agentId };
-  if (args['action'] === 'propose') return { ok: true, output: JSON.stringify(handbook.propose(actor, args['input'] as never)) };
+  if (args['action'] === 'propose' || args['action'] === 'create') {
+    const rawInput = (args['input'] && typeof args['input'] === 'object' && !Array.isArray(args['input']) ? args['input'] : args) as Record<string, unknown>;
+    let entry = handbook.propose(actor, rawInput as never);
+    if ((rawInput['approve'] === true || args['approve'] === true) && handbook.organization.isCreatorChief(agentId)) {
+      const pending = entry.versions.find((v) => v.state === 'proposed') ?? entry.versions.at(-1);
+      if (pending) {
+        entry = handbook.review(actor, entry.id, pending.version, true, entry.revision, Boolean(rawInput['retraining'] ?? args['retraining']));
+      }
+    }
+    return { ok: true, output: JSON.stringify(entry) };
+  }
+  if (args['action'] === 'review' || args['action'] === 'approve') {
+    if (!handbook.organization.isCreatorChief(agentId))
+      throw new Error('Agents may list, read or propose guidance. Director review is required for approval.');
+    const rawInput = (args['input'] && typeof args['input'] === 'object' && !Array.isArray(args['input']) ? { ...args, ...(args['input'] as Record<string, unknown>) } : args) as Record<string, unknown>;
+    const id = String(rawInput['id'] ?? '');
+    const current = handbook.read(actor, id);
+    const version = Number(rawInput['version'] ?? current.versions.find((v) => v.state === 'proposed')?.version ?? current.versions.at(-1)?.version ?? 1);
+    const revision = Number(rawInput['revision'] ?? current.revision);
+    const approved = args['action'] === 'approve' ? rawInput['approved'] !== false : Boolean(rawInput['approved'] ?? true);
+    const retraining = Boolean(rawInput['retraining']);
+    return { ok: true, output: JSON.stringify(handbook.review(actor, id, version, approved, revision, retraining)) };
+  }
+  if (args['action'] === 'archive') {
+    if (!handbook.organization.isCreatorChief(agentId))
+      throw new Error('Agents may list, read or propose guidance. Director review is required for approval.');
+    const rawInput = (args['input'] && typeof args['input'] === 'object' && !Array.isArray(args['input']) ? { ...args, ...(args['input'] as Record<string, unknown>) } : args) as Record<string, unknown>;
+    const id = String(rawInput['id'] ?? '');
+    const current = handbook.read(actor, id);
+    const revision = Number(rawInput['revision'] ?? current.revision);
+    return { ok: true, output: JSON.stringify(handbook.archive(actor, id, revision)) };
+  }
   if (args['action'] === 'read') {
     const entry = handbook.read(actor, String(args['id'])),
       version = entry.versions.find((v) => v.version === entry.approvedVersion && v.state === 'approved');

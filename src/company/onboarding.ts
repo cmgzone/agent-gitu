@@ -293,7 +293,8 @@ export class CompanyOnboardingService {
     });
   }
   activate(actor: CompanyActor, agentId: string, revision: number, availabilityProblems: string[] = []): CompanyOnboarding {
-    if (actor.kind !== 'director') throw new Error('Only the director activates employees after verified onboarding.');
+    if (actor.kind !== 'director' && !this.organization.isCreatorChief(actor.agentId))
+      throw new Error('Only the director activates employees after verified onboarding.');
     if (availabilityProblems.length) throw new Error(availabilityProblems.join('; '));
     const record = this.read(actor, agentId),
       member = this.organization.member(agentId);
@@ -318,6 +319,186 @@ export class CompanyOnboardingService {
       this.organization.store.saveResource('organization', this.companyId, this.companyId, org);
       r.stage = 'active';
     });
+  }
+  train(
+    actor: CompanyActor,
+    agentId: string,
+    input: {
+      revision?: number;
+      jobTitle?: string;
+      responsibilities?: string[];
+      departmentId?: string;
+      managerId?: string;
+      rules?: (string | { id?: string; title?: string; kind?: 'guideline' | 'suggestion'; content: string })[];
+      training?: string;
+      notes?: string;
+      requirements?: Partial<CompanyOnboarding['requirements']>;
+      activate?: boolean;
+    } = {},
+    availabilityProblems: string[] = [],
+  ): CompanyOnboarding {
+    if (actor.kind !== 'director' && !this.organization.isCreatorChief(actor.agentId))
+      throw new Error('Only the director or the Chief of Staff who created this company can train and onboard employees directly.');
+    this.manager(actor, agentId);
+    const initialMember = this.organization.member(agentId);
+    if (initialMember.status === 'suspended') throw new Error('Ask the director to resume this employee before onboarding.');
+    if (input.revision !== undefined) {
+      const initialRecord = this.read(actor, agentId);
+      if (!Number.isSafeInteger(Number(input.revision)) || Number(input.revision) !== initialRecord.revision)
+        throw new Error('Onboarding changed. Refresh before continuing.');
+    }
+    const company = this.organization.store.get(this.companyId)!;
+    const orgSnap = this.organization.snapshot();
+    const currentMember = this.organization.member(agentId);
+    const jobTitle = typeof input.jobTitle === 'string' && input.jobTitle.trim() ? input.jobTitle.trim() : currentMember.jobTitle || 'Employee';
+    const responsibilities =
+      Array.isArray(input.responsibilities) && input.responsibilities.length
+        ? lines(input.responsibilities)
+        : currentMember.responsibilities.length
+          ? currentMember.responsibilities
+          : [company.direction || company.purpose || 'Deliver verified work aligned with company mission and handbook rules'];
+    const managerId =
+      typeof input.managerId === 'string' && input.managerId.trim()
+        ? input.managerId.trim()
+        : currentMember.managerId || (currentMember.role === 'ceo' ? undefined : company.leadId);
+    const departmentId =
+      typeof input.departmentId === 'string' && input.departmentId.trim() ? input.departmentId.trim() : currentMember.departmentId;
+    if (
+      jobTitle !== currentMember.jobTitle ||
+      JSON.stringify(responsibilities) !== JSON.stringify(currentMember.responsibilities) ||
+      managerId !== currentMember.managerId ||
+      departmentId !== currentMember.departmentId
+    ) {
+      this.organization.updateMember(actor, agentId, { jobTitle, responsibilities, managerId, departmentId }, orgSnap.revision);
+    }
+    if (Array.isArray(input.rules)) {
+      for (const rule of input.rules) {
+        let entry;
+        if (typeof rule === 'string') {
+          const content = rule.trim();
+          if (!content) continue;
+          const title = content.length <= 72 ? content : content.slice(0, 69).trim() + '...';
+          entry = this.handbook.propose(actor, { title, kind: 'guideline', content });
+        } else if (rule && typeof rule === 'object') {
+          const content = String(rule.content ?? '').trim();
+          if (!content) throw new Error('Enter nonempty rule content.');
+          const title =
+            typeof rule.title === 'string' && rule.title.trim()
+              ? rule.title.trim()
+              : content.length <= 72
+                ? content
+                : content.slice(0, 69).trim() + '...';
+          const existing = rule.id ? this.handbook.read(actor, rule.id) : undefined;
+          entry = this.handbook.propose(actor, {
+            id: existing?.id,
+            revision: existing?.revision,
+            title,
+            kind: rule.kind ?? 'guideline',
+            content,
+          });
+        }
+        if (entry) {
+          const pending = entry.versions.find((v) => v.state === 'proposed');
+          if (pending) this.handbook.review(actor, entry.id, pending.version, true, entry.revision, false);
+        }
+      }
+    }
+    let record = this.read(actor, agentId);
+    if (!['identity', 'retraining', 'orientation', 'blocked'].includes(record.stage)) {
+      record = this.edit(actor, agentId, record.revision, (r) => {
+        this.retire(r, 'Updated company and rules training.');
+        r.stage = 'retraining';
+        r.orientation = undefined;
+        r.meetingId = undefined;
+        r.resourceCheck = undefined;
+        r.assessment = undefined;
+      });
+    }
+    const requirements: CompanyOnboarding['requirements'] = {
+      tools: input.requirements?.tools ? lines(input.requirements.tools) : record.requirements.tools,
+      connectionIds: input.requirements?.connectionIds ? lines(input.requirements.connectionIds) : record.requirements.connectionIds,
+      accountIds: input.requirements?.accountIds ? lines(input.requirements.accountIds) : record.requirements.accountIds,
+      skills: input.requirements?.skills ? lines(input.requirements.skills) : record.requirements.skills,
+    };
+    record = this.orient(actor, agentId, record.revision, requirements);
+    const approvedRules = this.handbook
+      .list({ kind: 'director' })
+      .filter((e) => e.state === 'current' && e.approvedVersion)
+      .map((e) => {
+        const v = e.versions.find((ver) => ver.version === e.approvedVersion);
+        return { id: e.id, title: e.title, kind: e.kind, version: e.approvedVersion!, content: v?.content ?? '' };
+      });
+    const updatedMember = this.organization.member(agentId);
+    const rulesSummary = approvedRules.length
+      ? approvedRules.map((r) => `- [${r.kind}] ${r.title} (${r.id} v${r.version}): ${r.content}`).join('\n')
+      : '- Follow company mission, direction, and assigned responsibilities.';
+    const customTraining = typeof input.training === 'string' && input.training.trim() ? `\nTraining instructions: ${input.training.trim()}` : '';
+    const briefingText =
+      `COMPANY ONBOARDING & RULES TRAINING — ${company.name} [${company.id}]\n` +
+      `Mission: ${company.purpose}\n` +
+      `Direction: ${company.direction || company.purpose}\n` +
+      `Role: ${updatedMember.role} (${updatedMember.jobTitle})\n` +
+      `Responsibilities: ${updatedMember.responsibilities.join('; ')}\n` +
+      `Approved Company Rules & Handbook:\n${rulesSummary}` +
+      customTraining;
+    const ackText =
+      `Acknowledged onboarding training for ${company.name} as ${updatedMember.jobTitle}. ` +
+      `Responsibilities: ${updatedMember.responsibilities.join('; ')}. ` +
+      (approvedRules.length
+        ? `Committed to ${approvedRules.length} approved handbook rule(s): ${approvedRules.map((r) => r.title).join(', ')}.`
+        : 'Committed to company mission and operating rules.');
+    record = this.schedule(actor, agentId, record.revision);
+    const meeting = this.room.begin(actor, record.meetingId!);
+    const chairId = meeting.chairId;
+    const chairLease = this.room.grant(actor, meeting.id, { agentId: chairId, agendaId: meeting.agenda[0]!.id }).lease!;
+    this.room.contribute({ kind: 'agent', agentId: chairId }, meeting.id, chairLease.id, { text: briefingText });
+    const empAgendaId = (meeting.agenda[1] ?? meeting.agenda[0])!.id;
+    const empLease = this.room.grant(actor, meeting.id, { agentId, agendaId: empAgendaId }).lease!;
+    this.room.contribute({ kind: 'agent', agentId }, meeting.id, empLease.id, { text: ackText });
+    this.room.finish(actor, meeting.id, 'Company onboarding and rules training completed.');
+    record = this.check(actor, agentId, this.read(actor, agentId).revision, availabilityProblems);
+    if (record.stage === 'blocked' || input.activate === false) return record;
+    record = this.assess(actor, agentId, record.revision, {
+      goal: 'Confirm company mission, role responsibilities, and approved handbook rules',
+      criteria: ['Acknowledge company mission, responsibilities, and handbook rules'],
+      maxTurns: 1,
+    });
+    const mission = this.organization.cowork.getMission(record.assessment!.missionId)!;
+    const trainerAgentId = actor.kind === 'agent' ? actor.agentId : company.leadId ?? agentId;
+    this.organization.cowork.appendMessage(mission.conversationId, {
+      role: 'agent',
+      via: 'agent',
+      agentId: trainerAgentId,
+      missionId: mission.id,
+      text: briefingText,
+    });
+    const ackMessage = this.organization.cowork.appendMessage(mission.conversationId, {
+      role: 'agent',
+      via: 'agent',
+      agentId,
+      missionId: mission.id,
+      text: ackText,
+    });
+    this.organization.cowork.updateMission(mission.id, {
+      status: 'done',
+      result: ackText,
+      finishedAt: now(),
+    });
+    for (const job of this.organization.store.jobs(this.companyId)) {
+      if (job.kind === 'mission' && job.payload['missionId'] === mission.id && ['queued', 'running'].includes(job.state)) {
+        this.organization.store.finishJob(job, 'done');
+      }
+    }
+    const reviewNotes =
+      typeof input.notes === 'string' && input.notes.trim()
+        ? input.notes.trim()
+        : 'Trained on company mission, role responsibilities, and approved handbook rules.';
+    record = this.review(actor, agentId, this.read(actor, agentId).revision, {
+      approved: true,
+      notes: reviewNotes,
+      evidenceMessageIds: [ackMessage.id],
+    });
+    return this.activate(actor, agentId, record.revision, availabilityProblems);
   }
   assessmentAllowed(agentId: string, missionId?: string): boolean {
     if (!missionId) return false;

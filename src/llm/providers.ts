@@ -883,7 +883,11 @@ function piRuntimeFor(
       baseUrl,
       apiKey,
       modelId: model,
-      vision: metadata?.vision,
+      vision: resolveSupportedImages(
+        peekModelCatalog(),
+        providerId,
+        model,
+      ),
       contextWindow: metadata?.contextTokens,
       maxTokens: metadata?.outputTokens,
     },

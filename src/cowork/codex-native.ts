@@ -263,13 +263,16 @@ export async function runNativeCoworkTurn(input: {
           }
           if (
             result.ok &&
-            (['ask_user', 'request_permission', 'computer_handoff', 'request_browser_auth'].includes(tool) ||
+            (['ask_user', 'request_permission', 'computer_handoff', 'request_browser_auth', 'request_credential'].includes(tool) ||
               (tool === 'connected_apps' && /^(?:Review \S+ posted\.|Waiting for review \S+\.)/.test(result.output)))
           )
             waiting = true;
           return {
             success: result.ok,
-            contentItems: [{ type: 'inputText', text: JSON.stringify(result) }, ...(result.image ? [{ type: 'inputImage', imageUrl: result.image }] : [])],
+            contentItems: [
+              { type: 'inputText', text: JSON.stringify(result.image ? { ...result, image: undefined } : result) },
+              ...(result.image ? [{ type: 'inputImage', imageUrl: result.image }] : []),
+            ],
           };
         })();
         responses.set(callKey, work);

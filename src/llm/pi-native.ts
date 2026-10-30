@@ -124,12 +124,13 @@ function toImages(urls: string[]): PiImage[] {
 }
 
 /** The consumer's `{ success, contentItems }` answer → pi's tool result shape. */
-export function toToolResult(answer: NativeRecord): AgentToolResult {
+export function toToolResult(answer: NativeRecord, allowImages = true): AgentToolResult {
   const content: ({ type: 'text'; text: string } | PiImage)[] = [];
   const items = Array.isArray(answer['contentItems']) ? answer['contentItems'] : [];
   for (const entry of items) {
     const item = record(entry);
     if (item['type'] === 'inputImage' && typeof item['imageUrl'] === 'string') {
+      if (!allowImages) continue;
       const image = toImage(item['imageUrl']);
       if (image) content.push(image);
       continue;
@@ -307,6 +308,7 @@ export class PiNativeRuntime implements NativeTaskRuntime {
         events = events.then(() => input.onEvent(method, params)).catch(() => undefined);
       };
 
+      const allowImages = this.options.target.vision !== false;
       const customTools: ToolDefinition[] = declared.map((tool) => ({
         name: tool.name,
         label: tool.name,
@@ -322,7 +324,7 @@ export class PiNativeRuntime implements NativeTaskRuntime {
             tool: tool.name,
             arguments: record(params),
           });
-          return toToolResult(answer);
+          return toToolResult(answer, allowImages);
         },
       }));
 
@@ -440,7 +442,7 @@ export class PiNativeRuntime implements NativeTaskRuntime {
       };
       input.signal.addEventListener('abort', onAbort, { once: true });
 
-      const images = toImages(input.images ?? []);
+      const images = allowImages ? toImages(input.images ?? []) : [];
       await session.prompt(input.text, images.length ? { images } : undefined);
       await events;
       return {

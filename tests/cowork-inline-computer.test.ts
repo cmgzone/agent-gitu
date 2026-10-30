@@ -65,7 +65,7 @@ describe('contextual inline computer',()=>{
     const f=fixture();f.cw.computers[0]={agentId:'gitu',state:'running',control:'user',handoff:{requestId:'elsewhere'}};
     f.cw.requests=[{id:'elsewhere',agentId:'gitu',conversationId:'other',desktopHandoff:true,status:'open'}];f.context.cwRenderComputerActivity();
     expect(f.nodes.cwComputerBtn.hidden).toBe(false);expect(f.nodes.cwComputerBtn.attrs['data-handoff']).toBe('false');expect(f.nodes.cwInlineComputer).toBeUndefined();
-    f.agent.useHostComputer=true;f.cw.busy=true;f.cw.progresses=[{agentId:'gitu',tool:'browse'}];f.context.cwRenderComputerActivity();
+    f.agent.useHostComputer=true;f.cw.busy=true;f.cw.progresses=[{agentId:'gitu',tool:'run_command'}];f.context.cwRenderComputerActivity();expect(f.nodes.cwInlineComputer).toBeUndefined();f.cw.progresses=[{agentId:'gitu',tool:'browse'}];f.context.cwRenderComputerActivity();
     expect(f.nodes.cwInlineComputer.querySelector('[data-expand-computer]').hidden).toBe(false);expect(f.frames[0].src).toBe('/api/server-browser/gitu/view');expect(f.frames[0].tabIndex).toBe(0);expect(f.context.api).not.toHaveBeenCalled();
   });
   it('disconnects the inline stream on profile navigation and while the desktop is expanded',()=>{

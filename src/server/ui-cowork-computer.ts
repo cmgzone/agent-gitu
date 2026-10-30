@@ -65,7 +65,7 @@ export const COWORK_COMPUTER_JS = String.raw`
       var computer=(cw.computers||[]).find(function(item){return item.agentId===agent.id;});
       var request=(cw.requests||[]).find(function(item){return item.agentId===agent.id&&item.conversationId===conv.id&&item.desktopHandoff&&item.status==='open';});
       var handoff=!!request||!!(computer&&computer.control==='user'&&!agent.useHostComputer&&!(computer.handoff&&computer.handoff.requestId));
-      var action=progress.find(function(item){return item.agentId===agent.id&&/^(browse|desktop_input|desktop_screenshot|computer_process|computer_status|run_command)$/.test(item.tool||'');});
+      var action=progress.find(function(item){return item.agentId===agent.id&&(agent.useHostComputer?item.tool==='browse':/^(browse|desktop_input|desktop_screenshot|computer_process|computer_status|run_command)$/.test(item.tool||''));});
       if(action)seen.agents[agent.id]=true;
       var pinned=cw.inlineBrowser&&cw.inlineBrowser.agentId===agent.id&&cw.inlineBrowser.conversationId===conv.id;
       if(agent.useHostComputer&&!pinned&&cw.browserDismissed===conv.id+':'+String(cw.generation||0)+':'+agent.id)return null;

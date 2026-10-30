@@ -864,8 +864,8 @@ async function agentTurn(input: {
         }
       }
       const appReview = result.ok && call.tool === 'connected_apps' && /^(?:Review \S+ posted\.|Waiting for review \S+\.)/.test(result.output);
-      if (result.ok && (['ask_user', 'request_permission', 'computer_handoff', 'request_browser_auth'].includes(call.tool) || appReview)) {
-        reply = appReview ? 'This action is waiting for your approval in the card above.' : visibleCoworkText(reply) || 'I’m waiting for your response to the card above.';
+      if (result.ok && (['ask_user', 'request_permission', 'computer_handoff', 'request_browser_auth', 'request_credential'].includes(call.tool) || appReview)) {
+        reply = appReview ? 'This action is waiting for your approval in the card above.' : call.tool === 'request_credential' ? 'I posted a secure connection card for you above. Please enter your credentials to continue.' : visibleCoworkText(reply) || 'I’m waiting for your response to the card above.';
         waitingForUser = true;
         endedByWaiting = true;
         for (const pendingCall of calls.slice(index + 1)) appendResult(pendingCall, { ok: false, output: 'Not executed: the turn is paused for the user. Continue only after the dependency is resolved.' });
@@ -1367,7 +1367,7 @@ export async function runMissionSession(input: {
         messages.push(toolResultMessage(call.tool, result, supportsImages));
         publicProgress(reply, call.tool, result.ok, summarizeParams(call.tool, call.params), coworkWebOrigin(call.tool, call.params), coworkMcpServer(call.tool, call.params), undefined, coworkAppService(call.tool, call.params));
         waitingForAppReview = result.ok && call.tool === 'connected_apps' && /^(?:Review \S+ posted\.|Waiting for review \S+\.)/.test(result.output);
-        if (result.ok && (['ask_user', 'request_permission', 'computer_handoff', 'request_browser_auth'].includes(call.tool) || waitingForAppReview)) { waiting = true; break; }
+        if (result.ok && (['ask_user', 'request_permission', 'computer_handoff', 'request_browser_auth', 'request_credential'].includes(call.tool) || waitingForAppReview)) { waiting = true; break; }
       }
       if (waiting || repeatedWorkStopped) break;
       messages.push({ role: 'user', content: 'Continue the work session. Remember to end with your status JSON when this session is done.' });

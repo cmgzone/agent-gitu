@@ -325,7 +325,13 @@ export async function runNativeCodexTask(input: {
         await commandOutcome(command, { ok: result.result.ok, exitCode: result.result.exitCode, output: result.result.output });
       }
     }
-    return { success: result.result.ok, contentItems: [{ type: 'inputText', text: JSON.stringify(result.result) }] };
+    return {
+      success: result.result.ok,
+      contentItems: [
+        { type: 'inputText', text: JSON.stringify(result.result.image ? { ...result.result, image: undefined } : result.result) },
+        ...(result.result.image ? [{ type: 'inputImage', imageUrl: result.result.image }] : []),
+      ],
+    };
   };
 
   const request = async (method: string, params: NativeRecord): Promise<NativeRecord> => {

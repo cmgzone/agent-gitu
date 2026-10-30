@@ -1,46 +1,129 @@
+'use strict';
+
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const fsPromises = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+
 const {
-  createRateLimiter,
-  handleSupportSubmission,
-} = (() => {
-  const ticket = require('../support-ticket.cjs');
-  const server = require('../support-server.cjs');
-  return { ...ticket, handleSupportSubmission: server.handleSupportSubmission };
-})();
+  MAX_BODY_LENGTH,
+  createSupportTicket,
+  persistSupportTicket,
+  processSupportTicket,
+  validateSupportTicket,
+} = require('../support-ticket.cjs');
 
-const validInput = {
-  requestType: 'website-problem',
-  name: 'Ari Visitor',
-  email: 'ari@example.com',
-  productOrPage: 'Download page',
-  problem: 'The download page shows a broken link after I select the Windows build.',
-  whenStarted: 'This morning',
-  reproductionDetails: 'Open the download page, select the Windows build, and observe the link.',
-  consent: true,
-};
+function validPayload(overrides) {
+  return Object.assign(
+    {
+      name: 'Test User',
+      email: 't@example.com',
+      productOrPage: 'pikpam.com',
+      problem: 'The download button is not working',
+      whenStarted: 'today',
+      reproductionDetails: 'Clicked the download button on the homepage and nothing happened.',
+    },
+    overrides || {}
+  );
+}
 
-test('accepts an in-scope customer problem, persists it, and queues notification', async () => {
-  const directory = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'pikpam-support-'));
-  const result = await handleSupportSubmission(validInput, {
-    ticketDirectory: directory,
-    notificationEmail: 'support@example.com',
-    now: new Date('2026-10-26T12:00:00.000Z'),
-  });
-  assert.equal(result.status, 201);
-  assert.match(result.body.ticketId, /^PK-/);
-  const tickets = fs.readFileSync(path.join(directory, 'tickets.jsonl'), 'utf8');
-  const notifications = fs.readFileSync(path.join(directory, 'notifications.jsonl'), 'utf8');
-  assert.match(tickets, /Download page/);
-  assert.match(notifications, /support@example.com/);
-  assert.doesNotMatch(tickets, /password|api[_ -]?key|private key/i);
+function withNotificationEmail(value, run) {
+  const saved = process.env.SUPPORT_NOTIFICATION_EMAIL;
+  if (value === undefined) delete process.env.SUPPORT_NOTIFICATION_EMAIL;
+  else process.env.SUPPORT_NOTIFICATION_EMAIL = value;
+  try {
+    return run();
+  } finally {
+    if (saved === undefined) delete process.env.SUPPORT_NOTIFICATION_EMAIL;
+    else process.env.SUPPORT_NOTIFICATION_EMAIL = saved;
+  }
+}
+
+test('accepts a valid website problem and persists it as JSONL', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikpam-support-'));
+
+  try {
+    const validation = validateSupportTicket(validPayload());
+    assert.equal(validation.ok, true);
+    assert.equal(validation.ticket.status, 'open');
+
+    const ticket = createSupportTicket(validPayload({ name: '  Test User  ' }));
+    assert.match(ticket.id, /^SUP-[0-9a-f-]{36}$/);
+    assert.match(ticket.createdAt, /^\d{4}-\d{2}-\d{2}T/);
+    assert.equal(ticket.name, 'Test User');
+    assert.equal(ticket.email, 't@example.com');
+    assert.equal(ticket.status, 'open');
+
+    const persisted = persistSupportTicket(path.join(dir, 'nested', 'tickets'), ticket);
+    assert.ok(fs.existsSync(persisted.ticketsPath));
+    assert.ok(fs.existsSync(persisted.notificationsPath));
+
+    const ticketLines = fs.readFileSync(persisted.ticketsPath, 'utf8').trim().split('\n');
+    assert.equal(ticketLines.length, 1);
+
+    const stored = JSON.parse(ticketLines[0]);
+    assert.equal(stored.id, ticket.id);
+    assert.equal(stored.email, 't@example.com');
+    assert.equal(stored.problem, 'The download button is not working');
+    assert.equal(stored.status, 'open');
+
+    const notificationLines = fs.readFileSync(persisted.notificationsPath, 'utf8').trim().split('\n');
+    assert.equal(notificationLines.length, 1);
+
+    const withEmail = withNotificationEmail('sales@pikpam.com', () => persistSupportTicket(dir, ticket));
+    const notifyLines = fs.readFileSync(withEmail.notificationsPath, 'utf8').trim().split('\n');
+    assert.equal(JSON.parse(notifyLines[notifyLines.length - 1]).to, 'sales@pikpam.com');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
-test('refuses out-of-scope requests', async () => {
-  const result = await handleSupportSubmission({
-    ...validInput,
-    problem:¶»§q«^w^xÑÈZ®Ã"“°¢76W'BæWVÂ‡&W7VÇBæ&öG’æ6öFRÂu4T5$UEô4ôåDTåBr“°§Ò“° §FW7B‚wfÆ–FFW2&WV—&VBFWF–Ç2æB6öç6VçBrÂ7–æ2‚’Óâ°¢6öç7B&W7VÇBÒv—B†æFÆU7W÷'E7V&Ö—76–öâ‡°¢ââçfÆ–D–çWBÀ¢VÖ–Ã¢væ÷BÖâÖVÖ–ÂrÀ¢6öç6VçC¢fÇ6RÀ¢ÒÂ°¢F–6¶WDF—&V7F÷'“¢v—Bg5&öÖ—6W2æÖ¶GFV×‡F‚æ¦ö–â†÷2çF×F—"‚’Âw–·Ò×7W÷'BÒr’’À¢æ÷F–f–6F–öäVÖ–Ã¢w7W÷'DW†×ÆRæ6öÒrÀ¢Ò“°¢76W'BæWVÂ‡&W7VÇBç7FGW2ÂC“°¢76W'BæWVÂ‡&W7VÇBæ&öG’æ6öFRÂt”ådÄ”EôTÔ”Âr“°§Ò“° §FW7B‚w&FRÆ–Ö—FW"&Æö6·2&WVFVB7V&Ö—76–öç2v—F†÷WB–ç7V7F–ær6öçFVçBrÂ‚’Óâ°¢ÆWBæ÷rÒ°¢6öç7BÆ–Ö—FW"Ò7&VFU&FTÆ–Ö—FW"‡²Æ–Ö—C¢"Âv–æF÷t×3¢Âæ÷s¢‚’Óâæ÷rÒ“°¢76W'BæWVÂ†Æ–Ö—FW"æ6†V6²‚v6Æ–VçBr’æÆÆ÷vVBÂG'VR“°¢76W'BæWVÂ†Æ–Ö—FW"æ6†V6²‚v6Æ–VçBr’æÆÆ÷vVBÂG'VR“°¢76W'BæWVÂ†Æ–Ö—FW"æ6†V6²‚v6Æ–VçBr’æÆÆ÷vVBÂfÇ6R“°¢æ÷rÒ°¢76W'BæWVÂ†Æ–Ö—FW"æ6†V6²‚v6Æ–VçBr’æÆÆ÷vVBÂG'VR“°§Ò“°
+test('rejects messages that contain secrets', () => {
+  const result = validateSupportTicket(
+    validPayload({ problem: 'Login fails, my password: hunter2SuperSecret keeps getting rejected' })
+  );
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'secret_detected');
+  assert.ok(typeof result.message === 'string' && result.message.length > 0);
+
+  const apiKey = validateSupportTicket(
+    validPayload({ reproductionDetails: 'api_key = sk-live-abcdefghijklmnop123456' })
+  );
+  assert.equal(apiKey.ok, false);
+  assert.equal(apiKey.code, 'secret_detected');
+});
+
+test('rejects out-of-scope requests', () => {
+  const refund = validateSupportTicket(
+    validPayload({ problem: 'I want a refund for my subscription invoice this month' })
+  );
+  assert.equal(refund.ok, false);
+  assert.equal(refund.code, 'out_of_scope');
+
+  const infra = validateSupportTicket(
+    validPayload({ problem: 'Please change the code and open a pull request for our terraform infra' })
+  );
+  assert.equal(infra.ok, false);
+  assert.equal(infra.code, 'out_of_scope');
+
+  const invalidEmail = validateSupportTicket(validPayload({ email: 'not-an-email' }));
+  assert.equal(invalidEmail.ok, false);
+  assert.equal(invalidEmail.code, 'invalid_email');
+});
+
+test('is not accepted when SUPPORT_NOTIFICATION_EMAIL is not configured', () => {
+  assert.equal(MAX_BODY_LENGTH, 16000);
+
+  const unavailable = withNotificationEmail(undefined, () => processSupportTicket(validPayload()));
+  assert.equal(unavailable.ok, false);
+  assert.equal(unavailable.status, 503);
+  assert.equal(unavailable.code, 'temporarily_unavailable');
+  assert.equal(unavailable.ticket, undefined);
+
+  const configured = withNotificationEmail('sales@pikpam.com', () => processSupportTicket(validPayload()));
+  assert.equal(configured.ok, true);
+  assert.equal(configured.status, 200);
+  assert.equal(configured.notificationEmail, 'sales@pikpam.com');
+  assert.match(configured.ticket.id, /^SUP-/);
+});

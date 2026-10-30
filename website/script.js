@@ -152,3 +152,31 @@
     }),
   );
 })();
+
+// --- Pikpam support widget loader -------------------------------------------
+// Loads support-widget.js exactly once on every page that uses this shared
+// script. Additive only: it never blocks rendering and never throws, so a
+// missing or failed widget can never break the page.
+(() => {
+  const WIDGET_SRC = 'support-widget.js';
+  const SCRIPT_ID = 'pikpam-support-widget-script';
+
+  try {
+    if (window.PikpamSupportWidget && window.PikpamSupportWidget.loaded) return;
+    if (document.getElementById(SCRIPT_ID)) return;
+
+    const alreadyLoaded = Array.from(document.getElementsByTagName('script')).some((node) =>
+      (node.getAttribute('src') || '').includes(WIDGET_SRC),
+    );
+    if (alreadyLoaded) return;
+
+    const script = document.createElement('script');
+    script.id = SCRIPT_ID;
+    script.src = WIDGET_SRC;
+    script.async = true;
+    script.onerror = () => {};
+    (document.body || document.documentElement).appendChild(script);
+  } catch {
+    /* the support widget is optional — never break the page */
+  }
+})();

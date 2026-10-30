@@ -80,8 +80,9 @@ describe('UI — responsive task shell and trustworthy controls', () => {
 
   it('shows ChatGPT subscription state without treating it as an API key', () => {
     expect(UI_HTML).toContain("p.auth === 'chatgpt-subscription'");
-    expect(UI_HTML).toContain('Your ChatGPT credentials remain in Codex.');
-    expect(UI_HTML).not.toContain('chatgptSignout');
+    expect(UI_HTML).toContain('Your sign-in is stored on this device only; signing out removes it.');
+    expect(UI_HTML).toContain('chatgptSignout');
+    expect(UI_HTML).toContain("api('/api/chatgpt/auth', { method: 'DELETE' })");
   });
 
   it('gives runtime recovery guidance instead of blaming the selected model', () => {

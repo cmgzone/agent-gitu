@@ -5,6 +5,54 @@ import { DatabaseSync } from 'node:sqlite';
 import { expect, it, vi } from 'vitest';
 import { SessionStore } from '../src/server/session-store.js';
 
+it('records the failure class that ended a turn so failure rates are measurable', () => {
+  const home = mkdtempSync(path.join(tmpdir(), 'gitu-failure-class-'));
+  const store = new SessionStore(path.join(home, 'sessions.sqlite'));
+  try {
+    store.upsertSession({ runId: 'failed-run', taskId: 'task-1', goal: 'Fix the renderer', startedAt: new Date().toISOString(), status: 'failed', error: 'The model turn failed: 429 rate limit', failureClass: 'rate_limit_temporary' });
+    store.upsertSession({ runId: 'ok-run', goal: 'Read the config', startedAt: new Date().toISOString(), status: 'completed' });
+    expect(store.listSessions().find((session) => session.runId === 'failed-run')).toMatchObject({
+      failureClass: 'rate_limit_temporary',
+      error: 'The model turn failed: 429 rate limit',
+    });
+    expect(store.getSessionByTaskId('task-1')?.failureClass).toBe('rate_limit_temporary');
+    // A turn that did not fail carries no class, rather than a default one.
+    expect(store.listSessions().find((session) => session.runId === 'ok-run')?.failureClass).toBeUndefined();
+  } finally {
+    store.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+it('adds the failure-class column to a database created before it existed', () => {
+  const home = mkdtempSync(path.join(tmpdir(), 'gitu-failure-migration-'));
+  const file = path.join(home, 'sessions.sqlite');
+  const legacy = new DatabaseSync(file);
+  // The schema as it stood before this column existed: every base column
+  // present, only the later additions missing.
+  legacy.exec(`CREATE TABLE sessions (
+    runId TEXT PRIMARY KEY, taskId TEXT, goal TEXT, project TEXT, projectPath TEXT,
+    taggedFolders TEXT, writableFolders TEXT, branch TEXT, worktreePath TEXT,
+    startedAt TEXT, status TEXT, finishedAt TEXT, mode TEXT, provider TEXT, model TEXT,
+    requestedProvider TEXT, requestedModel TEXT, activeProvider TEXT, activeModel TEXT,
+    report TEXT, error TEXT, usage TEXT, updatedAt TEXT
+  )`);
+  legacy.prepare(`INSERT INTO sessions (runId, goal, startedAt, status) VALUES (?, ?, ?, ?)`).run('old-run', 'Earlier work', new Date().toISOString(), 'completed');
+  legacy.close();
+
+  const store = new SessionStore(file);
+  try {
+    // The pre-existing row survives the migration and simply has no class.
+    expect(store.listSessions().map((session) => session.runId)).toContain('old-run');
+    expect(store.listSessions().find((session) => session.runId === 'old-run')?.failureClass).toBeUndefined();
+    store.upsertSession({ runId: 'old-run', goal: 'Earlier work', startedAt: new Date().toISOString(), status: 'failed', failureClass: 'auth' });
+    expect(store.listSessions().find((session) => session.runId === 'old-run')?.failureClass).toBe('auth');
+  } finally {
+    store.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 it('keeps coding events and completion writable while another connection reads task history', () => {
   const home = mkdtempSync(path.join(tmpdir(), 'gitu-session-concurrency-'));
   vi.stubEnv('AGENT_GITU_HOME', home);

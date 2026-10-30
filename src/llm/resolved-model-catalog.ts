@@ -1,4 +1,4 @@
-import { codexSubscriptionInfo } from './codex-subscription.js';
+import { chatgptSubscriptionInfo } from './pi-chatgpt.js';
 import { modelBrandFor } from './model-brand.js';
 import {
   allProviderSpecs,
@@ -17,7 +17,7 @@ export interface ModelCatalogDependencies {
   providerKey: typeof providerKey;
   cachedLiveModels: typeof cachedLiveModels;
   fetchModelCatalog: typeof fetchModelCatalog;
-  codexSubscriptionInfo: typeof codexSubscriptionInfo;
+  chatgptSubscriptionInfo: typeof chatgptSubscriptionInfo;
 }
 
 /** Preserve source order and the first explicit modality, without mutating cached rows. */
@@ -39,7 +39,7 @@ function normalizeModels(models: readonly ModelInfo[]): ModelInfo[] {
  */
 export async function resolveModelCatalog(deps: Partial<ModelCatalogDependencies> = {}) {
   const catalogPromise = (deps.fetchModelCatalog ?? fetchModelCatalog)();
-  const subscriptionPromise = (deps.codexSubscriptionInfo ?? codexSubscriptionInfo)();
+  const subscriptionPromise = (deps.chatgptSubscriptionInfo ?? chatgptSubscriptionInfo)();
   const providerRowsPromise = Promise.all(
     Object.values((deps.allProviderSpecs ?? allProviderSpecs)()).map(async (spec) => {
       const subscription = spec.auth === 'chatgpt-subscription' ? await subscriptionPromise : undefined;

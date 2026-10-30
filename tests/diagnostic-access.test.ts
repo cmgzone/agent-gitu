@@ -28,7 +28,7 @@ function fixture(approved = true) {
 const request = (tool: string, target: string, extra = {}) => ({ tool, params: { path: target, ...extra }, reason: 'Diagnose app launch', expected: 'Read evidence' });
 
 describe('scoped diagnostic reads', () => {
-  it('asks for external log access even with auto-approve and never grants writes', async () => {
+  it('asks for external log access even with auto-approve, and a read approval never grants writes', async () => {
     const f = fixture();
     try {
       const read = await f.executor.execute(request('read_file', f.file));
@@ -38,8 +38,13 @@ describe('scoped diagnostic reads', () => {
       expect(f.approval.mock.calls[0]?.[0]).toMatchObject({ tool: 'read_file', summary: f.file });
       expect(() => f.guard.assertReadable(f.file)).not.toThrow();
       expect(() => f.guard.assertReadable(path.join(f.logs, 'another.log'))).toThrow();
+      // A write is its own decision: the read grant authorizes nothing else, so
+      // it must be asked about separately (and refused here).
+      f.approval.mockImplementation(async () => false);
       const write = await f.executor.execute(request('write_file', f.file, { content: 'changed' }));
       expect(write.result.ok).toBe(false);
+      expect(f.approval).toHaveBeenCalledTimes(2);
+      expect(f.approval.mock.calls[1]?.[0]).toMatchObject({ tool: 'write_file', summary: f.file });
       expect(readFileSync(f.file, 'utf8')).toBe('launch failure evidence');
     } finally { f.executor.dispose(); }
   });

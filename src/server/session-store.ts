@@ -45,6 +45,12 @@ export interface StoredSession {
   activeModel?: string;
   report?: CompletionReport;
   error?: string;
+  /**
+   * Which failure ended the turn, in Gitu's own taxonomy (`LlmErrorKind`, or a
+   * local class such as `verification`). Recorded so the failure rate and its
+   * mix can be measured instead of guessed at.
+   */
+  failureClass?: string;
   usage?: SessionUsage;
 }
 
@@ -128,6 +134,7 @@ export class SessionStore {
          report TEXT,
          error TEXT,
          usage TEXT,
+         failureClass TEXT,
          updatedAt TEXT
        );
        CREATE TABLE IF NOT EXISTS events (
@@ -178,6 +185,9 @@ export class SessionStore {
       ['sessions', 'worktreePath TEXT'],
       ['sessions', 'taggedFolders TEXT'],
       ['sessions', 'writableFolders TEXT'],
+      // Per-turn failure taxonomy. Operator-facing only: no board or gate reads
+      // it, so an old row without one behaves exactly as it always did.
+      ['sessions', 'failureClass TEXT'],
       // The typed companion on a prose row. Older rows simply have none and
       // restore as prose-only, exactly as they always have.
       ['events', 'typed TEXT'],
@@ -193,8 +203,8 @@ export class SessionStore {
   upsertSession(s: StoredSession): void {
     this.db
       .prepare(
-        `INSERT INTO sessions (runId, taskId, goal, project, projectPath, taggedFolders, writableFolders, branch, worktreePath, startedAt, status, finishedAt, mode, provider, model, requestedProvider, requestedModel, activeProvider, activeModel, report, error, usage, modelRecovery, updatedAt, coworkTask)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO sessions (runId, taskId, goal, project, projectPath, taggedFolders, writableFolders, branch, worktreePath, startedAt, status, finishedAt, mode, provider, model, requestedProvider, requestedModel, activeProvider, activeModel, report, error, usage, modelRecovery, updatedAt, coworkTask, failureClass)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(runId) DO UPDATE SET
            taskId = excluded.taskId,
            goal = excluded.goal,
@@ -218,6 +228,7 @@ export class SessionStore {
            usage = excluded.usage,
            modelRecovery = excluded.modelRecovery,
            coworkTask = excluded.coworkTask,
+           failureClass = excluded.failureClass,
            updatedAt = excluded.updatedAt`,
       )
       .run(
@@ -246,6 +257,7 @@ export class SessionStore {
         s.modelRecovery ? JSON.stringify(s.modelRecovery) : null,
         new Date().toISOString(),
         s.coworkTask ? JSON.stringify(s.coworkTask) : null,
+        s.failureClass ?? null,
       );
   }
 
@@ -351,6 +363,7 @@ export class SessionStore {
         report: string | null;
         error: string | null;
         usage: string | null;
+        failureClass: string | null;
         modelRecovery: string | null;
         coworkTask: string | null;
       }[];
@@ -376,6 +389,7 @@ export class SessionStore {
       activeModel: r.activeModel ?? r.model ?? undefined,
       report: parseReport(r.report),
       error: r.error ?? undefined,
+      failureClass: r.failureClass ?? undefined,
       usage: parseUsage(r.usage),
       modelRecovery: parseModelRecovery(r.modelRecovery),
       coworkTask: parseCoworkTask(r.coworkTask),
@@ -408,6 +422,7 @@ export class SessionStore {
         report: string | null;
         error: string | null;
         usage: string | null;
+        failureClass: string | null;
         modelRecovery: string | null;
         coworkTask: string | null;
       } | undefined;
@@ -434,6 +449,7 @@ export class SessionStore {
       activeModel: r.activeModel ?? r.model ?? undefined,
       report: parseReport(r.report),
       error: r.error ?? undefined,
+      failureClass: r.failureClass ?? undefined,
       usage: parseUsage(r.usage),
       modelRecovery: parseModelRecovery(r.modelRecovery),
       coworkTask: parseCoworkTask(r.coworkTask),

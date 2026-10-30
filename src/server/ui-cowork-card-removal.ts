@@ -5,6 +5,8 @@ export const COWORK_CARD_REMOVAL_CSS = String.raw`
 export const COWORK_CARD_REMOVAL_JS = String.raw`
   function cwBindCardRemoval(root){
     root.querySelectorAll('[data-cwrequest-row]').forEach(function(row){
+      if(!row.dataset)row.dataset={};
+      if(!row.style)row.style={};
       if(row.dataset.cardRemovalBound)return;row.dataset.cardRemovalBound='true';
       var id=row.getAttribute('data-cwrequest-row'),bubble=row.querySelector('.cw-bubble');if(!bubble)return;
       var button=document.createElement('button');button.type='button';button.className='cw-card-remove';button.textContent='×';button.title='Remove card';button.setAttribute('aria-label','Remove this card');bubble.appendChild(button);

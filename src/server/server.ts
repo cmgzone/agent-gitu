@@ -115,7 +115,7 @@ import { fetchWidgetSource, widgetAppDocument, WIDGET_APP_CSP, widgetState } fro
 import { readOnboarding, saveOnboarding } from './onboarding.js';
 import { evaluateChiefAuthority, type ChiefAuthorityPolicy, type ChiefResolverContext } from '../cowork/chief-resolver.js';
 import type { ToolContext } from '../tools/tools.js';
-import { codexSubscriptionInfo, codexSubscriptionLoginPending, startCodexSubscriptionLogin, type CodexLoginStart, type CodexSubscriptionInfo } from '../llm/codex-subscription.js';
+import { chatgptSubscriptionInfo, chatgptLoginPending, chatgptLogout, startChatgptLogin, type ChatgptLoginStart, type ChatgptSubscriptionInfo } from '../llm/pi-chatgpt.js';
 import { ProviderError, allProviderSpecs, fetchModelCatalog, freeModelFallback, modelCapabilityTier, modelMetadataFor, peekModelCatalog, providerKey, resolveImageSupport, resolveLlm, usageCostUsd } from '../llm/providers.js';
 import { resolveModelCatalog } from '../llm/resolved-model-catalog.js';
 import { resolveEmbedder } from '../llm/providers.js';
@@ -293,6 +293,8 @@ interface RunSession {
   actionProtocolMode?: 'auto' | 'native' | 'structured_text' | 'text';
   /** Bound retry/fallback history for the live run; values are provider::model, never credentials. */
   fallbackHistory?: string[];
+  /** Failure taxonomy recorded on the turn that failed; durable in the session store. */
+  failureClass?: string;
   autoApprove?: boolean;
   events: SessionEvent[];
   /** High-water mark survives removal of superseded rows within this process. */
@@ -384,9 +386,11 @@ export interface GituServerConfig {
    * person is right there, and their own approval is the point.
    */
   chiefOfStaff?: ChiefOfStaffConfig | false;
-  /** Injectable for tests; production queries the local Codex runtime. */
-  codexSubscriptionInfo?: () => Promise<CodexSubscriptionInfo>;
-  startCodexSubscriptionLogin?: () => Promise<CodexLoginStart>;
+  /** Injectable for tests; production asks pi about the stored ChatGPT sign-in. */
+  chatgptSubscriptionInfo?: () => Promise<ChatgptSubscriptionInfo>;
+  startChatgptLogin?: () => Promise<ChatgptLoginStart>;
+  /** Injectable for tests; production removes the stored ChatGPT sign-in from pi. */
+  chatgptLogout?: () => Promise<void>;
   /**
    * Delegated Chief-of-Staff authority. Absent means no automatic resolution:
    * every Cowork request stays open for the user, which is the default.
@@ -991,6 +995,7 @@ export class GituServer {
       activeModel: s.activeModel ?? s.model,
       report: s.report,
       error: s.error,
+      failureClass: s.failureClass,
       usage: s.usage,
       modelRecovery: s.modelRecovery,
     });
@@ -1832,7 +1837,7 @@ export class GituServer {
           ? (()=>{const assignment=this.cowork().getAgent(scope.agent.id)!;let first=true;return privateCodingSession(input.goal, input.workspace, (signal,instruction) => {
               const parent=this.cowork().getAgent(scope.agent.id);if(!parent)throw Error('The requesting teammate was removed.');
               if(parent.useHostComputer!==assignment.useHostComputer||parent.cloudConnectionId!==assignment.cloudConnectionId)throw Error('The assigned computer changed. Start a new coding task on the selected computer.');
-              const bridge=first&&!scope.background&&input.workspace.path==='/workspace'&&parent.allowWrites===assignment.allowWrites&&parent.allowShell===assignment.allowShell?scope.subAgents:this.codingWorkerBridge(parent,scope.conversationId!,signal,scope.missionId,input.workspace.type==='container'?input.workspace.path:undefined);first=false;
+              const bridge=first&&!scope.background&&(input.workspace.type==='host'||input.workspace.path==='/workspace')&&parent.allowWrites===assignment.allowWrites&&parent.allowShell===assignment.allowShell?scope.subAgents:this.codingWorkerBridge(parent,scope.conversationId!,signal,scope.missionId,input.workspace.type==='container'?input.workspace.path:undefined);first=false;
               if (!bridge) throw new Error('The private coding runtime is unavailable. Restore it before continuing this task.');
               return bridge.run({ role: 'Agent Gitu coding', objective: (instruction??input.goal) + '\nProject: ' + input.workspace.path + '\nMain Agent Gitu owns this engineering task. Before editing, verify that the folder and actual repository identity match the requested project. If missing, ambiguous or mismatched, stop and report that the user must choose the correct folder. Do not reuse another project, silently switch folders or continue editing. Implement and verify only in the confirmed workspace, keeping company and computer permissions in force. Return concrete evidence and remaining blockers. Do not delegate further.', reason: 'Main-agent coding task', budget: input.budget ?? {}, maxRuntimeMinutes: input.runOptions.timeoutMinutes }, signal);
             },readRuntimeSelection);})()
@@ -2237,6 +2242,9 @@ export class GituServer {
             },
             agentRole: (name) => agentStore.get(name)?.role,
             agentEffort: (name) => agentStore.get(name)?.effort,
+            // Specialists inherit the owner's live Full Access choice, never a
+            // per-request flag and never a model-supplied value.
+            fullAccess: () => codingAutoApprove(),
             onEvent: (text) => emit(text),
           })
         : undefined;
@@ -2641,7 +2649,7 @@ export class GituServer {
         const evidence=Array.isArray(params['evidence'])?params['evidence'].filter((value):value is string=>typeof value==='string'):[];
         return output(this.proactivity().recordCodingReview(task.runId,task.finishedAt,status as 'passed'|'issues'|'blocked',String(params['text']??''),evidence));
       }
-      if(action==='list_models')return output(await resolveModelCatalog({codexSubscriptionInfo:this.config.codexSubscriptionInfo}));
+      if(action==='list_models')return output(await resolveModelCatalog({chatgptSubscriptionInfo:this.config.chatgptSubscriptionInfo}));
       if(action==='list_tasks')return output([...this.sessions.values()].filter(owned).map(task=>this.sessionView(task)));
       if(action==='list_conversations')return output(store.listConversations().map(conv=>({id:conv.id,title:conv.title,memberIds:conv.memberIds})));
       if(action==='list_agents')return output(store.listAgents().map(agent=>({id:agent.id,name:agent.name,chief:agent.chiefOfStaff})));
@@ -7090,7 +7098,7 @@ export class GituServer {
     }
     if (method === 'GET' && path === '/api/models') {
       this.sendJson(res, 200, {...await resolveModelCatalog({
-        codexSubscriptionInfo: this.config.codexSubscriptionInfo,
+        chatgptSubscriptionInfo: this.config.chatgptSubscriptionInfo,
       }),selection:readRuntimeSelection()});
       return;
     }
@@ -7491,14 +7499,14 @@ export class GituServer {
     }
 
     if (method === 'GET' && path === '/api/chatgpt/auth') {
-      const subscription = await (this.config.codexSubscriptionInfo ?? codexSubscriptionInfo)();
-      this.sendJson(res, 200, { ...subscription, loggedIn: subscription.signedIn, loginPending: codexSubscriptionLoginPending() });
+      const subscription = await (this.config.chatgptSubscriptionInfo ?? chatgptSubscriptionInfo)();
+      this.sendJson(res, 200, { ...subscription, loggedIn: subscription.signedIn, loginPending: chatgptLoginPending() });
       return;
     }
 
     if (method === 'POST' && path === '/api/chatgpt/login') {
       try {
-        const login = await (this.config.startCodexSubscriptionLogin ?? startCodexSubscriptionLogin)();
+        const login = await (this.config.startChatgptLogin ?? startChatgptLogin)();
         this.sendJson(res, 202, { ...login, url: login.authUrl });
       } catch (err) {
         this.sendJson(res, 400, { error: (err as Error).message });
@@ -7507,7 +7515,12 @@ export class GituServer {
     }
 
     if (method === 'DELETE' && path === '/api/chatgpt/auth') {
-      this.sendJson(res, 405, { error: 'Sign out in Codex. Agent Gitu never stores your ChatGPT credentials.' });
+      try {
+        await (this.config.chatgptLogout ?? chatgptLogout)();
+        this.sendJson(res, 200, { ok: true, signedIn: false, loggedIn: false });
+      } catch (err) {
+        this.sendJson(res, 500, { error: `Could not sign out of ChatGPT: ${(err as Error).message}` });
+      }
       return;
     }
 
@@ -8743,6 +8756,8 @@ export class GituServer {
             },
             agentRole: (name) => agentStore.get(name)?.role,
             agentEffort: (name) => agentStore.get(name)?.effort,
+            // Delegated lanes inherit the owner's live Full Access choice.
+            fullAccess: () => codingAutoApprove(),
             // Specialists inherit this run's autonomy: a delegated lane changes
             // approach instead of dying, still bounded by its own ceiling and
             // by this run's budget.
@@ -8915,6 +8930,10 @@ export class GituServer {
         index,
         mode: opts.mode,
         autoApprove: codingAutoApprove(opts.autoApprove),
+        // Full Access filesystem authority comes from the owner's saved choice
+        // and is re-read at execution time, so switching to Ask applies to the
+        // very next tool call. A request flag only covers approval behaviour.
+        fullAccess: () => codingAutoApprove(),
         autoLearn: opts.autoLearn,
         requirePlanReview: opts.review,
         criteria: opts.criteria,
@@ -9046,6 +9065,7 @@ export class GituServer {
       if (err instanceof ProjectGuardError) {
         session.status = 'blocked';
         session.error = err.message;
+        session.failureClass = 'workspace_access';
         this.pushEvent(session, `workspace access required: ${err.message}`);
         return;
       }
@@ -9103,6 +9123,9 @@ export class GituServer {
       const delay = llm.nativeTask ? undefined : providerRecoveryDelay(err, recoveryAttempt + 1, this.config.providerRecoveryDelayMs);
       session.status = delay !== undefined ? 'waiting_for_model' : 'failed';
       session.error = (err as Error).message;
+      // Tag every failed turn with the class that ended it, so the failure rate
+      // and its mix are measurable instead of anecdotal.
+      session.failureClass = llmError?.details.kind ?? 'unknown';
       if (delay !== undefined) {
         session.report = undefined;
         session.modelRecovery = { attempt: recoveryAttempt + 1, nextRetryAt: new Date(Date.now() + delay).toISOString() };

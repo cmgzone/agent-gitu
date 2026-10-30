@@ -5,12 +5,36 @@ import { realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { ProjectLock, WorkspaceAuthority } from '../types.js';
 import { nowIso, readJson, writeJson } from '../util.js';
+import { gituHomeRoot } from '../workspace/home.js';
 
 const MARKER_FILES = ['package.json', 'pyproject.toml', 'cargo.toml', 'go.mod', 'pom.xml', 'build.gradle'];
 const DEFAULT_IGNORES = ['node_modules', 'dist', 'build', 'out', 'coverage', '.git', '.venv', '__pycache__', 'target', '.hermes'];
 const execGit = promisify(execFile);
 
+/**
+ * The host-owned access mode. `workspace` keeps every project-boundary rule;
+ * `full` is the user's explicit Full Access choice and lifts project-only
+ * filesystem restrictions. It is never derived from model output or tool
+ * parameters — only from the host's live authorization state.
+ */
+export type ProjectAccessMode = 'workspace' | 'full';
+
+export interface ProjectGuardAccessOptions {
+  /**
+   * Re-evaluated for every filesystem decision, so revoking Full Access takes
+   * effect at the next tool call instead of the next task.
+   */
+  accessMode?: () => ProjectAccessMode;
+}
+
 export class ProjectGuardError extends Error {}
+
+/** A concrete, user-approved write target outside the locked project. */
+export interface ExternalWriteScope {
+  path: string;
+  real: string;
+  directory: boolean;
+}
 
 function tryGit(repoRoot: string, args: string[]): string | undefined {
   try {
@@ -25,6 +49,15 @@ function canonicalPath(candidate: string): string {
     return realpathSync(candidate);
   } catch {
     return path.resolve(candidate);
+  }
+}
+
+/** Fail closed: an unreadable authority never expands access. */
+function accessModeIsFull(access?: ProjectGuardAccessOptions): boolean {
+  try {
+    return access?.accessMode?.() === 'full';
+  } catch {
+    return false;
   }
 }
 
@@ -124,6 +157,63 @@ export class ProjectGuard {
   ) {}
 
   /**
+   * Set by the host only — never by model-supplied tool parameters.
+   * In `full` mode project-boundary and ignore-path restrictions are relaxed
+   * for the user's explicitly authorized Full Access session. Gitu's own
+   * private state (.hermes), Git state (.git), and the live task ledger remain
+   * protected regardless of the mode.
+   */
+  private accessModeSource?: () => ProjectAccessMode;
+  private fixedAccessMode: ProjectAccessMode = 'workspace';
+  private accessDecision?: ProjectAccessMode;
+
+  /**
+   * Resolved per authorization boundary (see `beginToolAuthorization`), so a
+   * revoked setting applies to the next tool execution rather than the next
+   * task, without re-reading the owner's settings once per scanned file.
+   */
+  get accessMode(): ProjectAccessMode {
+    return this.accessDecision ?? this.resolveAccessMode();
+  }
+
+  private resolveAccessMode(): ProjectAccessMode {
+    if (!this.accessModeSource) return this.fixedAccessMode;
+    try {
+      return this.accessModeSource() === 'full' ? 'full' : 'workspace';
+    } catch {
+      // A failing authority lookup must never widen access.
+      return 'workspace';
+    }
+  }
+
+  /**
+   * Freeze the owner's decision for one tool execution. The Executor calls
+   * this at the dispatch boundary: authorization is re-checked for every tool,
+   * while adapters, scans and verification inside that call share one answer.
+   */
+  beginToolAuthorization(): void {
+    this.accessDecision = this.resolveAccessMode();
+  }
+
+  endToolAuthorization(): void {
+    this.accessDecision = undefined;
+  }
+
+  get fullAccess(): boolean {
+    return this.accessMode === 'full';
+  }
+
+  /** Host/test override for a fixed mode. A live authority takes precedence. */
+  set fullAccess(value: boolean) {
+    this.fixedAccessMode = value ? 'full' : 'workspace';
+  }
+
+  /** Called only by the host; never from a model-supplied tool parameter. */
+  setAccessAuthority(source: () => ProjectAccessMode): void {
+    this.accessModeSource = source;
+  }
+
+  /**
    * Task-scoped scratch directory (absolute) that tools MAY touch even though
    * it sits under .hermes. Set by the orchestrator per run; temporary
    * diagnostics are redirected here so they never land in the user's source
@@ -131,16 +221,16 @@ export class ProjectGuard {
    */
   taskTmpRoot?: string;
 
-  static detect(cwd: string): ProjectGuard {
+  static detect(cwd: string, access?: ProjectGuardAccessOptions): ProjectGuard {
     if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new ProjectGuardError(`Selected workspace is not an existing directory: ${cwd}`);
     const located = findRepoRoot(cwd);
-    if (!located) {
+    if (!located && !accessModeIsFull(access)) {
       throw new ProjectGuardError(
         `No project marker found at or above ${cwd}. Agent Gitu refuses to act without a locked project scope.`,
       );
     }
-    const { root: locatedRoot, marker } = located;
-    const root = canonicalPath(locatedRoot);
+    // Without a marker, Full Access still works on the folder the user chose.
+    const root = canonicalPath(located ? located.root : cwd);
     const workspace = discoverWorkspaceAuthority(root);
 
     let branch = tryGit(root, ['rev-parse', '--abbrev-ref', 'HEAD']);
@@ -148,16 +238,18 @@ export class ProjectGuard {
       branch = undefined;
     }
 
-    return ProjectGuard.fromDetectedRoot(root, marker, workspace, branch);
+    const guard = ProjectGuard.fromDetectedRoot(root, located?.marker, workspace, branch);
+    if (access?.accessMode) guard.setAccessAuthority(access.accessMode);
+    return guard;
   }
 
   /** Desktop/run startup must not wait for Git on Electron's main thread. */
-  static async detectAsync(cwd: string): Promise<ProjectGuard> {
+  static async detectAsync(cwd: string, access?: ProjectGuardAccessOptions): Promise<ProjectGuard> {
     const selected = await stat(cwd).catch(() => undefined);
     if (!selected?.isDirectory()) throw new ProjectGuardError(`Selected workspace is not an existing directory: ${cwd}`);
     const located = findRepoRoot(cwd);
-    if (!located) throw new ProjectGuardError(`No project marker found at or above ${cwd}. Agent Gitu refuses to act without a locked project scope.`);
-    const root = canonicalPath(located.root);
+    if (!located && !accessModeIsFull(access)) throw new ProjectGuardError(`No project marker found at or above ${cwd}. Agent Gitu refuses to act without a locked project scope.`);
+    const root = canonicalPath(located ? located.root : cwd);
     const git = async (args: string[]): Promise<string | undefined> => {
       try { return (await execGit('git', args, { cwd: root, encoding: 'utf8', timeout: 3000, windowsHide: true })).stdout.trim(); }
       catch { return undefined; }
@@ -170,7 +262,9 @@ export class ProjectGuard {
     const worktreeRoot = canonicalPath(top || root);
     const common = commonDir ? canonicalPath(commonDir) : undefined;
     const repositoryRoot = common && path.basename(common).toLowerCase() === '.git' ? canonicalPath(path.dirname(common)) : worktreeRoot;
-    return ProjectGuard.fromDetectedRoot(root, located.marker, { repositoryRoot, worktreeRoot, writableRoot: root }, branch);
+    const guard = ProjectGuard.fromDetectedRoot(root, located?.marker, { repositoryRoot, worktreeRoot, writableRoot: root }, branch);
+    if (access?.accessMode) guard.setAccessAuthority(access.accessMode);
+    return guard;
   }
 
   private static fromDetectedRoot(root: string, marker: string | undefined, workspace: WorkspaceAuthority, branch: string | undefined): ProjectGuard {
@@ -193,7 +287,7 @@ export class ProjectGuard {
       repoRoot: root,
       workspace,
       branch,
-      techStack: marker === 'package.json' ? detectTechStack(pkg) : [marker ?? 'unknown'],
+      techStack: marker === 'package.json' || (!marker && existsSync(pkgPath)) ? detectTechStack(pkg) : [marker ?? 'unknown'],
       entrypoints: detectEntrypoints(root, pkg),
       testCommand: pickScript(scripts, ['test', 'test:unit']),
       buildCommand: pickScript(scripts, ['build']),
@@ -237,7 +331,100 @@ export class ProjectGuard {
     return !rel.startsWith('..') && !path.isAbsolute(rel);
   }
 
+  private isPrivateStatePath(absPath: string): boolean {
+    const parts = path.resolve(absPath).split(path.sep).map((part) => part.toLowerCase());
+    return parts.includes('.hermes') || parts.includes('.git');
+  }
+
+  /** Canonical path of the nearest existing ancestor, or the path itself. */
+  private canonicalTarget(absPath: string): string {
+    let probe = path.resolve(absPath);
+    for (;;) {
+      if (existsSync(probe)) return canonicalPath(probe);
+      const parent = path.dirname(probe);
+      if (parent === probe) return path.resolve(absPath);
+      probe = parent;
+    }
+  }
+
+  /** Scans must not block the desktop loop on large Full Access searches. */
+  private async canonicalTargetAsync(absPath: string): Promise<string> {
+    let probe = path.resolve(absPath);
+    for (;;) {
+      if (existsSync(probe)) {
+        try {
+          return await realpath(probe);
+        } catch {
+          return path.resolve(probe);
+        }
+      }
+      const parent = path.dirname(probe);
+      if (parent === probe) return path.resolve(absPath);
+      probe = parent;
+    }
+  }
+
+  /**
+   * Agent Gitu's own control plane: credentials, the session database and the
+   * cache. Full Access covers the user's files and projects (Projects/ and
+   * Workspace/ stay writable), never the state that supervises the agent.
+   */
+  private isProtectedGituHome(absPath: string): boolean {
+    const rel = path.relative(gituHomeRoot(), path.resolve(absPath));
+    if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) return false;
+    const top = (rel.split(path.sep)[0] ?? '').toLowerCase();
+    return top === 'settings' || top === 'sessions' || top === 'cache';
+  }
+
+  private isInsideTaskScratch(absPath: string): boolean {
+    const scratch = this.taskTmpRoot;
+    if (!scratch) return false;
+    const abs = path.resolve(absPath);
+    const rel = path.relative(path.resolve(scratch), abs);
+    return !rel.startsWith('..') && !path.isAbsolute(rel);
+  }
+
+  /**
+   * Full Access is unrestricted *workspace* access, not authority over the
+   * control plane supervising the agent. Gitu's live task ledger, credentials
+   * and private state stay sealed, as do Git internals: the agent uses Git
+   * through commands, never by editing .git directly. Symlinks are followed
+   * only when their target is not private state.
+   */
+  private fullAccessTargetProblem(absPath: string, real: string): string | undefined {
+    if (this.isInsideTaskScratch(absPath)) {
+      return this.isProtectedGituHome(real) || (this.isPrivateStatePath(real) && !this.isInsideTaskScratch(real))
+        ? `Path ${absPath} resolves into Agent Gitu or Git private state and cannot be touched by tools.`
+        : undefined;
+    }
+    if (this.isPrivateStatePath(absPath) || this.isProtectedGituHome(absPath)) {
+      return `Path ${absPath} is inside Agent Gitu or Git private state and cannot be touched by tools.`;
+    }
+    if (this.isPrivateStatePath(real) || this.isProtectedGituHome(real)) {
+      return `Path ${absPath} resolves into Agent Gitu or Git private state (symlink) and cannot be touched by tools.`;
+    }
+    return undefined;
+  }
+
+  private assertFullAccessTarget(absPath: string): void {
+    const abs = path.resolve(absPath);
+    const problem = this.fullAccessTargetProblem(abs, this.canonicalTarget(abs));
+    if (problem) throw new ProjectGuardError(problem);
+  }
+
+  private async assertFullAccessTargetAsync(absPath: string): Promise<void> {
+    const abs = path.resolve(absPath);
+    const problem = this.fullAccessTargetProblem(abs, await this.canonicalTargetAsync(abs));
+    if (problem) throw new ProjectGuardError(problem);
+  }
+
   private readonly diagnosticReads = new Map<string, { real: string; directory: boolean }>();
+  /**
+   * Write targets the user approved one by one, outside the locked project.
+   * This is the alternative to Full Access: nothing is authorized in advance,
+   * each path is asked about, and the agent's private state is never grantable.
+   */
+  private readonly externalWrites = new Map<string, { real: string; directory: boolean }>();
   /** User-selected, run-scoped folders. The host owns both lists. */
   private taggedReadFolders?: () => readonly string[];
   private taggedWriteFolders?: () => readonly string[];
@@ -260,6 +447,12 @@ export class ProjectGuard {
   /** Read authority is separate from write authority; ignore rules only control discovery. */
   assertReadable(absPath: string): void {
     const abs = path.resolve(absPath);
+    // Full Access mode: the owner authorized unrestricted filesystem access.
+    // Private Gitu/Git state and the task ledger stay sealed in all modes.
+    if (this.fullAccess) {
+      this.assertFullAccessTarget(abs);
+      return;
+    }
     // Preserve the existing task scratch exception and normal workspace checks.
     try {
       this.assertInside(abs);
@@ -302,6 +495,12 @@ export class ProjectGuard {
   /** Read-only scans must not block the desktop event loop on filesystem checks. */
   async assertReadableAsync(absPath: string): Promise<void> {
     const abs = path.resolve(absPath);
+    // Full Access mode: the owner authorized unrestricted filesystem access.
+    // Symlinks are followed unless they resolve into private state.
+    if (this.fullAccess) {
+      await this.assertFullAccessTargetAsync(abs);
+      return;
+    }
     const within = (root: string, candidate: string): boolean => {
       const rel = path.relative(root, candidate);
       return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
@@ -358,6 +557,68 @@ export class ProjectGuard {
     return { path: abs, real, directory: statSync(abs).isDirectory() };
   }
 
+  /** Canonical path of a target that may not exist yet: the nearest existing
+   * ancestor is resolved, the not-yet-created remainder is appended verbatim,
+   * so an approved new file is still identified by where it will land. */
+  private canonicalProspective(absPath: string): string {
+    const abs = path.resolve(absPath);
+    if (existsSync(abs)) return canonicalPath(abs);
+    const parent = path.dirname(abs);
+    if (parent === abs) return abs;
+    return path.join(this.canonicalProspective(parent), path.basename(abs));
+  }
+
+  /**
+   * Validate a proposed write target outside the project before the user is
+   * asked. No access is granted here, and control-plane paths can never be
+   * requested: Agent Gitu's state, credentials and Git internals stay sealed
+   * whether or not the user is asked.
+   */
+  externalWriteScope(absPath: string): ExternalWriteScope {
+    const abs = path.resolve(absPath);
+    if (this.isInsideProject(abs)) {
+      throw new ProjectGuardError(`Path ${abs} is inside the locked project; it does not need external approval.`);
+    }
+    if (this.isPrivateStatePath(abs) || this.isProtectedGituHome(abs)) {
+      throw new ProjectGuardError(`Path ${absPath} is inside Agent Gitu or Git private state and cannot be touched by tools.`);
+    }
+    const real = this.canonicalProspective(abs);
+    if (this.isPrivateStatePath(real) || this.isProtectedGituHome(real)) {
+      throw new ProjectGuardError(`Path ${absPath} resolves into Agent Gitu or Git private state (symlink) and cannot be touched by tools.`);
+    }
+    return { path: abs, real, directory: existsSync(abs) && statSync(abs).isDirectory() };
+  }
+
+  /** Called only by the host after approval; never from model-supplied tool parameters. */
+  grantExternalWrite(scope: ExternalWriteScope): void {
+    const current = this.externalWriteScope(scope.path);
+    if (current.real !== scope.real || current.directory !== scope.directory) {
+      throw new ProjectGuardError('External write target changed while awaiting approval.');
+    }
+    this.externalWrites.set(scope.path, { real: scope.real, directory: scope.directory });
+  }
+
+  /** An approval covers exactly one file, or one folder and everything below it. */
+  private isExternallyApproved(absPath: string): boolean {
+    if (this.externalWrites.size === 0) return false;
+    const abs = path.resolve(absPath);
+    const real = this.canonicalProspective(abs);
+    const within = (root: string, candidate: string): boolean => {
+      const rel = path.relative(root, candidate);
+      return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+    };
+    for (const [granted, scope] of this.externalWrites) {
+      if (abs === granted) {
+        // The approved file must still be the same file, not a swapped symlink.
+        if (real === scope.real) return true;
+        continue;
+      }
+      if (!scope.directory || !within(granted, abs)) continue;
+      if (within(scope.real, real)) return true;
+    }
+    return false;
+  }
+
   /** Called only by the host after approval; never from model-supplied tool parameters. */
   grantDiagnosticRead(scope: { path: string; real: string; directory: boolean }): void {
     const current = this.diagnosticReadScope(scope.path);
@@ -396,6 +657,12 @@ export class ProjectGuard {
   }
 
   assertInside(absPath: string): void {
+    if (this.fullAccess) {
+      // Full Access mode: writes anywhere except the control plane supervising
+      // the agent and the Git internals under .git.
+      this.assertFullAccessTarget(absPath);
+      return;
+    }
     if (!this.isInsideProject(absPath)) {
       const abs = path.resolve(absPath);
       for (const folder of this.taggedWriteFolders?.() ?? []) {
@@ -415,6 +682,11 @@ export class ProjectGuard {
         this.assertNoSymlinkEscape(abs, scope);
         return;
       }
+      // Neither Full Access nor a folder tag: the user approved this exact
+      // path for this task (see externalWriteScope / grantExternalWrite).
+      // The approval is bound to the canonical target, so a swapped symlink
+      // no longer matches and stays denied.
+      if (this.isExternallyApproved(abs)) return;
       throw new ProjectGuardError(
         `Path ${absPath} is outside the locked project ${this.lock.name} (${this.lock.repoRoot}).`,
       );

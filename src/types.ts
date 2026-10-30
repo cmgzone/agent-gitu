@@ -693,7 +693,7 @@ export interface TaskLedgerData {
   schemaVersion: 1;
   /** Durable execution ownership; changing providers requires an explicit continuation. */
   execution?: {
-    mode: 'gitu' | 'codex-native' | 'codex-legacy';
+    mode: 'gitu' | NativeExecutionMode | 'codex-legacy';
     native?: { threadId: string; turnId?: string; cwd: string; toolExecution?: 'gitu-guarded'; phaseId?: string; status: 'starting' | 'running' | 'completed' | 'interrupted' | 'failed'; planStepIds?: string[]; processedItems: string[]; model?: string; requestedEffort?: string; effectiveEffort?: string };
   };
   taskId: string;
@@ -972,6 +972,7 @@ export interface ToolResult {
 }
 import type { SkillIdentity } from './skills/skills.js';
 import type { FileKnowledgeStats } from './context/file-knowledge.js';
+import type { NativeExecutionMode } from './llm/native-task.js';
 export type {
   ProblemState,
   ProblemStatus,

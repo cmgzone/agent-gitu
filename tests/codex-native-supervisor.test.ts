@@ -17,7 +17,10 @@ afterEach(() => {
   for (const folder of folders.splice(0)) rmSync(folder, { recursive: true, force: true });
 });
 
-function fixture(scenario: (input: NativeTaskInput) => Promise<void>, opts: { mode?: 'chat' | 'agent'; approval?: boolean; goal?: string } = {}) {
+function fixture(
+  scenario: (input: NativeTaskInput) => Promise<void>,
+  opts: { mode?: 'chat' | 'agent'; approval?: boolean; goal?: string; runtime?: NativeTaskRuntime['mode'] } = {},
+) {
   const root = mkdtempSync(path.join(tmpdir(), 'gitu-native-supervisor-'));
   folders.push(root);
   writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'native-test', version: '1.0.0' }));
@@ -34,7 +37,7 @@ function fixture(scenario: (input: NativeTaskInput) => Promise<void>, opts: { mo
     await scenario(input);
     return { threadId: 'thread-1', turnId: 'turn-1', status: 'completed' as const };
   });
-  const runtime: NativeTaskRuntime = { mode: 'codex-native', runTurn, steer: vi.fn(async () => {}) };
+  const runtime: NativeTaskRuntime = { mode: opts.runtime ?? 'codex-native', runTurn, steer: vi.fn(async () => {}) };
   const llm = Object.assign(new ScriptedMockLlm([]), { nativeTask: runtime });
   const config: GituConfig = { cwd: root, llm, mode: opts.mode ?? 'agent', requirePlanReview: false, autoLearn: false, onEvent, onCodingEvent, approvalHandler: approve };
   const controller = new AbortController();
@@ -70,9 +73,91 @@ describe('Gitu supervises the native loop', () => {
     f.config.effort = 'max';
     await f.run();
     expect(f.ledger.data.execution?.native).toMatchObject({ model: 'model', requestedEffort: 'max', effectiveEffort: 'max' });
-    expect(f.onEvent.mock.calls.some(([line]) => line.startsWith('verify   Codex finished.'))).toBe(true);
+    expect(f.onEvent.mock.calls.some(([line]) => line.startsWith('verify   The model turn finished.'))).toBe(true);
     expect(f.runTurn).toHaveBeenCalledTimes(1);
   });
+
+  it('supervises a pi-mode turn without naming another runtime anywhere a user reads', async () => {
+    const f = fixture(async (input) => {
+      await answer(input, 'Two.');
+    }, { mode: 'chat', runtime: 'pi-native' });
+    await f.run();
+    const lines = f.onEvent.mock.calls.map(([line]) => String(line)).join('\n');
+    // The supervisor is shared: every sentence it publishes must be true for
+    // whichever loop is executing, not just the Codex one.
+    expect(lines).toContain('runtime  ');
+    expect(lines).toContain('verify   The model turn finished.');
+    expect(lines).not.toContain('Codex');
+    expect(String(f.runTurn.mock.calls[0]![0].instructions)).not.toContain('Codex');
+    expect(f.ledger.data.blockers.join(' ')).not.toContain('Codex');
+    expect(f.ledger.data.execution?.mode).toBe('pi-native');
+  });
+
+  it('records a runtime-neutral blocker when a pi-mode turn ends without a final answer', async () => {
+    const f = fixture(async () => {}, { mode: 'chat', runtime: 'pi-native' });
+    expect((await f.run()).report.status).toBe('blocked');
+    expect(f.ledger.data.blockers.join(' ')).toContain('The native turn ended without a final answer');
+    expect(f.ledger.data.blockers.join(' ')).not.toContain('Codex');
+  });
+
+  it('retries a transient native failure that happened before any tool ran', async () => {
+    const f = fixture(async (input) => {
+      await answer(input, 'Two.');
+    }, { mode: 'chat', runtime: 'pi-native' });
+    f.config.providerRecoveryDelayMs = 1;
+    const run = f.runtime.runTurn;
+    let attempts = 0;
+    f.runtime.runTurn = async (turnInput) => {
+      if (++attempts === 1) throw new LlmError('503 service unavailable', { kind: 'provider_unavailable' });
+      return run(turnInput);
+    };
+    const result = await f.run();
+    expect(attempts).toBe(2);
+    expect(result.report.status).toBe('complete');
+    expect(f.onEvent.mock.calls.map(([line]) => String(line)).join('\n')).toContain('retry 2/3');
+  });
+
+  it('does not re-enter a native turn that already ran a tool', async () => {
+    const f = fixture(async (input) => {
+      expect((await call(input, 'gitu_read_file', { path: 'answer.cjs' }))['success']).toBe(true);
+      throw new LlmError('503 service unavailable', { kind: 'provider_unavailable' });
+    }, { mode: 'chat', runtime: 'pi-native' });
+    f.config.providerRecoveryDelayMs = 1;
+    await expect(f.run()).rejects.toThrow('503 service unavailable');
+    expect(f.runTurn).toHaveBeenCalledTimes(1);
+    expect(f.ledger.data.blockers.join(' ')).toContain('503 service unavailable');
+  });
+
+  it('never retries a non-transient native failure, even before any tool ran', async () => {
+    const f = fixture(async () => {
+      throw new LlmError('invalid api key', { kind: 'auth' });
+    }, { mode: 'chat', runtime: 'pi-native' });
+    f.config.providerRecoveryDelayMs = 1;
+    await expect(f.run()).rejects.toThrow('invalid api key');
+    expect(f.runTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops re-entering the native turn after the bounded attempt budget', async () => {
+    const f = fixture(async () => {
+      throw new LlmError('503 service unavailable', { kind: 'provider_unavailable' });
+    }, { mode: 'chat', runtime: 'pi-native' });
+    f.config.providerRecoveryDelayMs = 1;
+    await expect(f.run()).rejects.toThrow('503 service unavailable');
+    expect(f.runTurn).toHaveBeenCalledTimes(3);
+  });
+
+  it('lets Stop cancel the recovery wait instead of sitting out the backoff', async () => {
+    const f = fixture(async () => {
+      throw new LlmError('503 service unavailable', { kind: 'provider_unavailable' });
+    }, { mode: 'chat', runtime: 'pi-native' });
+    // A real minute-long wait: only cancellation can end it in this test.
+    f.config.providerRecoveryDelayMs = 60_000;
+    const pending = f.run();
+    await vi.waitFor(() => expect(f.runTurn).toHaveBeenCalledTimes(1));
+    f.controller.abort();
+    expect((await pending).report.status).toBe('aborted');
+    expect(f.runTurn).toHaveBeenCalledTimes(1);
+  }, 15_000);
 
   it('cancels workspace verification without starting another scan to build the report', async () => {
     const f = fixture(async (input) => {

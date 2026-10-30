@@ -60,6 +60,12 @@ export interface GituFactoryOptions {
   actionProtocolMode?: 'auto' | 'native' | 'structured_text' | 'text';
   /** Defaults to `false`: unattended approval must be opted into per run. */
   autoApprove?: boolean;
+  /**
+   * Live owner Full Access authority (the saved coding-access setting). The
+   * engine re-reads it at execution time so revocation is immediate. Omitted
+   * means the run's `autoApprove` grant is the authority.
+   */
+  fullAccess?: () => boolean;
   /** Defaults to `true`. */
   autoLearn?: boolean;
   /** Defaults to `true`: a plan is reviewed before implementation starts. */
@@ -140,6 +146,7 @@ export function buildGituConfig(options: GituFactoryOptions, deps: GituFactoryDe
     // Spelled out on purpose: an omitted flag must mean the documented default,
     // not whatever the engine happens to fall back to.
     autoApprove: options.autoApprove ?? false,
+    fullAccess: options.fullAccess,
     autoLearn: options.autoLearn ?? true,
     requirePlanReview: options.requirePlanReview ?? true,
     index: options.index,

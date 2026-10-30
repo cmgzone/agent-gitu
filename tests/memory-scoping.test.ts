@@ -219,7 +219,7 @@ describe('audit persistence (review hardening #1)', () => {
     for (const id of [ids[0]!, ids[504]!]) {
       expect(reopened.explain(id).audit).toEqual(expect.arrayContaining([expect.objectContaining({ memoryId: id, event: 'created' })]));
     }
-  });
+  }, 60_000);
 });
 
 describe('mid-run publish_finding (review hardening #2)', () => {

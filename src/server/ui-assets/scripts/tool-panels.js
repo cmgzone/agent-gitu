@@ -276,7 +276,7 @@
     stat('Provider', session && session.provider ? session.provider : '—');
     stat('Model', session && session.model ? prettyModelName(session.model) : '—');
     stat('Mode', L ? L.mode : '—');
-    var nativeRun = L && L.execution && L.execution.mode === 'codex-native';
+    var nativeRun = L && L.execution && (L.execution.mode === 'codex-native' || L.execution.mode === 'pi-native');
     var nativeSettings = nativeRun && L.execution.native;
     var actualEffort = nativeRun ? nativeSettings && nativeSettings.effectiveEffort : L && L.effortPlan && L.effortPlan.llmEffort;
     stat('Effort', actualEffort ? actualEffort + ' (run)' : 'Not recorded for this turn');

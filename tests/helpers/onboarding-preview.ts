@@ -13,7 +13,7 @@ const server = new HermesServer({ passwordRequired: false,
   cwd: process.env.AGENT_GITU_HOME,
   port: 0,
   llm: new ScriptedMockLlm([() => 'Preview complete.']),
-  codexSubscriptionInfo: async () => ({ available: true, signedIn: false, models: [] }),
+  chatgptSubscriptionInfo: async () => ({ available: true, signedIn: false, models: [] }),
 });
 console.log(`Onboarding preview: http://127.0.0.1:${await server.start()}`);
 process.on('SIGINT', () => { void server.stop().then(() => process.exit(0)); });

@@ -19,7 +19,7 @@ import {
   resolveLlm,
   type ProviderSpec,
 } from './llm/providers.js';
-import { codexSubscriptionInfo, startCodexSubscriptionLogin, waitForCodexSubscriptionLogin } from './llm/codex-subscription.js';
+import { chatgptLogout, chatgptSubscriptionInfo, startChatgptLogin, waitForChatgptLogin } from './llm/pi-chatgpt.js';
 import { mergedEnv } from './llm/keys.js';
 import { MemoryStore } from './memory/memory-store.js';
 import { Reporter } from './report/reporter.js';
@@ -97,7 +97,7 @@ Run options:
 
 Providers:
   chatgpt   ChatGPT subscription — run \`gitu login\` (uses the models in your
-            ChatGPT plan through local Codex; no API key)
+            ChatGPT plan; no API key)
   alibaba   Alibaba Cloud Model Studio / DashScope (OpenAI-compatible)
             keys: HERMES_ALIBABA_API_KEY | DASHSCOPE_API_KEY | ALIBABA_API_KEY
             models: run \`gitu models --provider alibaba\` (default: qwen3.8-max)
@@ -134,10 +134,10 @@ function askLine(question: string): Promise<string> {
 
 async function listProviderModels(spec: ProviderSpec, pick: boolean): Promise<void> {
   if (spec.auth === 'chatgpt-subscription') {
-    const status = await codexSubscriptionInfo();
+    const status = await chatgptSubscriptionInfo();
     const ids = status.models.length > 0 ? status.models.map((model) => model.id) : [...spec.models];
     console.log(`\n${spec.id} — ${spec.label}`);
-    console.log(`source: ${status.signedIn ? 'models available through your local Codex sign-in' : 'built-in list (run gitu login to use this provider)'}`);
+    console.log(`source: ${status.signedIn ? 'models available through your ChatGPT sign-in' : 'built-in list (run gitu login to use this provider)'}`);
     ids.forEach((id, i) => {
       const marker = id === spec.defaultModel ? '  (default)' : '';
       console.log(`  ${String(i + 1).padStart(3)}. ${id}${marker}`);
@@ -331,11 +331,11 @@ async function main(): Promise<void> {
       const env = mergedEnv();
       for (const spec of Object.values(PROVIDERS)) {
         if (spec.id === 'chatgpt') {
-          const status = await codexSubscriptionInfo();
+          const status = await chatgptSubscriptionInfo();
           const statusText = status.signedIn ? `ready (ChatGPT${status.planType ? ` · ${status.planType}` : ''})` : 'not signed in — run `gitu login`';
           console.log(`${spec.id.padEnd(9)} ${statusText.padEnd(40)} ${spec.label}`);
           console.log(`          base: ${spec.baseUrl}`);
-          console.log(`          auth: local Codex browser sign-in (no API key) — run \`gitu login\``);
+          console.log(`          auth: ChatGPT sign-in (no API key) — run \`gitu login\``);
           console.log(`          models: ${spec.models.length} known (default: ${spec.defaultModel}) — run \`gitu models --provider ${spec.id}\``);
           continue;
         }
@@ -530,6 +530,8 @@ async function main(): Promise<void> {
               },
               agentRole: (name) => agentStore.get(name)?.role,
               agentEffort: (name) => agentStore.get(name)?.effort,
+              // Mirror the run's explicit --yes grant for delegated lanes.
+              fullAccess: () => Boolean(flags.get('yes')),
               onEvent: (e) => {
                 // The web UI consumes this metadata alongside the readable lifecycle.
                 if (!e.startsWith('subagent-state ')) console.error(presenter.event(e));
@@ -594,30 +596,36 @@ async function main(): Promise<void> {
     }
 
     case 'login': {
-      const started = await startCodexSubscriptionLogin();
+      const started = await startChatgptLogin();
       if (started.alreadySignedIn) {
-        const status = await codexSubscriptionInfo(true);
+        const status = await chatgptSubscriptionInfo(true);
         console.log(`Already connected to ChatGPT${status.planType ? ` (${status.planType})` : ''}.`);
         return;
       }
-      console.log('Open this secure Codex sign-in link in a browser:');
+      console.log('Open this secure ChatGPT sign-in link in a browser:');
       console.log(`  ${started.authUrl}`);
       if (started.userCode) console.log(`Enter this one-time code on that page: ${started.userCode}`);
       console.log('\nWaiting up to five minutes for sign-in to complete…');
-      const completed = started.loginId ? await waitForCodexSubscriptionLogin(started.loginId) : false;
+      const completed = started.loginId ? await waitForChatgptLogin(started.loginId) : false;
       if (!completed) {
         console.log('Sign-in was not completed. Run `gitu login` again when you are ready.');
         process.exitCode = 2;
         return;
       }
-      const status = await codexSubscriptionInfo(true);
+      const status = await chatgptSubscriptionInfo(true);
       console.log(`Connected to ChatGPT${status.planType ? ` (${status.planType})` : ''}.`);
       console.log('Use it with: gitu run "<goal>" --provider chatgpt');
       return;
     }
 
     case 'logout': {
-      console.log('Run `codex logout` to sign out. Agent Gitu never stores your ChatGPT credentials.');
+      const status = await chatgptSubscriptionInfo(true);
+      if (!status.signedIn) {
+        console.log('You are not signed in to ChatGPT.');
+        return;
+      }
+      await chatgptLogout();
+      console.log('Signed out of ChatGPT. Run `gitu login` to connect again.');
       return;
     }
 

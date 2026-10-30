@@ -1,8 +1,8 @@
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { readJson, writeJson } from '../util.js';
+import { readJson, sweepStaleTempFiles, writeJson } from '../util.js';
 
 /** Primary Agent Gitu home layout. The on-disk layout remains stable so an
  * upgrade never strands existing projects, ledgers, or settings. */
@@ -113,24 +113,29 @@ export function ensureGituHome(): GituHome {
   for (const dir of [home.root, home.projects, home.workspace, home.sessions, home.settings, home.cache]) {
     mkdirSync(dir, { recursive: true });
   }
+  // Reclaim temporaries abandoned by a writer killed mid-publish. They are
+  // never overwritten (each carries a pid/epoch suffix), so without this sweep
+  // they accumulate in the settings directory forever.
+  for (const dir of [home.settings, home.sessions, home.cache]) {
+    const removed = sweepStaleTempFiles(dir);
+    if (removed) console.error(`[hermes] removed ${removed} abandoned temporary file(s) from ${dir}`);
+  }
   const marker = path.join(home.workspace, 'package.json');
   const fresh = !existsSync(marker);
-  const pkg = fresh
-    ? { name: 'agent-gitu-workspace', version: '0.1.0', private: true, description: 'Default Agent Gitu scratch project', scripts: { test: 'node --version' } }
-    : (() => {
-        try {
-          const data = JSON.parse(readFileSync(marker, 'utf8')) as Record<string, unknown>;
-          if (data['name'] === 'hermes-workspace') {
-            data['name'] = 'agent-gitu-workspace';
-            data['description'] = 'Default Agent Gitu scratch project';
-          }
-          return data;
-        } catch {
-          return { name: 'agent-gitu-workspace', private: true, scripts: { test: 'node --version' } };
+  const existing = fresh ? undefined : readJson<Record<string, unknown>>(marker);
+  const pkg = existing
+    ? (() => {
+        if (existing['name'] === 'hermes-workspace') {
+          existing['name'] = 'agent-gitu-workspace';
+          existing['description'] = 'Default Agent Gitu scratch project';
         }
-      })();
+        return existing;
+      })()
+    : { name: 'agent-gitu-workspace', version: '0.1.0', private: true, description: 'Default Agent Gitu scratch project', scripts: { test: 'node --version' } };
   if (fresh || pkg['name'] === 'agent-gitu-workspace') {
-    writeFileSync(marker, `${JSON.stringify(pkg, null, 2)}\n`);
+    // Hardened writer: this file is the project guard's detection marker, so a
+    // torn write here silently disables project detection for the workspace.
+    writeJson(marker, pkg);
   }
   return home;
 }

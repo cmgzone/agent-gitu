@@ -81,14 +81,31 @@ export function classifyCommand(command: string): { tier: RiskTier; why: string 
 
 export type ApprovalHandler = (request: { tool: string; tier: RiskTier; why: string; summary: string }) => Promise<boolean> | boolean;
 
+/**
+ * `true` is the historical snapshot; a supplier is re-evaluated per action so
+ * the owner's live Full Access choice applies to the command being executed
+ * rather than the one that was queued when the run started.
+ */
+export type AutoApproveAuthority = boolean | (() => boolean);
+
 export class PolicyEngine {
   constructor(
-    private readonly autoApprove: boolean = false,
+    private readonly autoApprove: AutoApproveAuthority = false,
     private readonly approvalHandler?: ApprovalHandler,
     /** Safe mode: dangerous-tier commands are NEVER auto-approved, even with
      *  autoApprove — the unattended-but-cautious middle ground. */
     private readonly safeMode: boolean = false,
   ) {}
+
+  /** A failing authority never auto-approves. */
+  private autoApproveEnabled(): boolean {
+    if (typeof this.autoApprove !== 'function') return this.autoApprove;
+    try {
+      return this.autoApprove();
+    } catch {
+      return false;
+    }
+  }
 
   /** External reads require an explicit, scoped decision even in auto-approve mode. */
   async approveDiagnosticRead(tool: string, target: string, directory: boolean): Promise<boolean> {
@@ -97,6 +114,18 @@ export class PolicyEngine {
       tool,
       tier: 'moderate',
       why: `Read diagnostic ${directory ? 'files in this folder and its subfolders' : 'file'} outside the project. This grants no write access.`,
+      summary: target,
+    });
+  }
+
+  /** External writes also require an explicit, path-scoped decision: the
+   *  alternative to turning on Full Access is asking about the exact target. */
+  async approveExternalWrite(tool: string, target: string, directory: boolean): Promise<boolean> {
+    if (!this.approvalHandler) return false;
+    return this.approvalHandler({
+      tool,
+      tier: 'moderate',
+      why: `Write ${directory ? 'files in this folder and its subfolders' : 'this file'} outside the locked project. Approval covers this path for the rest of this task; Agent Gitu state, credentials and Git internals stay protected.`,
       summary: target,
     });
   }
@@ -174,7 +203,7 @@ export class PolicyEngine {
       return { tier, allowed: true, requiresApproval: false, reason: `${why} (logged)` };
     }
 
-    if (this.autoApprove && !(this.safeMode && tier === 'dangerous')) {
+    if (this.autoApproveEnabled() && !(this.safeMode && tier === 'dangerous')) {
       return { tier, allowed: true, requiresApproval: false, reason: `${why} (auto-approved)` };
     }
     if (this.approvalHandler) {

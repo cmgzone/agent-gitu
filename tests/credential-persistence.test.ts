@@ -123,7 +123,9 @@ describe('saved credential durability', () => {
     expect(() => setStoredKey('TEST_NEW_KEY', 'new-fixture')).toThrow('Existing files were preserved');
     expect(loadStoredKeys().TEST_OLD_KEY).toBe('old-fixture');
     expect(loadStoredKeys().TEST_NEW_KEY).toBeUndefined();
-    expect(copy).not.toHaveBeenCalled();
+    // No copy-over fallback may publish this credential file. Unrelated writes
+    // (e.g. the recovery backup taken by writeJson) are allowed to copy.
+    expect(copy.mock.calls.filter(([, destination]) => destination === file)).toEqual([]);
     expect(fs.readdirSync(path.dirname(file)).filter((name) => name.endsWith('.tmp'))).toEqual([]);
   });
 

@@ -11,7 +11,14 @@ import { CONNECTED_APPS_JS } from '../src/server/ui-connected-apps.js';
 const esc = (value: unknown) => String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!);
 
 function ui() {
-  const text = { textContent: '', hidden: false };
+  let textVal = '';
+  const text = {
+    get textContent() { return textVal; },
+    set textContent(v: string) { textVal = v; },
+    get innerHTML() { return textVal; },
+    set innerHTML(v: string) { textVal = v.replace(/<[^>]*>/g, '').trim(); },
+    hidden: false,
+  };
   const label = { textContent: '' };
   const tool = { innerHTML: '' };
   const indicator = { className: 'cw-progress-activity activity-indicator' };

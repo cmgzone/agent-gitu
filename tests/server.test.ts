@@ -333,18 +333,20 @@ describe('HermesServer', () => {
     }
   });
 
-  it('exposes the local Codex ChatGPT subscription without exposing credentials', async () => {
+  it('exposes the ChatGPT subscription without exposing credentials, and signs out', async () => {
+    let signedOut = 0;
     const server = new HermesServer({ passwordRequired: false, autoInstallLsp: false,
       cwd: makeProject('chatgpt-subscription'),
       port: 0,
       llm: new ScriptedMockLlm([]),
-      codexSubscriptionInfo: async () => ({
+      chatgptSubscriptionInfo: async () => ({
         available: true,
         signedIn: true,
         planType: 'plus',
         models: [{ id: 'gpt-5.6-terra', displayName: 'Terra', vision: true, effortLevels: ['low', 'medium', 'high'], isDefault: true }],
       }),
-      startCodexSubscriptionLogin: async () => ({
+      chatgptLogout: async () => { signedOut += 1; },
+      startChatgptLogin: async () => ({
         alreadySignedIn: false,
         authUrl: 'https://chatgpt.com/auth/example',
         loginId: 'login-test',
@@ -368,6 +370,11 @@ describe('HermesServer', () => {
     const login = await fetch(`${base}/api/chatgpt/login`, { method: 'POST' });
     expect(login.status).toBe(202);
     await expect(login.json()).resolves.toMatchObject({ url: 'https://chatgpt.com/auth/example', loginId: 'login-test', userCode: 'TEST-1234' });
+
+    const out = await fetch(`${base}/api/chatgpt/auth`, { method: 'DELETE' });
+    expect(out.status).toBe(200);
+    await expect(out.json()).resolves.toMatchObject({ ok: true, signedIn: false });
+    expect(signedOut).toBe(1);
   });
 
   it('runs a task end-to-end over HTTP with live state', async () => {

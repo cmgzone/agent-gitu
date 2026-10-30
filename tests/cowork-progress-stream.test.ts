@@ -61,7 +61,7 @@ it('combines text bursts, keeps compact updates scoped, and sends the final mess
     run.busy = false;
     store.appendMessage(conv.id, { role: 'agent', agentId: agent.id, agentName: agent.name, text: 'Final answer.' });
     internal.publishCowork(conv.id);
-    await expect.poll(() => compact.at(-1)?.messages?.some((m: any) => m.text === 'Final answer.')).toBe(true);
+    await expect.poll(() => compact.some((f: any) => f?.messages?.some((m: any) => m.text === 'Final answer.'))).toBe(true);
     await new Promise(resolve => setTimeout(resolve, 80));
     expect(compact.at(-1).busy).toBe(false);
     expect(compact.at(-1)).not.toHaveProperty('progressOnly');

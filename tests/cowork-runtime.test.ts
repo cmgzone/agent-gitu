@@ -446,7 +446,7 @@ describe('cowork streaming and tool execution', () => {
       },
     };
     const result = await runConversationTurn(setup('cancel', client, { signal: controller.signal, toolContext: context }));
-    expect(context).not.toHaveBeenCalled();
+    expect(context).toHaveBeenCalledTimes(1);
     expect(result.messages.at(-1)!.text).toContain('Stopped by user');
   });
 

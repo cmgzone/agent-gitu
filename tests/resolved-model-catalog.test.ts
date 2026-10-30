@@ -22,7 +22,7 @@ function dependencies(specs: ProviderSpec[]) {
     providerKey: vi.fn<ModelCatalogDependencies['providerKey']>(() => undefined),
     cachedLiveModels: vi.fn<ModelCatalogDependencies['cachedLiveModels']>(async () => undefined),
     fetchModelCatalog: vi.fn<ModelCatalogDependencies['fetchModelCatalog']>(async () => undefined),
-    codexSubscriptionInfo: vi.fn<ModelCatalogDependencies['codexSubscriptionInfo']>(async () => ({ available: false, signedIn: false, models: [] })),
+    chatgptSubscriptionInfo: vi.fn<ModelCatalogDependencies['chatgptSubscriptionInfo']>(async () => ({ available: false, signedIn: false, models: [] })),
   };
 }
 
@@ -122,7 +122,7 @@ describe('resolveModelCatalog', () => {
       auth: 'chatgpt-subscription', keyEnvVars: [], baseUrl: 'codex://chatgpt',
       defaultModel: 'seed-default', models: ['seed-default'],
     })]);
-    deps.codexSubscriptionInfo.mockResolvedValue({
+    deps.chatgptSubscriptionInfo.mockResolvedValue({
       available: true,
       signedIn: true,
       planType: 'plus',
@@ -167,7 +167,7 @@ describe('resolveModelCatalog', () => {
 
   it('uses the injected subscription callback once, follows the plan default and bypasses API-key discovery', async () => {
     const deps = dependencies([spec('subscription', { auth: 'chatgpt-subscription' })]);
-    deps.codexSubscriptionInfo.mockResolvedValue({
+    deps.chatgptSubscriptionInfo.mockResolvedValue({
       available: true, signedIn: true, planType: 'plus',
       models: [' future-subscription-model ', 'future-subscription-model', ''].map((id) => ({
         id, vision: true, effortLevels: ['high'], isDefault: true,
@@ -181,14 +181,14 @@ describe('resolveModelCatalog', () => {
     expect(providers[0]).toMatchObject({ auth: 'chatgpt-subscription', defaultModel: 'future-subscription-model', hasKey: false, signedIn: true, planType: 'plus', available: true, usable: true, live: true });
     expect(providers[0]?.models[0]?.vision).toBe(true);
     expect(defaultProvider).toBe('subscription');
-    expect(deps.codexSubscriptionInfo).toHaveBeenCalledTimes(1);
+    expect(deps.chatgptSubscriptionInfo).toHaveBeenCalledTimes(1);
     expect(deps.providerKey).not.toHaveBeenCalled();
     expect(deps.cachedLiveModels).not.toHaveBeenCalled();
   });
 
   it.each([true, false])('preserves signed-out subscription availability (%s) with offline seeds and default', async (available) => {
     const deps = dependencies([spec('subscription', { auth: 'chatgpt-subscription' })]);
-    deps.codexSubscriptionInfo.mockResolvedValue({ available, signedIn: false, models: [] });
+    deps.chatgptSubscriptionInfo.mockResolvedValue({ available, signedIn: false, models: [] });
     const { providers, defaultProvider } = await resolveModelCatalog(deps);
     expect(ids(providers[0]!)).toEqual(['subscription-seed', 'subscription-default']);
     expect(providers[0]).toMatchObject({ available, signedIn: false, usable: false, hasKey: false, live: false });

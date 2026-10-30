@@ -1,5 +1,8 @@
 import { createHash } from 'node:crypto';
-import { copyFileSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+// Namespace access (rather than named imports) keeps these calls interceptable
+// by tests, matching src/llm/credential-file.ts. The durability guarantee below
+// is only worth asserting if a test can observe it.
+import fs from 'node:fs';
 import path from 'node:path';
 
 export function nowIso(): string {
@@ -173,31 +176,79 @@ export function excerpt(text: string, max = 1200): string {
   return `${head}\n... [truncated ${text.length - head.length - tail.length} chars] ...\n${tail}`;
 }
 
-export function readJson<T>(file: string): T | undefined {
+/**
+ * A file that is empty, whitespace-only, or contains NUL bytes is the
+ * signature of a torn write: the writer published a preallocated page before
+ * its contents were flushed, so the atomically renamed file holds no data.
+ * Such a file must never be read as "no saved state".
+ */
+function looksCorrupt(raw: string): boolean {
+  return raw.length === 0 || raw.includes('\0') || raw.trim().length === 0;
+}
+
+/**
+ * Move a damaged file aside and restore the last good `.bak` when one exists.
+ * Quarantining (rather than deleting) keeps the evidence for diagnosis, which
+ * is what distinguishes this from the old silent "treat as absent" read.
+ */
+function recoverDamaged<T>(file: string, reason: string): T | undefined {
+  const backup = `${file}.bak`;
+  let restored: T | undefined;
   try {
-    return JSON.parse(readFileSync(file, 'utf8')) as T;
+    const rawBackup = fs.readFileSync(backup, 'utf8');
+    if (!looksCorrupt(rawBackup)) restored = JSON.parse(rawBackup) as T;
+  } catch {
+    // No usable backup: the caller gets "absent" after the warning below.
+  }
+  try {
+    fs.renameSync(file, `${file}.corrupt-${Date.now()}`);
+  } catch {
+    // The damaged file may already be gone; the warning still matters.
+  }
+  if (restored !== undefined) {
+    try {
+      fs.copyFileSync(backup, file);
+    } catch {
+      // The value is still returned; only the on-disk repair failed.
+    }
+    console.error(`[hermes] warning: ${file} ${reason}; restored the previous known-good backup ${backup}`);
+    return restored;
+  }
+  console.error(`[hermes] warning: ${file} ${reason}; moved aside as .corrupt and reported no saved state`);
+  return undefined;
+}
+
+export function readJson<T>(file: string): T | undefined {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, 'utf8');
   } catch (err) {
-    // Missing files are a normal "absent" signal for callers. A CORRUPT file
-    // must not masquerade as missing — surface it so silent state loss (e.g.
-    // a ledger read as "task not found") can at least be diagnosed.
+    // Missing files are a normal "absent" signal for callers. Anything else
+    // (permissions, I/O) is surfaced instead of silently read as absent.
     const code = (err as NodeJS.ErrnoException)?.code;
     if (code !== 'ENOENT') {
-      console.error(`[hermes] warning: ${file} exists but could not be parsed (${(err as Error).message})`);
+      console.error(`[hermes] warning: ${file} could not be read (${(err as Error).message})`);
     }
     return undefined;
   }
+  if (looksCorrupt(raw)) return recoverDamaged<T>(file, 'was empty or NUL-filled');
+  try {
+    return JSON.parse(raw) as T;
+  } catch (err) {
+    return recoverDamaged<T>(file, `could not be parsed (${(err as Error).message})`);
+  }
 }
 
-export function writeJson(file: string, data: unknown): void {
-  mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.${Date.now()}.${Math.floor(Math.random() * 1e6)}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
-  // Windows AV / Defender can briefly hold the freshly written temp file,
-  // causing EPERM/EBUSY on the atomic rename. Retry with backoff instead of
-  // crashing the specialist as "EPERM: operation not permitted".
+/**
+ * Publish `tmp` over `file`, tolerating Windows AV / Defender briefly holding
+ * the freshly written temp file (EPERM/EBUSY/EACCES on rename). The temp file
+ * is always reclaimed, including on the failure path — an abandoned `.tmp` is
+ * what a killed writer used to leave in the settings directory forever.
+ */
+function publishTemp(tmp: string, file: string): void {
   for (let attempt = 0; attempt < 6; attempt++) {
     try {
-      renameSync(tmp, file);
+      fs.renameSync(tmp, file);
       return;
     } catch (err) {
       const code = (err as NodeJS.ErrnoException)?.code;
@@ -208,14 +259,14 @@ export function writeJson(file: string, data: unknown): void {
         // otherwise see "missing"/corrupt state.
         for (let copyAttempt = 0; copyAttempt < 3; copyAttempt++) {
           try {
-            copyFileSync(tmp, file);
-            try { unlinkSync(tmp); } catch {}
+            fs.copyFileSync(tmp, file);
+            try { fs.unlinkSync(tmp); } catch {}
             return;
           } catch {
             // Retry next attempt
           }
         }
-        try { unlinkSync(tmp); } catch {}
+        try { fs.unlinkSync(tmp); } catch {}
         throw err;
       }
       // On Windows, replacing an existing destination with renameSync can
@@ -224,8 +275,8 @@ export function writeJson(file: string, data: unknown): void {
       // immediately instead of paying the full 465ms rename backoff on every
       // routine ledger save.
       try {
-        copyFileSync(tmp, file);
-        try { unlinkSync(tmp); } catch {}
+        fs.copyFileSync(tmp, file);
+        try { fs.unlinkSync(tmp); } catch {}
         return;
       } catch {
         // A real AV/reader lock can still clear shortly; retain the bounded
@@ -234,6 +285,87 @@ export function writeJson(file: string, data: unknown): void {
       // Retry next attempt
     }
   }
+}
+
+/** Keep exactly one known-good copy, so a torn write is recoverable. */
+function keepBackup(file: string): void {
+  try {
+    fs.copyFileSync(file, `${file}.bak`);
+  } catch {
+    // An unreadable published file: nothing to preserve.
+  }
+}
+
+export function writeJson(file: string, data: unknown, options: { mode?: number } = {}): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.${Date.now()}.${Math.floor(Math.random() * 1e6)}.tmp`;
+  // fsync before the rename. Without it the filesystem can publish a
+  // preallocated-but-unwritten file, which subsequently reads back as NUL
+  // bytes — the corruption that produced a 105-byte all-NUL package.json.
+  const fd = fs.openSync(tmp, 'w', options.mode);
+  try {
+    fs.writeFileSync(fd, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+    fs.fsyncSync(fd);
+  } catch (err) {
+    try { fs.closeSync(fd); } catch {}
+    try { fs.unlinkSync(tmp); } catch {}
+    throw err;
+  }
+  fs.closeSync(fd);
+  publishTemp(tmp, file);
+  // After publishing, so a backup always exists — including after the very
+  // first write, which is exactly when a torn second write has nothing else to
+  // fall back on.
+  keepBackup(file);
+}
+
+/**
+ * Reclaim abandoned atomic-write temporaries. A process killed between
+ * creating `<name>.<pid>.<epoch>.tmp` and publishing it leaves the temp file
+ * behind, and nothing else ever removes it.
+ *
+ * @param maxAgeMs only files at least this old are removed (default 1 hour).
+ * @returns how many files were reclaimed.
+ */
+export function sweepStaleTempFiles(dir: string, maxAgeMs = 60 * 60 * 1000): number {
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(dir);
+  } catch {
+    return 0;
+  }
+  const cutoff = Date.now() - maxAgeMs;
+  let removed = 0;
+  for (const entry of entries) {
+    if (!entry.endsWith('.tmp')) continue;
+    const target = path.join(dir, entry);
+    try {
+      const info = fs.statSync(target);
+      if (!info.isFile() || info.mtimeMs > cutoff) continue;
+      fs.unlinkSync(target);
+      removed++;
+    } catch {
+      // Another process may have removed it first.
+    }
+  }
+  return removed;
+}
+
+/**
+ * Repair the damage the pre-fsync writer already left behind: an all-NUL file
+ * is unreadable state, so quarantine it (preserving the evidence) and let the
+ * caller recreate it. Returns true when the file was repaired.
+ */
+export function repairCorruptJsonFile(file: string): boolean {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, 'utf8');
+  } catch {
+    return false;
+  }
+  if (!looksCorrupt(raw)) return false;
+  recoverDamaged<unknown>(file, 'was empty or NUL-filled');
+  return true;
 }
 
 export function summarizeParams(tool: string, params: Record<string, unknown>): string {

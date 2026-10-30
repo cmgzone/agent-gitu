@@ -764,7 +764,7 @@ describe('gate 7: stale cache invalidation is scoped to the changed connection',
     const { runtime } = runtimeWithFetch('cache-conn-a', () => ({ status: 200, data: {} }));
     await runtime.introspect({ kind: 'openapi', document: cacheV1 });
     const dir = path.join(ensureGituHome().settings, 'connection-capabilities');
-    expect(readdirSync(dir)).toEqual(['cache-conn-a.json']);
+    expect(readdirSync(dir).filter(f => f.endsWith('.json'))).toEqual(['cache-conn-a.json']);
   });
 });
 

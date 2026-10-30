@@ -3,10 +3,11 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { runNativeCoworkTurn } from '../src/cowork/codex-native.js';
+import { CoworkMemory } from '../src/cowork/memory.js';
 import { coworkNativeTools } from '../src/cowork/tools.js';
 import { CoworkStore } from '../src/cowork/store.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
-import { ScriptedMockLlm } from '../src/llm/llm.js';
+import { LlmError, ScriptedMockLlm } from '../src/llm/llm.js';
 import type { NativeTaskInput } from '../src/llm/native-task.js';
 import type { LlmMessage } from '../src/llm/llm.js';
 
@@ -15,7 +16,13 @@ afterEach(() => {
   for (const folder of folders.splice(0)) rmSync(folder, { force: true, recursive: true });
 });
 
-function fixture(scenario: (input: NativeTaskInput) => Promise<void>, onProgress?: (text: string) => void) {
+function fixture(
+  scenario: (input: NativeTaskInput) => Promise<void>,
+  onProgress?: (text: string) => void,
+  // `baseDelayMs` keeps a retry test off the real backoff, and `signal` lets it
+  // exercise Stop during that wait.
+  options: { baseDelayMs?: number; signal?: AbortSignal } = {},
+) {
   const root = mkdtempSync(path.join(tmpdir(), 'gitu-native-cowork-'));
   folders.push(root);
   writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'native-cowork-test', version: '1.0.0' }));
@@ -49,10 +56,13 @@ function fixture(scenario: (input: NativeTaskInput) => Promise<void>, onProgress
       conversationId: conversation.id,
       messages,
       store,
+      scope: { store, agent, memory: CoworkMemory.forWorkspace(root), conversationId: conversation.id },
       tools: coworkNativeTools(agent, false),
       perms: { allowShell: agent.allowShell, allowWrites: true, allowConfig: false, chief: false, browser: false },
       onTool,
       onProgress,
+      ...(options.signal ? { signal: options.signal } : {}),
+      ...(options.baseDelayMs !== undefined ? { recovery: { baseDelayMs: options.baseDelayMs } } : {}),
     });
   return { root, store, agent, conversation, ctx, runTurn, run, onTool, steer };
 }
@@ -120,6 +130,46 @@ describe('native Cowork execution', () => {
     expect(f.runTurn).toHaveBeenCalledTimes(1);
     expect(f.onTool).not.toHaveBeenCalled();
   });
+
+  it('retries a transient native failure that happened before any function ran', async () => {
+    const progress: string[] = [];
+    const f = fixture(async (input) => {
+      await finish(input, 'Done.');
+    }, (text) => progress.push(text), { baseDelayMs: 1 });
+    // The original implementation, read before the spy is re-programmed: the
+    // mock is the runtime's own runTurn, so calling it by reference would recurse.
+    const original = f.runTurn.getMockImplementation()!;
+    let attempts = 0;
+    f.runTurn.mockImplementation(async (input: NativeTaskInput) => {
+      if (++attempts === 1) throw new LlmError('503 service unavailable', { kind: 'provider_unavailable' });
+      return original(input);
+    });
+    expect((await f.run()).text).toBe('Done.');
+    expect(attempts).toBe(2);
+    expect(progress.join('\n')).toContain('attempt 2/3');
+  });
+
+  it('does not re-enter a native turn that already ran a function', async () => {
+    const f = fixture(async (input) => {
+      expect((await input.onRequest('item/tool/call', { turnId: 'native-turn', callId: 'read', tool: 'read_file', arguments: { path: 'a.txt' } }))['success']).toBe(true);
+      throw new LlmError('503 service unavailable', { kind: 'provider_unavailable' });
+    }, undefined, { baseDelayMs: 1 });
+    await expect(f.run()).rejects.toThrow('503 service unavailable');
+    expect(f.runTurn).toHaveBeenCalledTimes(1);
+    expect(f.onTool).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets Stop cancel the recovery wait instead of sitting out the backoff', async () => {
+    const controller = new AbortController();
+    const f = fixture(async () => {
+      throw new LlmError('503 service unavailable', { kind: 'provider_unavailable' });
+    }, undefined, { baseDelayMs: 60_000, signal: controller.signal });
+    const pending = f.run().then(() => 'resolved', (error: Error) => error.message);
+    await vi.waitFor(() => expect(f.runTurn).toHaveBeenCalledTimes(1));
+    controller.abort();
+    expect(await pending).toMatch(/abort/i);
+    expect(f.runTurn).toHaveBeenCalledTimes(1);
+  }, 15_000);
 
   it('executes scoped functions once and persists native continuity', async () => {
     const f = fixture(async (input) => {

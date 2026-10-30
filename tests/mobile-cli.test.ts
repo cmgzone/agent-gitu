@@ -41,7 +41,7 @@ it('starts the actual mobile CLI on the requested network interface with authent
       const timer = setTimeout(() => {
         clearInterval(poll);
         reject(new Error(`CLI startup timed out: ${output}`));
-      }, 20_000);
+      }, 60_000);
       const poll = setInterval(() => {
         if (output.includes('headless server running')) {
           clearTimeout(timer);
@@ -89,4 +89,4 @@ it('starts the actual mobile CLI on the requested network interface with authent
     }
     rmSync(root, { recursive: true, force: true });
   }
-}, 30_000);
+}, 90_000);

@@ -81,6 +81,7 @@ describe('buildGituConfig per-run inputs', () => {
     const images = [{ name: 'screen.png', dataUrl: 'data:image/png;base64,AAAA' }];
     const attachments = [{ name: 'notes.md', text: 'notes' }] as unknown as GituFactoryOptions['attachments'];
     const resume = { taskId: 't_1', message: 'keep going' };
+    const fullAccess = () => true;
     const config = buildGituConfig(
       baseOptions({
         mode: 'standard',
@@ -97,6 +98,7 @@ describe('buildGituConfig per-run inputs', () => {
         supportsImages: true,
         contextWindowTokens: 128_000,
         modelCapability: 'high',
+        fullAccess,
       }),
       baseDeps(),
     );
@@ -113,6 +115,8 @@ describe('buildGituConfig per-run inputs', () => {
     expect(config.supportsImages).toBe(true);
     expect(config.contextWindowTokens).toBe(128_000);
     expect(config.modelCapability).toBe('high');
+    // Identity, not shape: the engine must re-read the owner's live setting.
+    expect(config.fullAccess).toBe(fullAccess);
   });
 });
 

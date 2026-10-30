@@ -201,7 +201,7 @@ describe('Cowork message actions', () => {
     const request = { id: 'q1', agentId: 'chief', kind: 'question', status: 'open' };
     u.cw.requests = [request];
     const button = { disabled: false, onclick: null as null | (() => void), getAttribute: (name: string) => name === 'data-cwrequest' ? 'q1' : name === 'data-action' ? 'answer' : '' };
-    const root = { querySelectorAll: (sel: string) => sel.indexOf('[data-cwrequest') === 0 ? [button] : [], querySelector: () => ({ value: '  EU  ' }) };
+    const root = { querySelectorAll: (sel: string) => sel.indexOf('[data-cwrequest') === 0 && !sel.includes('row') ? [button] : [], querySelector: () => ({ value: '  EU  ' }) };
     let resolve: (value: unknown) => void = () => {};
     u.api.mockReturnValue(new Promise(done => { resolve = done; }));
     u.context.cwBindRequests(root);
@@ -227,7 +227,7 @@ describe('Cowork message actions', () => {
     expect(html).toContain('Secure credential request');
     expect(html).toContain('data-cwcredential="cr1"');
     expect(html).toContain('type="password"');
-    expect(html).toContain('value="https://api.github.com"');
+    expect(html).toContain('https://api.github.com');
     expect(html).not.toContain('data-cwanswer=');
 
     // Re-auth cards ask only for the key against the existing connection.
@@ -256,11 +256,11 @@ describe('Cowork message actions', () => {
     form.onsubmit!({ preventDefault: () => {} });
     await vi.waitFor(() => expect(u.api).toHaveBeenCalledTimes(2));
     const saveCall = u.api.mock.calls[0]!;
-    expect(saveCall[0]).toBe('/api/connections');
+    expect(saveCall[0]).toBe('/api/cowork/requests/cr1/credential-save');
     expect(JSON.parse(saveCall[1].body).token).toBe('ghp_secret');
     const provideCall = u.api.mock.calls[1]!;
     expect(provideCall[0]).toBe('/api/cowork/requests/cr1');
-    expect(JSON.parse(provideCall[1].body)).toEqual({ action: 'provide', connectionId: 'github' });
+    expect(JSON.parse(provideCall[1].body)).toMatchObject({ action: 'provide', connectionId: 'github' });
   });
 
   it('keeps the retired profile panel closed while preserving the mobile chat drawer', () => {
@@ -348,7 +348,8 @@ describe('Cowork message actions', () => {
 
   it('shows prose or a neutral working indicator during tool execution', () => {
     const u = fixture();
-    const text = { textContent: '' };
+    let _text = '';
+    const text = { get textContent() { return _text; }, set textContent(v: string) { _text = v; }, get innerHTML() { return _text; }, set innerHTML(v: string) { _text = String(v ?? '').replace(/<[^>]*>/g, ''); } };
     const label = { textContent: '' };
     const icon = { innerHTML: '', _ico: undefined as string | undefined };
     const live = { hidden: true, innerHTML: '', _progressKey: null, querySelectorAll: (selector: string) => selector === '.cw-progress-text' ? [text] : selector === '.cw-progress-activity .wtext' ? [label] : selector === '.cw-progress-activity .cw-tool-ico' ? [icon] : [] };

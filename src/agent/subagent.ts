@@ -8,6 +8,7 @@ import { ProjectGuard } from '../guard/project-guard.js';
 import { TaskLedger } from '../ledger/task-ledger.js';
 import { extractJson, LlmError, parseXmlFunctionCall, type LlmClient, type LlmMessage } from '../llm/llm.js';
 import { resilientLlm } from '../llm/resilient.js';
+import { isNativeExecutionMode } from '../llm/native-task.js';
 import { DEFAULT_LOOP_POLICY, LoopDetector } from '../loop/loop-detector.js';
 import { deadline } from '../tools/command-timeout.js';
 import { formatToolOutput } from './tool-output.js';
@@ -136,6 +137,11 @@ export interface SubAgentRunnerDeps {
    * can never outspend the work it was delegated.
    */
   autonomy?: Partial<AutonomyPolicy>;
+  /**
+   * Live owner Full Access authority, inherited from the owning run. A
+   * specialist lane can never widen it: it only mirrors the host's setting.
+   */
+  fullAccess?: () => boolean;
   onEvent?: (text: string) => void;
 }
 
@@ -1024,10 +1030,18 @@ export class SubAgentRunner {
     let executor: Executor | undefined;
     let projectScope = '';
 
+    const fullAccess = (): boolean => {
+      try {
+        return this.deps.fullAccess?.() === true;
+      } catch {
+        return false;
+      }
+    };
+
     try {
-      const guard = ProjectGuard.detect(workRoot);
+      const guard = ProjectGuard.detect(workRoot, { accessMode: () => (fullAccess() ? 'full' : 'workspace') });
       projectScope = guard.lock.name;
-      const nativeResumeLedger = llm.nativeTask && resumedFrom ? TaskLedger.list(workRoot).find(candidate => candidate.data.execution?.mode === 'codex-native' && candidate.activeWorkPhase()?.goal === task) : undefined;
+      const nativeResumeLedger = llm.nativeTask && resumedFrom ? TaskLedger.list(workRoot).find(candidate => isNativeExecutionMode(candidate.data.execution?.mode) && candidate.activeWorkPhase()?.goal === task) : undefined;
       ledger = nativeResumeLedger ?? TaskLedger.create({
         repoRoot: workRoot,
         goal: `[subagent:${name}] ${task.slice(0, 120)}`,
@@ -1046,7 +1060,7 @@ export class SubAgentRunner {
         ledger.setCriteriaFromSpecs(specs);
       }
       ledger.setStatus('executing');
-      const policy = new PolicyEngine(false);
+      const policy = new PolicyEngine(fullAccess);
       // A specialist's own dynamic budget/stagnation controller is the lane
       // authority, so its duplicate-read bound is one notch looser than the
       // main agent's: the third identical read still executes for real, the

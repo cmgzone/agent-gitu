@@ -10,11 +10,12 @@ import type { ProjectGuard } from '../guard/project-guard.js';
 import type { TaskLedger } from '../ledger/task-ledger.js';
 import { LoopDetector } from '../loop/loop-detector.js';
 import { LlmError } from '../llm/llm.js';
-import type { NativeRecord } from '../llm/native-task.js';
+import type { NativeRecord, NativeTaskInput } from '../llm/native-task.js';
 import type { MemoryStore } from '../memory/memory-store.js';
 import type { PolicyEngine } from '../policy/policy.js';
 import { Reporter } from '../report/reporter.js';
-import { commandResultSource, isCommandPending, KNOWN_TOOL_NAMES } from '../tools/tools.js';
+import { commandResultSource, isCommandPending } from '../tools/tools.js';
+import { codingServiceToolIds, canonicalToolDefinition } from '../tools/catalog.js';
 import { conversationIntent, evaluateInstructionGate } from '../agent/follow-up.js';
 import { RunTelemetry } from '../agent/telemetry.js';
 import { classifyCommand } from '../policy/policy.js';
@@ -23,108 +24,47 @@ import type { CriterionSpec, ToolResult } from '../types.js';
 import { canonicalJson, sha256 } from '../util.js';
 import { nativeCodexPermissions, NATIVE_PERMISSION_PROFILE } from './native-codex-permissions.js';
 import { COMMAND_RECOVERY_CONTRACT } from '../agent/command-recovery.js';
+import { runNativeTurnWithRecovery } from '../agent/task-recovery.js';
 import { isDeploymentAction, DEPLOYMENT_OWNERSHIP } from './deployment-authority.js';
 
 function object(value: unknown): NativeRecord {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as NativeRecord) : {};
 }
 const activeTasks = new Set<string>();
-const SERVICE_TOOLS = [...KNOWN_TOOL_NAMES, 'capability_action', 'connection_action', 'connection_operation', 'connection_discovery', 'bind_criterion_verification'];
+// Derived from the one catalog, so a capability cannot be reachable here and
+// invisible there (or the reverse) without a single edit.
+const SERVICE_TOOLS = codingServiceToolIds();
 
 export function nativeGituTools(): NativeRecord[] {
+  const taskDef = canonicalToolDefinition('gitu_task');
+  const serviceDef = canonicalToolDefinition('gitu_service');
+  const coreTools = ['read_file', 'write_file', 'apply_edit', 'list_files', 'search_files', 'run_command'];
   return [
     {
       type: 'function',
       name: 'gitu_task',
-      description: 'Gitu task supervision. Inspect durable state, set acceptance criteria, or link REAL recorded evidence to a criterion. Does not execute a model loop.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          operation: { type: 'string', enum: ['state', 'set_criteria', 'update_plan', 'link_criterion', 'bind_verification'] },
-          verification: { type: 'string', description: 'Exact executable command for bind_verification; never descriptive prose.' },
-          replacementReason: { type: 'string', description: 'Why a model-selected check is unsuitable and how the replacement verifies the same requirement.' },
-          plan: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: { step: { type: 'string' }, status: { type: 'string', enum: ['pending', 'inProgress', 'completed'] } },
-              required: ['step', 'status'],
-            },
-          },
-          criteria: {
-            type: 'array',
-            items: { type: 'object', properties: { text: { type: 'string' }, verification: { type: 'string' }, evidenceType: { type: 'string' } }, required: ['text'] },
-          },
-          criterionId: { type: 'string' },
-          evidenceId: { type: 'string' },
-        },
-        required: ['operation'],
-      },
+      description: taskDef?.description ?? 'Gitu task supervision.',
+      inputSchema: taskDef?.inputSchema ?? { type: 'object', properties: {} },
     },
     {
       type: 'function',
       name: 'gitu_service',
-      description:
-        'Use Gitu’s guarded files, browser, memory, skills, saved connections, and supervised specialists. Gitu validates permissions and audits execution. Inspect state/results instead of repeating completed work.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          tool: { type: 'string', description: 'A documented Gitu tool, registered capability action, or listed mcp:server:tool.' },
-          params: { type: 'object' },
-          reason: { type: 'string' },
-        },
-        required: ['tool', 'params'],
-      },
+      description: serviceDef?.description ?? 'Use Gitu’s guarded services.',
+      inputSchema: serviceDef?.inputSchema ?? { type: 'object', properties: {} },
     },
-    ...Object.entries({
-      read_file: { path: { type: 'string' }, offset: { type: 'number' }, limit: { type: 'number' } },
-      write_file: { path: { type: 'string' }, content: { type: 'string' } },
-      apply_edit: { path: { type: 'string' }, oldString: { type: 'string' }, newString: { type: 'string' }, replaceAll: { type: 'boolean' } },
-      list_files: { path: { type: 'string' } },
-      search_files: {
-        pattern: { type: 'string' },
-        path: { type: 'string' },
-        mode: { type: 'string', enum: ['literal', 'regex'] },
-        include: { type: 'array', items: { type: 'string' } },
-      },
-      run_command: {
-        action: { type: 'string', enum: ['run', 'status', 'stop'] },
-        command: { type: 'string' },
-        id: { type: 'string' },
-        waitMs: { type: 'number', description: 'Observation window before returning the same live job id; does not stop the command.' },
-        timeoutMs: { type: 'number', description: 'Explicit hard kill deadline. Omit for long builds, SDK setup, analyzers, and tests; use waitMs to yield.' },
-        background: { type: 'boolean' },
-        verificationScope: { type: 'object', properties: { paths: { type: 'array', items: { type: 'string' } }, reason: { type: 'string' } }, required: ['paths', 'reason'] },
-      },
-    }).map(([name, properties]) => ({
-      type: 'function',
-      name: 'gitu_' + name,
-      description:
-        name === 'run_command'
-          ? 'Run a command through Gitu policy and approvals. action=run requires command; action=status or stop requires the returned cmd-N id. Status retrieves the SAME process and its retained result; never use Get-Job or start a duplicate. Omit timeoutMs for productive long work.'
-          : `Gitu guarded ${name}. File paths are relative to the selected project. apply_edit replaces the exact oldString with newString.`,
-      inputSchema: {
-        type: 'object',
-        properties,
-        required:
-          name === 'run_command'
-            ? ['action']
-            : name === 'list_files'
-              ? []
-              : name === 'search_files'
-                ? ['pattern']
-                : name === 'write_file'
-                  ? ['path', 'content']
-                  : name === 'apply_edit'
-                    ? ['path', 'oldString', 'newString']
-                    : ['path'],
-        additionalProperties: false,
-      },
-    })),
+    ...coreTools.map((id) => {
+      const def = canonicalToolDefinition(id);
+      return {
+        type: 'function',
+        name: 'gitu_' + id,
+        description: def?.description ?? `Gitu guarded ${id}.`,
+        inputSchema: def?.inputSchema ?? { type: 'object', properties: {} },
+      };
+    }),
   ];
 }
 
-/** The supervisor observes native events and verifies once; it does not re-prompt. */
+/** The supervisor observes execution events and verifies once; it does not re-prompt. */
 export async function runNativeCodexTask(input: {
   config: GituConfig;
   guard: ProjectGuard;
@@ -139,7 +79,7 @@ export async function runNativeCodexTask(input: {
   const { config, guard, ledger, memory, policy, signal, goal } = input;
   const runtime = config.llm.nativeTask!;
   const taskKey = guard.activeWritableRoot + ':' + ledger.data.taskId;
-  if (activeTasks.has(taskKey)) throw new Error('This native Codex task already has an active execution.');
+  if (activeTasks.has(taskKey)) throw new Error('This task already has an active native execution.');
   activeTasks.add(taskKey);
   const emit = config.onEvent ?? (() => {});
   const typed = config.onCodingEvent;
@@ -177,6 +117,11 @@ export async function runNativeCodexTask(input: {
   const responseByItem = new Map<string, string>();
   const reasoningByItem = new Map<string, string>();
   const answers = new Map<string, Promise<NativeRecord>>();
+  // Latched by the first admitted tool call. A native turn that fails before
+  // this point is safe to re-enter; one that fails after it must not be, since
+  // the retry would start a fresh provider session whose call ids no longer
+  // match the dedupe records (see `runNativeTurnWithRecovery`).
+  let acted = false;
   const observedCommands = new Set<string>();
   const commandVerificationScopes = new Map<string, unknown>();
   let finalAnswer = '',
@@ -249,12 +194,12 @@ export async function runNativeCodexTask(input: {
     const count = (repetitions.get(key) ?? 0) + 1;
     repetitions.set(key, count);
     if (count === 3) {
-      emit('recover  Native Codex repeated an unchanged command result. Asking it to use saved results and advance the task.');
+      emit('recover  The model repeated an unchanged command result. Asking it to use saved results and advance the task.');
       await runtime.steer?.(
         'Gitu observed the same command and unchanged result three times. Reuse the saved evidence. Make a different useful action or report the concrete blocker; do not restart completed checks.',
       );
     }
-    if (count >= 4) throw new Error('Native Codex repeated the same command result without progress after a steering correction. Task saved for review.');
+    if (count >= 4) throw new Error('The model repeated the same command result without progress after a steering correction. Task saved for review.');
   };
 
   const service = async (params: NativeRecord): Promise<NativeRecord> => {
@@ -363,7 +308,7 @@ export async function runNativeCodexTask(input: {
     const result = await executor.execute({
       tool,
       params: object(params['params']),
-      reason: String(params['reason'] ?? 'Native Codex requested a supervised Gitu service.'),
+      reason: String(params['reason'] ?? 'The model requested a supervised Gitu service.'),
       expected: 'Observe the real service result.',
     });
     telemetry.noteToolCall();
@@ -386,6 +331,7 @@ export async function runNativeCodexTask(input: {
   const request = async (method: string, params: NativeRecord): Promise<NativeRecord> => {
     signal.throwIfAborted();
     if (method === 'item/tool/call') {
+      acted = true;
       const callId = String(params['callId'] ?? params['itemId'] ?? '');
       const callKey = callId ? String(params['turnId'] ?? '') + ':' + callId : '';
       if (!callKey) throw new Error('Native tool call has no stable identifier; refusing possible duplicate execution.');
@@ -478,7 +424,7 @@ export async function runNativeCodexTask(input: {
             await runtime.steer?.(
               'The same Gitu request returned unchanged results three times. Use the saved result, take a different useful action, or report the blocker. Do not repeat it.',
             );
-          if (count >= 4) throw new Error('Native Codex repeated the same Gitu request and unchanged result without progress. Task saved for review.');
+          if (count >= 4) throw new Error('The model repeated the same Gitu request and unchanged result without progress. Task saved for review.');
         }
         return result;
       });
@@ -550,7 +496,7 @@ export async function runNativeCodexTask(input: {
   try {
     const settings = nativeCodexPermissions(guard, ledger, config.scopeFiles);
     const previous = ledger.data.execution?.native;
-    if (previous && previous.cwd !== guard.activeWritableRoot) throw new Error('Saved native Codex session belongs to another workspace. Explicitly create a new task.');
+    if (previous && previous.cwd !== guard.activeWritableRoot) throw new Error('The saved native session belongs to another workspace. Explicitly create a new task.');
     if (config.criteria?.length && !currentCriteria().length) {
       const provided = ledger.appendCriteriaFromSpecs(EvidenceEngine.normalizeCriteria(config.criteria));
       for (const criterion of provided) if (criterion.verification) criterion.verificationUserPinned = true;
@@ -569,14 +515,14 @@ export async function runNativeCodexTask(input: {
           { description: 'Inspect and implement the requested task: ' + goal, verification: 'Task acceptance criteria' },
           { description: 'Verify the requested changes and report the results', verification: 'Independent project checks' },
         ]);
-      if (!(await checkPlan())) throw new Error('Native execution is waiting for the required Gitu plan approval. No Codex tools were started.');
+      if (!(await checkPlan())) throw new Error('Native execution is waiting for the required Gitu plan approval. No model tools were started.');
     }
     if (config.autonomy?.maxTurns !== undefined && config.autonomy.maxTurns < 1) throw new Error('Native turn budget is exhausted.');
-    emit('runtime  ChatGPT subscription uses the Native Codex agent loop with Gitu guarded tools. Direct OS tools are disabled to preserve permissions.');
+    emit('runtime  The model provider runs its own agent loop with Gitu guarded tools. Direct OS tools are disabled to preserve permissions.');
     typed?.({ type: 'run_started', goal, workspace: guard.activeWritableRoot });
     ledger.setStatus('executing');
     const nativeInstructions = [
-      'You are the native Codex execution runtime inside Agent Gitu. Use your native agent loop and tools; reply in normal prose, never Gitu action JSON. Gitu is the authority for scope, permissions, and verification.',
+      'You are the native execution runtime inside Agent Gitu. Use your own agent loop and tools; reply in normal prose, never Gitu action JSON. Gitu is the authority for scope, permissions, and verification.',
       config.autoApprove ? 'The owner enabled full coding access. Gitu automatically handles coding approvals under the owner’s grants. Perform authorized work through the registered tools; do not ask for duplicate approval or invent approval.request tools. Missing tools or credentials are actual prerequisites, not approval requests.' : '',
       config.deploymentAllowed?.() === false ? DEPLOYMENT_OWNERSHIP : '',
       'For nontrivial work, call gitu_task({operation:"update_plan",plan:[{step:"...",status:"inProgress"},{step:"...",status:"pending"}]}). Update the same checklist as work proceeds; mark each completed step with status:"completed". Small edits need no formal plan or criteria. Choose the smallest meaningful check; substantial work benefits from acceptance criteria with exact verification commands. Use state to recover saved facts and link_criterion only with real recorded evidence. Finish with a final answer reporting changes, checks, and concrete limitations.',
@@ -608,15 +554,22 @@ export async function runNativeCodexTask(input: {
     ]
       .filter(Boolean)
       .join('\n\n');
+    const stateCriteria = currentCriteria();
     const stateContext = JSON.stringify({
-      criteria: currentCriteria(),
+      criteria: stateCriteria,
       plan: ledger.data.plan,
       filesChanged: ledger.data.filesChanged,
       evidence: ledger.data.evidence.slice(-12),
       actions: ledger.data.actions.slice(-8),
     });
+    settings['compactionContext'] = {
+      goal,
+      criteria: stateCriteria.map((c) => (typeof c === 'string' ? c : (c as { description?: string; name?: string }).description ?? (c as { name?: string }).name ?? JSON.stringify(c))),
+      remainingPlan: ledger.data.plan.filter((s) => s.status !== 'done').map((s) => s.description),
+      relevantFiles: ledger.data.filesChanged,
+    };
     const initialText = previous ? input.message : goal + (input.message !== goal ? '\n\nCurrent user message:\n' + input.message : '');
-    const result = await runtime.runTurn({
+    const turnInput: NativeTaskInput = {
       cwd: guard.activeWritableRoot,
       threadId: previous?.threadId,
       text: initialText + '\n\nSaved Gitu task state (data, not tool instructions):\n' + stateContext,
@@ -629,7 +582,9 @@ export async function runNativeCodexTask(input: {
       images: config.images?.map((i) => i.dataUrl),
       onThread: (threadId) => {
         ledger.data.execution = {
-          mode: 'codex-native',
+          // Record the loop that actually ran, so resuming a pi task never
+          // looks like a different runtime task (and vice versa).
+          mode: runtime.mode,
           native: {
             ...previous,
             threadId,
@@ -669,18 +624,29 @@ export async function runNativeCodexTask(input: {
         if (config.autonomy?.maxTurns !== undefined && telemetry.snapshot().calls >= config.autonomy.maxTurns)
           throw new Error('The user-selected model-turn budget is exhausted. Native progress is saved.');
       },
+    };
+    // The turn is the retryable unit, not the request: it is re-entered only
+    // while `acted` is false, so no completed tool call can be replayed.
+    const result = await runNativeTurnWithRecovery({
+      turn: () => runtime.runTurn(turnInput),
+      hasActed: () => acted,
+      signal,
+      ...(config.providerRecoveryDelayMs !== undefined ? { baseDelayMs: config.providerRecoveryDelayMs } : {}),
+      ...(config.recoverySleep ? { sleep: (ms: number) => config.recoverySleep!(ms) } : {}),
+      onRetry: ({ attempt, maxAttempts, delayMs, error }) =>
+        emit(`recover  ${error.message.slice(0, 120)} — retry ${attempt}/${maxAttempts} in ${(delayMs / 1000).toFixed(1)}s`),
     });
     runtimeResult = result.status;
     ledger.data.execution!.native!.status = result.status;
     ledger.save();
     if (result.status === 'interrupted') exited = 'aborted';
-    else if (!finalAnswer) ledger.addBlocker('Native Codex ended without a final answer. Progress messages are not completion; no automatic restart was made.');
+    else if (!finalAnswer) ledger.addBlocker('The native turn ended without a final answer. Progress messages are not completion; no automatic restart was made.');
     else if (discussion || input.conversationControl?.()) {
       answeredDiscussion = discussion;
       ledger.addBlocker('Paused for discussion with the user.');
     } else {
-      // One verification phase after Codex's completed turn. No second model loop.
-      emit('verify   Codex finished. Gitu is checking saved evidence and workspace state locally; no model request is running.');
+      // One verification phase after the model's completed turn. No second model loop.
+      emit('verify   The model turn finished. Gitu is checking saved evidence and workspace state locally; no model request is running.');
       inspections.clear();
       const verificationFingerprint = await workspaceFingerprint();
       await refreshScopedVerification(ledger.data, guard.activeWritableRoot, verificationFingerprint);
@@ -744,8 +710,8 @@ export async function runNativeCodexTask(input: {
         const ev = latestVerificationEvidence(ledger.data, c, fingerprint);
         return !ev?.passed || !evidenceMatchesWorkspace(ev, fingerprint) || (ev.exitCode !== undefined && ev.exitCode !== 0);
       });
-      if (currentCriteria().length && !gate.open) ledger.addBlocker('Codex turn ended; Gitu acceptance criteria remain unverified: ' + gate.missing.join('; '));
-      if (openPlan.length) ledger.addBlocker('Codex turn ended with unfinished plan steps: ' + openPlan.map((s) => s.description).join('; '));
+      if (currentCriteria().length && !gate.open) ledger.addBlocker('The model turn ended; Gitu acceptance criteria remain unverified: ' + gate.missing.join('; '));
+      if (openPlan.length) ledger.addBlocker('The model turn ended with unfinished plan steps: ' + openPlan.map((s) => s.description).join('; '));
       if (failed.length) ledger.addBlocker('Final verification failed or was not authorized: ' + failed.join('; '));
       const freshCheck = ledger.data.evidence.slice(phase.evidenceStartIndex).some((check) => check.passed && check.command &&
         evidenceMatchesWorkspace(check, fingerprint) && !isTrivialEvidenceCommand(check.command) && !isManufacturedEvidenceCommand(check.command) &&
@@ -755,7 +721,7 @@ export async function runNativeCodexTask(input: {
         else ledger.addBlocker('Files changed without acceptance criteria or an independent verification command.');
       }
       if (!currentCriteria().length && !ledger.data.actions.slice(phase.actionStartIndex).length && config.mode !== 'chat' && !conversationIntent(goal))
-        ledger.addBlocker('Codex supplied prose without performing the requested work or defining acceptance criteria. Task saved without automatically repeating the turn.');
+        ledger.addBlocker('The model supplied prose without performing the requested work or defining acceptance criteria. Task saved without automatically repeating the turn.');
       const gateFinding = evaluateInstructionGate(ledger.activeInstructions(), ledger.data.actions.slice(phase.actionStartIndex), ledger.data.evidence);
       if (gateFinding.unmetRequirements.length || gateFinding.denialUnrecovered)
         ledger.addBlocker(
@@ -809,7 +775,7 @@ export async function runNativeCodexTask(input: {
   ledger.save();
   memory.add({
     type: 'task',
-    claim: `Native Codex task ${goal} ended as ${report.status}: ${report.summary}`,
+    claim: `Task ${goal} ended as ${report.status}: ${report.summary}`,
     evidence: ledger.data.taskId,
     scope: guard.lock.name,
     confidence: runtimeResult === 'completed' ? 0.9 : 0.5,

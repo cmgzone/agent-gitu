@@ -1,10 +1,13 @@
 import { OpenAiCompatClient, type LlmClient } from './llm.js';
-import { CodexSubscriptionClient, codexExecutable, subscriptionModelContextWindow } from './codex-subscription.js';
-import { CodexNativeRuntime } from './codex-native.js';
+import { PiNativeRuntime } from './pi-native.js';
+import { CHATGPT_PI_PROVIDER, subscriptionModelContextWindow } from './pi-chatgpt.js';
+import { PiSubscriptionClient } from './pi-subscription-client.js';
+import { selectedRuntime } from './runtime-mode.js';
+import type { NativeTaskRuntime } from './native-task.js';
 import { mergedEnv } from './keys.js';
 import { readRuntimeSelection } from '../workspace/runtime-selection.js';
 import { createEmbedder, type Embedder } from '../context/embeddings.js';
-import { loadWorkspaceSettings, type CustomProviderProfile } from '../workspace/home.js';
+import { ensureGituHome, loadWorkspaceSettings, type CustomProviderProfile } from '../workspace/home.js';
 
 /**
  * Resolve an embeddings-capable client from the SAME provider configuration
@@ -73,7 +76,7 @@ export interface ProviderSpec {
   maxEffort?: 'distinct' | 'collapses-to-high';
   /** Model catalog is publicly fetchable without an API key (e.g. OpenCode Zen / Go). */
   publicModels?: boolean;
-  /** This provider uses Codex's locally managed ChatGPT OAuth session, never an API key. */
+  /** This provider uses pi's managed ChatGPT sign-in (OAuth), never an API key. */
   auth?: 'api-key' | 'chatgpt-subscription';
   /** Saved user profile, not a built-in catalog entry. */
   custom?: boolean;
@@ -184,14 +187,12 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
   },
   chatgpt: {
     id: 'chatgpt',
-    label: 'ChatGPT subscription (via Codex)',
-    // A sentinel only: requests go through the local Codex runtime, not this URL.
-    baseUrl: 'codex://chatgpt',
+    label: 'ChatGPT subscription',
+    // Served by pi's built-in ChatGPT sign-in; pi owns the endpoint for this provider.
+    baseUrl: 'https://chatgpt.com/backend-api',
     keyEnvVars: [],
-    // Offline fallback only: the picker is filled from the runtime's live
-    // `model/list`, so new plan models appear as soon as the bundled Codex
-    // runtime knows them (a stale runtime cannot run them: the service answers
-    // "requires a newer version of Codex"). Keep this generation-accurate and
+    // Offline fallback only: the picker is filled from pi's catalog for the plan,
+    // so new plan models appear as soon as pi knows them. Keep this generation-accurate and
     // free of models the service has retired.
     defaultModel: 'gpt-6-astra',
     models: ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'],
@@ -390,7 +391,7 @@ export interface ModelMetadata {
   /** Image input capability reported by the live catalog. `undefined` when the
    *  catalog did not publish modality info for this model. */
   vision?: boolean;
-  source: 'models.dev' | 'codex-runtime';
+  source: 'models.dev' | 'pi-catalog';
 }
 
 export type ModelCatalog = Map<string, Map<string, ModelMetadata>>;
@@ -567,7 +568,7 @@ export function modelMetadataFor(catalog: ModelCatalog | undefined, providerId: 
   const metadata = catalog?.get(catalogProvider)?.get(model);
   if (providerId === 'chatgpt') {
     const contextTokens = subscriptionModelContextWindow(model);
-    if (contextTokens) return { ...metadata, contextTokens, source: 'codex-runtime' };
+    if (contextTokens) return { ...metadata, contextTokens, source: 'pi-catalog' };
   }
   return metadata;
 }
@@ -808,11 +809,9 @@ export interface ResolveOptions {
   provider?: string;
   model?: string;
   baseUrl?: string;
-  /** Workspace Codex may inspect while responding. */
+  /** Workspace the model may inspect while responding. */
   workingDirectory?: string;
   env?: NodeJS.ProcessEnv;
-  /** Explicit comparison/rollback option. Never selected as an automatic fallback. */
-  subscriptionExecutionMode?: 'native' | 'legacy';
 }
 
 export interface ResolvedLlm {
@@ -826,9 +825,42 @@ export interface ResolvedLlm {
   rateLimitKey?: string;
 }
 
+/**
+ * Under the pi runtime, pi owns the agent loop for every API-key provider: pi
+ * drives the model and tool rounds, and each Gitu capability runs as a pi
+ * custom tool through the same permission path. `RUNTIME=codex` restores the
+ * previous behavior (Codex loop, or Gitu's own loop for API-key providers).
+ */
+function piRuntimeFor(
+  providerId: string,
+  label: string | undefined,
+  baseUrl: string,
+  apiKey: string,
+  model: string,
+  env: NodeJS.ProcessEnv,
+): NativeTaskRuntime | undefined {
+  if (selectedRuntime(env) !== 'pi') return undefined;
+  const metadata = modelMetadataFor(peekModelCatalog(), providerId, model);
+  return new PiNativeRuntime({
+    agentDir: ensureGituHome().root,
+    target: {
+      // Namespaced so registering Gitu's catalog never replaces a pi built-in
+      // provider's own model list.
+      providerId: `gitu-${providerId}`,
+      label,
+      baseUrl,
+      apiKey,
+      modelId: model,
+      vision: metadata?.vision,
+      contextWindow: metadata?.contextTokens,
+      maxTokens: metadata?.outputTokens,
+    },
+  });
+}
+
 function build(
   providerId: string,
-  spec: { baseUrl: string; defaultModel: string; toolMode?: ProviderSpec['toolMode']; capabilities?: ProviderCapabilities } | undefined,
+  spec: { baseUrl: string; defaultModel: string; label?: string; toolMode?: ProviderSpec['toolMode']; capabilities?: ProviderCapabilities } | undefined,
   apiKey: string,
   keyEnvVar: string,
   opts: ResolveOptions,
@@ -842,15 +874,17 @@ function build(
   // guessed). A fire-and-forget fetch here would poison the shared catalog
   // backoff on failure, so warming is deliberately left to existing callers.
   const modelMaxOutputTokens = modelMetadataFor(peekModelCatalog(), providerId, model)?.outputTokens;
+  const client = new OpenAiCompatClient({
+    apiKey,
+    baseUrl,
+    model,
+    rateLimitKey: `${providerId}:${keyEnvVar}:chat`,
+    modelMaxOutputTokens,
+    capabilities: spec?.capabilities,
+  });
+  const nativeTask = piRuntimeFor(providerId, spec?.label, baseUrl, apiKey, model, env);
   return {
-    client: new OpenAiCompatClient({
-      apiKey,
-      baseUrl,
-      model,
-      rateLimitKey: `${providerId}:${keyEnvVar}:chat`,
-      modelMaxOutputTokens,
-      capabilities: spec?.capabilities,
-    }),
+    client: nativeTask ? Object.assign(client, { nativeTask }) : client,
     providerId,
     baseUrl,
     model,
@@ -875,13 +909,23 @@ export function resolveLlm(opts: ResolveOptions = {}): ResolvedLlm {
       );
     }
     if (spec.auth === 'chatgpt-subscription') {
-      if (!codexExecutable()) {
-        throw new ProviderError('ChatGPT subscription access needs the local Codex runtime. Install or update Codex, then restart Agent Gitu.');
-      }
+      // The subscription is served by pi's own `openai-codex` sign-in: pi drives
+      // the agent turn, and the text client answers single requests outside one.
       const model = opts.model ?? env['HERMES_MODEL'] ?? spec.defaultModel;
+      const client = new PiSubscriptionClient(model);
+      client.nativeTask = new PiNativeRuntime({
+        agentDir: ensureGituHome().root,
+        target: {
+          providerId: CHATGPT_PI_PROVIDER,
+          builtin: true,
+          label: spec.label,
+          baseUrl: spec.baseUrl,
+          apiKey: '',
+          modelId: model,
+        },
+      });
       return {
-        client: Object.assign(new CodexSubscriptionClient({ model, workingDirectory: opts.workingDirectory ?? process.cwd() }),
-          (opts.subscriptionExecutionMode ?? env['GITU_CHATGPT_EXECUTION_MODE']) === 'legacy' ? {} : { nativeTask: new CodexNativeRuntime(model) }),
+        client,
         providerId: spec.id,
         baseUrl: spec.baseUrl,
         model,
@@ -903,19 +947,24 @@ export function resolveLlm(opts: ResolveOptions = {}): ResolvedLlm {
   if (genericKey) {
     const baseUrl = opts.baseUrl ?? env['HERMES_BASE_URL'] ?? env['OPENAI_BASE_URL'];
     const model = opts.model ?? env['HERMES_MODEL'] ?? env['OPENAI_MODEL'];
+    const genericKeyEnvVar = env['HERMES_API_KEY'] ? 'HERMES_API_KEY' : 'OPENAI_API_KEY';
+    const genericBaseUrl = baseUrl ?? 'https://api.openai.com/v1';
+    const genericModel = model ?? 'gpt-4.1-mini';
+    const genericNative = piRuntimeFor('custom', 'Custom OpenAI-compatible endpoint', genericBaseUrl, genericKey, genericModel, env);
+    const genericClient = new OpenAiCompatClient({
+      apiKey: genericKey,
+      baseUrl,
+      model,
+      rateLimitKey: `custom:${genericKeyEnvVar}:chat`,
+    });
     return {
-      client: new OpenAiCompatClient({
-        apiKey: genericKey,
-        baseUrl,
-        model,
-        rateLimitKey: `custom:${env['HERMES_API_KEY'] ? 'HERMES_API_KEY' : 'OPENAI_API_KEY'}:chat`,
-      }),
+      client: genericNative ? Object.assign(genericClient, { nativeTask: genericNative }) : genericClient,
       providerId: 'custom',
-      baseUrl: baseUrl ?? 'https://api.openai.com/v1',
-      model: model ?? 'gpt-4.1-mini',
-      keyEnvVar: env['HERMES_API_KEY'] ? 'HERMES_API_KEY' : 'OPENAI_API_KEY',
+      baseUrl: genericBaseUrl,
+      model: genericModel,
+      keyEnvVar: genericKeyEnvVar,
       toolMode: 'auto',
-      rateLimitKey: `custom:${env['HERMES_API_KEY'] ? 'HERMES_API_KEY' : 'OPENAI_API_KEY'}:chat`,
+      rateLimitKey: `custom:${genericKeyEnvVar}:chat`,
     };
   }
 

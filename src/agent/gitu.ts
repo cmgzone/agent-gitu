@@ -30,6 +30,7 @@ import {
 } from '../llm/llm.js';
 import { resolveEmbedder } from '../llm/providers.js';
 import { recoveryBudgetTokens, reduceEffortOneLevel, type EffortLevel } from '../llm/output-budget.js';
+import { isNativeExecutionMode } from '../llm/native-task.js';
 import { computeResilientDelay, resilientLlm, sleepWithSignal } from '../llm/resilient.js';
 import {
   EMPTY_REPLY_RETRY_BASE_MS,
@@ -182,6 +183,12 @@ export interface GituConfig {
   index?: CodeIndex;
   mode?: 'agent' | 'fast' | 'standard' | 'chat';
   autoApprove?: boolean;
+  /**
+   * Host-owned live Full Access authority, resolved from the owner's saved
+   * setting. When omitted, the run's `autoApprove` grant is the authority.
+   * Never populated from model output or tool parameters.
+   */
+  fullAccess?: () => boolean;
   /** Never auto-approve dangerous commands, even with autoApprove — the
    *  unattended-but-cautious middle ground. */
   safeMode?: boolean;
@@ -258,6 +265,12 @@ export interface GituConfig {
    * exercise the recovery ladder without waiting out real backoff.
    */
   recoverySleep?: (ms: number) => Promise<void>;
+  /**
+   * Wait before re-entering a native turn that failed before it executed
+   * anything. Same reason as `recoverySleep`: a test must not wait out real
+   * backoff. Defaults to the shared provider-recovery delay.
+   */
+  providerRecoveryDelayMs?: number;
   /** Static-context budget for the unified buildModelContext gate (chars).
    *  Over-budget contexts trim the context pack, then oldest history. */
   contextBudget?: { maxChars?: number };
@@ -393,7 +406,7 @@ export class Gitu {
     if (this.nativeRunning && this.config.llm.nativeTask?.steer) {
       this.admitNativeSteering?.(text);
       void this.config.llm.nativeTask.steer([text, attachmentContext].filter(Boolean).join('\n\n')).catch(error => {
-        this.emit(`error    Could not steer native Codex: ${(error as Error).message}. The guidance is preserved for continuation.`);
+        this.emit(`error    Could not steer the running task: ${(error as Error).message}. The guidance is preserved for continuation.`);
         this.inbox.push({ text, attachmentContext });
       });
       return;
@@ -433,6 +446,18 @@ export class Gitu {
 
   async run(goal: string): Promise<GituRunResult> {
     const { cwd } = this.config;
+    /**
+     * Re-read at every decision. The user's saved access choice is the only
+     * authority; a model cannot flip a tool parameter, task context, or
+     * workspace path to obtain Full Access.
+     */
+    const fullAccess = (): boolean => {
+      try {
+        return this.config.fullAccess ? this.config.fullAccess() : this.config.autoApprove === true;
+      } catch {
+        return false;
+      }
+    };
     // Dynamic auto-retry: network blips and provider outages delay the run
     // (with visible events) instead of failing it.
     const llm = resilientLlm(this.config.llm, {
@@ -443,7 +468,7 @@ export class Gitu {
 
     let guard: ProjectGuard;
     try {
-      guard = await ProjectGuard.detectAsync(cwd);
+      guard = await ProjectGuard.detectAsync(cwd, { accessMode: () => (fullAccess() ? 'full' : 'workspace') });
     } catch (err) {
       if (err instanceof ProjectGuardError) throw err;
       throw err;
@@ -462,6 +487,9 @@ export class Gitu {
       `project  locked: ${guard.lock.name} @ ${guard.activeWritableRoot} (${guard.lock.branch ?? 'no branch'}) ` +
         `[repo=${guard.workspace.repositoryRoot}; worktree=${guard.workspace.worktreeRoot}; writable=${guard.workspace.writableRoot}]`,
     );
+    if (guard.fullAccess) {
+      this.emit('access   Full Access enabled by the owner: project-only filesystem restrictions are lifted; Gitu and Git private state stay protected.');
+    }
 
     const memory = MemoryStore.forProject(guard.lock.repoRoot);
     // A pattern can be encountered again when compaction replays the same
@@ -600,7 +628,14 @@ export class Gitu {
     ledger.setInvestigationDepth(investigationDepth);
     this.emit(`depth    investigation depth: ${investigationDepth}${investigationDepth === 'direct' ? ' — targeted context fast path active' : ''}`);
 
-    const policy = new PolicyEngine(this.config.autoApprove ?? false, this.config.approvalHandler, this.config.safeMode ?? false);
+    // Shell execution follows the same authority as the filesystem gate: an
+    // explicit Full Access grant auto-approves commands (safe mode still
+    // refuses dangerous ones), and revocation applies to the next command.
+    const policy = new PolicyEngine(
+      () => this.config.autoApprove === true || fullAccess(),
+      this.config.approvalHandler,
+      this.config.safeMode ?? false,
+    );
     if (this.config.llm.nativeTask) {
       this.abortController = new AbortController();
       if (this.aborted) this.abortController.abort();
@@ -613,8 +648,8 @@ export class Gitu {
         return await runNativeCodexTask({ config: { ...this.config, images: effectiveImages, providerCache: this.providerCache, universalRegistry: this.universalRegistry }, guard, ledger, memory, policy, signal: this.abortController.signal, goal: ledger.ensureTaskAuthority().currentGoal, message: [intakeMessage, buffered].filter(Boolean).join('\n\n'), conversationControl: () => this.nativeConversationControl });
       } finally { this.nativeRunning = false; this.admitNativeSteering = undefined; this.nativeConversationControl = undefined; }
     }
-    if (ledger.data.execution?.mode === 'codex-native' && !this.config.resume) throw new Error('Changing a native task runner requires an explicit continuation.');
-    ledger.data.execution = { ...ledger.data.execution, mode: this.config.llm.name.startsWith('chatgpt-subscription:') ? 'codex-legacy' : 'gitu' };
+    if (isNativeExecutionMode(ledger.data.execution?.mode) && !this.config.resume) throw new Error('Changing a native task runner requires an explicit continuation.');
+    ledger.data.execution = { ...ledger.data.execution, mode: 'gitu' };
     ledger.save();
     const prerequisiteResolver = new CapabilityAwareResolver(this.config.prerequisiteRecovery);
     // Successful reads remain valid progress for the orchestrator's dynamic

@@ -327,11 +327,11 @@
           var activeChip = selInProv ? '<span class="chip ok">active</span>' : '';
           var btnModel = titleCase(selInProv || p.defaultModel);
           if (p.auth === 'chatgpt-subscription') {
-            // Codex owns this credential; Agent Gitu only receives safe
+            // pi keeps this credential; the page only receives safe
             // signed-in / plan state and never sees a token or email address.
             keyChip = usable
               ? '<span class="chip ok">signed in' + (p.planType ? ' · ' + esc(p.planType) : '') + '</span>'
-              : '<span class="chip bad">' + (p.available === false ? 'Codex unavailable' : 'not signed in') + '</span>';
+              : '<span class="chip bad">' + (p.available === false ? 'unavailable' : 'not signed in') + '</span>';
           }
           var setupLabel = p.auth === 'chatgpt-subscription' ? 'Sign in first' : 'Add key first';
           var modelTitle = usable ? 'Search ' + esc(p.label) + ' models' : setupLabel;
@@ -354,9 +354,10 @@
             '<div class="keysec">' +
               (p.auth === 'chatgpt-subscription'
                 ? (usable
-                    ? '<div class="hint">Connected through local Codex' + (p.planType ? ' (' + esc(p.planType) + ')' : '') + '. Your ChatGPT credentials remain in Codex.</div>'
+                    ? '<button type="button" class="btn ghost" id="chatgptSignout">Sign out of ChatGPT</button>' +
+                      '<div class="hint">Connected to your ChatGPT plan' + (p.planType ? ' (' + esc(p.planType) + ')' : '') + '. Your sign-in is stored on this device only; signing out removes it.</div>'
                     : '<button type="button" class="btn dark" id="chatgptSignin">Sign in with ChatGPT</button>' +
-                      '<div class="hint">Opens the secure Codex sign-in flow. It uses the models included with your ChatGPT plan instead of an API key.</div>')
+                      '<div class="hint">Opens the secure ChatGPT sign-in flow. It uses the models included with your ChatGPT plan instead of an API key.</div>')
                 : '<input type="password" id="keyin-' + i + '" placeholder="paste ' + esc(p.id) + ' API key"' + (p.keyEnvVars && p.keyEnvVars.length ? ' title="stored locally as env var ' + esc(p.keyEnvVars.join(' or ')) + '"' : '') + ' style="margin:0;max-width:280px">' +
                   '<button class="btn dark" data-savekey="' + i + '">Save key</button>' +
                   '<button class="btn ghost" data-eye="' + i + '" title="show or hide the key">Show</button>' +
@@ -382,6 +383,20 @@
             cgSignin.disabled = false;
             cgSignin.textContent = 'Sign in with ChatGPT';
             toast('ChatGPT sign-in failed: ' + ((e && e.message) || e), true);
+          });
+        };
+        var cgSignout = $('chatgptSignout');
+        if (cgSignout) cgSignout.onclick = function () {
+          if (!window.confirm('Sign out of ChatGPT? Tasks that use your subscription will stop until you sign in again.')) return;
+          cgSignout.disabled = true;
+          cgSignout.textContent = 'Signing out…';
+          api('/api/chatgpt/auth', { method: 'DELETE' }).then(function () {
+            toast('Signed out of ChatGPT');
+            renderSettings();
+          }).catch(function (e) {
+            cgSignout.disabled = false;
+            cgSignout.textContent = 'Sign out of ChatGPT';
+            toast('ChatGPT sign-out failed: ' + ((e && e.message) || e), true);
           });
         };
         body.querySelectorAll('[data-testprofile]').forEach(function (btn) {
@@ -586,7 +601,7 @@
         '<div class="setrow"><div class="grow"><div class="t">Auto-learn reusable skills</div><div class="d">After a successful task the agent reflects on what it did and saves any repeatable multi-step pattern (deploy flows, design conventions, checklists) as a skill with create_skill. Turn off to stop all proactive skill creation.</div></div><button class="toggle ' + (S.settings.autoLearn ? 'on' : '') + '" id="pLearn"></button></div>' +
         '<div class="setrow"><div class="grow"><div class="t">Cowork learning mode</div><div class="d">When your cowork teammates learn from their work. <b>On each task</b> reflects after every completed turn (the original behavior). <b>Scheduled review</b> keeps ordinary turns quiet and reflects on a timer instead, plus a daily memory consolidation sweep. <b>Off</b> stops cowork learning entirely.</div></div><select id="pCwLearn"><option value="reactive">On each task (original)</option><option value="proactive">Scheduled review</option><option value="off">Off</option></select></div>' +
         '<div class="setrow"><div class="grow"><div class="t">Plan review</div><div class="d">In Plan mode the agent waits for your approval before building.</div></div><button class="toggle ' + (S.settings.review ? 'on' : '') + '" id="pReview"></button></div>' +
-        '<div class="setrow"><div class="grow"><div class="t">Full coding access</div><div class="d">Run coding tasks without approval cards, including tasks sent by P.A. Shared across desktop, mobile and hosted sessions.</div></div><button class="toggle ' + (S.settings.autoApprove ? 'on' : '') + '" id="pAuto" aria-label="Full coding access"></button></div>' +
+        '<div class="setrow"><div class="grow"><div class="t">Full coding access</div><div class="d">Run coding tasks without approval cards and let the agent edit files outside the selected project, including ignored build and dependency folders. When it is off, the agent asks before writing to a path outside the selected project. Agent Gitu’s own settings, credentials and task state stay protected. Shared across desktop, mobile and hosted sessions.</div></div><button class="toggle ' + (S.settings.autoApprove ? 'on' : '') + '" id="pAuto" aria-label="Full coding access"></button></div>' +
         '<div class="setrow"><div class="grow"><div class="t">Loop prevention</div><div class="d">Repeated failing actions are blocked automatically. Always on.</div></div><button class="toggle on" disabled></button></div>' +
         '<div class="setrow"><div class="grow"><div class="t">Evidence gate</div><div class="d">Tasks cannot complete without passing evidence for every criterion. Always on.</div></div><button class="toggle on" disabled></button></div>' +
         '</div>';

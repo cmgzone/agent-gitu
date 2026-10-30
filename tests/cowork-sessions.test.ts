@@ -18,7 +18,7 @@ function fixture() {
     esc: (value: unknown) => String(value ?? '').replace(/</g, '&lt;'), cwIcon: (name: string) => `<svg data-icon="${name}"></svg>`,
     document: { createElement: () => modal, body: { appendChild: vi.fn() } }, cwBindDialog: () => close,
     localStorage: { get length() { return drafts.size; }, key: (index: number) => [...drafts.keys()][index], removeItem: (key: string) => drafts.delete(key) },
-    api: vi.fn(), toast: vi.fn(), cwAgentModal: vi.fn(), cwOpenConv: vi.fn(), cwStopPoll: vi.fn(), cwRenderChat: vi.fn(), cwRenderRail: vi.fn() });
+    api: vi.fn(), toast: vi.fn(), cwAgentModal: vi.fn(), cwOpenConv: vi.fn(), cwStopPoll: vi.fn(), cwRenderChat: vi.fn(), cwRenderRail: vi.fn(), cwPurgeOfflineChat: vi.fn(), cwPersistOfflineRoster: vi.fn() });
   new Script(COWORK_SESSIONS_JS).runInContext(context);
   return { context, cw, drafts, modal, controls, members, close };
 }

@@ -26,6 +26,50 @@ export function providerRecoveryDelay(error: unknown, attempt: number, baseMs = 
   return Math.max(backoff, retryAfter ?? 0);
 }
 
+/** Initial native turn plus at most two further attempts — the same budget a
+ *  single model request gets (`DEFAULT_MAX_RETRIES` in `../llm/resilient.ts`). */
+const NATIVE_TURN_ATTEMPTS = 3;
+
+/**
+ * Run one provider-owned turn, retrying ONLY while nothing has executed yet.
+ *
+ * A native turn is not a request: by the time it fails it may already have run
+ * tools, and re-entering it starts a fresh provider session whose tool-call ids
+ * differ. Gitu's "this call was already handled" dedupe is keyed on the
+ * provider's own turn+call id, so it cannot recognise that replay and the same
+ * write or command would run a second time. Before the first admitted call the
+ * turn is side-effect-free, so a transient outage there is safe to re-enter;
+ * afterwards the failure propagates with the partial work saved, exactly as it
+ * did before.
+ */
+export async function runNativeTurnWithRecovery<T>(input: {
+  turn: () => Promise<T>;
+  /** Whether this turn has admitted a tool call. The caller sets it the moment
+   *  one arrives; it is never reset, because an attempt that acted has already
+   *  crossed the boundary the retry depends on. */
+  hasActed: () => boolean;
+  signal: AbortSignal;
+  onRetry?: (info: { attempt: number; maxAttempts: number; delayMs: number; error: Error }) => void;
+  maxAttempts?: number;
+  baseDelayMs?: number;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+}): Promise<T> {
+  const maxAttempts = Math.max(1, input.maxAttempts ?? NATIVE_TURN_ATTEMPTS);
+  for (let attempt = 1; ; attempt++) {
+    input.signal.throwIfAborted();
+    try {
+      return await input.turn();
+    } catch (error) {
+      // Cancellation wins over recovery: Stop must not wait out a backoff.
+      input.signal.throwIfAborted();
+      const delayMs = providerRecoveryDelay(error, attempt, input.baseDelayMs);
+      if (delayMs === undefined || input.hasActed() || attempt >= maxAttempts) throw error;
+      input.onRetry?.({ attempt: attempt + 1, maxAttempts, delayMs, error: error as Error });
+      await (input.sleep ? input.sleep(delayMs, input.signal) : sleep(delayMs, undefined, { signal: input.signal }));
+    }
+  }
+}
+
 /** Both engines require established completion or a genuine dependency. */
 export function completionDisposition(verified: boolean, waiting = false): 'done' | 'waiting' | 'working' {
   return waiting ? 'waiting' : verified ? 'done' : 'working';

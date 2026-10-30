@@ -8,8 +8,8 @@ import { ScriptedMockLlm } from '../src/llm/llm.js';
 import type { CoworkStore } from '../src/cowork/store.js';
 import { GituApi } from '../apps/mobile/src/gitu/client.js';
 
-const firebase = vi.hoisted(() => ({ send: vi.fn(async () => 'message-id'), initializeApp: vi.fn(() => ({ name: 'fixture' })), deleteApp: vi.fn() }));
-vi.mock('firebase-admin/app', () => ({ initializeApp: firebase.initializeApp, applicationDefault: () => 'fixture-server-credential', deleteApp: firebase.deleteApp }));
+const firebase = vi.hoisted(() => ({ send: vi.fn(async () => 'message-id'), initializeApp: vi.fn(() => ({ name: 'fixture' })), deleteApp: vi.fn(), cert: vi.fn(() => 'fixture-cert') }));
+vi.mock('firebase-admin/app', () => ({ initializeApp: firebase.initializeApp, applicationDefault: () => 'fixture-server-credential', deleteApp: firebase.deleteApp, cert: firebase.cert }));
 vi.mock('firebase-admin/messaging', () => ({ getMessaging: () => ({ send: firebase.send }) }));
 
 const deviceId = 'fixture-device-00000001',

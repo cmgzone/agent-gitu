@@ -1,4 +1,4 @@
-import type { ProjectGuard } from '../guard/project-guard.js';
+import type { ExternalWriteScope, ProjectGuard } from '../guard/project-guard.js';
 import { captureVerificationScope } from '../evidence/verification-scope.js';
 import type { TaskLedger } from '../ledger/task-ledger.js';
 import { CACHED_INVESTIGATION_PREFIX, LoopDetector, hasCompleteReadObservation } from '../loop/loop-detector.js';
@@ -63,6 +63,14 @@ import {
   type ToolContext,
 } from '../tools/tools.js';
 
+import {
+  isPiToolsEnabled,
+  piReadFile,
+  piWriteFile,
+  piApplyEdit,
+  piListFiles,
+  piSearchFiles,
+} from '../tools/adapters/index.js';
 import { toolCreateDocument } from '../tools/productivity.js';
 import type { FileDiff } from '../tools/diff.js';
 import { toolScheduleManage } from '../cron/tools.js';
@@ -102,6 +110,10 @@ const EXECUTOR_TOOL_NAMES = [
   'lsp_hover',
   'lsp_symbols',
 ];
+
+/** File tools that mutate a path named by the call, and so can request
+ *  approval for one specific target outside the locked project. */
+const EXTERNAL_WRITE_TOOLS = new Set(['write_file', 'apply_edit', 'create_document']);
 
 /**
  * An unknown tool call is a routing problem, not the end of the run: name the
@@ -247,6 +259,32 @@ export class Executor {
           this.guard.assertReadable(abs);
           this.emit(`diagnostic-read approved read-only access to ${scope.path}`);
         }
+      } else if (EXTERNAL_WRITE_TOOLS.has(req.tool)) {
+        try {
+          this.guard.assertInside(abs);
+        } catch (error) {
+          // The user does not have to hand the whole filesystem to the agent:
+          // an out-of-project target is asked about by path. Private state and
+          // Git internals refuse to produce a scope, so they are never offered.
+          const hardInstructions = typeof this.ledger.hardInstructions === 'function' ? this.ledger.hardInstructions() : [];
+          if (!this.instructionPolicy.evaluate(req.tool, req.params, hardInstructions).allowed) throw error;
+          // Ignored folders, symlink escapes and private state never produce a
+          // scope, so the user is never asked to unlock them: the original
+          // denial is what the agent sees.
+          let scope: ExternalWriteScope;
+          try {
+            scope = this.guard.externalWriteScope(abs);
+          } catch {
+            throw error;
+          }
+          if (!(await this.policy.approveExternalWrite(req.tool, scope.path, scope.directory))) {
+            throw new Error(`${(error as Error).message} Writing outside the project needs the user's approval, which was not granted; do not retry this path.`);
+          }
+          if (this.signal?.()?.aborted) throw new Error('External write cancelled');
+          this.guard.grantExternalWrite(scope);
+          this.guard.assertInside(abs);
+          this.emit(`external-write approved write access to ${scope.path}`);
+        }
       } else this.guard.assertInside(abs);
     } catch (err) {
       return `DENIED by project boundary: ${(err as Error).message}`;
@@ -284,7 +322,22 @@ export class Executor {
     }
   }
 
+  /**
+   * One access decision per tool execution. The owner's Full Access choice is
+   * re-checked here — never from model input — and every path check inside this
+   * call reuses that decision, so a large scan does not re-read settings for
+   * every file it touches. Handlers still assert the boundary themselves.
+   */
   async execute(req: ExecuteRequest): Promise<ExecuteOutcome> {
+    this.guard.beginToolAuthorization();
+    try {
+      return await this.executeTool(req);
+    } finally {
+      this.guard.endToolAuthorization();
+    }
+  }
+
+  private async executeTool(req: ExecuteRequest): Promise<ExecuteOutcome> {
     if (req.tool === 'run_command') req = { ...req, params: normalizeCommandParams(req.params) };
     const started = Date.now();
     // Model-DECLARED scratch writes (recovery-control fix 8): the model marks
@@ -602,19 +655,19 @@ export class Executor {
     try {
       switch (req.tool) {
         case 'read_file':
-          result = toolReadFile(ctx, req.params);
+          result = isPiToolsEnabled() ? await piReadFile(ctx, req.params, this.signal?.()) : toolReadFile(ctx, req.params);
           break;
         case 'write_file':
-          result = toolWriteFile(ctx, req.params);
+          result = isPiToolsEnabled() ? await piWriteFile(ctx, req.params, this.signal?.()) : toolWriteFile(ctx, req.params);
           break;
         case 'apply_edit':
-          result = toolApplyEdit(ctx, req.params);
+          result = isPiToolsEnabled() ? await piApplyEdit(ctx, req.params, this.signal?.()) : toolApplyEdit(ctx, req.params);
           break;
         case 'list_files':
-          result = toolListFiles(ctx, req.params);
+          result = isPiToolsEnabled() ? await piListFiles(ctx, req.params, this.signal?.()) : toolListFiles(ctx, req.params);
           break;
         case 'search_files':
-          result = await toolSearchFiles({ ...ctx, signal: this.signal?.() }, req.params);
+          result = isPiToolsEnabled() ? await piSearchFiles(ctx, req.params, this.signal?.()) : await toolSearchFiles({ ...ctx, signal: this.signal?.() }, req.params);
           break;
         case 'web_search':
           result = await toolWebSearch({ ...ctx, signal: this.signal?.() }, req.params);

@@ -123,7 +123,7 @@ it('refreshes computer identity instructions for the native coding-backed teamma
   const trigger = f.store.appendMessage(f.conversation.id, { role: 'user', via: 'web', text: 'I am signed in on the VPS Linux desktop.' });
   await runConversationTurn({ conversation: f.conversation, history: [trigger], trigger,
     append: message => f.store.appendMessage(f.conversation.id, message),
-    deps: { agents: [f.agent], resolveLlm: () => client, toolContext: () => ctx, store: f.store, browser: true } });
+    deps: { agents: [f.agent], resolveLlm: () => client, toolContext: () => ctx, store: f.store, memory: CoworkMemory.forWorkspace(ctx.cwd), browser: true } });
   expect(instructions).toContain('CURRENT COMPUTER AND BROWSER IDENTITY');
   expect(instructions).toContain('host-agent-browser');
   expect(instructions).toContain('Signed-in VPS Chrome');

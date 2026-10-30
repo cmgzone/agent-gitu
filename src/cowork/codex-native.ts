@@ -1,6 +1,7 @@
+import { runNativeTurnWithRecovery } from '../agent/task-recovery.js';
 import { nativeCodexPermissions, NATIVE_PERMISSION_PROFILE } from '../coding/native-codex-permissions.js';
 import { LlmError, type LlmClient, type LlmMessage, type LlmToolDefinition, type LlmUsage } from '../llm/llm.js';
-import type { NativeRecord } from '../llm/native-task.js';
+import type { NativeRecord, NativeTaskInput } from '../llm/native-task.js';
 import type { ToolContext } from '../tools/tools.js';
 import type { ToolResult } from '../types.js';
 import { canonicalJson, sha256 } from '../util.js';
@@ -33,8 +34,22 @@ export async function runNativeCoworkTurn(input: {
   onUsage?: (usage: LlmUsage) => void;
   beforeTool?: () => void;
   takeSteering?: () => string[];
+  /** Recovery for a turn that failed before it executed anything. Injected by
+   *  tests so they never wait out real backoff (see `runNativeTurnWithRecovery`). */
+  recovery?: { maxAttempts?: number; baseDelayMs?: number; sleep?: (ms: number, signal?: AbortSignal) => Promise<void> };
 }): Promise<{ text: string; waiting: boolean }> {
   const runtime = input.client.nativeTask!;
+  // A host that declares agent_memory must be able to serve it. Missing memory
+  // is a wiring fault, not a task condition: handing the model "memory is
+  // unavailable in this session" lets a broken host look like an agent that
+  // simply forgot, and the owner never learns the capability is gone. Stop
+  // before the first model round, so nothing ran and the failure names its
+  // cause. (The provider-owned loop never sees a scope; this consumer is the
+  // only place the promise and the execution can be compared.)
+  if (!input.scope?.memory && input.tools.some((tool) => tool.name === 'agent_memory'))
+    throw new Error(
+      'Cowork memory is not wired: this turn declares the agent_memory tool but the host supplied no CoworkToolScope.memory. Supply the CoworkMemory facade in the runner deps (deps.memory), or stop declaring agent_memory. No model round ran and nothing was executed.',
+    );
   const key = [input.conversationId, input.agent.id, input.threadId ?? '', input.purpose ?? 'chat'].join(':');
   if (active.has(key)) throw new Error('This native Cowork task is already running.');
   active.add(key);
@@ -75,13 +90,18 @@ export async function runNativeCoworkTurn(input: {
     const key = 'refusal:' + reason;
     const count = (repeated.get(key) ?? 0) + 1;
     repeated.set(key, count);
-    if (count >= 4) throw new Error('Native Codex repeated a denied or waiting request without progress. The session is preserved for review.');
+    if (count >= 4) throw new Error('The model repeated a denied or waiting request without progress. The session is preserved for review.');
     return { success: false, contentItems: [{ type: 'inputText', text: reason }] };
   };
   let text = '',
     waiting = false,
     narration = '',
     reasoning = '';
+  // Latched when a function is admitted for execution. A turn that failed
+  // before this point is safe to re-enter; one that failed after it is not,
+  // because the retry starts a fresh provider session whose call ids no longer
+  // match the durable admission records (see `runNativeTurnWithRecovery`).
+  let acted = false;
   let messageId: string | undefined;
   const persist = (): void => {
     if (session) {
@@ -127,16 +147,21 @@ export async function runNativeCoworkTurn(input: {
       .filter((message) => message.role === 'system')
       .map((message) => (typeof message.content === 'string' ? message.content.replace(/^COMPLETION STATE:.*(?:\r?\n|$)/gm, '') : ''))
       .join('\n\n') +
-    '\n\nNATIVE CODEX EXECUTION: You own the agent loop. Call the provided functions directly through code mode. Use gitu_cowork({tool:"name",params:{...}}) when a newly permitted tool is absent from the saved native catalog. Currently permitted functions: ' +
+    '\n\nGITU SUPERVISED EXECUTION: You own the agent loop. Call the provided functions directly through code mode. Use gitu_cowork({tool:"name",params:{...}}) when a newly permitted tool is absent from the saved native catalog. Currently permitted functions: ' +
     [...tools.keys()].join(', ') +
     ". Do not emit <tool> markers, <cowork_state> tags or Agent Gitu action JSON. Native turn events manage completion; your final response is readable prose. Direct OS tools are disabled; all effects use the permission-gated Gitu functions. When a built-in shell or patch attempt is denied or unavailable, perform the same operation with the listed guarded functions and continue; a denied built-in attempt is not a blocker. Reuse actual tool results, command job IDs and stored todos. A progress statement is not completion. Publish a final response only after doing the requested work or identifying a concrete blocker. QUESTION CARDS: When you need an answer or choice from the user, call ask_user with the question and useful options. Do not ask for that answer only in plain prose. For website credentials use request_browser_auth; for service credentials use request_credential. Never collect secrets in a question card. On a user question/permission card or app approval, stop work and explain what is awaiting the user. Do not retry unchanged failures. Never use Get-Job with a cmd-N ID; use run_command action=status with that ID.";
   try {
-    const result = await runtime.runTurn({
+    const config = nativeCodexPermissions(input.ctx.guard) as Record<string, unknown>;
+    config['compactionContext'] = {
+      goal: input.purpose ?? input.agent.name,
+      customFocus: `Cowork teammate: ${input.agent.name}`,
+    };
+    const turnInput: NativeTaskInput = {
       cwd,
       threadId: session?.threadId,
       text: (savedSession && !isAppend ? 'Updated conversation context (earlier messages were edited; do not replay completed tools):\n' : '') + transcript,
       instructions,
-      config: nativeCodexPermissions(input.ctx.guard),
+      config,
       permissions: NATIVE_PERMISSION_PROFILE,
       signal,
       tools: dynamicTools,
@@ -207,6 +232,7 @@ export async function runNativeCoworkTurn(input: {
         input.beforeTool?.();
         admitted.add(callKey);
         persist();
+        acted = true;
         const args = params['tool'] === 'gitu_cowork' ? record(passedArgs['params']) : passedArgs;
         const work = (async () => {
           input.onProgress?.(visibleCoworkText(narration, true), tool, undefined, JSON.stringify(args));
@@ -223,7 +249,7 @@ export async function runNativeCoworkTurn(input: {
               try { await runtime.steer?.('The same Cowork operation returned an unchanged result three times. Use its saved result, take a different useful action, or explain the concrete blocker. Do not repeat the same failed operation.'); }
               catch { /* A failed correction must not permit an unbounded loop. */ }
             }
-            if (count >= 4) throw new Error('Native Codex repeated the same Cowork operation and unchanged result without progress.');
+            if (count >= 4) throw new Error('The model repeated the same Cowork operation and unchanged result without progress.');
           }
           if (
             result.ok &&
@@ -239,6 +265,14 @@ export async function runNativeCoworkTurn(input: {
         responses.set(callKey, work);
         return work;
       },
+    };
+    const result = await runNativeTurnWithRecovery({
+      turn: () => runtime.runTurn(turnInput),
+      hasActed: () => acted,
+      signal,
+      ...(input.recovery ?? {}),
+      onRetry: ({ attempt, maxAttempts, delayMs }) =>
+        input.onProgress?.(`Retrying the model — attempt ${attempt}/${maxAttempts} in ${(delayMs / 1000).toFixed(1)}s. Saved work is preserved.`),
     });
     if (result.status !== 'completed') throw new LlmError('Native Cowork turn was interrupted; its session is preserved.', { kind: 'aborted' });
     if (!text.trim()) throw new LlmError('Native Cowork returned no final response. Progress is saved; it was not automatically restarted.', { kind: 'protocol_error' });

@@ -269,7 +269,7 @@ describe('cowork runner', () => {
     return {
       agents: store.listAgents(),
       resolveLlm: () => ({ complete: async () => script[Math.min(call++, script.length - 1)] } as never),
-      toolContext: () => { throw new Error('no tools in this test'); },
+      toolContext: () => ({ computerContext: () => '' } as never),
       ...overrides,
     };
   }
@@ -867,7 +867,7 @@ describe('cowork capability tools', () => {
     const deps = {
       agents: store.listAgents(),
       resolveLlm: () => { throw new Error('unused'); },
-      toolContext: () => { throw new Error('unused'); },
+      toolContext: () => ({ computerContext: () => '' }) as never,
       userContext: 'Name: Ada\nAbout: building a mobile app',
       memoryFor: (a: { id: string }) => (a.id === agent.id ? '- Prefers short answers' : ''),
     };
@@ -941,11 +941,11 @@ describe('cowork autonomy layer', () => {
     expect(pending[0]!.text).toBe('draft the announcement');
     // The inbox reaches the recipient's system prompt until delivered.
     const members = [sender, receiver];
-    const messages = buildCoworkMessages(receiver, conv, members, [], { agents: store.listAgents(), resolveLlm: () => { throw new Error('x'); }, toolContext: () => { throw new Error('x'); }, store } as never);
+    const messages = buildCoworkMessages(receiver, conv, members, [], { agents: store.listAgents(), resolveLlm: () => { throw new Error('x'); }, toolContext: () => ({ computerContext: () => '' }) as never, store } as never);
     expect(messages[0]!.content as string).toContain('INBOX');
     store.markInboxDelivered(pending.map((m) => m.id));
     expect(store.inboxFor('receiver')).toHaveLength(0);
-    const built = buildCoworkMessages(receiver, conv, members, [], { agents: store.listAgents(), resolveLlm: () => { throw new Error('x'); }, toolContext: () => { throw new Error('x'); }, store } as never);
+    const built = buildCoworkMessages(receiver, conv, members, [], { agents: store.listAgents(), resolveLlm: () => { throw new Error('x'); }, toolContext: () => ({ computerContext: () => '' }) as never, store } as never);
     expect(built[0]!.content as string).not.toContain('INBOX');
   });
 

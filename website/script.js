@@ -180,3 +180,15 @@
     /* the support widget is optional — never break the page */
   }
 })();
+
+// News link for the nav and the footer Explore column.
+(() => {
+  try {
+    const add = (box, sel, pos) => {
+      if (!box || box.querySelector('a[href="news.html"]')) return;
+      box.querySelector(sel)?.insertAdjacentHTML(pos, '<a href="news.html">News</a>');
+    };
+    add(document.querySelector('#main-navigation'), 'a.nav-github', 'beforebegin');
+    add(document.querySelector('.footer-column a[href="blog.html"]')?.closest('.footer-column'), 'a[href="blog.html"]', 'afterend');
+  } catch {}
+})();

@@ -1,0 +1,69 @@
+/* --- AI news digest -------------------------------------------------------- */
+.news-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 49px 33px;
+}
+.news-card {
+  border-top: 1px solid #ffffff25;
+  padding-top: 25px;
+  min-width: 0;
+}
+.news-card img {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1.5;
+  object-fit: cover;
+  border: 1px solid #4a6b9e3b;
+  border-radius: 10px;
+  background: var(--surface);
+  margin-bottom: 23px;
+}
+.news-card h2 {
+  font-size: 23px;
+  line-height: 1.3;
+  letter-spacing: -0.025em;
+}
+.news-card h2 a {
+  color: var(--text);
+}
+.news-card h2 a:hover {
+  color: var(--light);
+}
+.news-summary {
+  margin-top: 14px;
+  font-size: 13px;
+  line-height: 1.9;
+}
+.news-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 18px;
+  font-size: 9px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #7197d6;
+}
+.news-meta time {
+  color: #7d91b3;
+}
+.news-empty {
+  grid-column: 1 / -1;
+  font-size: 14px;
+  line-height: 1.9;
+  color: var(--muted);
+}
+.news-noscript {
+  margin-top: 18px;
+  font-size: 13px;
+  line-height: 1.9;
+  color: var(--muted);
+}
+@media (max-width: 560px) {
+  .news-grid {
+    gap: 33px;
+  }
+}

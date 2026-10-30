@@ -583,4 +583,60 @@ describe('Cowork continuity across providers and restarts', () => {
     expect(frames.some(text => text.includes('checked the workspace'))).toBe(true);
     expect(frames.some(text => text.includes('"status"'))).toBe(false);
   });
+
+  it('streams live status updates and retains the latest update across multi-round tool calls', async () => {
+    const s = setup();
+    const progressEvents: Array<{ text: string; tool?: string; phase?: string }> = [];
+    let round = 0;
+    const llm: LlmClient = {
+      name: 'multi-round-stream-test',
+      complete: async () => 'Done.',
+      completeTurnStream: async (_messages, _options, onDelta) => {
+        round += 1;
+        if (round === 1) {
+          onDelta('Checking package.json first…');
+          return {
+            kind: 'tool_calls' as const,
+            preamble: 'Checking package.json first…',
+            calls: [{ id: 'call-1', name: 'read_file', arguments: { path: 'package.json' } }],
+            metadata: {},
+          };
+        }
+        if (round === 2) {
+          return {
+            kind: 'tool_calls' as const,
+            preamble: '',
+            calls: [{ id: 'call-2', name: 'list_files', arguments: { path: '.' } }],
+            metadata: {},
+          };
+        }
+        onDelta('Finished inspecting the workspace.');
+        return {
+          kind: 'text' as const,
+          text: 'Finished inspecting the workspace.',
+          metadata: {},
+        };
+      },
+    };
+    const trigger = s.store.appendMessage(s.conversation.id, { role: 'user', text: 'Inspect the workspace', via: 'web' });
+    const result = await runConversationTurn({
+      conversation: s.conversation,
+      trigger,
+      history: [trigger],
+      deps: {
+        agents: [s.agent],
+        resolveLlm: () => llm,
+        toolContext: () => s.ctx,
+        memory: s.memory,
+        store: s.store,
+        autoLearn: false,
+        onProgress: (p) => progressEvents.push({ text: p.text, tool: p.tool, phase: p.phase }),
+      },
+      append: (m) => s.store.appendMessage(s.conversation.id, m),
+    });
+    expect(result.error).toBeUndefined();
+    const listFilesEvents = progressEvents.filter((p) => p.tool === 'list_files');
+    expect(listFilesEvents.length).toBeGreaterThan(0);
+    expect(listFilesEvents.every((p) => p.text === 'Checking package.json first…')).toBe(true);
+  });
 });

@@ -4,7 +4,7 @@ import { LlmError, type LlmClient, type LlmMessage, type LlmToolDefinition, type
 import type { NativeRecord, NativeTaskInput } from '../llm/native-task.js';
 import type { ToolContext } from '../tools/tools.js';
 import type { ToolResult } from '../types.js';
-import { canonicalJson, sha256 } from '../util.js';
+import { canonicalJson, sha256, summarizeParams } from '../util.js';
 import { executeCoworkTool, type CoworkToolPerms, type CoworkToolScope } from './tools.js';
 import { ensureQuestionCard } from './question-cards.js';
 import type { CoworkAgent, CoworkNativeSession, CoworkStore } from './store.js';
@@ -29,7 +29,7 @@ export async function runNativeCoworkTurn(input: {
   scope?: CoworkToolScope;
   store?: CoworkStore;
   signal?: AbortSignal;
-  onProgress?: (text: string, tool?: string, ok?: boolean, detail?: string, reasoning?: string) => void;
+  onProgress?: (text: string, tool?: string, ok?: boolean, detail?: string, reasoning?: string, args?: Record<string, unknown>) => void;
   onTool?: (tool: string, params: NativeRecord, result: ToolResult) => void;
   onUsage?: (usage: LlmUsage) => void;
   beforeTool?: () => void;
@@ -96,6 +96,7 @@ export async function runNativeCoworkTurn(input: {
   let text = '',
     waiting = false,
     narration = '',
+    lastCommentary = '',
     reasoning = '';
   // Latched when a function is admitted for execution. A turn that failed
   // before this point is safe to re-enter; one that failed after it is not,
@@ -149,7 +150,7 @@ export async function runNativeCoworkTurn(input: {
       .join('\n\n') +
     '\n\nGITU SUPERVISED EXECUTION: You own the agent loop. Call the provided functions directly through code mode. Use gitu_cowork({tool:"name",params:{...}}) when a newly permitted tool is absent from the saved native catalog. Currently permitted functions: ' +
     [...tools.keys()].join(', ') +
-    ". Do not emit <tool> markers, <cowork_state> tags or Agent Gitu action JSON. Native turn events manage completion; your final response is readable prose. Direct OS tools are disabled; all effects use the permission-gated Gitu functions. When a built-in shell or patch attempt is denied or unavailable, perform the same operation with the listed guarded functions and continue; a denied built-in attempt is not a blocker. Reuse actual tool results, command job IDs and stored todos. A progress statement is not completion. Publish a final response only after doing the requested work or identifying a concrete blocker. QUESTION CARDS: When you need an answer or choice from the user, call ask_user with the question and useful options. Do not ask for that answer only in plain prose. For website credentials use request_browser_auth; for service credentials use request_credential. Never collect secrets in a question card. On a user question/permission card or app approval, stop work and explain what is awaiting the user. Do not retry unchanged failures. Never use Get-Job with a cmd-N ID; use run_command action=status with that ID.";
+    ". Before calling functions or when your next step changes, stream a brief plain-language status update explaining what you are working on so the user can follow your progress live. Do not emit <tool> markers, <cowork_state> tags or Agent Gitu action JSON. Native turn events manage completion; your final response is readable prose. Direct OS tools are disabled; all effects use the permission-gated Gitu functions. When a built-in shell or patch attempt is denied or unavailable, perform the same operation with the listed guarded functions and continue; a denied built-in attempt is not a blocker. Reuse actual tool results, command job IDs and stored todos. A progress statement is not completion. Publish a final response only after doing the requested work or identifying a concrete blocker. QUESTION CARDS: When you need an answer or choice from the user, call ask_user with the question and useful options. Do not ask for that answer only in plain prose. For website credentials use request_browser_auth; for service credentials use request_credential. Never collect secrets in a question card. On a user question/permission card or app approval, stop work and explain what is awaiting the user. Do not retry unchanged failures. Never use Get-Job with a cmd-N ID; use run_command action=status with that ID.";
   try {
     const config = nativeCodexPermissions(input.ctx.guard) as Record<string, unknown>;
     config['compactionContext'] = {
@@ -184,11 +185,15 @@ export async function runNativeCoworkTurn(input: {
           if (id && messageId && id !== messageId) narration = '';
           if (id) messageId = id;
           narration += String(params['delta'] ?? '');
-          input.onProgress?.(visibleCoworkText(narration, true));
+          const visible = visibleCoworkText(narration, true);
+          if (visible) lastCommentary = visible;
+          input.onProgress?.(visible);
         }
         if (method.startsWith('item/reasoning/') && typeof params['delta'] === 'string') {
           reasoning += params['delta'];
-          input.onProgress?.(visibleCoworkText(narration, true), undefined, undefined, undefined, reasoning);
+          const visible = visibleCoworkText(narration, true);
+          if (visible) lastCommentary = visible;
+          input.onProgress?.(visible || lastCommentary, undefined, undefined, undefined, reasoning);
         }
         if (method === 'item/started' || method === 'item/completed') {
           const item = record(params['item']);
@@ -206,7 +211,11 @@ export async function runNativeCoworkTurn(input: {
             if (messageId && typeof item['id'] === 'string' && item['id'] !== messageId) return;
             const completeText = visibleCoworkText(String(item['text'] ?? ''));
             if (item['phase'] !== 'commentary') text = completeText;
-            if (completeText) input.onProgress?.(completeText);
+            if (completeText) {
+              lastCommentary = completeText;
+              input.onProgress?.(completeText);
+            }
+            messageId = undefined;
             narration = '';
             reasoning = '';
           }
@@ -235,10 +244,11 @@ export async function runNativeCoworkTurn(input: {
         acted = true;
         const args = params['tool'] === 'gitu_cowork' ? record(passedArgs['params']) : passedArgs;
         const work = (async () => {
-          input.onProgress?.(visibleCoworkText(narration, true), tool, undefined, JSON.stringify(args));
+          const detail = summarizeParams(tool, args);
+          input.onProgress?.(visibleCoworkText(narration, true) || lastCommentary, tool, undefined, detail, undefined, args);
           const result = await executeCoworkTool(input.ctx, tool, args, input.perms, input.scope);
           input.onTool?.(tool, args, result);
-          input.onProgress?.(visibleCoworkText(narration, true), tool, result.ok, result.output);
+          input.onProgress?.(visibleCoworkText(narration, true) || lastCommentary, tool, result.ok, detail || result.output, undefined, args);
           // A managed process can legitimately remain running across several
           // polls. Terminal results and unchanged failures still stop loops.
           if (!(tool === 'run_command' && args['action'] === 'status' && result.ok && result.status === 'running')) {

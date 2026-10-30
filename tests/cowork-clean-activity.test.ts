@@ -104,4 +104,24 @@ describe('Cowork clean activity', () => {
     u.state.progresses = [{ agentId: 'one', tool: 'read_file', toolOk: false }];
     expect(u.context.cwCleanActivityText()).toBe('A step failed');
   });
+
+  it('keeps the fallback working bubble hidden while streamed status text is visible during tool execution', () => {
+    const u = activity();
+    const working = { hidden: false, textContent: '' };
+    const workingLabel = { hidden: false, textContent: '' };
+    const msgs = { scrollHeight: 100, scrollTop: 100, clientHeight: 100 };
+    Object.assign(u.elements, { cwWorkingBubble: working, cwWorkingLabel: workingLabel, cwMsgs: msgs });
+    u.context.cwVisibleReply = (raw: string) => String(raw ?? '').trim();
+
+    u.state.progresses = [{ agentId: 'one', phase: 'working', text: 'Working…' }];
+    u.context.cwRenderCleanActivity();
+    expect(working.hidden).toBe(false);
+    expect(workingLabel.textContent).toBe('Working on your request…');
+
+    u.state.progresses = [{ agentId: 'one', phase: 'working', tool: 'read_file', text: 'Checking package.json to inspect the build scripts…' }];
+    u.context.cwRenderCleanActivity();
+    expect(working.hidden).toBe(true);
+    expect(u.elements.cwCleanStatus.hidden).toBe(false);
+    expect(u.elements.cwCleanLabel.textContent).toBe('Checking the relevant files…');
+  });
 });

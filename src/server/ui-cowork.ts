@@ -2882,7 +2882,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       var label = cwActivityLabel(p);
       if (labels[i].textContent !== label) labels[i].textContent = label;
       var streamed = cwVisibleReply(p.text);
-      if (/^Continuing automatically \(checkpoint \d+\)/.test(streamed)) streamed = '';
+      if (/^(?:Continuing automatically \(checkpoint \d+\)|Working(?:\u2026|\.\.\.)$)/.test(streamed)) streamed = '';
       // Keep only public reply text in chat; tools belong in the activity line.
       var text = streamed;
       if (texts[i]._replyText !== text) {

@@ -37,7 +37,7 @@ export const COWORK_CLEAN_ACTIVITY_JS = String.raw`
     var cw=cwEnsure(),text=cwCleanActivityText(),count=(cw.workHistory||[]).length;
     var working=$('cwWorkingBubble'),workingLabel=$('cwWorkingLabel');
     var progresses=(cw.progresses&&cw.progresses.length)?cw.progresses:(cw.progress?[cw.progress]:[]);
-    var replying=progresses.some(function(p){return p.phase==='responding'&&typeof cwVisibleReply==='function'&&cwVisibleReply(p.text);});
+    var replying=progresses.some(function(p){if(typeof cwVisibleReply!=='function')return false;var t=cwVisibleReply(p.text);return !!t&&!/^(?:Continuing automatically \(checkpoint \d+\)|Working(?:\u2026|\.\.\.)$)/.test(t);});
     var inChat=!!working&&cw.busy&&!replying&&!(cw.requests||[]).some(function(r){return r.status==='open';});
     if(working){
       var messages=$('cwMsgs'),atBottom=messages&&messages.scrollHeight-messages.scrollTop-messages.clientHeight<120;

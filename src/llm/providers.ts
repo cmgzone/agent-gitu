@@ -118,6 +118,7 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     ],
     effortLevels: ['low', 'medium', 'high', 'max'],
     maxEffort: 'distinct',
+    capabilities: { streamingTools: true },
   },
   openai: {
     id: 'openai',
@@ -272,6 +273,7 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     ],
     effortLevels: ['low', 'medium', 'high', 'max'],
     publicModels: true,
+    capabilities: { streamingTools: true },
   },
   'opencode-go': {
     id: 'opencode-go',
@@ -309,6 +311,7 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     ],
     effortLevels: ['low', 'medium', 'high', 'max'],
     publicModels: true,
+    capabilities: { streamingTools: true },
   },
   openrouter: {
     id: 'openrouter',
@@ -340,6 +343,7 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     ],
     effortLevels: ['low', 'medium', 'high'],
     publicModels: true,
+    capabilities: { streamingTools: true },
   },
 };
 
@@ -354,6 +358,7 @@ function customProfileSpec(profile: CustomProviderProfile): ProviderSpec {
     effortLevels: ['low', 'medium', 'high'],
     custom: true,
     toolMode: profile.toolMode ?? 'auto',
+    capabilities: { streamingTools: true },
   };
 }
 
@@ -956,6 +961,7 @@ export function resolveLlm(opts: ResolveOptions = {}): ResolvedLlm {
       baseUrl,
       model,
       rateLimitKey: `custom:${genericKeyEnvVar}:chat`,
+      capabilities: { streamingTools: true },
     });
     return {
       client: genericNative ? Object.assign(genericClient, { nativeTask: genericNative }) : genericClient,

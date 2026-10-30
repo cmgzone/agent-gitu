@@ -302,6 +302,11 @@ export class PiNativeRuntime implements NativeTaskRuntime {
       const exposed = new Set(declared.map((tool) => tool.name));
       const turnId = `pi-turn-${++this.turns}`;
 
+      let events: Promise<void> = Promise.resolve();
+      const emit = (method: string, params: NativeRecord): void => {
+        events = events.then(() => input.onEvent(method, params)).catch(() => undefined);
+      };
+
       const customTools: ToolDefinition[] = declared.map((tool) => ({
         name: tool.name,
         label: tool.name,
@@ -310,6 +315,7 @@ export class PiNativeRuntime implements NativeTaskRuntime {
         // Side effects are serial, matching Gitu's existing semantics.
         executionMode: 'sequential',
         execute: async (toolCallId, params) => {
+          await events;
           const answer = await input.onRequest('item/tool/call', {
             callId: toolCallId,
             turnId,
@@ -319,11 +325,6 @@ export class PiNativeRuntime implements NativeTaskRuntime {
           return toToolResult(answer);
         },
       }));
-
-      let events: Promise<void> = Promise.resolve();
-      const emit = (method: string, params: NativeRecord): void => {
-        events = events.then(() => input.onEvent(method, params)).catch(() => undefined);
-      };
 
       const compactionExt = piCompactionExtension({
         getContext: (reason) => {

@@ -274,4 +274,32 @@ describe('native Cowork execution', () => {
     await expect(mutation.run()).rejects.toThrow('changed files through built-in execution');
     expect(JSON.stringify(readFileSync(path.join(mutation.root, 'a.txt'), 'utf8'))).toContain('Before');
   });
+
+  it('preserves streamed commentary across item completion and tool execution', async () => {
+    const events: Array<{ text: string; tool?: string; ok?: boolean; detail?: string }> = [];
+    const f = fixture(async (input) => {
+      await input.onEvent('item/started', { item: { id: 'msg-1', type: 'agentMessage' } });
+      await input.onEvent('item/agentMessage/delta', { itemId: 'msg-1', delta: 'Inspecting a.txt to verify its contents…' });
+      await input.onEvent('item/completed', { item: { id: 'msg-1', type: 'agentMessage', phase: 'commentary', text: 'Inspecting a.txt to verify its contents…' } });
+      await input.onRequest('item/tool/call', { turnId: 'native-turn', callId: 'read-1', tool: 'read_file', arguments: { path: 'a.txt' } });
+      await finish(input, 'a.txt contains Before.');
+    });
+    const result = await runNativeCoworkTurn({
+      client: Object.assign(new ScriptedMockLlm([]), { nativeTask: { mode: 'codex-native' as const, runTurn: f.runTurn, steer: f.steer } }),
+      ctx: f.ctx,
+      agent: f.agent,
+      conversationId: f.conversation.id,
+      store: f.store,
+      scope: { store: f.store, agent: f.agent, memory: CoworkMemory.forWorkspace(f.root), conversationId: f.conversation.id },
+      messages: [{ role: 'user', content: 'Check a.txt.' }],
+      tools: coworkNativeTools(f.agent, false),
+      perms: { allowShell: false, allowWrites: true, allowConfig: false, chief: false, browser: false },
+      onProgress: (text, tool, ok, detail) => events.push({ text, tool, ok, detail }),
+    });
+    expect(result.text).toBe('a.txt contains Before.');
+    const toolEvents = events.filter((e) => e.tool === 'read_file');
+    expect(toolEvents.length).toBe(2);
+    expect(toolEvents[0]).toMatchObject({ text: 'Inspecting a.txt to verify its contents…', tool: 'read_file', ok: undefined, detail: 'read a.txt' });
+    expect(toolEvents[1]).toMatchObject({ text: 'Inspecting a.txt to verify its contents…', tool: 'read_file', ok: true, detail: 'read a.txt' });
+  });
 });

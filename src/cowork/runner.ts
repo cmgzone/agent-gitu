@@ -277,7 +277,7 @@ function systemPrompt(agent: CoworkAgent, conversation: CoworkConversation, memb
       ? `You have your own persistent Linux virtual computer, a full desktop shared with the user, private files, shell and browser. Use desktop_screenshot to inspect GUI windows and desktop_input (when shell permission is enabled) to click, type and open apps. The user can also operate this same desktop; check the current screen before interacting. Use browse for structured operations in the Agent browser. For website login, signup or verification, navigate to the HTTPS form with browse and call request_browser_auth. Secure cards submit into this persistent browser and resume your task. Call computer_handoff only for CAPTCHA or another unsupported human step; never ask for passwords or verification codes in chat. Stop desktop, browser, and shell actions while the user has control or the desktop is sleeping. Resume only after the user returns control. Paths are relative to /workspace. Teammates cannot read your private files. Share findings in the conversation; use share_file and receive_file for artifacts. Never claim a tool succeeded unless its result says so. If a tool result reports the virtual computer is unavailable, tools fall back automatically to the user workspace: continue with workspace-relative paths and do not ask the user to install or start Docker.`
       : `Paths in tool calls are relative to your workspace.`,
     `AUTONOMY: own the user's requested outcome and do the available work now. Make routine reversible decisions yourself using the goal, repository, available tools and prior user preferences. Choose a sensible approach, adapt when evidence changes, and explain meaningful tradeoffs briefly. Use a visible checklist with todo_manage when multiple steps need tracking; a simple answer or small task needs no formal plan, checklist, or extra permission. Scale verification to the actual result and risk: one meaningful read, check, or tool result can be enough. Questions, explanations and recommendations may be answered directly. Never claim an action or delivery happened without supporting results. If work must continue later, call schedule_followup before replying. message_teammate privately hands work to a teammate and wakes them automatically; verify its returned work before claiming the whole outcome is complete. Ask the user only for a choice that materially changes the result or a concrete missing dependency, and finish independent authorized work before posting a blocking card. Call request_permission when a required capability is disabled. Recover from unavailable tools using another supported approach. Request missing credentials with request_credential, never ask for secrets in chat. A blocking question or permission card means wait for the user's response.`,
-    `LIVE UPDATES: when work needs tools or takes time, include a short plain-language progress sentence before your first <tool> marker and when your next step changes. Say what you are checking or doing and why. The user sees this while tools run. This is a public status update, not private reasoning: do not include credentials, raw commands, private paths, or tool protocol details. Continue using the tools in the same reply; a progress sentence alone does not finish the task. After the work, report the concrete result.`,
+    `LIVE UPDATES: when work needs tools or takes time, stream a short plain-language progress sentence before calling your first tool or emitting your first <tool> marker, and whenever your next step changes. Say what you are checking or doing and why so the user sees what you are working on in real time while tools run. This is a public status update, not private reasoning: do not include credentials, raw commands, private paths, or tool protocol details. Continue using the tools in the same reply; a progress sentence alone does not finish the task. After the work, report the concrete result.`,
     'DELIVER FILES: use share_file for every finished document, image, audio or video the user should open or download. A file path in your reply is not an attachment; confirm share_file succeeded before claiming the user can download it. Private desktop downloads and media can be attached from the standard folders under /home/agent, within the owner-selected file-size limit.',
     RICH_OUTPUT_GUIDANCE,
     'When native functions are provided, call the named tool directly with its documented parameters. Use <tool> JSON markers only when native function calling is unavailable. A TOOL RESULT message is the actual execution result of your preceding call.',
@@ -603,10 +603,14 @@ async function agentTurn(input: {
   };
   let reply = '';
   let lastPublicUpdate = '';
+  let lastRoundUpdate = '';
   let reasoning = '';
   const progress = (text: string, tool?: string, toolOk?: boolean, webUrl?: string, detail?: string, phase: CoworkProgress['phase'] = 'working', mcpServer?: string, appService?: string) => {
-    if (text.trim()) lastPublicUpdate = text;
-    deps.onProgress?.({ agentId: agent.id, agentName: agent.name, text: text || lastPublicUpdate, reasoning, tool, toolOk, webUrl, detail, phase, mcpServer, appService });
+    if (text.trim()) {
+      lastPublicUpdate = text;
+      lastRoundUpdate = text;
+    }
+    deps.onProgress?.({ agentId: agent.id, agentName: agent.name, text: text || lastPublicUpdate || (tool ? lastRoundUpdate : ''), reasoning, tool, toolOk, webUrl, detail, phase, mcpServer, appService });
   };
   let segmentNumber = 1;
   let checkpointActions: CheckpointAction[] = [];
@@ -638,7 +642,7 @@ async function agentTurn(input: {
     const native = await runNativeCoworkTurn({ client, ctx, agent, conversationId: conversation.id, threadId, messages,
       tools: coworkNativeTools(agent, Boolean(deps.browser)), perms: { allowShell: agent.allowShell, allowWrites: agent.allowWrites, allowConfig: agent.allowConfig, chief: agent.chiefOfStaff, browser: Boolean(deps.browser) }, scope, store: deps.store, signal: deps.signal,
       takeSteering: () => (deps.takeSteering?.(agent.id, threadId) ?? []).map(message => message.text),
-      onProgress: (text, tool, ok, detail, nativeReasoning) => { reasoning = nativeReasoning ?? ''; progress(text, tool, ok, undefined, detail, tool ? 'working' : nativeReasoning ? 'thinking' : 'responding'); },
+      onProgress: (text, tool, ok, detail, nativeReasoning, args) => { reasoning = nativeReasoning ?? ''; progress(text, tool, ok, tool ? coworkWebOrigin(tool, args ?? {}) : undefined, detail, tool ? 'working' : nativeReasoning ? 'thinking' : 'responding', tool ? coworkMcpServer(tool, args ?? {}) : undefined, tool ? coworkAppService(tool, args ?? {}) : undefined); },
       onTool: (tool, params, result) => { usedTools.push({ name: tool, ok: result.ok }); recordToolResult(scope, tool, result, lastPublicUpdate); },
     });
     reply = native.text;
@@ -709,7 +713,7 @@ async function agentTurn(input: {
     };
     let turn: LlmTurnResult;
     try {
-      turn = await requestLlmTurn(llm, messages, opts, deps.onProgress && typeof client.completeStream === 'function' ? (delta) => {
+      turn = await requestLlmTurn(llm, messages, opts, deps.onProgress && (typeof client.completeStream === 'function' || typeof client.completeTurnStream === 'function') ? (delta) => {
             streamed += delta;
             phase = 'responding';
             streamProgress();
@@ -1269,19 +1273,23 @@ export async function runMissionSession(input: {
     let repeatedWorkStopped = false;
     const missionResults = new Map<string, { output: string; count: number }>();
     let lastPublicUpdate = '';
+    let lastRoundUpdate = '';
     let reasoning = '';
     const publicProgress = (raw: string, tool?: string, toolOk?: boolean, detail?: string, webUrl?: string, mcpServer?: string, phase: CoworkProgress['phase'] = 'working', appService?: string) => {
       // Mission status JSON is a machine-readable checkpoint, not chat prose.
       const visible = stripToolMarkers(raw, true).split(/(?:^|\n)\s*\{/)[0]!.trim();
-      if (visible) lastPublicUpdate = visible;
-      deps.onProgress?.({ agentId: agent.id, agentName: agent.name, text: visible || lastPublicUpdate, reasoning, tool, toolOk, detail, webUrl, mcpServer, phase, appService });
+      if (visible) {
+        lastPublicUpdate = visible;
+        lastRoundUpdate = visible;
+      }
+      deps.onProgress?.({ agentId: agent.id, agentName: agent.name, text: visible || lastPublicUpdate || (tool ? lastRoundUpdate : ''), reasoning, tool, toolOk, detail, webUrl, mcpServer, phase, appService });
     };
     try {
     if (client.nativeTask) {
       ctx ??= deps.toolContext(agent);
       const native = await runNativeCoworkTurn({ client, ctx, agent, conversationId: mission.conversationId, purpose: 'mission:' + mission.id, messages,
         tools: coworkNativeTools(agent, Boolean(deps.browser)), perms: { allowShell: agent.allowShell, allowWrites: agent.allowWrites, allowConfig: agent.allowConfig, chief: agent.chiefOfStaff, browser: Boolean(deps.browser) }, scope, store: deps.store, signal: deps.signal,
-        onProgress: (text, tool, ok, detail, nativeReasoning) => { reasoning = nativeReasoning ?? ''; publicProgress(text, tool, ok, detail); },
+        onProgress: (text, tool, ok, detail, nativeReasoning, args) => { reasoning = nativeReasoning ?? ''; publicProgress(text, tool, ok, detail, tool ? coworkWebOrigin(tool, args ?? {}) : undefined, tool ? coworkMcpServer(tool, args ?? {}) : undefined, tool ? 'working' : nativeReasoning ? 'thinking' : 'responding', tool ? coworkAppService(tool, args ?? {}) : undefined); },
         onTool: (tool, params, result) => recordToolResult(scope, tool, result, lastPublicUpdate),
       });
       reply = native.text; waiting = native.waiting;
@@ -1529,8 +1537,12 @@ export function createSubAgentChildRunner(deps: CoworkRunnerDeps): SubAgentChild
           tools: coworkNativeTools(childAgent, perms.browser).filter(tool => !SUBAGENT_BLOCKED_TOOLS.includes(tool.name)), perms, scope, store: deps.store, signal,
           beforeTool: () => { signal.throwIfAborted(); if (account.exhausted()) { budgetStopped = true; throw new Error('The parent budget is exhausted.'); } },
           onUsage: () => { turns++; if (!metered && !account.charge({ turns: 1 })) { budgetStopped = true; throw new Error('The sub-agent turn budget is exhausted.'); } },
-          onTool: (tool, params, result) => { trail.push({ tool, params, result }); recordToolResult(scope, tool, result, ''); },
-          onProgress: (text, tool, ok, detail) => deps.onProgress?.({ agentId: instance.id, agentName: instance.role, text, tool, toolOk: ok, detail }),
+          onTool: (tool, params, result) => { deps.subAgents?.recordActivity(instance.id, 'working', `${tool.replace(/_/g, ' ')} ${result.ok ? 'completed' : 'reported a problem'}.`); trail.push({ tool, params, result }); recordToolResult(scope, tool, result, ''); },
+          onProgress: (text, tool, ok, detail, nativeReasoning, args) => {
+            if (tool && ok === undefined) deps.subAgents?.recordActivity(instance.id, 'tool', `Using ${tool.replace(/_/g, ' ')}…`);
+            else if (!tool && text.trim()) deps.subAgents?.recordActivity(instance.id, 'working', text);
+            deps.onProgress?.({ agentId: instance.id, agentName: instance.role, text, reasoning: nativeReasoning, tool, toolOk: ok, detail, webUrl: tool ? coworkWebOrigin(tool, args ?? {}) : undefined, mcpServer: tool ? coworkMcpServer(tool, args ?? {}) : undefined, appService: tool ? coworkAppService(tool, args ?? {}) : undefined, phase: tool ? 'working' : nativeReasoning ? 'thinking' : 'responding' });
+          },
         });
         reply = native.text;
       }

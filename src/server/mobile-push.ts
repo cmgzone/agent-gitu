@@ -13,6 +13,9 @@ export interface PushNotice {
   target: 'run' | 'cowork' | 'home';
   targetId: string;
   companyId?: string;
+  threadId?: string;
+  title?: string;
+  body?: string;
 }
 export interface PushSender {
   send(token: string, workspaceId: string, notice: PushNotice): Promise<void>;
@@ -40,6 +43,22 @@ const description: Record<PushNotice['kind'], string> = {
   reply: 'A teammate has replied.',
   test: 'Android notifications are connected.',
 };
+
+/** Format a clean, human-readable notification hint/snippet from message text. */
+export function formatMessageHint(text: string, maxLength = 120): string {
+  if (!text) return '';
+  const sanitized = text
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/^#+\s+/gm, '')
+    .replace(/[*_~>]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!sanitized) return '';
+  if (sanitized.length <= maxLength) return sanitized;
+  return sanitized.slice(0, maxLength - 1).trimEnd() + '…';
+}
 
 /** Firebase credentials are resolved only on the server through ADC or an env secret. */
 export class FcmPushSender implements PushSender {
@@ -73,10 +92,18 @@ export class FcmPushSender implements PushSender {
       credential = applicationDefault();
     }
     this.app ??= initializeApp({ projectId: this.projectId, credential }, 'gitu-push-' + randomUUID());
-    const data = { workspaceId: workspace, target: notice.target, targetId: notice.targetId, ...(notice.companyId ? { companyId: notice.companyId } : {}) };
+    const title = notice.title || 'Agent Gitu';
+    const body = notice.body || description[notice.kind];
+    const data: Record<string, string> = {
+      workspaceId: workspace,
+      target: notice.target,
+      targetId: notice.targetId,
+      ...(notice.companyId ? { companyId: notice.companyId } : {}),
+      ...(notice.threadId ? { threadId: notice.threadId } : {}),
+    };
     await getMessaging(this.app).send({
       token,
-      notification: { title: 'Agent Gitu', body: description[notice.kind] },
+      notification: { title, body },
       data,
       android: {
         priority: 'high',

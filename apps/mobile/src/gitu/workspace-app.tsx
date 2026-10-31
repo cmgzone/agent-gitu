@@ -251,7 +251,7 @@ function Workspace({ server, close, target, opened }: { server: string; close: (
             if (message.nonce !== bridgeNonce) return;
             if (message.type === 'gitu-push-opened') { if (message.targetId === target?.targetId) opened(); return; }
             if (message.type === 'gitu-logout') {
-              setShowRootBack(false); setServer(undefined); setNotificationTarget(undefined);
+              setShowRootBack(false); close(); opened();
               if (savedServerFile) void FileSystem.deleteAsync(savedServerFile, { idempotent: true }).catch(() => {});
               return;
             }

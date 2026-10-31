@@ -21,6 +21,13 @@ describe('Android notification bridge', () => {
     expect(pushTarget({ workspaceId: 'unknown', target: 'run', targetId: 'run-1' }, saved)).toBeUndefined();
     expect(pushTarget({ workspaceId: 'known-workspace', target: 'run', targetId: '../../secret' }, saved)).toBeUndefined();
     expect(pushTarget({ workspaceId: 'known-workspace', target: 'cowork', targetId: 'chat-1', companyId: '../secret' }, saved)).toBeUndefined();
+    expect(pushTarget({ workspaceId: 'known-workspace', target: 'cowork', targetId: 'chat-1', threadId: '../secret' }, saved)).toBeUndefined();
+    expect(pushTarget({ workspaceId: 'known-workspace', target: 'cowork', targetId: 'chat-1', threadId: 'topic-99' }, saved)).toEqual({
+      server: 'https://gitu.example',
+      target: 'cowork',
+      targetId: 'chat-1',
+      threadId: 'topic-99',
+    });
     expect(
       pushTarget({ workspaceId: 'known-workspace', target: 'home', targetId: '' }, { 'https://gitu.example': { ...saved['https://gitu.example'], enabled: false } }),
     ).toBeUndefined();

@@ -38,6 +38,7 @@ function fixture() {
   }
   const input = (nodes.cwInput = makeNode('cwInput'));
   nodes.cwSlashMenu = makeNode('cwSlashMenu');
+  nodes.cwPlusContext = makeNode('cwPlusContext');
   nodes.cwContextBar = makeNode('cwContextBar');
   nodes.cwWorkbench = makeNode('cwWorkbench');
   nodes.cwReferences = makeNode('cwReferences');
@@ -156,17 +157,65 @@ describe('Cowork 6 next-gen UI features', () => {
     expect(diff).toContain('+ new line');
   });
 
-  it('3. Live Context, Token & Cost Meter Pill estimates tokens, percentage, and triggers /compact', () => {
+  it('3. Live Context, Token & Cost Meter Pill renders inside the + menu (#cwPlusContext) and uses real Cowork usage & catalog pricing when available', () => {
     const u = fixture();
-    const usage = u.context.cwEstimateContextUsage();
-    expect(usage.tokens).toBeGreaterThan(0);
-    expect(usage.maxTokens).toBe(128000);
-    expect(usage.modelLabel).toBe('deepseek-flash');
+    // Fallback estimation before any turn has run
+    const fallbackUsage = u.context.cwEstimateContextUsage();
+    expect(fallbackUsage.tokens).toBeGreaterThan(0);
+    expect(fallbackUsage.maxTokens).toBe(128000);
+    expect(fallbackUsage.isReal).toBe(false);
+    expect(fallbackUsage.modelLabel).toBe('deepseek-flash');
+
+    // Wire real S.models catalog metadata and real Cowork snapshot usage
+    u.context.S.models = [
+      {
+        id: 'deepseek',
+        models: [
+          {
+            id: 'deepseek-flash',
+            metadata: {
+              displayName: 'DeepSeek V4.1 Flash',
+              contextTokens: 64000,
+              inputPricePerMillion: 0.14,
+              outputPricePerMillion: 0.28,
+              cachedInputPricePerMillion: 0.014,
+            },
+          },
+        ],
+      },
+    ];
+    u.cw.usage = {
+      provider: 'deepseek',
+      model: 'deepseek-flash',
+      contextWindow: 64000,
+      inputTokens: 16000,
+      outputTokens: 2000,
+      cachedTokens: 4000,
+      contextTokens: 16000,
+      turns: 2,
+      costUsd: 0.0425,
+      budgetMaxCostUsd: 2.5,
+    };
+
+    const liveUsage = u.context.cwEstimateContextUsage();
+    expect(liveUsage.isReal).toBe(true);
+    expect(liveUsage.tokens).toBe(16000);
+    expect(liveUsage.maxTokens).toBe(64000);
+    expect(liveUsage.percent).toBe(25);
+    expect(liveUsage.costUsd).toBe(0.0425);
+    expect(liveUsage.costFormatted).toBe('$0.04');
+    expect(liveUsage.budgetMaxCostUsd).toBe(2.5);
+    expect(liveUsage.modelLabel).toBe('DeepSeek V4.1 Flash');
 
     u.context.cwRenderContextMeter();
-    expect(u.nodes.cwContextBar.hidden).toBe(false);
-    expect(u.nodes.cwContextBar.innerHTML).toContain('tok ·');
-    expect(u.nodes.cwContextBar.innerHTML).toContain('cwCompactTrigger');
+    expect(u.nodes.cwPlusContext.hidden).toBe(false);
+    expect(u.nodes.cwPlusContext.innerHTML).toContain('16.0k/64k tok · 25% · $0.04');
+    expect(u.nodes.cwPlusContext.innerHTML).toContain('Live Cowork usage (DeepSeek V4.1 Flash)');
+    expect(u.nodes.cwPlusContext.innerHTML).toContain('Spend: $0.04 / $2.50 budget');
+    expect(COWORK_JS).toContain('data-cwplus="workbench"');
+    expect(COWORK_JS).toContain('data-cwplus="pulse"');
+    expect(COWORK_JS).toContain('data-cwplus="compact"');
+    expect(COWORK_JS).toContain('data-cwplus="palette"');
 
     // /compact prefills a professional emoji-free checkpoint prompt
     u.context.cwRunSlashCommand('/compact');

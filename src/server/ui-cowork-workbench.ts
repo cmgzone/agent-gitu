@@ -23,8 +23,10 @@ export const COWORK_WORKBENCH_CSS = String.raw`
   .cw-palette-tag { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--border2); color: var(--muted); }
 
   /* ---- Context, Token & Cost Meter Pill ---- */
-  .cw-context-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 3px 10px 6px; font-size: 11px; color: var(--muted); }
-  .cw-context-bar[hidden] { display: none !important; }
+  .cw-context-bar { display: none !important; }
+  .cw-plus-menu { width: 204px; }
+  .cw-plus-context { margin-top: 4px; padding: 7px 10px 4px; border-top: 1px solid var(--border); font-size: 10.5px; color: var(--muted); display: flex; flex-direction: column; gap: 5px; font-variant-numeric: tabular-nums; }
+  .cw-plus-context[hidden] { display: none !important; }
   .cw-context-pill { display: inline-flex; align-items: center; gap: 7px; padding: 3px 9px; border: 1px solid var(--border); border-radius: 999px; background: color-mix(in srgb, var(--card) 72%, transparent); font-variant-numeric: tabular-nums; }
   .cw-context-meter-track { width: 44px; height: 4px; border-radius: 99px; background: var(--border); overflow: hidden; display: inline-block; }
   .cw-context-meter-fill { display: block; height: 100%; background: var(--accent); border-radius: inherit; transition: width .2s ease; }
@@ -90,6 +92,36 @@ export const COWORK_WORKBENCH_JS = String.raw`
     { cmd: '/model', label: 'Switch Model', desc: 'Edit active teammate provider or model' }
   ];
 
+  function cwModelCatalogMeta(agent) {
+    var modelsList = typeof S === 'object' && S && Array.isArray(S.models) ? S.models : [];
+    var providerId = agent && agent.provider ? String(agent.provider).toLowerCase() : '';
+    var modelId = agent && agent.model ? String(agent.model).toLowerCase() : '';
+    if (!modelId && !providerId) return null;
+    var fallbackMeta = null;
+    for (var i = 0; i < modelsList.length; i++) {
+      var p = modelsList[i];
+      if (!p || !Array.isArray(p.models)) continue;
+      var pMatch = !providerId || String(p.id || '').toLowerCase() === providerId;
+      for (var j = 0; j < p.models.length; j++) {
+        var entry = p.models[j];
+        if (!entry) continue;
+        var entryId = String(entry.id || '').toLowerCase();
+        if (modelId && entryId === modelId) {
+          if (pMatch && entry.metadata) return entry.metadata;
+          if (!fallbackMeta && entry.metadata) fallbackMeta = entry.metadata;
+        }
+      }
+    }
+    return fallbackMeta;
+  }
+
+  function cwFormatUsd(costUsd) {
+    if (typeof costUsd !== 'number' || !isFinite(costUsd) || costUsd <= 0) return '$0.00';
+    if (costUsd < 0.0001) return '<$0.0001';
+    if (costUsd < 0.01) return '$' + costUsd.toFixed(4);
+    return '$' + costUsd.toFixed(2);
+  }
+
   function cwEstimateContextUsage() {
     var cw = cwEnsure();
     var msgs = cw.msgs || [];
@@ -101,31 +133,133 @@ export const COWORK_WORKBENCH_JS = String.raw`
     for (var j = 0; j < history.length; j++) {
       chars += String(history[j] && history[j].publicUpdate || '').length + 80;
     }
-    var tokens = Math.max(0, Math.round(chars / 4));
+    var estimatedTokens = Math.max(0, Math.round(chars / 4));
     var conv = typeof cwActiveConv === 'function' ? cwActiveConv() : null;
     var agentId = cw.selectedAgentId || (conv && (conv.kind === 'dm' ? conv.memberIds[0] : conv.chiefId || conv.memberIds[0]));
     var agent = agentId && typeof cwAgentById === 'function' ? cwAgentById(agentId) : null;
-    var maxTokens = 128000;
-    var inputCostPerM = 0.25;
-    if (agent && agent.model) {
-      var m = String(agent.model).toLowerCase();
-      if (m.indexOf('opus') >= 0 || m.indexOf('gpt-5') >= 0 || m.indexOf('pro') >= 0) inputCostPerM = 2.5;
-      else if (m.indexOf('sonnet') >= 0 || m.indexOf('gpt-4') >= 0) inputCostPerM = 1.0;
-      else if (m.indexOf('flash') >= 0 || m.indexOf('mini') >= 0 || m.indexOf('deepseek') >= 0) inputCostPerM = 0.15;
+    var serverUsage = cw.usage && typeof cw.usage === 'object' ? cw.usage : null;
+    var catalogMeta = cwModelCatalogMeta(agent || (serverUsage ? { provider: serverUsage.provider, model: serverUsage.model } : null));
+
+    var subTree = cw.subAgents && typeof cw.subAgents === 'object' ? cw.subAgents : null;
+    var subNodes = subTree && Array.isArray(subTree.nodes) ? subTree.nodes : [];
+    var subInputTokens = 0;
+    var subOutputTokens = 0;
+    var subCachedTokens = 0;
+    var subContextTokens = 0;
+    var subNodeCostUsd = 0;
+    for (var k = 0; k < subNodes.length; k++) {
+      var node = subNodes[k];
+      if (!node) continue;
+      if (node.spend) {
+        subInputTokens += Number(node.spend.inputTokens) || 0;
+        subOutputTokens += Number(node.spend.outputTokens) || 0;
+        subCachedTokens += Number(node.spend.cachedTokens) || 0;
+        subNodeCostUsd += Number(node.spend.costUsd) || 0;
+      }
+      if (node.activity && Number(node.activity.contextTokens) > subContextTokens) {
+        subContextTokens = Number(node.activity.contextTokens);
+      }
     }
-    var pct = Math.min(100, Math.round((tokens / maxTokens) * 100));
-    var costUsd = (tokens / 1000000) * inputCostPerM;
+    var subTotalSpendUsd = subTree && subTree.totals && typeof subTree.totals.spendUsd === 'number'
+      ? subTree.totals.spendUsd
+      : subNodeCostUsd;
+
+    var missions = Array.isArray(cw.missions) ? cw.missions : [];
+    var missionSpendUsd = 0;
+    var missionMaxBudgetUsd = 0;
+    for (var mIdx = 0; mIdx < missions.length; mIdx++) {
+      var mItem = missions[mIdx];
+      if (!mItem) continue;
+      if (typeof mItem.budgetSpentUsd === 'number') missionSpendUsd += mItem.budgetSpentUsd;
+      if (typeof mItem.budgetMaxCostUsd === 'number') missionMaxBudgetUsd += mItem.budgetMaxCostUsd;
+    }
+
+    var inputTokens = serverUsage && typeof serverUsage.inputTokens === 'number'
+      ? Math.max(serverUsage.inputTokens, subInputTokens)
+      : subInputTokens;
+    var outputTokens = serverUsage && typeof serverUsage.outputTokens === 'number'
+      ? Math.max(serverUsage.outputTokens, subOutputTokens)
+      : subOutputTokens;
+    var cachedTokens = serverUsage && typeof serverUsage.cachedTokens === 'number'
+      ? Math.max(serverUsage.cachedTokens, subCachedTokens)
+      : subCachedTokens;
+    var liveContextTokens = (serverUsage && Number(serverUsage.contextTokens)) || subContextTokens || inputTokens;
+    var hasRealTokens = liveContextTokens > 0 || outputTokens > 0;
+    var tokens = hasRealTokens ? liveContextTokens : estimatedTokens;
+
+    var maxTokens = (catalogMeta && (catalogMeta.contextTokens || catalogMeta.inputTokens))
+      || (serverUsage && Number(serverUsage.contextWindow))
+      || 128000;
+
+    var inputCostPerM = (catalogMeta && typeof catalogMeta.inputPricePerMillion === 'number')
+      ? catalogMeta.inputPricePerMillion
+      : (serverUsage && typeof serverUsage.inputPricePerMillion === 'number')
+        ? serverUsage.inputPricePerMillion
+        : null;
+    var outputCostPerM = (catalogMeta && typeof catalogMeta.outputPricePerMillion === 'number')
+      ? catalogMeta.outputPricePerMillion
+      : (serverUsage && typeof serverUsage.outputPricePerMillion === 'number')
+        ? serverUsage.outputPricePerMillion
+        : null;
+    var cachedCostPerM = (catalogMeta && typeof catalogMeta.cachedInputPricePerMillion === 'number')
+      ? catalogMeta.cachedInputPricePerMillion
+      : (serverUsage && typeof serverUsage.cachedInputPricePerMillion === 'number')
+        ? serverUsage.cachedInputPricePerMillion
+        : null;
+
+    if (inputCostPerM === null) {
+      inputCostPerM = 0.25;
+      var modelHint = String((agent && agent.model) || (serverUsage && serverUsage.model) || '').toLowerCase();
+      if (modelHint.indexOf('opus') >= 0 || modelHint.indexOf('gpt-5') >= 0 || modelHint.indexOf('pro') >= 0) inputCostPerM = 2.5;
+      else if (modelHint.indexOf('sonnet') >= 0 || modelHint.indexOf('gpt-4') >= 0) inputCostPerM = 1.0;
+      else if (modelHint.indexOf('flash') >= 0 || modelHint.indexOf('mini') >= 0 || modelHint.indexOf('deepseek') >= 0) inputCostPerM = 0.15;
+    }
+    if (outputCostPerM === null) outputCostPerM = inputCostPerM * 3;
+    if (cachedCostPerM === null) cachedCostPerM = inputCostPerM;
+
+    var serverCostUsd = serverUsage && typeof serverUsage.costUsd === 'number' ? serverUsage.costUsd : 0;
+    var delegatedSpendUsd = Math.max(subTotalSpendUsd, missionSpendUsd);
+    var recordedCostUsd = Math.max(serverCostUsd, delegatedSpendUsd);
+    var catalogTokenCostUsd = 0;
+    if (hasRealTokens) {
+      var uncachedInput = Math.max(0, inputTokens - cachedTokens);
+      catalogTokenCostUsd = (uncachedInput / 1000000) * inputCostPerM
+        + (cachedTokens / 1000000) * cachedCostPerM
+        + (outputTokens / 1000000) * outputCostPerM;
+    }
+    var hasRealSpend = recordedCostUsd > 0 || hasRealTokens || (serverUsage && Number(serverUsage.turns) > 0);
+    var costUsd = recordedCostUsd > 0
+      ? recordedCostUsd
+      : hasRealTokens
+        ? catalogTokenCostUsd
+        : (tokens / 1000000) * inputCostPerM;
+
+    var pct = Math.min(100, Math.round((tokens / Math.max(1, maxTokens)) * 100));
+    var modelLabel = (catalogMeta && catalogMeta.displayName)
+      || (agent && (agent.model || agent.provider))
+      || (serverUsage && (serverUsage.modelLabel || serverUsage.model || serverUsage.provider))
+      || 'Default model';
+    var budgetMaxCostUsd = (serverUsage && typeof serverUsage.budgetMaxCostUsd === 'number')
+      ? serverUsage.budgetMaxCostUsd
+      : (missionMaxBudgetUsd > 0 ? missionMaxBudgetUsd : null);
+
     return {
       tokens: tokens,
+      inputTokens: inputTokens,
+      outputTokens: outputTokens,
+      cachedTokens: cachedTokens,
       maxTokens: maxTokens,
       percent: pct,
-      costFormatted: costUsd < 0.005 ? '<$0.01' : '$' + costUsd.toFixed(2),
-      modelLabel: (agent && (agent.model || agent.provider)) || 'Default model'
+      costUsd: costUsd,
+      costFormatted: cwFormatUsd(costUsd),
+      budgetMaxCostUsd: budgetMaxCostUsd,
+      isReal: Boolean(hasRealSpend),
+      modelLabel: modelLabel
     };
   }
 
   function cwRenderContextMeter() {
-    var host = $('cwContextBar');
+    var host = $('cwPlusContext') || $('cwContextBar');
     if (!host) return;
     var cw = cwEnsure();
     var conv = typeof cwActiveConv === 'function' ? cwActiveConv() : null;
@@ -137,22 +271,24 @@ export const COWORK_WORKBENCH_JS = String.raw`
     var usage = cwEstimateContextUsage();
     var tone = usage.percent >= 85 ? ' high' : usage.percent >= 65 ? ' warn' : '';
     var tokLabel = usage.tokens >= 1000 ? (usage.tokens / 1000).toFixed(1) + 'k' : String(usage.tokens);
+    var maxLabel = usage.maxTokens >= 1000 ? Math.round(usage.maxTokens / 1000) + 'k' : String(usage.maxTokens);
+    var titleParts = [
+      (usage.isReal ? 'Live Cowork usage' : 'Estimated context usage') + ' (' + usage.modelLabel + ')',
+      'Context window: ' + usage.tokens + ' / ' + usage.maxTokens + ' tokens (' + usage.percent + '%)'
+    ];
+    if (usage.inputTokens || usage.outputTokens) {
+      titleParts.push('Tokens: ' + usage.inputTokens + ' in / ' + usage.outputTokens + ' out' + (usage.cachedTokens ? ' (' + usage.cachedTokens + ' cached)' : ''));
+    }
+    if (usage.budgetMaxCostUsd) {
+      titleParts.push('Spend: ' + usage.costFormatted + ' / $' + Number(usage.budgetMaxCostUsd).toFixed(2) + ' budget');
+    } else {
+      titleParts.push('Price: ' + usage.costFormatted + (usage.isReal ? ' actual' : ' est.'));
+    }
     host.innerHTML =
-      '<div class="cw-context-pill" title="Estimated active context window usage (' + esc(usage.modelLabel) + ')">' +
+      '<div class="cw-context-pill" title="' + esc(titleParts.join(' · ')) + '">' +
         '<span class="cw-context-meter-track"><span class="cw-context-meter-fill' + tone + '" style="width:' + usage.percent + '%"></span></span>' +
-        '<span>' + esc(tokLabel) + ' tok · ' + usage.percent + '% · ' + esc(usage.costFormatted) + '</span>' +
-      '</div>' +
-      '<div class="cw-context-actions">' +
-        '<button type="button" class="cw-context-btn" id="cwPulseTrigger" title="Open Pulse Digest (/pulse)">Pulse</button>' +
-        '<button type="button" class="cw-context-btn" id="cwWorkbenchTrigger" title="Toggle Side-by-Side Workbench (/workbench)">Workbench</button>' +
-        '<button type="button" class="cw-context-btn" id="cwCompactTrigger" title="Compact conversation context (/compact)">Compact</button>' +
+        '<span>' + esc(tokLabel) + '/' + esc(maxLabel) + ' tok · ' + usage.percent + '% · ' + esc(usage.costFormatted) + '</span>' +
       '</div>';
-    var pulseBtn = $('cwPulseTrigger');
-    if (pulseBtn) pulseBtn.onclick = function () { cwOpenPulseModal(); };
-    var wbBtn = $('cwWorkbenchTrigger');
-    if (wbBtn) wbBtn.onclick = function () { cwToggleWorkbench(); };
-    var compactBtn = $('cwCompactTrigger');
-    if (compactBtn) compactBtn.onclick = function () { cwRunSlashCommand('/compact'); };
   }
 
   function cwExtractCitations(message) {

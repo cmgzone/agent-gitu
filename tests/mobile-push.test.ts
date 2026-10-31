@@ -102,6 +102,28 @@ describe('FCM device registry', () => {
     await push.close();
     expect(firebase.deleteApp).toHaveBeenCalledTimes(1);
   });
+
+  it('sends an Android notification with teammate title, message hint, and threadId through the Admin SDK', async () => {
+    const push = new FcmPushSender('fixture-project');
+    await push.send(token, 'workspace-fixture', {
+      ...notice(),
+      kind: 'reply',
+      target: 'cowork',
+      targetId: 'chat-1',
+      threadId: 'topic-1',
+      title: 'Atlas',
+      body: 'I have prepared the plan for review.',
+    });
+    expect(firebase.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        token,
+        notification: { title: 'Atlas', body: 'I have prepared the plan for review.' },
+        data: { workspaceId: 'workspace-fixture', target: 'cowork', targetId: 'chat-1', threadId: 'topic-1' },
+        android: expect.objectContaining({ priority: 'high', notification: expect.objectContaining({ channelId: 'gitu-workspace', visibility: 'private' }) }),
+      }),
+    );
+    await push.close();
+  });
 });
 
 describe('authenticated Android push API and event hooks', () => {
@@ -134,9 +156,22 @@ describe('authenticated Android push API and event hooks', () => {
     store.appendMessage(conversation.id, { role: 'agent', agentId: agent.id, agentName: agent.name, text: 'Private reply content', via: 'web' });
     store.addRequest({ conversationId: conversation.id, agentId: agent.id, kind: 'question', title: 'Private question', detail: 'Private detail', options: [] });
     await hooks.mobilePush.drain();
-    expect(transport.send.mock.calls.some(([, , event]) => event.kind === 'reply')).toBe(true);
-    expect(transport.send.mock.calls.some(([, , event]) => event.kind === 'attention')).toBe(true);
-    expect(JSON.stringify(transport.send.mock.calls)).not.toContain('Private');
+    const replyNotice = transport.send.mock.calls.find(([, , event]) => event.kind === 'reply')?.[2];
+    const attentionNotice = transport.send.mock.calls.find(([, , event]) => event.kind === 'attention')?.[2];
+    expect(replyNotice).toMatchObject({
+      kind: 'reply',
+      target: 'cowork',
+      targetId: conversation.id,
+      title: 'Fixture',
+      body: 'Private reply content',
+    });
+    expect(attentionNotice).toMatchObject({
+      kind: 'attention',
+      target: 'cowork',
+      targetId: conversation.id,
+      title: 'Fixture needs input',
+      body: 'Private question',
+    });
     const api = new GituApi(base, key, password, email);
     await api.connect();
     const { runId } = await api.start('Say hello', project, 'chat');

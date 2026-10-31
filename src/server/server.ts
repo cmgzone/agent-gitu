@@ -43,7 +43,7 @@ import { bridgeDesktop, connectDesktopStream, localDesktopStream } from '../cowo
 import { CloudComputerTransport } from '../cowork/cloud-computer.js';
 import { desktopAsset, desktopView } from './desktop-view.js';
 import { MobileAccess } from './mobile-access.js';
-import { FcmPushSender, MobilePush, type PushSender } from './mobile-push.js';
+import { FcmPushSender, MobilePush, formatMessageHint, type PushSender } from './mobile-push.js';
 import { AppAuth } from './app-auth.js';
 import { GoogleSignIn } from './google-sign-in.js';
 import { authPage } from './ui-auth.js';
@@ -552,6 +552,8 @@ export class GituServer {
   private readonly delegationPools = new Map<string, BudgetAccount>();
   /** Per-mission envelopes, allocated inside their conversation's pool. */
   private readonly missionAccounts = new Map<string, BudgetAccount>();
+  /** Per-conversation live LLM token & USD usage across direct Cowork turns and live questions. */
+  private readonly coworkUsage = new Map<string, { inputTokens: number; outputTokens: number; cachedTokens: number; contextTokens: number; turns: number; costUsd: number; pricedTurns: number }>();
   /** The envelope section as last written, so unchanged state is not rewritten. */
   private readonly budgetsPersisted = new Map<string, string>();
   /** Per-delegated-session teardown (MCP clients), released when the run settles. */
@@ -1521,7 +1523,7 @@ export class GituServer {
         try{await this.companyWorkers.run(c.id,agent.id,signal,async()=>{
           if(!store.messages(conversationId).some(m=>m.id==='company-question-'+job.id))store.appendMessage(conversationId,{id:'company-question-'+job.id,role:'user',via:'web',text:question,delivery:'question'});
           const awareness=await appAwareness(this.companyApps(c.id),store,agent.id);
-          const reply=await answerCoworkQuestion({agent,conversation,members:store.listAgents(),history:store.messages(conversationId),question,state:JSON.stringify(store.missions()),appContext:awareness.context,llm:this.coworkLlm(agent),signal});
+          const reply=await answerCoworkQuestion({agent,conversation,members:store.listAgents(),history:store.messages(conversationId),question,state:JSON.stringify(store.missions()),appContext:awareness.context,llm:this.coworkTrackedLlm(agent,conversationId),signal});
           signal.throwIfAborted();store.appendMessage(conversationId,{role:'agent',agentId:agent.id,agentName:agent.name,via:'agent',text:reply});
         });}finally{this.companyQuestionRuns.delete(job.id);}return;
       }
@@ -1561,10 +1563,36 @@ export class GituServer {
       const store = this.cowork(), companyId = this.companyScope.getStore()?.id;
       const target = { target: 'cowork' as const, targetId: conversationId, ...(companyId ? { companyId } : {}) };
       for (const request of store.requests(conversationId).filter(item => item.status === 'open' && !item.hiddenAt)) {
-        this.mobilePush.notify({ ...target, id: 'request:' + request.id, at: Date.parse(request.createdAt), kind: 'attention' });
+        const reqAgent = store.getAgent(request.agentId);
+        const teammateName = reqAgent?.name || 'Teammate';
+        const title = `${teammateName} needs input`;
+        const body = formatMessageHint(request.title || request.detail) || 'Gitu is waiting for your review or answer.';
+        this.mobilePush.notify({
+          ...target,
+          id: 'request:' + request.id,
+          at: Date.parse(request.createdAt),
+          kind: 'attention',
+          title,
+          body,
+        });
       }
       const message = store.messages(conversationId).filter(item => item.role === 'agent').at(-1);
-      if (message) this.mobilePush.notify({ ...target, id: 'message:' + message.id, at: Date.parse(message.ts), kind: 'reply' });
+      if (message) {
+        const agent = message.agentId ? store.getAgent(message.agentId) : undefined;
+        const conv = store.getConversation(conversationId);
+        const teammateName = message.agentName || agent?.name || 'Teammate';
+        const title = conv && conv.kind !== 'dm' && conv.title ? `${teammateName} (${conv.title})` : teammateName;
+        const body = formatMessageHint(message.text) || 'A teammate has replied.';
+        this.mobilePush.notify({
+          ...target,
+          ...(message.threadId ? { threadId: message.threadId } : {}),
+          id: 'message:' + message.id,
+          at: Date.parse(message.ts),
+          kind: 'reply',
+          title,
+          body,
+        });
+      }
     } catch { logger.warn({ subsystem: 'push' }, 'Conversation notification unavailable'); }
   }
 
@@ -1643,6 +1671,7 @@ export class GituServer {
       missions: [...activeMissions, ...recentMissions].map((mission) => this.coworkMissionView(mission)),
       // Workers belong to the same thread as their host-bound parent turn.
       subAgents: this.subAgents().tree({ conversationId, threadId }),
+      usage: this.coworkUsageView(conversationId, threadId),
       artifacts: store.artifacts(conversationId),
       todos: store.todos(conversationId),
       requests: store.requests(conversationId),
@@ -3038,6 +3067,124 @@ export class GituServer {
     }, usage => companyUsageCostUsd(pricing, usage), pricing,()=>{this.companyWorkflows(agent.companyId!).assertMission(this.companyScope.getStore()?.missionId);this.companyOrganization(agent.companyId!).assertExecution(agent.id,this.companyScope.getStore()?.meetingId,this.companyOnboarding(agent.companyId!).assessmentAllowed(agent.id,this.companyScope.getStore()?.missionId));});
   }
 
+  private coworkTrackedLlm(agent: CoworkAgent, conversationId: string): LlmClient {
+    const base = this.coworkLlm(agent);
+    const selected = !agent.companyId && !agent.provider && !agent.model ? readRuntimeSelection() : {};
+    const providerId = agent.provider ?? selected.provider ?? '';
+    const model = agent.model ?? selected.model ?? '';
+    const key = this.budgetKey(conversationId);
+    const tracked = new UsageTrackingClient(base, (usage) => {
+      const bucket = this.coworkUsage.get(key) ?? {
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedTokens: 0,
+        contextTokens: 0,
+        turns: 0,
+        costUsd: 0,
+        pricedTurns: 0,
+      };
+      const inTok = usage?.inputTokens ?? 0;
+      const outTok = usage?.outputTokens ?? 0;
+      const cachedTok = usage?.cachedTokens ?? 0;
+      bucket.inputTokens += inTok;
+      bucket.outputTokens += outTok;
+      bucket.cachedTokens += cachedTok;
+      if (inTok > 0) bucket.contextTokens = inTok;
+      bucket.turns += 1;
+      const turnCost = this.priceUsage(usage, providerId, model);
+      if (typeof turnCost === 'number' && Number.isFinite(turnCost)) {
+        bucket.costUsd = Math.round((bucket.costUsd + turnCost) * 1e6) / 1e6;
+        bucket.pricedTurns += 1;
+      }
+      this.coworkUsage.set(key, bucket);
+    });
+    if (!base.completeTurn) (tracked as { completeTurn?: unknown }).completeTurn = undefined;
+    if (!base.completeTurnStream) (tracked as { completeTurnStream?: unknown }).completeTurnStream = undefined;
+    return tracked;
+  }
+
+  private coworkUsageView(conversationId: string, threadId: string | null = null) {
+    const store = this.cowork();
+    const conv = store.getConversation(conversationId);
+    const leadId = conv?.kind === 'dm' ? conv.memberIds[0] : (conv?.chiefId ?? conv?.memberIds[0]);
+    const agent = leadId ? store.getAgent(leadId) : store.listAgents()[0];
+    const selected = !agent?.companyId && !agent?.provider && !agent?.model ? readRuntimeSelection() : {};
+    const providerId = agent?.provider ?? selected.provider ?? '';
+    const model = agent?.model ?? selected.model ?? '';
+    const meta = providerId || model ? modelMetadataFor(peekModelCatalog(), providerId, model) : undefined;
+    const key = this.budgetKey(conversationId);
+    const direct = this.coworkUsage.get(key);
+    const subTree = this.subAgents().tree({ conversationId, threadId });
+    let subContextTokens = 0;
+    let subTurns = 0;
+    for (const node of subTree.nodes ?? []) {
+      subTurns += node.spend?.turns ?? 0;
+      const nodeContext = node.activity?.contextTokens ?? 0;
+      if (nodeContext > subContextTokens) {
+        subContextTokens = nodeContext;
+      }
+    }
+    const codingTasks = [...this.sessions.values()].filter(
+      task => task.coworkTask?.conversationId === conversationId && task.coworkTask.companyId === this.companyScope.getStore()?.id,
+    );
+    let codingInputTokens = 0;
+    let codingOutputTokens = 0;
+    let codingCachedTokens = 0;
+    let codingCostUsd = 0;
+    for (const task of codingTasks) {
+      if (!task.usage) continue;
+      codingInputTokens += task.usage.inputTokens;
+      codingOutputTokens += task.usage.outputTokens;
+      codingCachedTokens += task.usage.cachedTokens;
+      if (typeof task.usage.costUsd === 'number') codingCostUsd += task.usage.costUsd;
+    }
+    const livePool = this.delegationPools.get(key);
+    const savedPool = store.budgetRecords().pools[conversationId];
+    const poolCostUsd = livePool ? (livePool.spend().costUsd ?? 0) : (savedPool?.spend.costUsd ?? 0);
+    const poolMaxCostUsd = livePool ? livePool.budget.maxCostUsd : savedPool?.budget.maxCostUsd;
+    let missionSpendUsd = 0;
+    let missionMaxBudgetUsd = 0;
+    const savedMissions = store.budgetRecords().missions;
+    for (const mission of store.missions(conversationId)) {
+      const liveMission = this.missionAccounts.get(this.budgetKey(mission.id));
+      const savedMission = savedMissions[mission.id];
+      missionSpendUsd += liveMission ? (liveMission.spend().costUsd ?? 0) : (savedMission?.spend.costUsd ?? 0);
+      const maxCost = liveMission ? liveMission.budget.maxCostUsd : (savedMission?.budget.maxCostUsd ?? mission.budget?.maxCostUsd);
+      if (typeof maxCost === 'number') missionMaxBudgetUsd += maxCost;
+    }
+    const delegatedSpendUsd = Math.max(
+      poolCostUsd,
+      missionSpendUsd,
+      (subTree.totals?.spendUsd ?? 0) + codingCostUsd,
+    );
+    const directCostUsd = direct?.costUsd ?? 0;
+    const totalCostUsd = Math.round((directCostUsd + delegatedSpendUsd) * 1e6) / 1e6;
+    const inputTokens = (direct?.inputTokens ?? 0) + codingInputTokens;
+    const outputTokens = (direct?.outputTokens ?? 0) + codingOutputTokens;
+    const cachedTokens = (direct?.cachedTokens ?? 0) + codingCachedTokens;
+    const turns = (direct?.turns ?? 0) + subTurns;
+    const contextTokens = (direct?.contextTokens ?? 0) || subContextTokens || inputTokens;
+    const contextWindow = meta?.contextTokens ?? meta?.inputTokens ?? undefined;
+    return {
+      provider: providerId || undefined,
+      model: model || undefined,
+      modelLabel: meta?.displayName || model || providerId || undefined,
+      contextWindow,
+      inputPricePerMillion: meta?.inputPricePerMillion,
+      outputPricePerMillion: meta?.outputPricePerMillion,
+      cachedInputPricePerMillion: meta?.cachedInputPricePerMillion,
+      inputTokens,
+      outputTokens,
+      cachedTokens,
+      contextTokens,
+      turns,
+      costUsd: totalCostUsd,
+      directCostUsd: Math.round(directCostUsd * 1e6) / 1e6,
+      delegatedCostUsd: Math.round(delegatedSpendUsd * 1e6) / 1e6,
+      budgetMaxCostUsd: poolMaxCostUsd ?? (missionMaxBudgetUsd > 0 ? missionMaxBudgetUsd : undefined),
+    };
+  }
+
   private companyApps(companyId:string): typeof this.appHub {
     const hub=this.appHub,store=this.companies();
     return new Proxy(hub,{get(target,key){if(key==='companyId')return companyId;if(key==='accounts')return async()=>{const ids=store.get(companyId)?.accountIds??[];return(await hub.accounts()).filter(a=>ids.includes(a.id));};if(key==='execute')return async(service:string,tool:string,args:Record<string,unknown>,accountId:string)=>{if(!store.get(companyId)?.accountIds.includes(accountId))throw new Error('Account is not granted to this company.');return hub.execute(service,tool,args,accountId);};const value=Reflect.get(target,key);return typeof value==='function'?value.bind(target):value;}});
@@ -3854,7 +4001,7 @@ export class GituServer {
         const text = connectionAnswer ?? (isNonMutatingStatusQuestion(trigger.text) ? state : await answerCoworkQuestion({
           agent, conversation, members, question: trigger.text, state,
           history,
-          llm: this.coworkLlm(agent), userContext: this.coworkUserContext(), memory: this.coworkMemoryFor(agent), appContext: awareness.context, signal: AbortSignal.timeout(30_000),
+          llm: this.coworkTrackedLlm(agent, conversation.id), userContext: this.coworkUserContext(), memory: this.coworkMemoryFor(agent), appContext: awareness.context, signal: AbortSignal.timeout(30_000),
         }));
         if (!store.getConversation(conversation.id) || !store.getMessage(conversation.id, trigger.id)) return;
         store.appendMessage(conversation.id, { role: 'agent', agentId: agent.id, agentName: agent.name, text, via: 'web', threadId: trigger.threadId, delivery: 'question', referencedMessageIds: [trigger.id] });
@@ -4071,7 +4218,7 @@ export class GituServer {
           },
           agents: store.listAgents(),
           connectedApps: this.companyScope.getStore()?this.companyApps(this.companyScope.getStore()!.id):this.appHub,
-          resolveLlm: (agent) => this.coworkLlm(agent),
+          resolveLlm: (agent) => this.coworkTrackedLlm(agent, conversationId),
           toolContext: (agent) => this.coworkToolContext(agent),
           computerFor: (agentId, agent) => this.coworkComputer(agentId, agent),
           hostComputerAllowed: agent => !!agent.companyId && this.companies().get(agent.companyId)?.allowHostComputer === true,

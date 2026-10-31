@@ -782,6 +782,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     if (!cw.threads) cw.threads = [];
     if (!cw.folders) cw.folders = [];
     if (!cw.widgets) cw.widgets = [];
+    if (cw.usage === undefined) cw.usage = null;
     if (cw.threadId === undefined) cw.threadId = null;
     return cw;
   }
@@ -835,7 +836,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     var cw = cwEnsure();
     if (!cw.active) return;
     var views = cw.chatViews || (cw.chatViews = new Map()), view = {};
-    ['msgs', 'lastSeq', 'lastChange', 'workHistory', 'artifacts', 'todos', 'requests', 'subAgents', 'threads', 'folders', 'widgets'].forEach(function (key) {
+    ['msgs', 'lastSeq', 'lastChange', 'workHistory', 'artifacts', 'todos', 'requests', 'subAgents', 'usage', 'threads', 'folders', 'widgets'].forEach(function (key) {
       view[key] = Array.isArray(cw[key]) ? cw[key].slice() : cw[key];
     });
     views.delete(cwChatKey()); views.set(cwChatKey(), view);
@@ -1392,6 +1393,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     cw.artifacts = [];
     cw.todos = [];
     cw.requests = [];
+    cw.usage = null;
     cw.pendingFiles = [];
     cw.rosterRevision = -1;
     cwRestoreChat();
@@ -1428,6 +1430,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     cw.artifacts = [];
     cw.todos = [];
     cw.requests = [];
+    cw.usage = null;
     cw.pendingFiles = [];
     cwRestoreChat();
     var cwRoot = $('cw');
@@ -1556,6 +1559,11 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
           '<button type="button" data-cwplus="mission">' + cwIcon('target') + ' New mission</button>' +
           '<button type="button" data-cwplus="folder">' + cwIcon('folder') + ' Tag folder</button>' +
           '<button type="button" data-cwplus="schedule">' + cwIcon('clock') + ' Schedule</button>' +
+          '<button type="button" data-cwplus="workbench">' + cwIcon('panel') + ' Live Workbench</button>' +
+          '<button type="button" data-cwplus="pulse">' + cwIcon('bolt') + ' Pulse Digest</button>' +
+          '<button type="button" data-cwplus="compact">' + cwIcon('sliders') + ' Compact Context</button>' +
+          '<button type="button" data-cwplus="palette">' + cwIcon('search') + ' Command Palette</button>' +
+          '<div class="cw-plus-context" id="cwPlusContext"></div>' +
         '</div></div>' +
       '</div>';
     $('cwMediaBtn').onclick = function () { cwOpenGallery(); };
@@ -1599,6 +1607,10 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
           else if(action==='attach')$('cwFile').click();
           else if (action === 'folder') cwFolderModal(conv);
           else if (action === 'schedule') cwScheduleModal(conv);
+          else if (action === 'workbench' && typeof cwToggleWorkbench === 'function') cwToggleWorkbench();
+          else if (action === 'pulse' && typeof cwOpenPulseModal === 'function') cwOpenPulseModal();
+          else if (action === 'compact' && typeof cwRunSlashCommand === 'function') cwRunSlashCommand('/compact');
+          else if (action === 'palette' && typeof cwOpenCommandPalette === 'function') cwOpenCommandPalette();
         };
       });
     }
@@ -3724,6 +3736,8 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     var subAgentsChanged = JSON.stringify(cw.subAgents || null) !== JSON.stringify(d.subAgents || null);
     var previousWorkerLayout = cwSubagentLayoutKey();
     cw.subAgents = d.subAgents || null;
+    var usageChanged = d.usage !== undefined && JSON.stringify(cw.usage || null) !== JSON.stringify(d.usage || null);
+    if (d.usage !== undefined) cw.usage = d.usage;
     var workerLayoutChanged = previousWorkerLayout !== cwSubagentLayoutKey();
     var artifactsChanged = JSON.stringify(cw.artifacts || []) !== JSON.stringify(d.artifacts || []);
     var requestsChanged = JSON.stringify(cw.requests || []) !== JSON.stringify(d.requests || []);
@@ -3753,6 +3767,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     cwRenderCodingActivity();
     if (workChanged || rosterChanged) cwRenderWork();
     if (foldersChanged) cwRenderFolders();
+    if ((usageChanged || missionsChanged || subAgentsChanged || rosterChanged) && typeof cwRenderContextMeter === 'function') cwRenderContextMeter();
     cwRenderTyping();
     if (missionsChanged || subAgentsChanged) { cwRenderMissionBadge(); cwRenderInfo(); }
     if (rosterChanged || foldersChanged || (wasBusy && !cw.busy)) cwRenderInfo();

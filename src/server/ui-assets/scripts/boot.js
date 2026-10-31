@@ -108,13 +108,22 @@
     if (!target || !['run','cowork','home'].includes(target.target)) throw new Error('Invalid notification destination.');
     if (target.target !== 'home' && !/^[\w-]{1,150}$/.test(target.targetId || '')) throw new Error('Invalid notification destination.');
     if (target.companyId && !/^[\w-]{1,150}$/.test(target.companyId)) throw new Error('Invalid company destination.');
+    if (target.threadId && !/^[\w-]{1,150}$/.test(target.threadId)) throw new Error('Invalid thread destination.');
     closeSettings();
+    if (typeof toggleMobileNav === 'function') toggleMobileNav(false);
+    var modals = document.querySelectorAll('.modal:not([hidden])');
+    for (var i = 0; i < modals.length; i++) {
+      var modal = modals[i], cancel = modal.querySelector('[data-cancel]') || modal.querySelector('.btn.ghost');
+      if (cancel && cancel.onclick) cancel.click(); else modal.remove();
+    }
     if (target.target === 'run') { openRun(target.targetId); return; }
     if (target.target === 'cowork' && target.companyId) { await companyOpen(target.companyId); Companies.tab = 'Chat'; companyRender(); return; }
     if (target.target === 'cowork') {
-      openCowork(); await cwLoad(false);
+      if (typeof cwClosePanels === 'function') cwClosePanels();
+      if (S.active !== 'cowork' || !$('cw')) openCowork();
+      await cwLoad(false);
       if (!cwEnsure().convs.some(function (conversation) { return conversation.id === target.targetId; })) throw new Error('This conversation is no longer available.');
-      cwOpenConv(target.targetId); return;
+      cwOpenConv(target.targetId, target.threadId || undefined); return;
     }
     openHome();
   };

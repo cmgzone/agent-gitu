@@ -3,6 +3,7 @@ export interface PushTarget {
   target: 'run' | 'cowork' | 'home';
   targetId: string;
   companyId?: string;
+  threadId?: string;
 }
 export interface PushWorkspace {
   enabled: boolean;
@@ -13,17 +14,25 @@ export interface PushWorkspace {
 export function pushTarget(data: Record<string, unknown>, workspaces: Record<string, PushWorkspace>): PushTarget | undefined {
   const target = data.target,
     id = data.targetId,
-    companyId = data.companyId;
+    companyId = data.companyId,
+    threadId = data.threadId;
   if (
     !['run', 'cowork', 'home'].includes(String(target)) ||
     typeof id !== 'string' ||
     (target !== 'home' && !/^[\w-]{1,150}$/.test(id)) ||
-    (companyId !== undefined && (typeof companyId !== 'string' || !/^[\w-]{1,150}$/.test(companyId)))
+    (companyId !== undefined && (typeof companyId !== 'string' || !/^[\w-]{1,150}$/.test(companyId))) ||
+    (threadId !== undefined && (typeof threadId !== 'string' || !/^[\w-]{1,150}$/.test(threadId)))
   )
     return;
   const entry = Object.entries(workspaces).find(([, value]) => value.enabled && value.workspaceId === data.workspaceId);
   if (!entry) return;
-  return { server: entry[0], target: target as PushTarget['target'], targetId: id, ...(typeof companyId === 'string' ? { companyId } : {}) };
+  return {
+    server: entry[0],
+    target: target as PushTarget['target'],
+    targetId: id,
+    ...(typeof companyId === 'string' ? { companyId } : {}),
+    ...(typeof threadId === 'string' ? { threadId } : {}),
+  };
 }
 
 /** HTTP stays inside the authenticated WebView; native code receives no cookie. */

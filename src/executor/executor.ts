@@ -821,8 +821,8 @@ export class Executor {
     }
 
     const record = this.ledger.recordAction({
-      verificationScope: result.ok && ['write_file', 'apply_edit'].includes(req.tool) && result.filesTouched?.length && result.filesTouched.every((file) => /\.(?:md|rst|txt)$/i.test(file))
-        ? await captureVerificationScope({ paths: result.filesTouched, reason: 'The guarded tool confirmed the exact written document contents on disk.' }, this.guard.activeWritableRoot)
+      verificationScope: result.ok && ['write_file', 'apply_edit'].includes(req.tool) && (result.filesTouched?.length ?? 0) > 0
+        ? await captureVerificationScope({ paths: result.filesTouched, reason: 'The guarded tool confirmed the exact written contents on disk.' }, this.guard.activeWritableRoot)
         : undefined,
       observationOnly: isObservationTool(req.tool, req.params),
       stepId,

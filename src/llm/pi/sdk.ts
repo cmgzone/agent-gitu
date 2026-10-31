@@ -30,6 +30,12 @@ export interface PiChatModelConfig {
   cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
   contextWindow: number;
   maxTokens: number;
+  compat?: {
+    supportsStore?: boolean;
+    supportsDeveloperRole?: boolean;
+    supportsReasoningEffort?: boolean;
+    maxTokensField?: 'max_completion_tokens' | 'max_tokens';
+  };
 }
 
 export interface PiProviderConfig {

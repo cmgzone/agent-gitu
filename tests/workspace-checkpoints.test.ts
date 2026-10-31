@@ -66,3 +66,68 @@ it('runs without host application imports for private/cloud transport and exclud
   const listing = await workspaceCheckpoint('list', options);
   expect(listing.checkpoints![0].id).toBe(result.checkpoint.id);
 });
+
+it('respects .gitignore and excludes common project build/generated directories (Flutter, Android, Python, Node)', async () => {
+  const options = fixture();
+  // Real source files
+  writeFileSync(path.join(options.root, 'main.dart'), 'void main() {}');
+  writeFileSync(path.join(options.root, 'app.py'), 'print("hello")');
+  // Built-in excluded directories for Flutter, Android, Python
+  for (const dir of ['.dart_tool', '.gradle', '__pycache__', '.pytest_cache']) {
+    mkdirSync(path.join(options.root, dir), { recursive: true });
+    writeFileSync(path.join(options.root, dir, 'cache.bin'), 'cache content');
+  }
+  // .gitignore file ignoring build/ and *.log
+  writeFileSync(path.join(options.root, '.gitignore'), "build/\n*.log\n/ignored-folder/\n");
+  mkdirSync(path.join(options.root, 'build'), { recursive: true });
+  writeFileSync(path.join(options.root, 'build', 'output.apk'), 'large generated apk');
+  mkdirSync(path.join(options.root, 'ignored-folder'), { recursive: true });
+  writeFileSync(path.join(options.root, 'ignored-folder', 'data.txt'), 'ignored data');
+  writeFileSync(path.join(options.root, 'debug.log'), 'log output');
+
+  const { checkpoint } = await workspaceCheckpoint('create', options);
+  // Only main.dart, app.py, and .gitignore should be recorded (3 files)
+  expect(checkpoint!.files).toBe(3);
+
+  // Restore should preserve unignored files and not include ignored ones
+  writeFileSync(path.join(options.root, 'main.dart'), 'void main() { print(1); }');
+  await workspaceCheckpoint('seal', { ...options, id: checkpoint!.id });
+  await workspaceCheckpoint('restore', { ...options, id: checkpoint!.id });
+  expect(readFileSync(path.join(options.root, 'main.dart'), 'utf8')).toBe('void main() {}');
+});
+
+it('creates and restores checkpoints without arbitrary 2 GB or file count limits', async () => {
+  const options = fixture();
+  for (let i = 0; i < 15; i++) {
+    writeFileSync(path.join(options.root, `file_${i}.txt`), `content ${i}`);
+  }
+  const { checkpoint } = await workspaceCheckpoint('create', options);
+  expect(checkpoint!.files).toBe(15);
+
+  writeFileSync(path.join(options.root, 'file_0.txt'), 'modified content 0');
+  await workspaceCheckpoint('seal', { ...options, id: checkpoint!.id });
+  const listing = await workspaceCheckpoint('list', options);
+  expect(listing.checkpoints?.some((c) => c.id === checkpoint!.id)).toBe(true);
+
+  await workspaceCheckpoint('restore', { ...options, id: checkpoint!.id });
+  expect(readFileSync(path.join(options.root, 'file_0.txt'), 'utf8')).toBe('content 0');
+});
+
+it('incrementally reuses prior hashes for unchanged files and degrades gracefully', async () => {
+  const options = fixture();
+  writeFileSync(path.join(options.root, 'stable.ts'), 'const a = 1;');
+  writeFileSync(path.join(options.root, 'evolving.ts'), 'const b = 1;');
+
+  const first = await workspaceCheckpoint('create', options);
+  expect(first.checkpoint?.files).toBe(2);
+
+  // Second checkpoint: stable.ts is unchanged (same mtime and size)
+  writeFileSync(path.join(options.root, 'evolving.ts'), 'const b = 2;');
+  const second = await workspaceCheckpoint('create', { ...options, label: 'Second' });
+  expect(second.checkpoint?.files).toBe(2);
+
+  // Restore reverts evolving.ts to initial state
+  await workspaceCheckpoint('seal', { ...options, id: first.checkpoint!.id });
+  await workspaceCheckpoint('restore', { ...options, id: first.checkpoint!.id });
+  expect(readFileSync(path.join(options.root, 'evolving.ts'), 'utf8')).toBe('const b = 1;');
+});

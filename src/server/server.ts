@@ -2618,9 +2618,14 @@ export class GituServer {
     busy.add(session.runId);
     let id: string | undefined;
     try {
-      const saved = await this.codingCheckpoint(session, 'create', undefined, root);
-      id = saved.checkpoint!.id;
-      this.pushEvent(session, 'checkpoint saved before coding · ' + id);
+      try {
+        const saved = await this.codingCheckpoint(session, 'create', undefined, root);
+        id = saved.checkpoint?.id;
+        if (id) this.pushEvent(session, 'checkpoint saved before coding · ' + id);
+      } catch (cpError) {
+        id = undefined;
+        this.pushEvent(session, 'Rollback protection unavailable: checkpoint snapshot could not be created (' + (cpError as Error).message + '). Proceeding with coding without rollback protection.');
+      }
       if (session.status === 'aborted' || this.stopping) throw Error('Coding task stopped before execution.');
       return await work();
     } finally {

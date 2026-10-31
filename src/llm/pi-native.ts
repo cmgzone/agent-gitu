@@ -25,6 +25,7 @@ import {
 } from './pi-compaction-extension.js';
 import {
   loadPiSdk,
+  type PiChatModelConfig,
   type PiImage,
   type PiProviderConfig,
   type PiSession,
@@ -73,10 +74,13 @@ export interface PiModelTarget {
   reasoning?: boolean;
   contextWindow?: number;
   maxTokens?: number;
+  compat?: PiChatModelConfig['compat'];
 }
 
 /** Gitu provider spec → pi provider registration (pi's `custom-provider.md`). */
 export function piProviderConfig(target: PiModelTarget): PiProviderConfig {
+  const isDirectOpenAi = target.providerId === 'openai' || target.providerId === 'gitu-openai' || target.baseUrl.includes('api.openai.com');
+  const supportsDeveloperRole = target.compat?.supportsDeveloperRole ?? isDirectOpenAi;
   return {
     name: target.label ?? target.providerId,
     baseUrl: target.baseUrl,
@@ -89,6 +93,10 @@ export function piProviderConfig(target: PiModelTarget): PiProviderConfig {
         name: target.modelId,
         reasoning: target.reasoning ?? true,
         input: target.vision ? ['text', 'image'] : ['text'],
+        compat: {
+          supportsDeveloperRole,
+          ...target.compat,
+        },
         // Provider pricing is unknown here; leaving it zero keeps cost reporting
         // from inventing a number. Gitu's own budgets own spend accounting.
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -380,6 +388,7 @@ export class PiNativeRuntime implements NativeTaskRuntime {
       let narration = '';
       let itemId = '';
       let messageSeq = 0;
+      let lastError: unknown;
 
       unsubscribe = session.subscribe((event: PiSessionEvent) => {
         const kind = String(event['type'] ?? '');
@@ -420,6 +429,12 @@ export class PiNativeRuntime implements NativeTaskRuntime {
         if (kind === 'message_end') {
           const message = record(event['message']);
           if (message['role'] !== 'assistant') return;
+          if (message['stopReason'] === 'error' && message['errorMessage']) {
+            lastError = message['errorMessage'];
+          }
+          if (message['stopReason'] === 'aborted') {
+            aborted = true;
+          }
           // A message that called tools is commentary; the answer is the one
           // that did not. This is the same distinction Codex reported.
           emit('item/completed', {
@@ -445,6 +460,7 @@ export class PiNativeRuntime implements NativeTaskRuntime {
       const images = allowImages ? toImages(input.images ?? []) : [];
       await session.prompt(input.text, images.length ? { images } : undefined);
       await events;
+      if (lastError) throw classifyPiError(lastError, this.options.target.providerId);
       return {
         threadId: sessionId,
         turnId,

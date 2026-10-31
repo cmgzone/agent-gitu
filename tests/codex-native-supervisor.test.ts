@@ -161,6 +161,7 @@ describe('Gitu supervises the native loop', () => {
 
   it('cancels workspace verification without starting another scan to build the report', async () => {
     const f = fixture(async (input) => {
+      await call(input, 'gitu_read_file', { path: 'answer.cjs' });
       await answer(input);
     });
     f.config.criteria = [{ text: 'Answer parses', verification: 'node --check answer.cjs' }];
@@ -273,7 +274,7 @@ describe('Gitu supervises the native loop', () => {
       await answer(input, 'Two.');
     }, { mode: 'chat' });
     const result = await f.run();
-    expect(result.report.status).toBe('complete');
+    expect(result.report.status, f.ledger.data.blockers.join('; ')).toBe('complete');
     expect(result.report.summary).toBe('Two.');
     expect(f.runTurn).toHaveBeenCalledTimes(1);
     expect(f.ledger.data.actions).toHaveLength(0);
@@ -284,7 +285,7 @@ describe('Gitu supervises the native loop', () => {
   it('answers an unpunctuated question in coding mode without demanding code changes', async () => {
     const f = fixture(input => answer(input, 'The UI was appending a duplicate completion report.'), { goal: 'Why am I getting a report when asking questions' });
     const result = await f.run();
-    expect(result.report.status).toBe('complete');
+    expect(result.report.status, f.ledger.data.blockers.join('; ')).toBe('complete');
     expect(result.ledger.data.actions).toHaveLength(0);
     expect(result.ledger.data.acceptanceCriteria).toHaveLength(0);
     expect(f.runTurn).toHaveBeenCalledOnce();
@@ -325,7 +326,7 @@ describe('Gitu supervises the native loop', () => {
     });
     f.config.criteria = [{ text: 'answer syntax parses', verification: 'node --check answer.cjs', evidenceType: 'command_success' }];
     const result = await f.run();
-    expect(result.report.status).toBe('complete');
+    expect(result.report.status, f.ledger.data.blockers.join('; ')).toBe('complete');
     expect(readFileSync(path.join(f.root, 'answer.cjs'), 'utf8')).toContain('2');
     expect(f.ledger.data.execution).toMatchObject({ mode: 'codex-native', native: { threadId: 'thread-1', turnId: 'turn-1', status: 'completed', toolExecution: 'gitu-guarded' } });
     expect(result.report.verificationDetails?.some((e) => e.passed && e.command === 'node --check answer.cjs')).toBe(true);
@@ -476,7 +477,7 @@ describe('Gitu supervises the native loop', () => {
       await answer(input);
     });
     expect((await f.run()).report.status).toBe('blocked');
-    expect(f.runTurn).toHaveBeenCalledTimes(1);
+    expect(f.runTurn).toHaveBeenCalledTimes(2);
   });
 
   it('distinguishes provider failures and retains the interrupted native session', async () => {
@@ -494,5 +495,136 @@ describe('Gitu supervises the native loop', () => {
     Object.assign(f.config, { requirePlanReview: true, planReviewHandler: async () => ({ approved: false }) });
     expect((await f.run()).report.status).toBe('blocked');
     expect(f.runTurn).not.toHaveBeenCalled();
+  });
+
+  it('recovers from a prose-only turn with automatic continuation and completes the task when tools are called', async () => {
+    let turn = 0;
+    const f = fixture(async (input) => {
+      turn++;
+      if (turn === 1) {
+        // First turn: model only returns prose without calling any tools, even though criteria & plan exist
+        await input.onEvent('turn/plan/updated', { plan: [{ step: 'Update answer', status: 'pending' }] });
+        await input.onEvent('item/completed', { turnId: 'turn-1', item: { id: 'msg-1', type: 'agentMessage', phase: 'final_answer', text: 'I plan to update answer.cjs.' } });
+      } else {
+        // Second turn (continuation): model executes tool, updates plan, and finishes
+        expect(input.text).toContain('Execute the requested work now');
+        await call(input, 'gitu_apply_edit', { path: 'answer.cjs', oldString: '1', newString: '2' }, 'call-edit');
+        await call(input, 'gitu_run_command', { action: 'run', command: 'node --check answer.cjs' });
+        await input.onEvent('turn/plan/updated', { plan: [{ step: 'Update answer', status: 'completed' }] });
+        await input.onEvent('item/completed', { turnId: 'turn-2', item: { id: 'msg-2', type: 'agentMessage', phase: 'final_answer', text: 'Updated answer.cjs to 2.' } });
+      }
+    });
+    f.config.criteria = [{ text: 'answer syntax parses', verification: 'node --check answer.cjs', evidenceType: 'command_success' }];
+    const result = await f.run();
+    expect(turn).toBe(2);
+    expect(result.report.status).toBe('complete');
+    expect(readFileSync(path.join(f.root, 'answer.cjs'), 'utf8')).toContain('2');
+    expect(f.onEvent.mock.calls.some(([line]) => line.startsWith('recover  The model supplied prose without performing work'))).toBe(true);
+  });
+
+  it('preserves the task and reports failure when prose continuation repeatedly yields no tool actions', async () => {
+    let turn = 0;
+    const f = fixture(async (input) => {
+      turn++;
+      await input.onEvent('item/completed', { turnId: 'turn-' + turn, item: { id: 'msg-' + turn, type: 'agentMessage', phase: 'final_answer', text: 'I am only explaining.' } });
+    });
+    const result = await f.run();
+    expect(turn).toBe(2);
+    expect(result.report.status).toBe('blocked');
+    expect(f.ledger.data.blockers.join(' ')).toContain('without performing the requested work');
+  });
+
+  it('does not trigger prose recovery when the goal or message is a question or discussion', async () => {
+    let turn = 0;
+    const f = fixture(async (input) => {
+      turn++;
+      await input.onEvent('item/completed', { turnId: 'turn-1', item: { id: 'msg-1', type: 'agentMessage', phase: 'final_answer', text: 'The port is 3000.' } });
+    }, { goal: 'What port does the server run on?' });
+    const result = await f.run();
+    expect(turn).toBe(1);
+    expect(result.report.status).toBe('complete');
+    expect(f.onEvent.mock.calls.some(([line]) => line.startsWith('recover  The model supplied prose'))).toBe(false);
+  });
+
+  it('never triggers prose continuation if any tool call was already admitted', async () => {
+    let turn = 0;
+    const f = fixture(async (input) => {
+      turn++;
+      // Admitted tool call occurred
+      await call(input, 'gitu_read_file', { path: 'answer.cjs' }, 'call-read');
+      await input.onEvent('item/completed', { turnId: 'turn-1', item: { id: 'msg-1', type: 'agentMessage', phase: 'final_answer', text: 'File read.' } });
+    });
+    await f.run();
+    expect(turn).toBe(1);
+    expect(f.onEvent.mock.calls.some(([line]) => line.startsWith('recover  The model supplied prose'))).toBe(false);
+  });
+
+  it('requires criteria or verification for consequential security/auth changes regardless of file count', async () => {
+    const f = fixture(async (input) => {
+      await call(input, 'gitu_write_file', { path: 'src/auth/session.ts', content: 'export const session = {};' });
+      await answer(input, 'Updated session handling.');
+    });
+    const result = await f.run();
+    expect(result.report.status).toBe('blocked');
+    expect(f.ledger.data.blockers.join(' ')).toContain('without acceptance criteria or an independent verification command');
+  });
+
+  it('accepts verified non-consequential changes across multiple files without formal criteria', async () => {
+    const f = fixture(async (input) => {
+      await call(input, 'gitu_write_file', { path: 'src/components/Button.tsx', content: 'export const Button = () => null;' });
+      await call(input, 'gitu_write_file', { path: 'src/components/Card.tsx', content: 'export const Card = () => null;' });
+      await call(input, 'gitu_write_file', { path: 'src/theme/colors.ts', content: 'export const primary = "blue";' });
+      await call(input, 'gitu_write_file', { path: 'src/theme/fonts.ts', content: 'export const font = "sans-serif";' });
+      await answer(input, 'Updated UI components and styling tokens.');
+    }, { goal: 'Update UI styling tokens and component layouts' });
+    const result = await f.run();
+    expect(result.report.status, f.ledger.data.blockers.join('; ')).toBe('complete');
+    expect(f.ledger.data.filesChanged).toHaveLength(4);
+    expect(f.ledger.data.evidence.some((e) => e.label === 'Task changes verified')).toBe(true);
+  });
+
+  it.each([
+    'src/auth/session.ts',
+    'prisma/schema.prisma',
+    'src/payments/stripe.ts',
+    '.github/workflows/deploy.yml',
+    '.env.production',
+  ])('blocks harmless-sounding tasks when touching sensitive files (false negative prevention: %s)', async (sensitivePath) => {
+    const f = fixture(async (input) => {
+      await call(input, 'gitu_write_file', { path: sensitivePath, content: '// sensitive content' });
+      await answer(input, 'Done.');
+    }, { goal: 'Fix typo in helper' });
+    const result = await f.run();
+    expect(result.report.status).toBe('blocked');
+    expect(f.ledger.data.blockers.join(' ')).toContain('without acceptance criteria or an independent verification command');
+  });
+
+  it('permits multi-file changes to design tokens and non-sensitive code without strict verification (false positive prevention)', async () => {
+    const f = fixture(async (input) => {
+      await call(input, 'gitu_write_file', { path: 'src/theme/tokens.ts', content: 'export const spacing = 8;' });
+      await call(input, 'gitu_write_file', { path: 'src/styles/theme.css', content: ':root { --gap: 8px; }' });
+      await call(input, 'gitu_write_file', { path: 'src/utils/math.ts', content: 'export const add = (a: number, b: number) => a + b;' });
+      await answer(input, 'Updated tokens and math helpers.');
+    }, { goal: 'Update design tokens and layout math' });
+    const result = await f.run();
+    expect(result.report.status, f.ledger.data.blockers.join('; ')).toBe('complete');
+    expect(f.ledger.data.filesChanged).toHaveLength(3);
+  });
+
+  it('handles interruption cleanly during recovery continuation on the same session', async () => {
+    let turn = 0;
+    const f = fixture(async (input) => {
+      turn++;
+      if (turn === 1) {
+        await input.onEvent('item/completed', { turnId: 'turn-1', item: { id: 'msg-1', type: 'agentMessage', phase: 'final_answer', text: 'I plan to work.' } });
+      } else {
+        f.controller.abort();
+        throw new LlmError('Turn aborted', { kind: 'aborted' });
+      }
+    });
+    const result = await f.run();
+    expect(turn).toBe(2);
+    expect(result.report.status).toBe('aborted');
+    expect(f.ledger.data.status).toBe('aborted');
   });
 });

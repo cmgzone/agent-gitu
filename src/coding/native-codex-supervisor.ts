@@ -2,7 +2,7 @@ import type { GituConfig, GituRunResult } from '../agent/gitu.js';
 import { EvidenceEngine, classifyEvidenceKind, evidenceMatchesWorkspace, isManufacturedEvidenceCommand, isTrivialEvidenceCommand, latestVerificationEvidence } from '../evidence/evidence.js';
 import { captureVerificationScope, refreshScopedVerification } from '../evidence/verification-scope.js';
 import { bindCriterionVerification, inspectVerificationCommand } from '../evidence/verification-command.js';
-import { selectVerificationCommands, verifiedDocumentationWrites } from '../evidence/verification-policy.js';
+import { isConsequentialChange, selectVerificationCommands, verifiedDocumentationWrites, verifiedHostConfirmedWrites } from '../evidence/verification-policy.js';
 import { planRisk } from '../agent/risk-planner.js';
 import { Executor } from '../executor/executor.js';
 import { getWorkspaceFingerprint } from '../git/git.js';
@@ -645,7 +645,48 @@ export async function runNativeCodexTask(input: {
     runtimeResult = result.status;
     ledger.data.execution!.native!.status = result.status;
     ledger.save();
-    if (result.status === 'interrupted') exited = 'aborted';
+
+    // Bounded autonomous continuation: when a non-chat coding task ends with
+    // prose but no actual tool work was performed during this turn,
+    // give the model one automatic prompt on the same session to execute through tools rather than narrating intentions.
+    const isProseOnly =
+      result.status !== 'interrupted' &&
+      !signal.aborted &&
+      !discussion &&
+      !input.conversationControl?.() &&
+      config.mode !== 'chat' &&
+      !conversationIntent(goal) &&
+      !acted &&
+      ledger.data.actions.slice(phase.actionStartIndex).length === 0 &&
+      Boolean(finalAnswer);
+
+    if (isProseOnly) {
+      emit('recover  The model supplied prose without performing work. Prompting one automatic continuation on the same session to execute tools.');
+      const continuationText =
+        'Execute the requested work now using Gitu’s registered tools (e.g. write_file, apply_edit, run_command). Do not merely explain your intention or narrate plans in prose; perform the necessary actions and verification.';
+      const continuationTurnInput: NativeTaskInput = {
+        ...turnInput,
+        threadId: ledger.data.execution?.native?.threadId ?? result.threadId,
+        text: continuationText,
+      };
+      const previousAnswer = finalAnswer;
+      finalAnswer = '';
+      const continuationResult = await runNativeTurnWithRecovery({
+        turn: () => runtime.runTurn(continuationTurnInput),
+        hasActed: () => acted,
+        signal,
+        ...(config.providerRecoveryDelayMs !== undefined ? { baseDelayMs: config.providerRecoveryDelayMs } : {}),
+        ...(config.recoverySleep ? { sleep: (ms: number) => config.recoverySleep!(ms) } : {}),
+        onRetry: ({ attempt, maxAttempts, delayMs, error }) =>
+          emit(`recover  ${error.message.slice(0, 120)} — retry ${attempt}/${maxAttempts} in ${(delayMs / 1000).toFixed(1)}s`),
+      });
+      runtimeResult = continuationResult.status;
+      ledger.data.execution!.native!.status = continuationResult.status;
+      ledger.save();
+      if (!finalAnswer) finalAnswer = previousAnswer;
+    }
+
+    if (runtimeResult === 'interrupted' || signal.aborted) exited = 'aborted';
     else if (!finalAnswer) ledger.addBlocker('The native turn ended without a final answer. Progress messages are not completion; no automatic restart was made.');
     else if (discussion || input.conversationControl?.()) {
       answeredDiscussion = discussion;
@@ -661,9 +702,10 @@ export async function runNativeCodexTask(input: {
         action.status === 'success' && ['write_file', 'apply_edit'].includes(action.tool) &&
         (action.paramsSummary === `write ${file}` || action.paramsSummary === `edit ${file}` || action.verificationScope?.paths.includes(file))));
       const documentationOnly = changedFiles.length > 0 && changedFiles.every((file) => /\.(?:md|rst|txt)$/i.test(file)) && !planRisk(goal).strictVerification;
+      const nonConsequentialWithoutCriteria = !currentCriteria().length && !isConsequentialChange(goal, changedFiles);
       const commands = selectVerificationCommands({
         required: currentCriteria().map((c) => c.verification).filter((c): c is string => Boolean(c)),
-        project: acceptedChanges() && !documentationOnly ? guard.lock : {},
+        project: acceptedChanges() && !documentationOnly && !nonConsequentialWithoutCriteria ? guard.lock : {},
         evidence: ledger.data.evidence.slice(phase.evidenceStartIndex),
         fingerprint: verificationFingerprint,
         strict: acceptedChanges() && planRisk(goal).strictVerification,
@@ -723,11 +765,16 @@ export async function runNativeCodexTask(input: {
         evidenceMatchesWorkspace(check, fingerprint) && !isTrivialEvidenceCommand(check.command) && !isManufacturedEvidenceCommand(check.command) &&
         latestVerificationEvidence(ledger.data, check.command, fingerprint)?.id === check.id);
       if (!currentCriteria().length && acceptedChanges() && !commands.size && !freshCheck) {
-        if (documentationOnly && verifiedDocumentationWrites({ filesChanged: changedFiles, actions: ledger.data.actions.slice(phase.actionStartIndex) }, fingerprint)) evidence.record(ledger.data, { kind: 'file', label: 'Documentation writes verified', passed: true, output: 'Guarded file writes still match their confirmed contents: ' + changedFiles.join(', '), workspaceFingerprint: fingerprint });
-        else ledger.addBlocker('Files changed without acceptance criteria or an independent verification command.');
+        if (documentationOnly && verifiedDocumentationWrites({ filesChanged: changedFiles, actions: ledger.data.actions.slice(phase.actionStartIndex) }, fingerprint)) {
+          evidence.record(ledger.data, { kind: 'file', label: 'Documentation writes verified', passed: true, output: 'Guarded file writes still match their confirmed contents: ' + changedFiles.join(', '), workspaceFingerprint: fingerprint });
+        } else if (!isConsequentialChange(goal, changedFiles) && verifiedHostConfirmedWrites({ filesChanged: changedFiles, actions: ledger.data.actions.slice(phase.actionStartIndex) }, fingerprint)) {
+          // Changes with no security, financial, or data risk that are verified by host-confirmed tool writes
+          // are accepted without requiring artificial formal criteria, regardless of file count.
+          evidence.record(ledger.data, { kind: 'file', label: 'Task changes verified', passed: true, output: 'Changes verified through guarded host writes within task scope: ' + changedFiles.join(', '), workspaceFingerprint: fingerprint });
+        } else ledger.addBlocker('Files changed without acceptance criteria or an independent verification command.');
       }
       if (!currentCriteria().length && !ledger.data.actions.slice(phase.actionStartIndex).length && config.mode !== 'chat' && !conversationIntent(goal))
-        ledger.addBlocker('The model supplied prose without performing the requested work or defining acceptance criteria. Task saved without automatically repeating the turn.');
+        ledger.addBlocker('The model supplied prose without performing the requested work or defining acceptance criteria after an automatic continuation. Task saved without repeating further turns.');
       const gateFinding = evaluateInstructionGate(ledger.activeInstructions(), ledger.data.actions.slice(phase.actionStartIndex), ledger.data.evidence);
       if (gateFinding.unmetRequirements.length || gateFinding.denialUnrecovered)
         ledger.addBlocker(

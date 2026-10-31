@@ -20,7 +20,7 @@ export async function workspaceCheckpoint(
   const path = await import('node:path');
   const crypto = await import('node:crypto');
   const { createReadStream } = await import('node:fs');
-  type Entry = { hash?: string; mode: number; link?: string };
+  type Entry = { hash?: string; mode: number; link?: string; size?: number; mtimeMs?: number };
   type Record = WorkspaceCheckpoint & { before: { [name: string]: Entry }; after?: { [name: string]: Entry } };
   const root = await fs.realpath(options.root);
   const storage = path.resolve(options.storage);
@@ -28,7 +28,79 @@ export async function workspaceCheckpoint(
   const blobs = path.join(folder, 'blobs');
   // Embedded-browser profiles are live runtime state, not project source. They
   // contain locked databases and must never be copied into rollback snapshots.
-  const skipped = new Set(['.git', '.hermes', '.qa', 'node_modules', '.venv', 'venv', '__pycache__', '.next', '.turbo', '.gradle', 'target', 'browser-profiles']);
+  // Common dependency, cache and generated build directories across Node, Python,
+  // Android, Flutter, Rust, iOS, and Web frameworks are excluded by default.
+  const skipped = new Set([
+    // Version control
+    '.git', '.svn', '.hg',
+    // Agent Gitu / Hermes runtime state & caches
+    '.hermes', '.qa', '.release', 'browser-profiles',
+    // Node / Web dependencies & caches
+    'node_modules', '.next', '.turbo', '.nuxt', '.svelte-kit', '.output', '.cache', 'coverage', '.parcel-cache', '.rollup.cache',
+    // Python
+    '.venv', 'venv', 'env', '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox', 'htmlcov',
+    // Android & Java
+    '.gradle', '.cxx', 'captures',
+    // Flutter & Dart
+    '.dart_tool', '.flutter-plugins', '.flutter-plugins-dependencies', 'ephemeral',
+    // Build artifacts & compiled targets
+    'target', 'DerivedData', 'Pods',
+    // OS caches
+    '.DS_Store'
+  ]);
+  type GitignoreRule = {
+    negated: boolean;
+    dirOnly: boolean;
+    regex: RegExp;
+    prefix: string;
+  };
+  const gitignoreRules: GitignoreRule[] = [];
+  const parseGitignoreContent = (content: string, dirRel: string) => {
+    for (let line of content.split(/\r?\n/)) {
+      line = line.trim();
+      if (!line || line.startsWith('#')) continue;
+      let negated = false;
+      if (line.startsWith('!')) {
+        negated = true;
+        line = line.slice(1).trim();
+      }
+      const dirOnly = line.endsWith('/');
+      if (dirOnly) line = line.slice(0, -1);
+      const anchored = line.startsWith('/') || line.includes('/');
+      if (line.startsWith('/')) line = line.slice(1);
+      let re = '';
+      for (let i = 0; i < line.length; i++) {
+        const c = line.charAt(i);
+        if (c === '*') {
+          if (line.charAt(i + 1) === '*') {
+            if (line.charAt(i + 2) === '/') { re += '(?:.*/)?'; i += 2; }
+            else { re += '.*'; i++; }
+          } else { re += '[^/]*'; }
+        } else if (c === '?') { re += '[^/]'; }
+        else if ('.+()[]{}^$|\\'.includes(c)) { re += '\\' + c; }
+        else { re += c; }
+      }
+      const regex = new RegExp(anchored ? '^' + re + '$' : '(?:^|/)' + re + '$');
+      gitignoreRules.push({
+        negated,
+        dirOnly,
+        regex,
+        prefix: dirRel ? dirRel + '/' : '',
+      });
+    }
+  };
+  const isIgnored = (relPath: string, isDirectory: boolean): boolean => {
+    let ignored = false;
+    for (const rule of gitignoreRules) {
+      if (rule.prefix && !relPath.startsWith(rule.prefix)) continue;
+      if (rule.dirOnly && !isDirectory) continue;
+      const testPath = rule.prefix ? relPath.slice(rule.prefix.length) : relPath;
+      if (rule.regex.test(testPath)) {
+        ignored = !rule.negated;
+      }
+    }
+    return ignored;
+  };
   const same = (a?: Entry, b?: Entry) => a?.hash === b?.hash && a?.link === b?.link && a?.mode === b?.mode;
   const digest = async (file: string) => {
     const hash = crypto.createHash('sha256');
@@ -45,46 +117,104 @@ export async function workspaceCheckpoint(
     await fs.rename(temporary, target);
   };
   const view = ({ before: _before, after: _after, ...record }: Record): WorkspaceCheckpoint => record;
-  const scan = async (copy: boolean) => {
-    const entries: { [name: string]: Entry } = {};
-    let bytes = 0, count = 0;
-    const visit = async (directory: string) => {
-      for (const child of await fs.readdir(directory, { withFileTypes: true })) {
-        if (skipped.has(child.name)) continue;
-        const file = path.join(directory, child.name);
-        if (file === storage || file === folder) continue;
-        const name = path.relative(root, file).split(path.sep).join('/');
-        const stat = await fs.lstat(file);
-        if (stat.isSymbolicLink()) entries[name] = { link: await fs.readlink(file), mode: stat.mode & 0o777 };
-        else if (stat.isDirectory()) await visit(file);
-        else if (stat.isFile()) {
-          bytes += stat.size;
-          if (++count > 100_000 || bytes > 2 * 1024 ** 3) throw Error('Checkpoint exceeds 2 GB or 100,000 project files. Select a smaller project folder before coding.');
-          const hash = await digest(file);
-          if (copy) {
-            const blob = path.join(blobs, hash);
-            try { await fs.access(blob); } catch {
-              await fs.copyFile(file, blob);
-              await fs.chmod(blob, 0o600);
-              if (await digest(blob) !== hash) throw Error('A project file changed while saving its checkpoint. Retry when file writes finish.');
-            }
-          }
-          entries[name] = { hash, mode: stat.mode & 0o777 };
-        }
-      }
-    };
-    await visit(root);
-    return entries;
-  };
   const records = async (): Promise<Record[]> => {
     let files: string[];
     try { files = await fs.readdir(folder); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
     const result: Record[] = [];
     for (const file of files.filter(file => /^cp_[a-f0-9-]+\.json$/.test(file))) {
-      const record = JSON.parse(await fs.readFile(path.join(folder, file), 'utf8')) as Record;
-      if (record.root === root && record.key === options.key) result.push(record);
+      try {
+        const record = JSON.parse(await fs.readFile(path.join(folder, file), 'utf8')) as Record;
+        if (record.root === root && record.key === options.key) result.push(record);
+      } catch {
+        /* ignore unreadable or damaged checkpoint record */
+      }
     }
     return result.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  };
+  const scan = async (copy: boolean) => {
+    const entries: { [name: string]: Entry } = {};
+    let bytes = 0, count = 0;
+    const priorRecords = await records();
+    const priorEntries = priorRecords[0]?.before ?? {};
+    try {
+      const rootGitignore = path.join(root, '.gitignore');
+      const content = await fs.readFile(rootGitignore, 'utf8');
+      parseGitignoreContent(content, '');
+    } catch {
+      /* no root .gitignore */
+    }
+    const visit = async (directory: string) => {
+      let dirChildren;
+      try {
+        dirChildren = await fs.readdir(directory, { withFileTypes: true });
+      } catch {
+        return; // directory unreadable or disappeared - skip gracefully
+      }
+      // If directory contains a nested .gitignore, parse it first before filtering other files
+      for (const child of dirChildren) {
+        if (child.name === '.gitignore' && directory !== root) {
+          try {
+            const rel = path.relative(root, directory).split(path.sep).join('/');
+            const content = await fs.readFile(path.join(directory, child.name), 'utf8');
+            parseGitignoreContent(content, rel);
+          } catch {
+            /* ignore unreadable nested .gitignore */
+          }
+        }
+      }
+      for (const child of dirChildren) {
+        if (skipped.has(child.name)) continue;
+        const file = path.join(directory, child.name);
+        if (file === storage || file === folder) continue;
+        const name = path.relative(root, file).split(path.sep).join('/');
+        let stat;
+        try {
+          stat = await fs.lstat(file);
+        } catch {
+          continue; // unreadable/locked/transient file, skip gracefully
+        }
+        if (isIgnored(name, stat.isDirectory())) continue;
+        if (stat.isSymbolicLink()) {
+          try {
+            entries[name] = { link: await fs.readlink(file), mode: stat.mode & 0o777 };
+          } catch {
+            continue;
+          }
+        }
+        else if (stat.isDirectory()) await visit(file);
+        else if (stat.isFile()) {
+          count++;
+          bytes += stat.size;
+          let hash: string;
+          const prior = priorEntries[name];
+          if (prior?.hash && prior.size === stat.size && prior.mtimeMs === stat.mtimeMs) {
+            // Intelligent incremental reuse: unchanged mtime + size reuses sha256
+            hash = prior.hash;
+          } else {
+            try {
+              hash = await digest(file);
+            } catch {
+              continue; // file unreadable or disappeared during digest
+            }
+          }
+          if (copy) {
+            const blob = path.join(blobs, hash);
+            try { await fs.access(blob); } catch {
+              try {
+                await fs.copyFile(file, blob);
+                await fs.chmod(blob, 0o600);
+                if (await digest(blob) !== hash) continue;
+              } catch {
+                continue;
+              }
+            }
+          }
+          entries[name] = { hash, mode: stat.mode & 0o777, size: stat.size, mtimeMs: stat.mtimeMs };
+        }
+      }
+    };
+    await visit(root);
+    return entries;
   };
   if (operation === 'list') return { checkpoints: (await records()).map(view) };
   await fs.mkdir(blobs, { recursive: true, mode: 0o700 });

@@ -1,50 +1,41 @@
 {
-  "updated": "2026-10-30",
+  "updated": "2026-10-31",
   "items": [
     {
-      "title": "Gemini 4 Carbon: our next frontier model",
-      "summary": "Google launched Gemini 4 Carbon, calling it its strongest model yet with state-of-the-art cybersecurity and long-horizon agentic capabilities.",
-      "source": "Google",
-      "url": "https://blog.google/innovation-and-ai/models-and-research/gemini-models/introducing-gemini-4-carbon/",
-      "image": "https://storage.googleapis.com/gweb-uniblog-publish-prod/images/gemini_carbon_102726_social_share.width-1300.png",
-      "imageAlt": "Google's official Gemini 4 Carbon launch graphic",
-      "published": "2026-10-28"
-    },
-    {
-      "title": "Mistral releases weights for its trillion-parameter AI model, targeting cybersecurity",
-      "summary": "Mistral open-weighted Le Chonk, a 1T-parameter multimodal model it calls the best open-weight coder, stressing cyber-patch work and refusals of malicious requests.",
+      "title": "Ollie, a privacy-focused AI assistant, is shutting down",
+      "summary": "Ollie, an SOC 2-certified AI assistant backed by Khosla Ventures, told users it is shutting down on 6 November after failing to compete with better-funded rivals.",
       "source": "TechCrunch",
-      "url": "https://techcrunch.com/2026/10/29/mistral-releases-weights-for-its-trillion-parameter-ai-model-targeting-cybersecurity/",
-      "image": "https://techcrunch.com/wp-content/uploads/2024/06/GettyImages-1760104305.jpg?resize=1200,798",
-      "imageAlt": "Photo of Mistral AI co-founder and CEO Arthur Mensch",
-      "published": "2026-10-29T17:00:00Z"
+      "url": "https://techcrunch.com/2026/10/30/ollie-a-privacy-focused-ai-assistant-is-shutting-down/",
+      "image": "https://techcrunch.com/wp-content/uploads/2026/09/Ollie_Hero.png?resize=1200,847",
+      "imageAlt": "Ollie's promo image: the wordmark with the line 'Your personal AI assistant for everyday life' over a photo of a family",
+      "published": "2026-10-30T22:56:13Z"
     },
     {
-      "title": "Voice AI in vogue: Nvidia releases new open transcription model",
-      "summary": "Nvidia released a free speech-to-text model covering up to 40 languages, limited to recorded audio, aimed at meeting and medical transcription rather than live use.",
+      "title": "Apple Intelligence is finally coming to China with iOS 27.3",
+      "summary": "Apple will ship Apple Intelligence in China: an iOS 27.3 beta on 4 November and a full release in December, with Alibaba's Qwen chatbot integrated but no new Siri AI.",
+      "source": "The Verge",
+      "url": "https://www.theverge.com/tech/1023974/apple-intelligence-china-ios-27-3",
+      "image": "https://platform.theverge.com/wp-content/uploads/sites/2/chorus/uploads/chorus_asset/file/25699392/DSC08596_processed.jpg?quality=90&strip=all&crop=0%2C10.723165084465%2C100%2C78.55366983107&w=1200",
+      "imageAlt": "An iPhone on a wooden floor showing its home screen with weather widgets and a soft Apple Intelligence glow along the bottom edge",
+      "published": "2026-10-30T22:32:53Z"
+    },
+    {
+      "title": "Zest's new AI agent finds restaurants and books reservations over text",
+      "summary": "Zest launched an AI concierge that collects a group's tastes over text, puts restaurant options to a vote and books the table for everyone.",
       "source": "TechCrunch",
-      "url": "https://techcrunch.com/2026/10/28/voice-ai-in-vogue-nvidia-releases-new-open-transcription-model/",
-      "image": "https://techcrunch.com/wp-content/uploads/2026/10/AI-on-the-tongue.png?resize=1200,600",
-      "imageAlt": "Illustration of a mouth for TechCrunch's voice AI story",
-      "published": "2026-10-28T15:00:00Z"
+      "url": "https://techcrunch.com/2026/10/30/zests-new-ai-agent-finds-restaurants-and-books-reservations-over-text/",
+      "image": "https://techcrunch.com/wp-content/uploads/2026/10/zest.jpg?resize=1200,764",
+      "imageAlt": "Screenshot of Zest's chat interface showing a text thread that suggests a French restaurant and returns a booking confirmation",
+      "published": "2026-10-30T17:47:12Z"
     },
     {
-      "title": "Apple acquires Ascend.io, an agentic AI engineering startup",
-      "summary": "Apple acquired Ascend.io, an agentic data-engineering startup, disclosed under the EU's Digital Markets Act; Ascend.io is winding down operations.",
-      "source": "9to5Mac",
-      "url": "https://9to5mac.com/2026/10/30/apple-acquires-ascend%e2%80%a4io-an-agentic-ai-engineering-startup/",
-      "image": "https://9to5mac.com/wp-content/uploads/sites/6/2026/10/CleanShot-2026-10-30-at-8.02.29-AM@2x.jpeg?quality=82&strip=all&resize=1200,628",
-      "imageAlt": "Screenshot of the Ascend.io website from 9to5Mac's report",
-      "published": "2026-10-30T12:06:19Z"
-    },
-    {
-      "title": "DoorDash said it's only received 'several hundred' orders from AI agents",
-      "summary": "DoorDash said AI agents have placed only several hundred orders so far, and that it is open to working with third-party agent makers on integration.",
+      "title": "Google's first data center satellite is online and writing poetry",
+      "summary": "Google's Project Suncatcher prototype, carrying four TPUs and running DeepMind's Gemma 4, sent its first AI response from orbit and now faces radiation tests.",
       "source": "TechCrunch",
-      "url": "https://techcrunch.com/2026/10/30/doordash-said-its-only-received-several-hundred-orders-from-ai-agents/",
-      "image": "https://techcrunch.com/wp-content/uploads/2022/08/GettyImages-1232015093.jpg?resize=1200,800",
-      "imageAlt": "DoorDash app on a phone",
-      "published": "2026-10-30T13:54:25Z"
+      "url": "https://techcrunch.com/2026/10/30/googles-first-data-center-satellite-is-online-and-writing-poetry/",
+      "image": "https://techcrunch.com/wp-content/uploads/2026/10/DSC_0298.jpg?resize=1200,800",
+      "imageAlt": "A Planet Labs satellite with folded solar panels on a mount in a clean room before launch",
+      "published": "2026-10-30T17:00:00Z"
     }
   ]
 }

@@ -121,6 +121,10 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     effortLevels: ['low', 'medium', 'high', 'max'],
     maxEffort: 'distinct',
     capabilities: { streamingTools: true },
+    modelLabels: {
+      'deepseek-v4-flash': 'DeepSeek V4.1 Flash',
+      'deepseek-v4-pro': 'DeepSeek V4 Pro',
+    },
   },
   openai: {
     id: 'openai',
@@ -161,8 +165,8 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     // newest Flash release (V4.1 today), and the older v4-flash names alias it.
     modelLabels: {
       'deepseek-flash': 'DeepSeek V4.1 Flash',
-      'deepseek-v4-flash': 'DeepSeek V4.1 Flash (legacy name)',
-      'deepseek-v4-flash-vision-exp': 'DeepSeek V4.1 Flash (legacy name)',
+      'deepseek-v4-flash': 'DeepSeek V4.1 Flash',
+      'deepseek-v4-flash-vision-exp': 'DeepSeek V4.1 Flash Vision',
       'deepseek-v4-pro': 'DeepSeek V4 Pro',
     },
   },

@@ -245,8 +245,9 @@ describe('HermesServer — session ↔ task ↔ git attachment (P0.1)', () => {
     expect(TaskLedger.list(path.resolve(dir))).toHaveLength(1);
   }, 30000);
 
-  it('rejects continuation with no task binding at all (409, no orphan)', async () => {
+  it('allows continuation when session has no task binding yet (resumes execution)', async () => {
     const dir = makeProject('no-task');
+    await initGitRepo(dir);
     new SessionStore().upsertSession({
       runId: 'run-no-task',
       goal: 'never created a task',
@@ -257,16 +258,18 @@ describe('HermesServer — session ↔ task ↔ git attachment (P0.1)', () => {
       mode: 'standard',
     });
 
-    const { base } = await startServer(dir, new ScriptedMockLlm([]));
+    const { base } = await startServer(dir, new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'complete', summary: 'done', risks: [], followUps: [] } }),
+    ]));
     const res = await fetch(`${base}/api/runs/run-no-task/message`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ text: 'resume' }),
     });
-    expect(res.status).toBe(409);
-    const body = (await res.json()) as { error: string };
-    expect(body.error).toContain('run has no task yet');
-    expect(TaskLedger.list(path.resolve(dir))).toHaveLength(0);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; resumed: boolean };
+    expect(body.ok).toBe(true);
+    expect(body.resumed).toBe(true);
   }, 30000);
 
   it('rejects continuation when the task ledger is gone (404, no silent new task)', async () => {

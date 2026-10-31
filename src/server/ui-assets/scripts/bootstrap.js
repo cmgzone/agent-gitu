@@ -179,7 +179,12 @@
   }
   function titleCase(m) { return m.replace(/(^|[-.])([a-z])/g, function (a, sep, ch) { return sep + ch.toUpperCase(); }); }
   // Display-only model-name polish: family casing that titleCase cannot know.
-  function prettyModelName(mid) { return titleCase(mid).replace(/Deepseek/gi, 'DeepSeek'); }
+  function prettyModelName(mid) {
+    if (/^deepseek-(?:v4-)?flash$/i.test(mid)) return 'DeepSeek-V4.1-Flash';
+    if (/^deepseek-(?:v4-)?flash-vision/i.test(mid)) return 'DeepSeek-V4.1-Flash-Vision';
+    if (/^deepseek-(?:v4-)?pro$/i.test(mid)) return 'DeepSeek-V4-Pro';
+    return titleCase(mid).replace(/Deepseek/gi, 'DeepSeek');
+  }
   function hhmm(iso) { var d = new Date(iso); return isNaN(d) ? '' : d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false }); }
   function shortDate(iso) { var d = new Date(iso); return isNaN(d) ? '—' : d.toLocaleDateString(undefined, { day: '2-digit', month: 'short' }) + ', ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false }); }
   function basename(p) { var parts = String(p).replace(/\\/g, '/').split('/'); return parts[parts.length - 1] || p; }

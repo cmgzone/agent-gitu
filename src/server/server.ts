@@ -8503,75 +8503,68 @@ export class GituServer {
         }
         return;
       }
-      if (!session.taskId) {
-        if(session.coworkTask){
-          const resolved=this.config.llm?{client:this.config.llm,providerId:session.provider,model:session.model}:resolveLlm({provider:session.provider,model:session.model,workingDirectory:session.projectPath??this.config.cwd});
-          session.provider=resolved.providerId;session.model=resolved.model;session.report=undefined;session.error=undefined;session.finishedAt=undefined;
-          this.pushEvent(session,'user-msg '+text);
-          void this.executeRun(session,resolved.client,{goal:session.goal+'\n\nOwner follow-up:\n'+text,mode:session.mode??'agent',projectPath:session.projectPath,model:resolved.model,autoApprove:session.autoApprove}).catch(error=>{session.status='failed';session.error=(error as Error).message;session.finishedAt=nowIso();this.pushEvent(session,session.error);this.notifyCodingOutcome(session.runId);});
-          this.sendJson(res,200,{ok:true,directToCoding:true,runId:session.runId,safeText:text});return;
+      let execRoot: string;
+      if (session.taskId) {
+        const taskRoot = this.resolveTaskRoot(session.taskId, session.projectPath);
+        if (!taskRoot) {
+          session.status = prevStatus;
+          this.sendJson(res, 409, { error: `Cannot resolve project root for task ${session.taskId}` });
+          return;
         }
-        session.status = prevStatus;
-        this.sendJson(res, 409, { error: 'run has no task yet' });
-        return;
-      }
-      const taskRoot = this.resolveTaskRoot(session.taskId, session.projectPath);
-      if (!taskRoot) {
-        session.status = prevStatus;
-        this.sendJson(res, 409, { error: `Cannot resolve project root for task ${session.taskId}` });
-        return;
-      }
-      const ledger = TaskLedger.load(taskRoot, session.taskId);
-      if (!ledger) {
-        session.status = prevStatus;
-        this.sendJson(res, 404, { error: `Task ledger ${session.taskId} not found at ${taskRoot}` });
-        return;
-      }
-      // A task is bound to its own gitu/* branch (or an existing legacy
-      // hermes/* branch), but the shared checkout can
-      // only hold one branch at a time: any newer run (or a manual switch)
-      // moves it and would lock every older session out. Instead of stealing
-      // the checkout back — which detaches whichever session owned it — resume
-      // in a dedicated linked worktree on this session's own branch. The
-      // shared checkout stays exactly where it is.
-      let execRoot = taskRoot;
-      if (ledger.data.worktreePath && existsSync(ledger.data.worktreePath)) {
-        if (this.isPrivateAgentStatePath(taskRoot, ledger.data.worktreePath)) {
-          const wt = await this.ensureSessionWorktree(taskRoot, session.taskId, ledger.data.gitBranch ?? '');
-          if (!wt) {
-            session.status = prevStatus;
-            this.sendJson(res, 409, { error: 'Execution rejected: legacy worktree is inside .hermes and could not be migrated to the canonical session workspace.' });
-            return;
-          }
-          execRoot = wt;
-          ledger.data.worktreePath = wt;
-          ledger.save();
-          session.worktreePath = wt;
-          this.pushEvent(session, `git     migrated legacy .hermes worktree to canonical session workspace ${wt}`);
-        } else {
-          execRoot = ledger.data.worktreePath;
+        const ledger = TaskLedger.load(taskRoot, session.taskId);
+        if (!ledger) {
+          session.status = prevStatus;
+          this.sendJson(res, 404, { error: `Task ledger ${session.taskId} not found at ${taskRoot}` });
+          return;
         }
-      } else {
-        const precheck = await ledger.validateEnvironment(execRoot);
-        if (!precheck.ok && /branch mismatch/i.test(precheck.reason ?? '')) {
-          const wt = await this.ensureSessionWorktree(execRoot, session.taskId, ledger.data.gitBranch ?? '');
-          if (wt) {
+        // A task is bound to its own gitu/* branch (or an existing legacy
+        // hermes/* branch), but the shared checkout can
+        // only hold one branch at a time: any newer run (or a manual switch)
+        // moves it and would lock every older session out. Instead of stealing
+        // the checkout back — which detaches whichever session owned it — resume
+        // in a dedicated linked worktree on this session's own branch. The
+        // shared checkout stays exactly where it is.
+        execRoot = taskRoot;
+        if (ledger.data.worktreePath && existsSync(ledger.data.worktreePath)) {
+          if (this.isPrivateAgentStatePath(taskRoot, ledger.data.worktreePath)) {
+            const wt = await this.ensureSessionWorktree(taskRoot, session.taskId, ledger.data.gitBranch ?? '');
+            if (!wt) {
+              session.status = prevStatus;
+              this.sendJson(res, 409, { error: 'Execution rejected: legacy worktree is inside .hermes and could not be migrated to the canonical session workspace.' });
+              return;
+            }
             execRoot = wt;
             ledger.data.worktreePath = wt;
             ledger.save();
             session.worktreePath = wt;
-            this.pushEvent(
-              session,
-              `git     resuming in isolated worktree ${wt} on ${ledger.data.gitBranch} — the main checkout keeps its current branch`,
-            );
+            this.pushEvent(session, `git     migrated legacy .hermes worktree to canonical session workspace ${wt}`);
+          } else {
+            execRoot = ledger.data.worktreePath;
+          }
+        } else {
+          const precheck = await ledger.validateEnvironment(execRoot);
+          if (!precheck.ok && /branch mismatch/i.test(precheck.reason ?? '')) {
+            const wt = await this.ensureSessionWorktree(execRoot, session.taskId, ledger.data.gitBranch ?? '');
+            if (wt) {
+              execRoot = wt;
+              ledger.data.worktreePath = wt;
+              ledger.save();
+              session.worktreePath = wt;
+              this.pushEvent(
+                session,
+                `git     resuming in isolated worktree ${wt} on ${ledger.data.gitBranch} — the main checkout keeps its current branch`,
+              );
+            }
           }
         }
-      }
-      const envCheck = await ledger.validateEnvironment(execRoot);
-      if (!envCheck.ok) {
-        session.status = prevStatus;
-        this.sendJson(res, 409, { error: `Execution rejected: ${envCheck.reason}` });
-        return;
+        const envCheck = await ledger.validateEnvironment(execRoot);
+        if (!envCheck.ok) {
+          session.status = prevStatus;
+          this.sendJson(res, 409, { error: `Execution rejected: ${envCheck.reason}` });
+          return;
+        }
+      } else {
+        execRoot = session.worktreePath ?? session.projectPath ?? this.projectRoot() ?? this.config.cwd;
       }
       let llm = this.config.llm;
       let provider = session.provider;
@@ -8657,17 +8650,21 @@ export class GituServer {
       session.report = undefined;
       session.finishedAt = undefined;
       session.error = undefined;
+      const nextGoal = !session.taskId
+        ? (session.goal ? `${session.goal}\n\nOwner follow-up:\n${text}` : text)
+        : session.goal;
+      if (!session.taskId) session.goal = nextGoal;
       if (supersede) this.supersedeUserMessage(session, supersede, text);
       this.pushEvent(session, `user-msg ${text}`);
       for (const file of stored.files) this.pushEvent(session, `file ${JSON.stringify(this.fileView(file))}`);
       this.pushEvent(session, `continue — resuming this session`);
       void this.executeRun(session, llm, {
-        goal: session.goal,
+        goal: nextGoal,
         mode: session.mode ?? 'standard',
         review: reviewSwitch ?? false,
         effort: body['effort'] === 'low' || body['effort'] === 'medium' || body['effort'] === 'high' || body['effort'] === 'max' ? body['effort'] : undefined,
         projectPath: execRoot,
-        resume: { taskId: session.taskId, message: text },
+        resume: session.taskId ? { taskId: session.taskId, message: text } : undefined,
         conversationHistory,
         images: modelImages.length ? modelImages : undefined,
         attachments: stored.attachments,
@@ -8675,8 +8672,14 @@ export class GituServer {
         actionProtocolMode,
         autoApprove: session.autoApprove,
         autonomy: resolveAutonomy(loadWorkspaceSettings().autonomy),
+      }).catch((error) => {
+        session.status = 'failed';
+        session.error = (error as Error).message;
+        session.finishedAt = nowIso();
+        this.pushEvent(session, session.error);
+        if (session.coworkTask) this.notifyCodingOutcome(session.runId);
       });
-      this.sendJson(res, 200, { ok: true, resumed: true, safeText: text });
+      this.sendJson(res, 200, { ok: true, resumed: true, runId: session.runId, safeText: text, ...(session.coworkTask ? { directToCoding: true } : {}) });
       return;
       } catch (err) {
         // Any failure during async setup must release the reservation or the

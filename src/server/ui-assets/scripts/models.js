@@ -124,11 +124,11 @@
 
   function modelInfo(value) {
     var parts = String(value || '').split('::');
-    var pid = parts[0], mid = parts[1];
+    var pid = (parts[0] || '').toLowerCase(), mid = (parts[1] || '').toLowerCase();
     for (var i = 0; i < S.models.length; i++) {
       var p = S.models[i];
-      if (p.id !== pid) continue;
-      for (var j = 0; j < p.models.length; j++) if (p.models[j].id === mid) return p.models[j];
+      if ((p.id || '').toLowerCase() !== pid) continue;
+      for (var j = 0; j < p.models.length; j++) if ((p.models[j].id || '').toLowerCase() === mid) return p.models[j];
     }
     return null;
   }

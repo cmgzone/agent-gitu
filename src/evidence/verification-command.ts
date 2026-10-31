@@ -51,7 +51,19 @@ else { @{ ok = $true; reason = 'Command names resolved; normal execution policy 
     }
     const first = /^(?:\w+=\S+\s+)*("[^"]+"|'[^']+'|[^\s;&|]+)/.exec(command.trim())?.[1]?.replace(/^['"]|['"]$/g, '');
     if (!first) return { ok: false, reason: 'Bind an exact executable verification command.' };
-    await execute('/bin/sh', ['-c', 'command -v "$1" >/dev/null 2>&1', 'gitu-verification', first], { cwd, signal });
+    // Resolve the command name without running it. A description such as
+    // "focused regression test command for thread-search" names nothing
+    // resolvable, and the win32 branch above already reports that case as an
+    // unavailable command with the canonical bind instruction. Fail the same
+    // way here so the reason a caller reports does not depend on the platform.
+    const resolvable = await execute('/bin/sh', ['-c', 'command -v "$1" >/dev/null 2>&1', 'gitu-verification', first], { cwd, signal }).then(
+      () => true,
+      () => false,
+    );
+    if (!resolvable) {
+      signal?.throwIfAborted();
+      return { ok: false, reason: `Verification is a description or references unavailable commands: ${first}. Bind an exact executable verification command.` };
+    }
     return { ok: true, reason: 'Command name resolved; normal execution policy still applies.' };
   } catch {
     signal?.throwIfAborted();

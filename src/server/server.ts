@@ -1037,6 +1037,55 @@ export class GituServer {
     return wtDir;
   }
 
+  /** The branch a working tree is currently on, or undefined when Git cannot say. */
+  private async branchAt(dir: string): Promise<string | undefined> {
+    if (!existsSync(dir)) return undefined;
+    const branch = (await gitExec(dir, ['rev-parse', '--abbrev-ref', 'HEAD']).catch(() => '')).trim();
+    return branch || undefined;
+  }
+
+  /** True when the shared checkout is verifiably on `branch` (or no branch is bound). */
+  private async sharedCheckoutOnBranch(repoRoot: string, branch: string | undefined): Promise<boolean> {
+    if (!branch) return true;
+    return (await this.branchAt(repoRoot)) === branch;
+  }
+
+  /**
+   * Use the recorded session worktree only if it is still usable.
+   *
+   * A path that merely exists is not enough: after a stale checkout, a manual
+   * branch switch, or an interrupted `git worktree` operation the directory can
+   * be present but parked on another branch, and executing there would quietly
+   * put this task's work on someone else's branch. Existence AND branch are
+   * verified, and a failed check re-creates the worktree through the same
+   * canonical path every other session uses.
+   */
+  private async revalidateSessionWorktree(
+    repoRoot: string,
+    taskId: string,
+    branch: string,
+    recorded: string,
+  ): Promise<{ path?: string; recreated: boolean; recorded: string; reason?: string }> {
+    const recordedExists = existsSync(recorded);
+    if (!branch) {
+      return recordedExists
+        ? { path: recorded, recreated: false, recorded }
+        : { path: undefined, recreated: false, recorded, reason: 'the recorded worktree is missing and the ledger records no branch to rebuild it on' };
+    }
+    if (recordedExists && (await this.branchAt(recorded)) === branch) return { path: recorded, recreated: false, recorded };
+    const reason = recordedExists
+      ? `the recorded worktree was on ${(await this.branchAt(recorded)) ?? 'an unknown branch'}, not ${branch}`
+      : 'the recorded worktree no longer exists';
+    let rebuilt = await this.ensureSessionWorktree(repoRoot, taskId, branch);
+    if (rebuilt && (await this.branchAt(rebuilt)) !== branch) {
+      // A registered worktree parked on the wrong branch can sometimes simply be
+      // moved back; if that fails it is genuinely unusable.
+      await gitExec(rebuilt, ['checkout', branch]).catch(() => '');
+    }
+    if (rebuilt && (await this.branchAt(rebuilt)) !== branch) rebuilt = undefined;
+    return rebuilt ? { path: rebuilt, recreated: true, recorded, reason } : { path: undefined, recreated: false, recorded, reason };
+  }
+
   /** Share private agent state and environment into a product worktree:
    *  .hermes is linked (single ledger source of truth), node_modules is linked when the
    *  main checkout has one, .env is copied. All best-effort — a worktree with
@@ -8692,22 +8741,56 @@ export class GituServer {
         // in a dedicated linked worktree on this session's own branch. The
         // shared checkout stays exactly where it is.
         execRoot = taskRoot;
-        if (ledger.data.worktreePath && existsSync(ledger.data.worktreePath)) {
-          if (this.isPrivateAgentStatePath(taskRoot, ledger.data.worktreePath)) {
-            const wt = await this.ensureSessionWorktree(taskRoot, session.taskId, ledger.data.gitBranch ?? '');
-            if (!wt) {
-              session.status = prevStatus;
-              this.sendJson(res, 409, { error: 'Execution rejected: legacy worktree is inside .hermes and could not be migrated to the canonical session workspace.' });
-              return;
-            }
-            execRoot = wt;
-            ledger.data.worktreePath = wt;
-            ledger.save();
-            session.worktreePath = wt;
-            this.pushEvent(session, `git     migrated legacy .hermes worktree to canonical session workspace ${wt}`);
-          } else {
-            execRoot = ledger.data.worktreePath;
+        if (ledger.data.worktreePath && this.isPrivateAgentStatePath(taskRoot, ledger.data.worktreePath)) {
+          const wt = await this.ensureSessionWorktree(taskRoot, session.taskId, ledger.data.gitBranch ?? '');
+          if (!wt) {
+            session.status = prevStatus;
+            this.sendJson(res, 409, { error: 'Execution rejected: legacy worktree is inside .hermes and could not be migrated to the canonical session workspace.' });
+            return;
           }
+          execRoot = wt;
+          ledger.data.worktreePath = wt;
+          ledger.save();
+          session.worktreePath = wt;
+          this.pushEvent(session, `git     migrated legacy .hermes worktree to canonical session workspace ${wt}`);
+        } else if (ledger.data.worktreePath) {
+          // A recorded worktree is a claim, not a fact. Verify it exists and is
+          // still on this task's branch before executing there.
+          const revalidated = await this.revalidateSessionWorktree(
+            taskRoot,
+            session.taskId,
+            ledger.data.gitBranch ?? '',
+            ledger.data.worktreePath,
+          );
+          if (revalidated.path) {
+            execRoot = revalidated.path;
+            if (revalidated.path !== revalidated.recorded) {
+              ledger.data.worktreePath = revalidated.path;
+              ledger.save();
+              session.worktreePath = revalidated.path;
+              this.pushEvent(
+                session,
+                `git     re-created the session worktree at ${revalidated.path} on ${ledger.data.gitBranch} — ${revalidated.reason}`,
+              );
+            }
+          } else if (await this.sharedCheckoutOnBranch(taskRoot, ledger.data.gitBranch)) {
+            // Isolation is unavailable. Say so out loud instead of quietly
+            // downgrading a task that believes it owns its own checkout.
+            const reason = revalidated.reason ?? 'the session worktree is unavailable';
+            ledger.data.worktreePath = undefined;
+            ledger.save();
+            session.worktreePath = undefined;
+            this.pushEvent(
+              session,
+              `warn    isolation unavailable — ${reason}; continuing in the shared checkout ${taskRoot}` +
+                (ledger.data.gitBranch ? ` on ${ledger.data.gitBranch}` : ''),
+            );
+            logger.warn(
+              { subsystem: 'worktree', runId: session.runId, taskId: session.taskId, recorded: revalidated.recorded, branch: ledger.data.gitBranch, reason },
+              'Session worktree unavailable: continuing in the shared checkout',
+            );
+          }
+          // Otherwise the record stands and the environment check below refuses.
         } else {
           const precheck = await ledger.validateEnvironment(execRoot);
           if (!precheck.ok && /branch mismatch/i.test(precheck.reason ?? '')) {

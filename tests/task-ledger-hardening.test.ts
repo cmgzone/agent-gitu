@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -316,5 +316,111 @@ describe('task ledger hardening — self-heal instead of refusing', () => {
     expect(rebuilt?.data.recoveryNote).toContain(`branch=${guard.lock.branch ?? 'master'}`);
     expect(rebuilt?.data.acceptanceCriteria).toEqual([]);
     expect(TaskLedger.list(path.resolve(dir))).toHaveLength(1);
+  }, 60000);
+});
+
+describe('task ledger hardening — worktree revalidation', () => {
+  const servers: HermesServer[] = [];
+
+  afterAll(async () => {
+    for (const server of servers) await server.stop();
+  });
+
+  async function startServer(dir: string, llm: LlmClient): Promise<{ base: string; server: HermesServer }> {
+    const server = new HermesServer({ passwordRequired: false, cwd: dir, port: 0, llm });
+    servers.push(server);
+    const port = await server.start();
+    return { base: `http://127.0.0.1:${port}`, server };
+  }
+
+  function seedSession(runId: string, taskId: string, dir: string, goal: string): void {
+    new SessionStore().upsertSession({
+      runId,
+      taskId,
+      goal,
+      project: 'worktree-revalidation',
+      projectPath: path.resolve(dir),
+      startedAt: new Date().toISOString(),
+      status: 'blocked',
+      mode: 'standard',
+    });
+  }
+
+  it('re-creates a recorded worktree that exists but is on the wrong branch', async () => {
+    const dir = makeProject('stale-worktree');
+    await initGitRepo(dir);
+    const guard = ProjectGuard.detect(dir);
+    const staleDir = path.join(dir, '..', `stale-checkout-${Date.now().toString(36)}`);
+    mkdirSync(staleDir, { recursive: true });
+
+    const ledger = TaskLedger.create({
+      repoRoot: path.resolve(dir),
+      goal: 'worktree task',
+      project: guard.lock,
+      mode: 'standard',
+      gitBranch: 'gitu/stale-worktree',
+      worktreePath: staleDir,
+    });
+    // The branch exists, but the recorded directory was never checked out on it.
+    await gitExec(dir, ['branch', 'gitu/stale-worktree']);
+    seedSession('run-stale-worktree', ledger.data.taskId, dir, 'worktree task');
+
+    const { base, server } = await startServer(dir, new ScriptedMockLlm([COMPLETE_ONCE]));
+    const res = await fetch(`${base}/api/runs/run-stale-worktree/message`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'continue' }),
+    });
+    expect(res.status).toBe(200);
+
+    const done = await waitFor(async () => {
+      const session = (await fetch(`${base}/api/runs/run-stale-worktree`).then((r) => r.json())) as { status: string; worktreePath?: string };
+      return session.status !== 'running' ? session : undefined;
+    });
+    expect(done.worktreePath).toBeDefined();
+    expect(done.worktreePath).not.toBe(staleDir);
+    // The replacement really is a checkout of this repository, not an empty dir.
+    expect(existsSync(path.join(done.worktreePath!, '.git'))).toBe(true);
+    expect((await gitExec(done.worktreePath!, ['rev-parse', '--show-toplevel'])).trim()).toBe(path.resolve(done.worktreePath!));
+    expect(eventTexts(server, 'run-stale-worktree').some((line) => line.includes('git     re-created the session worktree'))).toBe(true);
+
+    const reloaded = TaskLedger.load(path.resolve(dir), ledger.data.taskId);
+    expect(reloaded?.data.worktreePath).toBe(done.worktreePath);
+    rmSync(staleDir, { recursive: true, force: true });
+  }, 60000);
+
+  it('never downgrades silently: a lost worktree on the shared branch says so out loud', async () => {
+    const dir = makeProject('downgrade');
+    const sharedBranch = await initGitRepo(dir);
+    const guard = ProjectGuard.detect(dir);
+    const missing = path.join(dir, '..', `lost-worktree-${Date.now().toString(36)}`);
+
+    const ledger = TaskLedger.create({
+      repoRoot: path.resolve(dir),
+      goal: 'downgrade task',
+      project: guard.lock,
+      mode: 'standard',
+      gitBranch: sharedBranch,
+      worktreePath: missing,
+    });
+    seedSession('run-downgrade', ledger.data.taskId, dir, 'downgrade task');
+
+    const { base, server } = await startServer(dir, new ScriptedMockLlm([COMPLETE_ONCE]));
+    const res = await fetch(`${base}/api/runs/run-downgrade/message`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'continue' }),
+    });
+    expect(res.status).toBe(200);
+
+    const done = await waitFor(async () => {
+      const session = (await fetch(`${base}/api/runs/run-downgrade`).then((r) => r.json())) as { status: string; worktreePath?: string };
+      return session.status !== 'running' ? session : undefined;
+    });
+    // The run continues in the shared checkout, and the transcript says why.
+    expect(done.worktreePath).toBeUndefined();
+    expect(eventTexts(server, 'run-downgrade').some((line) => line.includes('isolation unavailable'))).toBe(true);
+    const reloaded = TaskLedger.load(path.resolve(dir), ledger.data.taskId);
+    expect(reloaded?.data.worktreePath).toBeUndefined();
   }, 60000);
 });

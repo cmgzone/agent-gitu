@@ -384,7 +384,7 @@ describe('task ledger hardening — worktree revalidation', () => {
     expect(done.worktreePath).not.toBe(staleDir);
     // The replacement really is a checkout of this repository, not an empty dir.
     expect(existsSync(path.join(done.worktreePath!, '.git'))).toBe(true);
-    expect((await gitExec(done.worktreePath!, ['rev-parse', '--show-toplevel'])).trim()).toBe(path.resolve(done.worktreePath!));
+    expect(path.resolve((await gitExec(done.worktreePath!, ['rev-parse', '--show-toplevel'])).trim())).toBe(path.resolve(done.worktreePath!));
     expect(eventTexts(server, 'run-stale-worktree').some((line) => line.includes('git     re-created the session worktree'))).toBe(true);
 
     const reloaded = TaskLedger.load(path.resolve(dir), ledger.data.taskId);

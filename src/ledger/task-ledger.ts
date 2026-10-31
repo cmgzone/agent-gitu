@@ -73,11 +73,13 @@ export class TaskLedger {
     goal: string;
     project: ProjectLock;
     mode: 'agent' | 'fast' | 'standard' | 'chat';
+    /** Reuse an id a host already reserved for this run (write-once). */
+    taskId?: string;
     gitBranch?: string;
     worktreePath?: string;
     activeSkills?: string[];
   }): TaskLedger {
-    const taskId = shortId('hermes-task');
+    const taskId = input.taskId ?? shortId('hermes-task');
     const now = nowIso();
     const data: TaskLedgerData = {
       schemaVersion: 1,
@@ -119,6 +121,32 @@ export class TaskLedger {
     const ledger = new TaskLedger(data, file);
     ledger.save();
     return ledger;
+  }
+
+  /**
+   * Idempotent, write-once ledger creation.
+   *
+   * Every run must own a ledger from its first moment, so a session can never
+   * exist without one. A caller that already knows the task id (a continuation,
+   * or a run whose ledger the host reserved during setup) gets the existing
+   * ledger back untouched — this never rewrites a task's durable state. Only a
+   * genuinely missing ledger is created, and only once.
+   */
+  static ensure(input: {
+    repoRoot: string;
+    goal: string;
+    project: ProjectLock;
+    mode: 'agent' | 'fast' | 'standard' | 'chat';
+    taskId?: string;
+    gitBranch?: string;
+    worktreePath?: string;
+    activeSkills?: string[];
+  }): { ledger: TaskLedger; created: boolean } {
+    if (input.taskId) {
+      const existing = TaskLedger.load(input.repoRoot, input.taskId);
+      if (existing) return { ledger: existing, created: false };
+    }
+    return { ledger: TaskLedger.create(input), created: true };
   }
 
   static load(repoRoot: string, taskId: string): TaskLedger | undefined {

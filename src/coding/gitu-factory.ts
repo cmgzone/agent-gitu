@@ -71,6 +71,8 @@ export interface GituFactoryOptions {
   /** Defaults to `true`: a plan is reviewed before implementation starts. */
   requirePlanReview?: boolean;
   resume?: { taskId: string; message: string };
+  /** Task id the host already reserved for this run (write-once adoption). */
+  taskId?: string;
   conversationHistory?: LlmMessage[];
   images?: { name: string; dataUrl: string }[];
   attachments?: ModelContextAttachment[];
@@ -158,6 +160,7 @@ export function buildGituConfig(options: GituFactoryOptions, deps: GituFactoryDe
     effort: options.effort,
     actionProtocolMode: options.actionProtocolMode,
     resume: options.resume,
+    taskId: options.taskId,
     conversationHistory: options.conversationHistory,
     images: options.images,
     attachments: options.attachments,

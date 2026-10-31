@@ -132,7 +132,7 @@ import { catalogCapabilityDeclared } from '../connections/catalog.js';
 import type { ApprovalHandler } from '../policy/policy.js';
 import { UniversalCapabilityRegistry } from '../connections/runtime/universal-registry.js';
 import type { ModelContextAttachment } from '../context/model-context.js';
-import type { CompletionReport, RiskTier, ToolResult } from '../types.js';
+import type { CompletionReport, ProjectLock, RiskTier, ToolResult } from '../types.js';
 import { nowIso, sha256, shortId } from '../util.js';
 import { createProject, ensureGituHome, gituHomeRoot, isDriveRoot, listProjects, loadWorkspaceSettings, projectsDir, sanitizeCustomProviders, updateWorkspaceSettings } from '../workspace/home.js';
 import { UI_HTML } from './ui.js';
@@ -828,6 +828,45 @@ export class GituServer {
       }
     }
     return undefined;
+  }
+
+  /**
+   * Bind the ledger this run will work in, at run start.
+   *
+   * Write-once: a continuation keeps the ledger it already had, and a brand-new
+   * run reserves one before the engine exists. That is what makes a session
+   * without a task impossible — even a run that dies during model setup has one
+   * durable task to resume. Failure to write the ledger is reported, not fatal:
+   * the engine surfaces storage problems in its own words.
+   */
+  private ensureRunLedger(
+    session: RunSession,
+    repoRoot: string,
+    project: ProjectLock,
+    opts: { goal: string; mode: 'agent' | 'fast' | 'standard' | 'chat'; resume?: { taskId: string } },
+  ): string | undefined {
+    const known = opts.resume?.taskId ?? session.taskId;
+    try {
+      const { ledger } = TaskLedger.ensure({
+        repoRoot,
+        taskId: known,
+        goal: opts.goal,
+        project,
+        mode: opts.mode,
+        ...(session.branch ? { gitBranch: session.branch } : {}),
+      });
+      if (session.taskId !== ledger.data.taskId) {
+        session.taskId = ledger.data.taskId;
+        this.persistSession(session);
+      }
+      return ledger.data.taskId;
+    } catch (error) {
+      logger.warn(
+        { subsystem: 'ledger', runId: session.runId, repoRoot, ...errorMetadata(error) },
+        'Could not reserve a task ledger for this run',
+      );
+      return known;
+    }
   }
 
   /** Session worktrees must never live under <repo>/.hermes. That directory is
@@ -8360,6 +8399,21 @@ export class GituServer {
       connection?.resolve(false);
       void runtime?.cancel('Stopped by user.');
 
+      // A stop that lands before the engine attached has no agent loop to notice
+      // the abort, so the durable note is written here instead. A stopped run
+      // must always say so in its ledger, not only when a model turn got the
+      // chance to observe the abort.
+      if (!gitu && session.taskId) {
+        try {
+          const stopRoot = session.worktreePath ?? session.projectPath ?? this.config.cwd;
+          const stoppedLedger = TaskLedger.load(stopRoot, session.taskId);
+          if (stoppedLedger && !stoppedLedger.data.blockers.some((blocker) => blocker.includes('Stopped by user'))) {
+            stoppedLedger.addBlocker('Stopped by user.');
+          }
+        } catch (error) {
+          logger.warn({ subsystem: 'ledger', runId: session.runId, taskId: session.taskId, ...errorMetadata(error) }, 'Could not record the stop in the task ledger');
+        }
+      }
       this.pushEvent(session, 'stopped by user');
       this.sendJson(res, 200, { ok: true });
       return;
@@ -8848,15 +8902,16 @@ export class GituServer {
     const isCurrentExecution = (): boolean => !this.stopping && this.sessions.get(session.runId) === session && session.executionGeneration === generation && session.gitu === activeGitu;
     let root: string;
     let ignorePaths: string[] | undefined;
+    let projectLock: ProjectLock;
     this.pushEvent(session, 'activity preparing-project');
     // Catalog modality is the source of truth for image support; warm the
     // catalog once per run so even brand-new providers report vision correctly.
     peekModelCatalog() ?? (await fetchModelCatalog().catch(() => undefined));
     if (!isCurrentExecution()) return;
     try {
-      const lock = (await ProjectGuard.detectAsync(opts.projectPath ?? this.config.cwd)).lock;
-      root = lock.repoRoot;
-      ignorePaths = lock.ignorePaths;
+      projectLock = (await ProjectGuard.detectAsync(opts.projectPath ?? this.config.cwd)).lock;
+      root = projectLock.repoRoot;
+      ignorePaths = projectLock.ignorePaths;
     } catch (error) {
       // A stale picker/session path must never execute against the server's
       // unrelated default project. Keep this session and its task for recovery.
@@ -8866,6 +8921,10 @@ export class GituServer {
       this.persistSession(session);
       return;
     }
+    // Every run owns a ledger from its first moment. Reserving it here — rather
+    // than when the engine happens to emit its first line — is what makes a
+    // session without a task impossible, including runs that fail in setup.
+    const reservedTaskId = this.ensureRunLedger(session, root, projectLock, opts);
     const index = llm.nativeTask ? undefined : this.sharedIndex(root, ignorePaths);
     if (index && !index.isFresh()) this.pushEvent(session, 'activity indexing-project');
     if (index) await index.ensureFreshAsync(root, ignorePaths ?? []);
@@ -9126,6 +9185,7 @@ export class GituServer {
         contextWindowTokens,
         modelCapability,
         resume: opts.resume,
+        taskId: reservedTaskId,
         conversationHistory: opts.conversationHistory,
         images: opts.images,
         attachments: opts.attachments,

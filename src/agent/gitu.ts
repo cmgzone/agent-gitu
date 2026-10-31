@@ -280,6 +280,8 @@ export interface GituConfig {
    *  specialists are invisible to it too). */
   memoryRetrieval?: MemoryRetrievalContext;
   resume?: { taskId: string; message: string };
+  /** Task id a host already reserved for this run (write-once adoption). */
+  taskId?: string;
   /** Prior user/assistant turns for a resumed server session. */
   conversationHistory?: LlmMessage[];
   autoLearn?: boolean;
@@ -554,14 +556,25 @@ export class Gitu {
         /* diagnostics must never block a resume */
       }
     } else {
-      ledger = TaskLedger.create({
+      // A run never begins without a ledger. The host may have reserved one
+      // before this engine was built (write-once), so adopt that id instead of
+      // creating a second, orphaned task for the same run.
+      const reserved = TaskLedger.ensure({
         repoRoot: guard.lock.repoRoot,
+        taskId: this.config.taskId,
         goal,
         project: guard.lock,
         mode: this.config.mode ?? 'standard',
       });
+      ledger = reserved.ledger;
       if (this.config.extraConstraints && this.config.extraConstraints.length > 0) {
-        ledger.data.constraints = [...ledger.data.constraints, ...this.config.extraConstraints];
+        const known = new Set(ledger.data.constraints);
+        for (const constraint of this.config.extraConstraints) {
+          if (!known.has(constraint)) {
+            known.add(constraint);
+            ledger.data.constraints.push(constraint);
+          }
+        }
       }
       this.emit(`ledger   created: ${ledger.data.taskId}`);
     }

@@ -6,6 +6,7 @@ import { gitExec } from '../src/git/git.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
 import { TaskLedger } from '../src/ledger/task-ledger.js';
 import { compareProjectIdentity, readProjectIdentity } from '../src/ledger/project-identity.js';
+import { acquireTaskLock, readTaskLock, taskLockPath, TASK_LOCK_STALE_MS } from '../src/ledger/task-lock.js';
 import { ScriptedMockLlm, type LlmClient, type LlmDeltaHandler, type LlmMessage, type LlmOptions } from '../src/llm/llm.js';
 import { HermesServer } from '../src/server/server.js';
 import { SessionStore } from '../src/server/session-store.js';
@@ -78,6 +79,8 @@ function eventTexts(server: HermesServer, runId: string): string[] {
   const sessions = (server as unknown as { sessions: Map<string, { events: { text: string }[] }> }).sessions;
   return (sessions.get(runId)?.events ?? []).map((event) => event.text);
 }
+
+const ACKNOWLEDGE = (): string => JSON.stringify({ action: { type: 'complete', summary: 'acknowledged', chat: true } });
 
 const COMPLETE_ONCE = (): string => JSON.stringify({ action: { type: 'complete', summary: 'acknowledged', risks: [], followUps: [] } });
 
@@ -422,5 +425,116 @@ describe('task ledger hardening — worktree revalidation', () => {
     expect(eventTexts(server, 'run-downgrade').some((line) => line.includes('isolation unavailable'))).toBe(true);
     const reloaded = TaskLedger.load(path.resolve(dir), ledger.data.taskId);
     expect(reloaded?.data.worktreePath).toBeUndefined();
+  }, 60000);
+});
+
+describe('task ledger hardening — concurrent resume guard', () => {
+  const servers: HermesServer[] = [];
+
+  afterAll(async () => {
+    for (const server of servers) await server.stop();
+  });
+
+  async function startServer(dir: string, llm: LlmClient): Promise<{ base: string; server: HermesServer }> {
+    const server = new HermesServer({ passwordRequired: false, cwd: dir, port: 0, llm });
+    servers.push(server);
+    const port = await server.start();
+    return { base: `http://127.0.0.1:${port}`, server };
+  }
+
+  it('refuses a second holder, then succeeds once the lock is stale', () => {
+    const dir = makeProject('lock-unit');
+    const started = 1_000_000;
+    const first = acquireTaskLock({ repoRoot: dir, taskId: 'task-lock', runId: 'run-a', pid: 111, now: started });
+    expect(first.ok).toBe(true);
+    expect(readTaskLock(dir, 'task-lock')).toMatchObject({ runId: 'run-a', pid: 111 });
+
+    // A second resume, one minute later, is refused with an actionable message.
+    const second = acquireTaskLock({ repoRoot: dir, taskId: 'task-lock', runId: 'run-b', pid: 222, now: started + 60_000 });
+    expect(second.ok).toBe(false);
+    if (!second.ok) {
+      expect(second.refusal.held.runId).toBe('run-a');
+      expect(second.refusal.message).toContain('already being resumed by run run-a');
+      expect(second.refusal.message).toContain('pid 111');
+      expect(second.refusal.message).toContain('retry');
+    }
+    // The refused attempt did not touch the holder's lock.
+    expect(readTaskLock(dir, 'task-lock')?.runId).toBe('run-a');
+
+    // The same run continuing is not a conflict.
+    expect(acquireTaskLock({ repoRoot: dir, taskId: 'task-lock', runId: 'run-a', now: started + 120_000 }).ok).toBe(true);
+
+    // Once the window has passed, an abandoned lock can be taken over.
+    const takeover = acquireTaskLock({ repoRoot: dir, taskId: 'task-lock', runId: 'run-b', pid: 222, now: started + 120_000 + TASK_LOCK_STALE_MS + 1 });
+    expect(takeover.ok).toBe(true);
+    if (takeover.ok) {
+      expect(takeover.lock.takenOver).toBe(true);
+      // The old owner must not be able to free the lock it no longer holds.
+      if (first.ok) first.lock.release();
+      expect(readTaskLock(dir, 'task-lock')?.runId).toBe('run-b');
+      takeover.lock.release();
+      expect(readTaskLock(dir, 'task-lock')).toBeUndefined();
+      expect(existsSync(taskLockPath(dir, 'task-lock'))).toBe(false);
+    }
+  });
+
+  it('blocks a second concurrent resume and lets it through after the lock goes stale', async () => {
+    const dir = makeProject('lock-http');
+    await initGitRepo(dir);
+    const guard = ProjectGuard.detect(dir);
+    const ledger = TaskLedger.create({ repoRoot: path.resolve(dir), goal: 'resume once', project: guard.lock, mode: 'standard' });
+    const taskId = ledger.data.taskId;
+
+    // Another live run already holds this task.
+    const holder = acquireTaskLock({ repoRoot: path.resolve(dir), taskId, runId: 'run-holder', pid: 4321 });
+    expect(holder.ok).toBe(true);
+
+    new SessionStore().upsertSession({
+      runId: 'run-contender',
+      taskId,
+      goal: 'resume once',
+      project: 'lock-http',
+      projectPath: path.resolve(dir),
+      startedAt: new Date().toISOString(),
+      status: 'blocked',
+      mode: 'standard',
+    });
+
+    const { base, server } = await startServer(dir, new ScriptedMockLlm([ACKNOWLEDGE]));
+    const blocked = await fetch(`${base}/api/runs/run-contender/message`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'continue' }),
+    });
+    expect(blocked.status).toBe(409);
+    const blockedBody = (await blocked.json()) as { error: string; taskLock: { runId: string; pid: number } };
+    expect(blockedBody.error).toContain('already being resumed by run run-holder');
+    expect(blockedBody.taskLock).toMatchObject({ runId: 'run-holder', pid: 4321 });
+    // Nothing ran, and the ledger was not rewritten by the refused attempt.
+    expect(TaskLedger.load(path.resolve(dir), taskId)?.data.status).toBe('intake');
+    expect(readTaskLock(path.resolve(dir), taskId)?.runId).toBe('run-holder');
+
+    // Age the lock past the staleness window: now the same resume is allowed.
+    const stale = Date.now() - TASK_LOCK_STALE_MS - 60_000;
+    writeFileSync(
+      taskLockPath(path.resolve(dir), taskId),
+      JSON.stringify({ taskId, runId: 'run-holder', pid: 4321, startedAt: new Date(stale).toISOString(), startedAtMs: stale, staleAfterMs: TASK_LOCK_STALE_MS }, null, 2),
+    );
+    const allowed = await fetch(`${base}/api/runs/run-contender/message`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'continue' }),
+    });
+    expect(allowed.status).toBe(200);
+    expect(((await allowed.json()) as { resumed: boolean }).resumed).toBe(true);
+
+    const done = await waitFor(async () => {
+      const session = (await fetch(`${base}/api/runs/run-contender`).then((r) => r.json())) as { status: string; error?: string };
+      return session.status !== 'running' ? session : undefined;
+    });
+    expect(done.status).toBe('completed');
+    expect(eventTexts(server, 'run-contender').some((line) => line.includes('took over an abandoned resume lock'))).toBe(true);
+    // The finished run released the lock it took over.
+    expect(readTaskLock(path.resolve(dir), taskId)).toBeUndefined();
   }, 60000);
 });

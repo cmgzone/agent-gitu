@@ -95,6 +95,7 @@ import { ProjectGuard, ProjectGuardError } from '../guard/project-guard.js';
 import { gitCommit, gitDiff, gitDiscard, gitInfo, gitInit, gitPush } from '../git/git.js';
 import { TaskLedger } from '../ledger/task-ledger.js';
 import { samePath } from '../ledger/project-identity.js';
+import { acquireTaskLock } from '../ledger/task-lock.js';
 import { gitExec } from '../git/git.js';
 import type { LlmClient, LlmMessage, LlmUsage } from '../llm/llm.js';
 import { LlmError, UsageTrackingClient, extractLastJsonObject } from '../llm/llm.js';
@@ -518,6 +519,11 @@ export class GituServer {
   /** Runtime-owned session guarantees. Approval resolution authority lives here;
    *  the run path keeps a compatibility mirror for the existing endpoint and UI. */
   private readonly gituRuntime = new GituSessionRuntime();
+  /**
+   * Advisory resume locks held by this process, keyed by task id. The lock file
+   * is the authority; this map only remembers what to release when a run ends.
+   */
+  private readonly taskResumeLocks = new Map<string, { taskId: string; runId: string; release: () => void }>();
   private scheduler?: CronScheduler;
   private cronStore?: CronStore;
   private store?: SessionStore;
@@ -8697,6 +8703,7 @@ export class GituServer {
         return;
       }
       let execRoot: string;
+      let ledgerRoot: string | undefined;
       if (session.taskId) {
         let taskRoot = this.resolveTaskRoot(session.taskId, session.projectPath);
         let ledger = taskRoot ? TaskLedger.load(taskRoot, session.taskId) : undefined;
@@ -8813,6 +8820,7 @@ export class GituServer {
           this.sendJson(res, 409, { error: `Execution rejected: ${envCheck.reason}` });
           return;
         }
+        ledgerRoot = taskRoot;
       } else {
         execRoot = session.worktreePath ?? session.projectPath ?? this.projectRoot() ?? this.config.cwd;
       }
@@ -8908,6 +8916,44 @@ export class GituServer {
       this.pushEvent(session, `user-msg ${text}`);
       for (const file of stored.files) this.pushEvent(session, `file ${JSON.stringify(this.fileView(file))}`);
       this.pushEvent(session, `continue — resuming this session`);
+      if (session.taskId && ledgerRoot) {
+        // Two sessions must never resume the same task at once: each run rewrites
+        // the whole ledger from its own copy. The lock is advisory, carries
+        // pid/timestamp/runId, and an abandoned one (older than the staleness
+        // window) can be taken over so a crash cannot block the task forever.
+        let claim: ReturnType<typeof acquireTaskLock> | undefined;
+        try {
+          claim = acquireTaskLock({ repoRoot: ledgerRoot, taskId: session.taskId, runId: session.runId });
+        } catch (error) {
+          logger.warn({ subsystem: 'ledger', runId: session.runId, taskId: session.taskId, ...errorMetadata(error) }, 'Could not take the resume lock; continuing without it');
+        }
+        if (claim && !claim.ok) {
+          session.status = prevStatus;
+          this.pushEvent(session, `blocked ${claim.refusal.message}`);
+          this.sendJson(res, 409, {
+            error: claim.refusal.message,
+            taskLock: {
+              taskId: claim.refusal.held.taskId,
+              runId: claim.refusal.held.runId,
+              pid: claim.refusal.held.pid,
+              startedAt: claim.refusal.held.startedAt,
+              ageMs: claim.refusal.ageMs,
+              staleAfterMs: claim.refusal.staleAfterMs,
+            },
+          });
+          return;
+        }
+        if (claim?.lock) {
+          this.taskResumeLocks.set(session.taskId, {
+            taskId: session.taskId,
+            runId: session.runId,
+            release: claim.lock.release,
+          });
+          if (claim.lock.takenOver) {
+            this.pushEvent(session, `ledger   took over an abandoned resume lock for ${session.taskId} (older than ${Math.round(claim.lock.record.staleAfterMs / 60000)}m)`);
+          }
+        }
+      }
       void this.executeRun(session, llm, {
         goal: nextGoal,
         mode: session.mode ?? 'standard',
@@ -9569,7 +9615,26 @@ export class GituServer {
       session.finishedAt = session.status === 'waiting_for_model' ? undefined : nowIso();
       this.pushEvent(session, `run finished: ${session.status}`);
       if(session.coworkTask&&session.status!=='running'&&session.status!=='waiting_for_model')this.notifyCodingOutcome(session.runId);
+      this.releaseTaskResumeLock(session);
       this.saveRegistry();
+    }
+  }
+
+  /**
+   * Drop this run's advisory resume lock.
+   *
+   * Only the owning run may release: a newer resume that took the lock over keeps
+   * it, so a late finish of a superseded run cannot free a live one.
+   */
+  private releaseTaskResumeLock(session: RunSession): void {
+    if (!session.taskId) return;
+    const held = this.taskResumeLocks.get(session.taskId);
+    if (!held || held.runId !== session.runId) return;
+    this.taskResumeLocks.delete(session.taskId);
+    try {
+      held.release();
+    } catch (error) {
+      logger.warn({ subsystem: 'ledger', runId: session.runId, taskId: session.taskId, ...errorMetadata(error) }, 'Could not release the resume lock');
     }
   }
 }

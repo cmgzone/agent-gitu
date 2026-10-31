@@ -1,4 +1,4 @@
-import { readdirSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import type {
   AcceptanceCriterion,
@@ -19,6 +19,7 @@ import type {
   TaskFinding,
   TaskLedgerData,
   TaskStatus,
+  ProjectIdentity,
   SkillLifecycleEvent,
   UserInstruction,
   VisualReference,
@@ -55,6 +56,7 @@ function normalizeStepInput(steps: PlanStepInput[]): NormalizedStep[] {
   }));
 }
 import { gitExec } from '../git/git.js';
+import { compareProjectIdentity, readProjectIdentity, samePath, type IdentityMatch } from './project-identity.js';
 import { nowIso, readJson, shortId, writeJson } from '../util.js';
 
 export class TaskLedger {
@@ -101,6 +103,7 @@ export class TaskLedger {
       status: 'intake',
       mode: input.mode,
       project: input.project,
+      projectIdentity: readProjectIdentity(input.repoRoot),
       gitBranch: input.gitBranch ?? input.project.branch,
       worktreePath: input.worktreePath,
       activeSkills: input.activeSkills ?? [],
@@ -149,6 +152,47 @@ export class TaskLedger {
     return { ledger: TaskLedger.create(input), created: true };
   }
 
+  /**
+   * Find a task whose recorded project path is gone.
+   *
+   * The absolute path in a ledger can become meaningless (renamed folder,
+   * restored backup, re-cloned repository) while the project is still the same
+   * project. Each candidate root that holds this task id is checked against the
+   * identity recorded for the task: fingerprint first, then remote, then the
+   * recorded path. `expected` is that identity when the caller already knows it
+   * (a session records the identity it was bound to); otherwise the ledger's own
+   * record is used. A candidate that is provably a different project never wins,
+   * and a single unverifiable candidate (a non-Git project, or a ledger written
+   * before identities existed) is accepted only because the task id is unique.
+   */
+  static locate(
+    taskId: string,
+    candidates: string[],
+    expected?: ProjectIdentity,
+  ): { ledger: TaskLedger; root: string; previousRoot?: string; identity: IdentityMatch } | undefined {
+    const verified: { ledger: TaskLedger; root: string; previousRoot?: string; identity: IdentityMatch }[] = [];
+    const unverified: typeof verified = [];
+    const seen = new Set<string>();
+    for (const candidate of candidates) {
+      if (!candidate) continue;
+      const root = path.resolve(candidate);
+      const key = process.platform === 'win32' ? root.toLowerCase() : root;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (!existsSync(path.join(root, '.hermes', 'tasks', `${taskId}.json`))) continue;
+      const ledger = TaskLedger.load(root, taskId);
+      if (!ledger) continue;
+      const recordedRoot = expected?.root ?? ledger.data.projectIdentity?.root;
+      const identity = compareProjectIdentity(expected ?? ledger.data.projectIdentity, root);
+      if (identity === 'mismatch') continue;
+      const entry = { ledger, root, ...(recordedRoot && !samePath(recordedRoot, root) ? { previousRoot: recordedRoot } : {}), identity };
+      if (identity === 'match') verified.push(entry);
+      else unverified.push(entry);
+    }
+    if (verified.length > 0) return verified[0];
+    return unverified.length === 1 ? unverified[0] : undefined;
+  }
+
   static load(repoRoot: string, taskId: string): TaskLedger | undefined {
     const file = path.join(repoRoot, '.hermes', 'tasks', `${taskId}.json`);
     const data = readJson<TaskLedgerData>(file);
@@ -172,6 +216,47 @@ export class TaskLedger {
   save(): void {
     this.data.updatedAt = nowIso();
     writeJson(this.file, this.data);
+  }
+
+  /**
+   * Hydrate the identity on a ledger written before identities existed.
+   *
+   * Deliberately explicit rather than a side effect of `load`: most callers
+   * only read a ledger, and they must not rewrite it.
+   */
+  ensureProjectIdentity(repoRoot = this.data.project.repoRoot): ProjectIdentity {
+    if (!this.data.projectIdentity) {
+      this.data.projectIdentity = readProjectIdentity(repoRoot);
+      this.save();
+    }
+    return this.data.projectIdentity;
+  }
+
+  /**
+   * Re-bind this task to the project root it now lives in.
+   *
+   * The ledger file does not move — it was found inside the new root. What
+   * changes is the recorded binding (project root, workspace authority, identity)
+   * plus an audit note of where it came from.
+   */
+  relocateTo(root: string): void {
+    const target = path.resolve(root);
+    const previousRoot = this.data.projectIdentity?.root ?? this.data.project.repoRoot;
+    const workspace = this.data.project.workspace;
+    const reboundWorkspace = workspace
+      ? {
+          ...workspace,
+          repositoryRoot: samePath(workspace.repositoryRoot, previousRoot) ? target : workspace.repositoryRoot,
+          worktreeRoot: samePath(workspace.worktreeRoot, previousRoot) ? target : workspace.worktreeRoot,
+          writableRoot: samePath(workspace.writableRoot, previousRoot) ? target : workspace.writableRoot,
+        }
+      : undefined;
+    this.data.project = { ...this.data.project, repoRoot: target, ...(reboundWorkspace ? { workspace: reboundWorkspace } : {}) };
+    this.data.projectIdentity = {
+      ...readProjectIdentity(target),
+      ...(samePath(previousRoot, target) ? {} : { relocatedFrom: previousRoot, relocatedAt: nowIso() }),
+    };
+    this.save();
   }
 
   ensureTaskAuthority(): TaskAuthority {

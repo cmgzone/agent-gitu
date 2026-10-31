@@ -94,6 +94,7 @@ import { CronScheduler, CronStore, parseEvery, type CronJob } from '../cron/sche
 import { ProjectGuard, ProjectGuardError } from '../guard/project-guard.js';
 import { gitCommit, gitDiff, gitDiscard, gitInfo, gitInit, gitPush } from '../git/git.js';
 import { TaskLedger } from '../ledger/task-ledger.js';
+import { samePath } from '../ledger/project-identity.js';
 import { gitExec } from '../git/git.js';
 import type { LlmClient, LlmMessage, LlmUsage } from '../llm/llm.js';
 import { LlmError, UsageTrackingClient, extractLastJsonObject } from '../llm/llm.js';
@@ -132,7 +133,7 @@ import { catalogCapabilityDeclared } from '../connections/catalog.js';
 import type { ApprovalHandler } from '../policy/policy.js';
 import { UniversalCapabilityRegistry } from '../connections/runtime/universal-registry.js';
 import type { ModelContextAttachment } from '../context/model-context.js';
-import type { CompletionReport, ProjectLock, RiskTier, ToolResult } from '../types.js';
+import type { CompletionReport, ProjectIdentity, ProjectLock, RiskTier, ToolResult } from '../types.js';
 import { nowIso, sha256, shortId } from '../util.js';
 import { createProject, ensureGituHome, gituHomeRoot, isDriveRoot, listProjects, loadWorkspaceSettings, projectsDir, sanitizeCustomProviders, updateWorkspaceSettings } from '../workspace/home.js';
 import { UI_HTML } from './ui.js';
@@ -200,6 +201,8 @@ export interface RunSessionView {
   writableFolders: string[];
   branch?: string;
   worktreePath?: string;
+  /** Identity of the project this session is bound to; additive to the view. */
+  projectIdentity?: ProjectIdentity;
   mode?: 'agent' | 'fast' | 'standard' | 'chat';
   provider?: string;
   model?: string;
@@ -283,6 +286,8 @@ interface RunSession {
   writableFolders: string[];
   branch?: string;
   worktreePath?: string;
+  /** Identity recorded for the task's project, when one has been recorded. */
+  projectIdentity?: ProjectIdentity;
   mode?: 'agent' | 'fast' | 'standard' | 'chat';
   provider?: string;
   model?: string;
@@ -831,6 +836,30 @@ export class GituServer {
   }
 
   /**
+   * Locate a task whose recorded project path no longer exists.
+   *
+   * Candidates are the roots this server already knows about (session project
+   * paths, managed projects, the configured workspace). The winner is decided by
+   * the identity the ledger recorded — remote URL and root-commit fingerprint —
+   * not by whichever path happens to still exist. A candidate that is provably a
+   * different project never wins.
+   */
+  private relocateTaskLedger(taskId: string, triedRoot?: string, session?: RunSession): { ledger: TaskLedger; root: string; previousRoot?: string } | undefined {
+    const candidates: string[] = [];
+    for (const session of this.sessions.values()) if (session.projectPath) candidates.push(session.projectPath);
+    for (const project of listProjects()) candidates.push(project.path);
+    candidates.push(this.config.cwd);
+    if (triedRoot) candidates.push(triedRoot);
+    const located = TaskLedger.locate(taskId, candidates, session?.projectIdentity);
+    if (!located) return undefined;
+    if (triedRoot && samePath(located.root, triedRoot)) return undefined;
+    const recordedRoot = located.ledger.data.projectIdentity?.root ?? located.ledger.data.project.repoRoot;
+    if (!samePath(recordedRoot, located.root)) located.ledger.relocateTo(located.root);
+    else located.ledger.ensureProjectIdentity();
+    return { ledger: located.ledger, root: located.root, previousRoot: located.previousRoot };
+  }
+
+  /**
    * Bind the ledger this run will work in, at run start.
    *
    * Write-once: a continuation keeps the ledger it already had, and a brand-new
@@ -855,8 +884,11 @@ export class GituServer {
         mode: opts.mode,
         ...(session.branch ? { gitBranch: session.branch } : {}),
       });
-      if (session.taskId !== ledger.data.taskId) {
+      const identity = ledger.data.projectIdentity ?? ledger.ensureProjectIdentity(repoRoot);
+      const rebound = !samePath(session.projectIdentity?.root, identity.root) || session.projectIdentity?.fingerprint !== identity.fingerprint;
+      if (session.taskId !== ledger.data.taskId || rebound) {
         session.taskId = ledger.data.taskId;
+        session.projectIdentity = identity;
         this.persistSession(session);
       }
       return ledger.data.taskId;
@@ -1024,6 +1056,7 @@ export class GituServer {
       writableFolders: s.writableFolders,
       branch: s.branch,
       worktreePath: s.worktreePath,
+      projectIdentity: s.projectIdentity,
       startedAt: s.startedAt,
       status: s.status,
       finishedAt: s.finishedAt,
@@ -1221,6 +1254,7 @@ export class GituServer {
         writableFolders: (entry.writableFolders ?? []).filter((folder) => (entry.taggedFolders ?? []).includes(folder)),
         branch,
         worktreePath,
+        projectIdentity: entry.projectIdentity ?? undefined,
         mode,
         provider: entry.provider,
         model: entry.model,
@@ -6115,6 +6149,7 @@ export class GituServer {
       writableFolders: s.writableFolders,
       branch: s.branch,
       worktreePath: s.worktreePath,
+      projectIdentity: s.projectIdentity,
       mode: s.mode,
       provider: s.provider,
       model: s.model,
@@ -8564,13 +8599,30 @@ export class GituServer {
       }
       let execRoot: string;
       if (session.taskId) {
-        const taskRoot = this.resolveTaskRoot(session.taskId, session.projectPath);
+        let taskRoot = this.resolveTaskRoot(session.taskId, session.projectPath);
+        let ledger = taskRoot ? TaskLedger.load(taskRoot, session.taskId) : undefined;
+        if (!ledger) {
+          // The recorded project path may be gone (renamed folder, restored
+          // backup, re-clone). Resolve the task by the identity it recorded
+          // rather than failing on a path that no longer exists.
+          const located = this.relocateTaskLedger(session.taskId, taskRoot, session);
+          if (located) {
+            taskRoot = located.root;
+            ledger = located.ledger;
+            session.projectPath = located.root;
+            session.project = located.root.split(/[\\/]/).filter(Boolean).pop();
+            this.persistSession(session);
+            this.pushEvent(
+              session,
+              `ledger   relocated: ${session.taskId} → ${located.root}${located.previousRoot ? ` (recorded at ${located.previousRoot}, which no longer exists)` : ''}`,
+            );
+          }
+        }
         if (!taskRoot) {
           session.status = prevStatus;
           this.sendJson(res, 409, { error: `Cannot resolve project root for task ${session.taskId}` });
           return;
         }
-        const ledger = TaskLedger.load(taskRoot, session.taskId);
         if (!ledger) {
           session.status = prevStatus;
           this.sendJson(res, 404, { error: `Task ledger ${session.taskId} not found at ${taskRoot}` });

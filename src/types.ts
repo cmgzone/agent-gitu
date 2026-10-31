@@ -32,6 +32,27 @@ export interface WorkspaceAuthority {
 
 export type CriterionEvidenceType = 'command_success' | 'test_success' | 'build_success' | 'lint_success' | 'typecheck_success' | 'any';
 
+/**
+ * What a task is bound to, independent of where the folder currently lives.
+ *
+ * A path is not an identity: a renamed folder, a restored backup, or a fresh
+ * clone of the same repository all move a project legitimately. Recording the
+ * remote and a content-derived fingerprint lets a task be found again by
+ * identity when its old path is gone.
+ */
+export interface ProjectIdentity {
+  /** Absolute project root at the moment the identity was recorded. */
+  root: string;
+  /** `remote.origin.url` from the local Git config, when the project has one. */
+  remoteUrl?: string;
+  /** Root commit sha (or git directory) — stable across a move and a re-clone. */
+  fingerprint?: string;
+  recordedAt: string;
+  /** Set when the task was relocated from a path that no longer existed. */
+  relocatedFrom?: string;
+  relocatedAt?: string;
+}
+
 export interface CriterionSpec {
   text: string;
   verification?: string;
@@ -701,6 +722,12 @@ export interface TaskLedgerData {
   status: TaskStatus;
   mode: 'agent' | 'fast' | 'standard' | 'chat';
   project: ProjectLock;
+  /**
+   * Who this task belongs to, recorded beside the path so a moved project can
+   * be recognised instead of abandoned. Additive: ledgers written before this
+   * field existed simply have no identity and are matched by task id alone.
+   */
+  projectIdentity?: ProjectIdentity;
   gitBranch?: string;
   worktreePath?: string;
   activeSkills?: string[];

@@ -2,7 +2,7 @@ import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import type { CompletionReport } from '../types.js';
+import type { CompletionReport, ProjectIdentity } from '../types.js';
 import { ensureGituHome, homeEnvOverride } from '../workspace/home.js';
 
 export interface SessionUsage {
@@ -19,6 +19,20 @@ export interface SessionUsage {
   costIncomplete?: boolean;
 }
 
+/**
+ * Read a stored project identity. A row written before identities existed, or one
+ * whose payload is unreadable, simply has no identity — never a failed read.
+ */
+function parseStoredIdentity(raw: string | null | undefined): ProjectIdentity | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as ProjectIdentity;
+    return parsed && typeof parsed.root === 'string' ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export interface StoredSession {
   coworkTask?: { agentId: string; agentName: string; conversationId: string; companyId?: string; missionId?: string; execution: 'host' | 'private'; workspacePath?: string; recoveryAttempts?:number; previousFailure?:string; recoveryRunId?:string; reviewRootId?:string };
   modelRecovery?: { attempt: number; nextRetryAt: string };
@@ -31,6 +45,12 @@ export interface StoredSession {
   writableFolders?: string[];
   branch?: string;
   worktreePath?: string;
+  /**
+   * Identity of the project this session is bound to (root, remote, root-commit
+   * fingerprint). Additive: rows written before it existed simply have none, and
+   * resolution then falls back to the task id alone.
+   */
+  projectIdentity?: ProjectIdentity;
   startedAt: string;
   status: string;
   finishedAt?: string;
@@ -121,6 +141,7 @@ export class SessionStore {
          writableFolders TEXT,
          branch TEXT,
          worktreePath TEXT,
+         projectIdentity TEXT,
          startedAt TEXT,
          status TEXT,
          finishedAt TEXT,
@@ -183,6 +204,7 @@ export class SessionStore {
       ['sessions', 'coworkTask TEXT'],
       ['sessions', 'branch TEXT'],
       ['sessions', 'worktreePath TEXT'],
+      ['sessions', 'projectIdentity TEXT'],
       ['sessions', 'taggedFolders TEXT'],
       ['sessions', 'writableFolders TEXT'],
       // Per-turn failure taxonomy. Operator-facing only: no board or gate reads
@@ -203,8 +225,8 @@ export class SessionStore {
   upsertSession(s: StoredSession): void {
     this.db
       .prepare(
-        `INSERT INTO sessions (runId, taskId, goal, project, projectPath, taggedFolders, writableFolders, branch, worktreePath, startedAt, status, finishedAt, mode, provider, model, requestedProvider, requestedModel, activeProvider, activeModel, report, error, usage, modelRecovery, updatedAt, coworkTask, failureClass)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO sessions (runId, taskId, goal, project, projectPath, taggedFolders, writableFolders, branch, worktreePath, startedAt, status, finishedAt, mode, provider, model, requestedProvider, requestedModel, activeProvider, activeModel, report, error, usage, modelRecovery, updatedAt, coworkTask, failureClass, projectIdentity)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(runId) DO UPDATE SET
            taskId = excluded.taskId,
            goal = excluded.goal,
@@ -214,6 +236,7 @@ export class SessionStore {
            writableFolders = excluded.writableFolders,
            branch = excluded.branch,
            worktreePath = excluded.worktreePath,
+           projectIdentity = excluded.projectIdentity,
            status = excluded.status,
            finishedAt = excluded.finishedAt,
            mode = excluded.mode,
@@ -258,6 +281,7 @@ export class SessionStore {
         new Date().toISOString(),
         s.coworkTask ? JSON.stringify(s.coworkTask) : null,
         s.failureClass ?? null,
+        s.projectIdentity ? JSON.stringify(s.projectIdentity) : null,
       );
   }
 
@@ -350,6 +374,7 @@ export class SessionStore {
         writableFolders: string | null;
         branch: string | null;
         worktreePath: string | null;
+        projectIdentity: string | null;
         startedAt: string;
         status: string;
         finishedAt: string | null;
@@ -377,6 +402,7 @@ export class SessionStore {
       writableFolders: parseTaggedFolders(r.writableFolders),
       branch: r.branch ?? undefined,
       worktreePath: r.worktreePath ?? undefined,
+      projectIdentity: parseStoredIdentity(r.projectIdentity),
       startedAt: r.startedAt,
       status: r.status,
       finishedAt: r.finishedAt ?? undefined,
@@ -409,6 +435,7 @@ export class SessionStore {
         writableFolders: string | null;
         branch: string | null;
         worktreePath: string | null;
+        projectIdentity: string | null;
         startedAt: string;
         status: string;
         finishedAt: string | null;
@@ -437,6 +464,7 @@ export class SessionStore {
       writableFolders: parseTaggedFolders(r.writableFolders),
       branch: r.branch ?? undefined,
       worktreePath: r.worktreePath ?? undefined,
+      projectIdentity: parseStoredIdentity(r.projectIdentity),
       startedAt: r.startedAt,
       status: r.status,
       finishedAt: r.finishedAt ?? undefined,

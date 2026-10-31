@@ -1,12 +1,15 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, renameSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { gitExec } from '../src/git/git.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
 import { TaskLedger } from '../src/ledger/task-ledger.js';
-import { type LlmClient, type LlmDeltaHandler, type LlmMessage, type LlmOptions } from '../src/llm/llm.js';
+import { compareProjectIdentity, readProjectIdentity } from '../src/ledger/project-identity.js';
+import { ScriptedMockLlm, type LlmClient, type LlmDeltaHandler, type LlmMessage, type LlmOptions } from '../src/llm/llm.js';
 import { HermesServer } from '../src/server/server.js';
+import { SessionStore } from '../src/server/session-store.js';
+import { createProject } from '../src/workspace/home.js';
 
 function makeProject(name: string): string {
   const dir = mkdtempSync(path.join(tmpdir(), `hermes-hardening-${name}-`));
@@ -66,6 +69,16 @@ class GatedLlm implements LlmClient {
   }
 }
 
+/**
+ * Read a live session's transcript lines. The HTTP session view publishes state,
+ * not the transcript, so a test that asserts on what the run told the user reads
+ * the same in-memory rows the UI streams.
+ */
+function eventTexts(server: HermesServer, runId: string): string[] {
+  const sessions = (server as unknown as { sessions: Map<string, { events: { text: string }[] }> }).sessions;
+  return (sessions.get(runId)?.events ?? []).map((event) => event.text);
+}
+
 const COMPLETE_ONCE = (): string => JSON.stringify({ action: { type: 'complete', summary: 'acknowledged', risks: [], followUps: [] } });
 
 describe('task ledger hardening — a run always owns a ledger', () => {
@@ -75,11 +88,11 @@ describe('task ledger hardening — a run always owns a ledger', () => {
     for (const server of servers) await server.stop();
   });
 
-  async function startServer(dir: string, llm: LlmClient): Promise<string> {
+  async function startServer(dir: string, llm: LlmClient): Promise<{ base: string; server: HermesServer }> {
     const server = new HermesServer({ passwordRequired: false, cwd: dir, port: 0, llm });
     servers.push(server);
     const port = await server.start();
-    return `http://127.0.0.1:${port}`;
+    return { base: `http://127.0.0.1:${port}`, server };
   }
 
   it('creates a ledger once and never rewrites it (write-once ensure)', () => {
@@ -110,7 +123,7 @@ describe('task ledger hardening — a run always owns a ledger', () => {
     const dir = makeProject('run-start');
     await initGitRepo(dir);
     const llm = new GatedLlm();
-    const base = await startServer(dir, llm);
+    const { base } = await startServer(dir, llm);
 
     const created = (await fetch(`${base}/api/runs`, {
       method: 'POST',
@@ -137,5 +150,107 @@ describe('task ledger hardening — a run always owns a ledger', () => {
     });
     expect(finished.taskId).toBe(bound.taskId);
     expect(TaskLedger.list(path.resolve(dir))).toHaveLength(1);
+  }, 60000);
+});
+
+describe('task ledger hardening — identity-based resolution', () => {
+  const servers: HermesServer[] = [];
+
+  afterAll(async () => {
+    for (const server of servers) await server.stop();
+  });
+
+  async function startServer(dir: string, llm: LlmClient): Promise<{ base: string; server: HermesServer }> {
+    const server = new HermesServer({ passwordRequired: false, cwd: dir, port: 0, llm });
+    servers.push(server);
+    const port = await server.start();
+    return { base: `http://127.0.0.1:${port}`, server };
+  }
+
+  it('identifies a project by content, so a rename does not change who it is', async () => {
+    const original = makeProject('identity');
+    await initGitRepo(original);
+    const identity = readProjectIdentity(original);
+    expect(identity.root).toBe(path.resolve(original));
+    expect(identity.fingerprint).toMatch(/^root-commit:[0-9a-f]{40}$/);
+
+    const moved = `${original}-moved`;
+    renameSync(original, moved);
+    expect(compareProjectIdentity(identity, moved)).toBe('match');
+
+    // A different repository is provably not this project.
+    const other = makeProject('identity-other');
+    await initGitRepo(other);
+    expect(compareProjectIdentity(identity, other)).toBe('mismatch');
+  }, 60000);
+
+  it('locates a moved ledger by identity and refuses a different project', async () => {
+    const original = makeProject('locate');
+    await initGitRepo(original);
+    const guard = ProjectGuard.detect(original);
+    const ledger = TaskLedger.create({ repoRoot: path.resolve(original), goal: 'moved task', project: guard.lock, mode: 'standard' });
+
+    // A decoy project holding the same task id but a different history.
+    const decoy = makeProject('locate-decoy');
+    await initGitRepo(decoy);
+    const decoyGuard = ProjectGuard.detect(decoy);
+    TaskLedger.create({ repoRoot: path.resolve(decoy), goal: 'decoy', project: decoyGuard.lock, mode: 'standard', taskId: ledger.data.taskId });
+
+    // The identity the task was recorded under outranks a duplicate task id.
+    expect(TaskLedger.locate(ledger.data.taskId, [decoy], ledger.data.projectIdentity)).toBeUndefined();
+
+    const moved = `${original}-moved`;
+    renameSync(original, moved);
+    const located = TaskLedger.locate(ledger.data.taskId, [path.resolve(decoy), path.resolve(moved)], ledger.data.projectIdentity);
+    expect(located?.root).toBe(path.resolve(moved));
+    expect(located?.previousRoot).toBe(path.resolve(original));
+    expect(located?.identity).toBe('match');
+  }, 60000);
+
+  it('relocates a task whose recorded project path no longer exists instead of failing', async () => {
+    const managed = createProject('moved-ledger-project');
+    await initGitRepo(managed.path);
+    const guard = ProjectGuard.detect(managed.path);
+    const ledger = TaskLedger.create({ repoRoot: path.resolve(managed.path), goal: 'survive the move', project: guard.lock, mode: 'standard' });
+
+    const elsewhere = makeProject('moved-ledger-cwd');
+    new SessionStore().upsertSession({
+      runId: 'run-moved-project',
+      taskId: ledger.data.taskId,
+      goal: 'survive the move',
+      project: 'moved-ledger-project',
+      projectPath: path.resolve(managed.path),
+      startedAt: new Date().toISOString(),
+      status: 'blocked',
+      mode: 'standard',
+    });
+
+    // Everything the task recorded moves with the folder; the old path is gone.
+    const movedPath = `${managed.path}-relocated`;
+    renameSync(managed.path, movedPath);
+
+    const { base, server } = await startServer(elsewhere, new ScriptedMockLlm([COMPLETE_ONCE]));
+    const res = await fetch(`${base}/api/runs/run-moved-project/message`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'continue' }),
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { resumed: boolean }).resumed).toBe(true);
+
+    const done = await waitFor(async () => {
+      const session = (await fetch(`${base}/api/runs/run-moved-project`).then((r) => r.json())) as { status: string; projectPath?: string };
+      return session.status !== 'running' ? session : undefined;
+    });
+    expect(done.projectPath).toBe(path.resolve(movedPath));
+    expect(eventTexts(server, 'run-moved-project').some((line) => line.includes('ledger   relocated'))).toBe(true);
+
+    const relocated = TaskLedger.load(path.resolve(movedPath), ledger.data.taskId);
+    expect(relocated?.data.project.repoRoot).toBe(path.resolve(movedPath));
+    expect(relocated?.data.projectIdentity?.root).toBe(path.resolve(movedPath));
+    expect(relocated?.data.projectIdentity?.relocatedFrom).toBe(path.resolve(managed.path));
+    // The stale copy of the coordinate is gone, and no second task appeared.
+    expect(existsSync(path.join(managed.path, '.hermes', 'tasks'))).toBe(false);
+    expect(TaskLedger.list(path.resolve(movedPath))).toHaveLength(1);
   }, 60000);
 });

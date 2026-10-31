@@ -272,7 +272,7 @@ describe('HermesServer — session ↔ task ↔ git attachment (P0.1)', () => {
     expect(body.resumed).toBe(true);
   }, 30000);
 
-  it('rejects continuation when the task ledger is gone (404, no silent new task)', async () => {
+  it('self-heals a missing task ledger from session metadata instead of refusing', async () => {
     const dir = makeProject('orphan');
     new SessionStore().upsertSession({
       runId: 'run-orphan',
@@ -285,16 +285,47 @@ describe('HermesServer — session ↔ task ↔ git attachment (P0.1)', () => {
       mode: 'standard',
     });
 
-    const { base } = await startServer(dir, new ScriptedMockLlm([]));
+    const { base } = await startServer(dir, new ScriptedMockLlm([() => JSON.stringify({ action: { type: 'complete', summary: 'continued', risks: [], followUps: [] } })]));
     const res = await fetch(`${base}/api/runs/run-orphan/message`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ text: 'resume' }),
     });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { resumed: boolean }).resumed).toBe(true);
+
+    // The rebuilt ledger keeps the session's task id and admits it was recovered.
+    const rebuilt = TaskLedger.load(path.resolve(dir), 'hermes-task-20990101-deadbe');
+    expect(rebuilt?.data.recovered).toBe(true);
+    expect(rebuilt?.data.recoveredAt).toBeTruthy();
+    expect(rebuilt?.data.goal).toBe('ledger deleted');
+  }, 30000);
+
+  it('still refuses (404) when the project cannot record a ledger at all', async () => {
+    const dir = makeProject('unwritable');
+    // A file where the task directory belongs: no ledger can ever be written,
+    // so refusing is the honest answer rather than pretending to recover.
+    writeFileSync(path.join(dir, '.hermes'), 'not a directory');
+
+    new SessionStore().upsertSession({
+      runId: 'run-unwritable',
+      taskId: 'hermes-task-20990101-0bad00',
+      goal: 'ledger cannot be written',
+      project: 'unwritable',
+      projectPath: path.resolve(dir),
+      startedAt: new Date().toISOString(),
+      status: 'blocked',
+      mode: 'standard',
+    });
+
+    const { base } = await startServer(dir, new ScriptedMockLlm([]));
+    const res = await fetch(`${base}/api/runs/run-unwritable/message`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'resume' }),
+    });
     expect(res.status).toBe(404);
-    const body = (await res.json()) as { error: string };
-    expect(body.error).toContain('Task ledger');
-    expect(TaskLedger.list(path.resolve(dir))).toHaveLength(0);
+    expect(((await res.json()) as { error: string }).error).toContain('Task ledger');
   }, 30000);
 });
 

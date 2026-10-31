@@ -193,6 +193,43 @@ export class TaskLedger {
     return unverified.length === 1 ? unverified[0] : undefined;
   }
 
+  /**
+   * Rebuild a minimal ledger for a session whose ledger is genuinely gone.
+   *
+   * Refusing here strands a run that still has everything it needs: the project
+   * on disk, the branch it was working on, and the session's goal. The rebuild is
+   * deliberately minimal — goal, project, mode, branch, worktree — and is marked
+   * `recovered` with a note and a timestamp so nobody mistakes it for the
+   * original record. Criteria, evidence and history cannot be invented, so they
+   * start empty and the run continues from where it can prove it is.
+   */
+  static recover(input: {
+    repoRoot: string;
+    taskId: string;
+    goal: string;
+    project: ProjectLock;
+    mode: 'agent' | 'fast' | 'standard' | 'chat';
+    gitBranch?: string;
+    worktreePath?: string;
+    /** What the rebuild is based on (branch, last commit, project path). */
+    note?: string;
+  }): TaskLedger {
+    const ledger = TaskLedger.create({
+      repoRoot: input.repoRoot,
+      taskId: input.taskId,
+      goal: input.goal,
+      project: input.project,
+      mode: input.mode,
+      ...(input.gitBranch ? { gitBranch: input.gitBranch } : {}),
+      ...(input.worktreePath ? { worktreePath: input.worktreePath } : {}),
+    });
+    ledger.data.recovered = true;
+    ledger.data.recoveredAt = nowIso();
+    ledger.data.recoveryNote = input.note ?? 'rebuilt from session metadata after the task ledger was missing';
+    ledger.save();
+    return ledger;
+  }
+
   static load(repoRoot: string, taskId: string): TaskLedger | undefined {
     const file = path.join(repoRoot, '.hermes', 'tasks', `${taskId}.json`);
     const data = readJson<TaskLedgerData>(file);

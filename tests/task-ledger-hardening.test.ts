@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -252,5 +252,69 @@ describe('task ledger hardening — identity-based resolution', () => {
     // The stale copy of the coordinate is gone, and no second task appeared.
     expect(existsSync(path.join(managed.path, '.hermes', 'tasks'))).toBe(false);
     expect(TaskLedger.list(path.resolve(movedPath))).toHaveLength(1);
+  }, 60000);
+});
+
+describe('task ledger hardening — self-heal instead of refusing', () => {
+  const servers: HermesServer[] = [];
+
+  afterAll(async () => {
+    for (const server of servers) await server.stop();
+  });
+
+  async function startServer(dir: string, llm: LlmClient): Promise<{ base: string; server: HermesServer }> {
+    const server = new HermesServer({ passwordRequired: false, cwd: dir, port: 0, llm });
+    servers.push(server);
+    const port = await server.start();
+    return { base: `http://127.0.0.1:${port}`, server };
+  }
+
+  it('rebuilds a lost ledger from session metadata, says so, and continues the run', async () => {
+    const dir = makeProject('self-heal');
+    await initGitRepo(dir);
+    const guard = ProjectGuard.detect(dir);
+    const ledger = TaskLedger.create({ repoRoot: path.resolve(dir), goal: 'recover this task', project: guard.lock, mode: 'standard' });
+    const taskId = ledger.data.taskId;
+
+    // The ledger file is gone: a crash mid-write, a cleaned checkout, a bad sync.
+    rmSync(path.join(dir, '.hermes', 'tasks', `${taskId}.json`));
+    expect(TaskLedger.load(path.resolve(dir), taskId)).toBeUndefined();
+
+    new SessionStore().upsertSession({
+      runId: 'run-self-heal',
+      taskId,
+      goal: 'recover this task',
+      project: 'self-heal',
+      projectPath: path.resolve(dir),
+      startedAt: new Date().toISOString(),
+      status: 'blocked',
+      mode: 'standard',
+    });
+
+    const { base, server } = await startServer(dir, new ScriptedMockLlm([COMPLETE_ONCE]));
+    const res = await fetch(`${base}/api/runs/run-self-heal/message`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'continue' }),
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { resumed: boolean }).resumed).toBe(true);
+
+    const done = await waitFor(async () => {
+      const session = (await fetch(`${base}/api/runs/run-self-heal`).then((r) => r.json())) as { status: string; recovered?: boolean };
+      return session.status !== 'running' ? session : undefined;
+    });
+    expect(done.recovered).toBe(true);
+    expect(eventTexts(server, 'run-self-heal').some((line) => line.includes('ledger   recovered'))).toBe(true);
+
+    const rebuilt = TaskLedger.load(path.resolve(dir), taskId);
+    expect(rebuilt?.data.taskId).toBe(taskId);
+    expect(rebuilt?.data.recovered).toBe(true);
+    expect(rebuilt?.data.recoveredAt).toBeTruthy();
+    // The rebuild records what it was based on, without inventing history.
+    expect(rebuilt?.data.recoveryNote).toContain('lastCommit=');
+    expect(rebuilt?.data.recoveryNote).toContain(`branch=${guard.lock.branch ?? 'master'}`);
+    expect(rebuilt?.data.acceptanceCriteria).toEqual([]);
+    expect(TaskLedger.list(path.resolve(dir))).toHaveLength(1);
   }, 60000);
 });

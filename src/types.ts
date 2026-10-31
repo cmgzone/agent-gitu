@@ -728,6 +728,14 @@ export interface TaskLedgerData {
    * field existed simply have no identity and are matched by task id alone.
    */
   projectIdentity?: ProjectIdentity;
+  /**
+   * Set when this ledger was rebuilt from session metadata because the original
+   * ledger file was gone. Additive: an ordinary ledger simply has no flag.
+   */
+  recovered?: boolean;
+  recoveredAt?: string;
+  /** One line saying what the recovery was based on, for the transcript. */
+  recoveryNote?: string;
   gitBranch?: string;
   worktreePath?: string;
   activeSkills?: string[];

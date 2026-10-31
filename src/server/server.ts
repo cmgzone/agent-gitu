@@ -203,6 +203,8 @@ export interface RunSessionView {
   worktreePath?: string;
   /** Identity of the project this session is bound to; additive to the view. */
   projectIdentity?: ProjectIdentity;
+  /** True when this session's ledger had to be rebuilt from session metadata. */
+  recovered?: boolean;
   mode?: 'agent' | 'fast' | 'standard' | 'chat';
   provider?: string;
   model?: string;
@@ -288,6 +290,8 @@ interface RunSession {
   worktreePath?: string;
   /** Identity recorded for the task's project, when one has been recorded. */
   projectIdentity?: ProjectIdentity;
+  /** True when the task ledger was rebuilt from session metadata (self-healed). */
+  recovered?: boolean;
   mode?: 'agent' | 'fast' | 'standard' | 'chat';
   provider?: string;
   model?: string;
@@ -857,6 +861,51 @@ export class GituServer {
     if (!samePath(recordedRoot, located.root)) located.ledger.relocateTo(located.root);
     else located.ledger.ensureProjectIdentity();
     return { ledger: located.ledger, root: located.root, previousRoot: located.previousRoot };
+  }
+
+  /**
+   * Rebuild a missing ledger for a session that still has a project.
+   *
+   * Recovery is explicit and visible: the ledger carries `recovered`, a note and
+   * a timestamp, and the run emits a line saying so. Returns undefined only when
+   * the project itself cannot record a ledger, which is the one case where
+   * refusing is still the honest answer.
+   */
+  private async recoverSessionLedger(session: RunSession, repoRoot: string, mode: 'agent' | 'fast' | 'standard' | 'chat'): Promise<TaskLedger | undefined> {
+    if (!session.taskId) return undefined;
+    try {
+      const project = ProjectGuard.detect(repoRoot).lock;
+      const headBranch = (await gitExec(repoRoot, ['rev-parse', '--abbrev-ref', 'HEAD']).catch(() => '')).trim();
+      const branch = session.branch ?? (headBranch || undefined);
+      const lastCommit = (await gitExec(repoRoot, ['rev-parse', '--short', 'HEAD']).catch(() => '')).trim() || undefined;
+      const note = [
+        `rebuilt from session metadata after the task ledger was missing`,
+        `project=${repoRoot}`,
+        `branch=${branch ?? 'unknown'}`,
+        `lastCommit=${lastCommit ?? 'none'}`,
+      ].join('; ');
+      const ledger = TaskLedger.recover({
+        repoRoot,
+        taskId: session.taskId,
+        goal: session.goal,
+        project,
+        mode,
+        ...(branch ? { gitBranch: branch } : {}),
+        ...(session.worktreePath ? { worktreePath: session.worktreePath } : {}),
+        note,
+      });
+      session.recovered = true;
+      session.projectIdentity = ledger.data.projectIdentity;
+      this.persistSession(session);
+      this.pushEvent(session, `ledger   recovered: ${session.taskId} — ${note}`);
+      return ledger;
+    } catch (error) {
+      logger.warn(
+        { subsystem: 'ledger', runId: session.runId, taskId: session.taskId, repoRoot, ...errorMetadata(error) },
+        'Could not rebuild a missing task ledger from session metadata',
+      );
+      return undefined;
+    }
   }
 
   /**
@@ -6150,6 +6199,7 @@ export class GituServer {
       branch: s.branch,
       worktreePath: s.worktreePath,
       projectIdentity: s.projectIdentity,
+      recovered: s.recovered,
       mode: s.mode,
       provider: s.provider,
       model: s.model,
@@ -8624,6 +8674,12 @@ export class GituServer {
           return;
         }
         if (!ledger) {
+          // The session exists and the project is here: refusing would strand a
+          // run that can still continue. Rebuild a minimal ledger from what the
+          // session knows, mark it recovered, and carry on.
+          ledger = await this.recoverSessionLedger(session, taskRoot, modeSwitch ?? session.mode ?? 'standard');
+        }
+        if (!ledger) {
           session.status = prevStatus;
           this.sendJson(res, 404, { error: `Task ledger ${session.taskId} not found at ${taskRoot}` });
           return;
@@ -9152,7 +9208,7 @@ export class GituServer {
         this.publishNativeEvent(session, event);
         return;
       }
-      const ledgerMatch = event.source.match(/ledger\s+(?:created|resumed):\s+(\S+)/);
+      const ledgerMatch = event.source.match(/ledger\s+(?:created|resumed|recovered):\s+(\S+)/);
       if (ledgerMatch) {
         session.taskId = ledgerMatch[1];
         this.persistSession(session);

@@ -14,6 +14,7 @@ import { COWORK_DIALOGS_JS } from './ui-cowork-dialogs.js';
 import { COWORK_SESSIONS_CSS, COWORK_SESSIONS_JS } from './ui-cowork-sessions.js';
 import { CHAT_QUESTION_CSS, CHAT_QUESTION_JS } from './ui-chat-questions.js';
 import { COWORK_CODING_CSS, COWORK_CODING_JS } from './ui-cowork-coding.js';
+import { COWORK_WORKBENCH_CSS, COWORK_WORKBENCH_JS } from './ui-cowork-workbench.js';
 
 /**
  * Cowork mode UI: a messaging-app style surface (agent roster, DMs, group
@@ -608,6 +609,7 @@ export const COWORK_CSS = String.raw`
   ${COWORK_WIDGETS_CSS}
   ${COWORK_SESSIONS_CSS}
   ${COWORK_CODING_CSS}
+  ${COWORK_WORKBENCH_CSS}
 `;
 
 export const COWORK_JS = PROACTIVITY_JS + String.raw`
@@ -629,6 +631,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
   ${COWORK_DIALOGS_JS}
   ${COWORK_SESSIONS_JS}
   ${COWORK_CODING_JS}
+  ${COWORK_WORKBENCH_JS}
   function cwAvatarShape(shape, color) {
     if (CW_SHAPES.indexOf(shape) >= 0) return shape;
     // Existing profiles keep their identity and settings; display the plush
@@ -1032,6 +1035,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
         '<button class="cw-panel-backdrop" id="cwPanelBackdrop" aria-label="Close panel" hidden></button>' +
         cwWidgetsShellHtml() +
         '<section class="cw-chat" id="cwChat"></section>' +
+        '<aside class="cw-workbench" id="cwWorkbench" aria-label="Live Workbench" hidden></aside>' +
       '</div>';
     $('cwPanelBackdrop').onclick = cwClosePanels;
     cwBindPanelControls();
@@ -1531,6 +1535,8 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       '<nav class="cw-teammate-switcher" id="cwTeammateSwitcher" aria-label="Switch teammate" hidden></nav>' +
       '<div class="cw-msgs" id="cwMsgs"></div>' +
       '<div class="cw-composer-wrap" id="cwComposerWrap">' +
+        '<div class="cw-slash-menu" id="cwSlashMenu" role="listbox" aria-label="Slash commands" hidden></div>' +
+        '<div class="cw-context-bar" id="cwContextBar" hidden></div>' +
         '<div class="cw-clean-activity" id="cwCleanActivity" hidden><span class="cw-clean-status" id="cwCleanStatus" role="status" aria-live="polite" aria-atomic="true"><span id="cwCleanLabel"></span></span><button type="button" id="cwCleanDetails" aria-label="View work details" hidden></button></div>' +
         '<div class="cw-delivery" id="cwDelivery" aria-label="Message delivery" hidden><button type="button" data-cwdelivery="steer" aria-pressed="true" title="Guide the current task at its next safe step">' + cwIcon('bolt') + 'Steer</button><button type="button" data-cwdelivery="queue" aria-pressed="false" title="Start this request after the current task finishes">' + cwIcon('clock') + 'Queue</button><button type="button" data-cwdelivery="question" aria-pressed="false" title="Ask a question while work continues">' + cwIcon('chat') + 'Ask</button><span class="cw-delivery-note" id="cwDeliveryNote"></span></div>' +
         '<div class="cw-work" id="cwWork"></div>' +
@@ -1568,7 +1574,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     cwRenderWidgetIntent();
     input.addEventListener('paste', cwPasteImages);
     input.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); cwSend(); } });
-    input.addEventListener('input', function () { input.style.height = 'auto'; input.style.height = Math.min(160, input.scrollHeight) + 'px'; cwSaveDraft(); cwRenderComposerAction(); cwUpdateJumpLatest(); });
+    input.addEventListener('input', function () { input.style.height = 'auto'; input.style.height = Math.min(160, input.scrollHeight) + 'px'; cwSaveDraft(); cwRenderComposerAction(); cwUpdateJumpLatest(); if (typeof cwUpdateSlashMenu === 'function') cwUpdateSlashMenu(); });
     $('cwMsgs').addEventListener('toggle', function () { cwUpdateJumpLatest(); }, true);
     $('cwFile').onchange = function () { cwAddFiles(Array.prototype.slice.call($('cwFile').files || [])); $('cwFile').value = ''; };showFileLimitNear($('cwFile'));
     $('cwSend').onclick = cwSend;
@@ -1604,6 +1610,8 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     cwRenderReferences();
     cwRenderInfo();
     cwRenderTyping();
+    if (typeof cwRenderContextMeter === 'function') cwRenderContextMeter();
+    if (typeof cwRenderWorkbench === 'function') cwRenderWorkbench();
     cwBindFloatingComposer();
     if (scroll) cwRestoreScroll($('cwMsgs'), scroll);
     else cwJumpLatest();
@@ -2172,6 +2180,9 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     if (m.localOnly && m.files && m.files.length) html += '<div class="cw-message-refs">Attachments: ' + m.files.map(function (f) { return esc(f.name); }).join(', ') + '</div>';
     var menuId = 'cw-message-menu-' + m.id;
     html += '<div class="cw-message-actions"><button class="cw-message-more" type="button" popovertarget="' + esc(menuId) + '" aria-label="Message actions" title="Message actions">…</button><div class="cw-message-menu" id="' + esc(menuId) + '" popover="auto" aria-label="Message actions">' + button('copy', 'Copy', false);
+    if (m.role !== 'user') {
+      html += button('workbench', 'Open in Workbench', false);
+    }
     if (m.role === 'user') {
       html += button('edit', 'Edit', active);
       if (m.status === 'failed') html += button('retry', 'Retry', active);
@@ -2230,8 +2241,9 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       return '<div class="cw-row me" data-cwentrance="' + esc(m.id || '') + '"><div class="cw-bubble"><div class="cw-meta"><span class="nm">You</span><span class="tg">' + via + ' · ' + cwTime(m.ts) + '</span></div>' + cwBody(userImages.text, members, false) + cwMessageActionsHtml(m) + '</div></div>' + cwPhotoCardsHtml(userImages.images,'user') + cwChatMediaHtml(m.text, 'user', m.id) + cwFilesHtml(m.artifactIds, 'user', true);
     }
     var reply=cwVisibleReply(m.text),replyImages=cwChatImageParts(reply,m.artifactIds);
+    var citations=typeof cwCitationsHtml==='function'?cwCitationsHtml({role:m.role,text:reply,tools:m.tools}):'';
     return cwReplyHtml(agent || { name: m.agentName || 'agent', avatar: { color: '#8f80ff', shape: 'cube' } }, cwTime(m.ts),
-      cwBody(replyImages.text, members, false), cwMessageActionsHtml(m), m.id) + cwPhotoCardsHtml(replyImages.images,'agent') + cwChatMediaHtml(reply, 'agent', m.id) + cwFilesHtml(m.artifactIds, 'agent', true);
+      cwBody(replyImages.text, members, false) + citations, cwMessageActionsHtml(m), m.id) + cwPhotoCardsHtml(replyImages.images,'agent') + cwChatMediaHtml(reply, 'agent', m.id) + cwFilesHtml(m.artifactIds, 'agent', true);
   }
 
   // Shared by Cowork replies and the main agent's completion report.
@@ -2537,11 +2549,11 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     var cw = cwEnsure(), first = steps[0];
     var key = String(cw.active || '') + ':' + String(cw.threadId || 'main') + ':' + first.id;
     var previousUpdate = '';
-    var rows = steps.slice().reverse().map(function (step) {
+    var rows = steps.slice().reverse().map(function (step, idx) {
       var update = cwVisibleReply(step.publicUpdate || '');
       var narration = update && update !== previousUpdate ? '<p class="cw-work-update">' + esc(update) + '</p>' : '';
       previousUpdate = update;
-      return '<li><div class="cw-work-step"><span class="result' + (step.ok ? '' : ' failed') + '">' + (step.ok ? '✓ Completed' : '! Failed') + '</span><span class="action">' + esc(cwToolActivityTitle(step.tool)) + '</span><span>' + esc(step.agentName || '') + '</span><time datetime="' + esc(step.ts) + '">' + esc(cwTime(step.ts)) + '</time></div>' + narration + '</li>';
+      return '<li><div class="cw-work-step"><span class="result' + (step.ok ? '' : ' failed') + '">' + (step.ok ? '✓ Completed' : '! Failed') + '</span><span class="action">' + esc(cwToolActivityTitle(step.tool)) + '</span><span>' + esc(step.agentName || '') + '</span><time datetime="' + esc(step.ts) + '">' + esc(cwTime(step.ts)) + '</time><button type="button" class="cw-branch-step-btn" data-cwbranch-step="' + idx + '" title="Branch or continue from this step">Branch</button></div>' + narration + '</li>';
     }).join('');
     return '<details class="cw-work-history" data-cwworkhistory="' + esc(key) + '"><summary>Work details · ' + steps.length + ' action' + (steps.length === 1 ? '' : 's') + '</summary><ol aria-label="Work details, newest first">' + rows + '</ol></details>';
   }
@@ -2750,6 +2762,9 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     cwAnimateChatBubbles(wrap);
     cwBindFileCards(wrap);
     cwBindRequests(wrap);
+    if (typeof cwBindCitations === 'function') cwBindCitations(wrap);
+    if (typeof cwBindWorkHistoryBranching === 'function') cwBindWorkHistoryBranching(wrap);
+    if (typeof cwRenderContextMeter === 'function') cwRenderContextMeter();
     wrap.querySelectorAll('.cw-message-more').forEach(function (b) { b.onclick = function () {
       var menu = document.getElementById(b.getAttribute('popovertarget'));
       // Native popovers provide outside-click/Escape dismissal and stay above
@@ -3852,6 +3867,9 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     var cw = cwEnsure(), input = $('cwInput');
     if (!input) return;
     var text = input.value.trim(), files = (cw.pendingFiles || []).slice();
+    if (!files.length && /^\/(workbench|pulse|compact|handoff|compare|connect|model)\b/i.test(text) && typeof cwRunSlashCommand === 'function') {
+      if (cwRunSlashCommand(text)) return Promise.resolve();
+    }
     if (files.some(function (file) { return file.loading||file.error; })) { toast('Finish or retry the attachments before sending'); return; }
     if (!text && !files.length) return;
     if (!cw.active) { toast('Open a chat first', true); return; }
@@ -3918,6 +3936,12 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     if (action === 'copy') {
       if (typeof navigator === 'undefined' || !navigator.clipboard) { toast('Clipboard unavailable in this browser', true); return; }
       return navigator.clipboard.writeText(m.text || '').then(function () { toast('Copied'); }).catch(function (e) { toast(e.message, true); });
+    }
+    if (action === 'workbench') {
+      if (typeof cwOpenWorkbench === 'function') {
+        cwOpenWorkbench({ id: m.id, title: (m.agentName || 'Teammate') + ' reply', content: cwVisibleReply(m.text || '') });
+      }
+      return;
     }
     if (action === 'reference') {
       if (m.localOnly) return;

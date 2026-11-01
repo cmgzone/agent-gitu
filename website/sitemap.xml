@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url><loc>https://pikpam.com/</loc><lastmod>2026-10-11</lastmod></url>
-  <url><loc>https://pikpam.com/cowork.html</loc><lastmod>2026-10-11</lastmod></url>
-  <url><loc>https://pikpam.com/coding.html</loc><lastmod>2026-10-11</lastmod></url>
-  <url><loc>https://pikpam.com/connections.html</loc><lastmod>2026-10-11</lastmod></url>
-  <url><loc>https://pikpam.com/docs.html</loc><lastmod>2026-10-11</lastmod></url>
-  <url><loc>https://pikpam.com/download.html</loc><lastmod>2026-10-11</lastmod></url>
-  <url><loc>https://pikpam.com/blog.html</loc><lastmod>2026-10-11</lastmod></url>
-  <url><loc>https://pikpam.com/news.html</loc><lastmod>2026-10-11</lastmod></url>
-  <url><loc>https://pikpam.com/quiet-proactivity.html</loc><lastmod>2026-10-11</lastmod></url>
-  <url><loc>https://pikpam.com/security.html</loc><lastmod>2026-10-11</lastmod></url>
+  <url><loc>https://pikpam.com/</loc><lastmod>2026-10-31</lastmod><changefreq>weekly</changefreq><priority>1.0</priority></url>
+  <url><loc>https://pikpam.com/cowork.html</loc><lastmod>2026-10-31</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
+  <url><loc>https://pikpam.com/coding.html</loc><lastmod>2026-10-31</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
+  <url><loc>https://pikpam.com/connections.html</loc><lastmod>2026-10-31</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://pikpam.com/docs.html</loc><lastmod>2026-10-31</lastmod><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://pikpam.com/download.html</loc><lastmod>2026-10-31</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
+  <url><loc>https://pikpam.com/blog.html</loc><lastmod>2026-10-31</lastmod><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://pikpam.com/security.html</loc><lastmod>2026-10-31</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://pikpam.com/quiet-proactivity.html</loc><lastmod>2026-10-31</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://pikpam.com/news.html</loc><lastmod>2026-11-01</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>
 </urlset>

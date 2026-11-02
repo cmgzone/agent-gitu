@@ -252,7 +252,7 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
   { name: 'apply_edit', doc: 'Replace exact text in a file. params: {"path":"src/x.ts","oldString":"...","newString":"..."}' },
   {
     name: 'run_command',
-    doc: 'Run a shell command in your computer. params: {"command":"npm test"}. A command never blocks the turn on output: the call answers with a STATUS — "exited" with an exit code, or "running" with a job id the runtime keeps tracking. waitMs (default 60000) is how long it waits for a terminal state before answering RUNNING; timeoutMs is the hard kill deadline (0 = unlimited, respected without a 600-second cap) and Stop cancels the process tree. While a result says RUNNING, check it with {"action":"status","id":"cmd-3"} (waits up to waitMs, default 10000, for the terminal state) and stop it with {"action":"stop","id":"cmd-3"}. On the private computer, background:true starts a server; inspect/stop its id with computer_process.',
+    doc: 'Run a shell command in your computer. params: {"command":"npm test","cwd":"optional working directory (e.g. project repository folder)"}. A command never blocks the turn on output: the call answers with a STATUS — "exited" with an exit code, or "running" with a job id the runtime keeps tracking. waitMs (default 60000) is how long it waits for a terminal state before answering RUNNING; timeoutMs is the hard kill deadline (0 = unlimited, respected without a 600-second cap) and Stop cancels the process tree. While a result says RUNNING, check it with {"action":"status","id":"cmd-3"} (waits up to waitMs, default 10000, for the terminal state) and stop it with {"action":"stop","id":"cmd-3"}. On the private computer, background:true starts a server; inspect/stop its id with computer_process.',
   },
   {
     name: 'gitu_task',
@@ -558,8 +558,9 @@ async function executeAuthorizedCoworkTool(ctx: ToolContext, tool: string, param
       const codeFile = /\.(?:[cm]?[jt]sx?|py|go|rs|java|kt|swift|c|cpp|h|hpp|cs|php|rb|vue|svelte|html|css|scss|sql)$/i.test(target)
         || /(?:^|[/\\])(?:package\.json|tsconfig[^/\\]*\.json|Dockerfile|Cargo\.toml|go\.mod)$/i.test(target);
       const command = String(params['command'] ?? '');
-      const codeCommand = /\b(?:npm|pnpm|yarn|bun|npx|tsc|vitest|jest|pytest|cargo|gradle|mvn)\b|\bgit\s+(?:commit|apply|checkout|switch|merge|cherry-pick|reset)\b|\bgo\s+(?:build|test|run)\b/i.test(command);
-      if ((['write_file', 'apply_edit'].includes(tool) && codeFile) || (['run_command', 'ssh_exec'].includes(tool) && codeCommand && !isDeploymentAction(tool === 'ssh_exec' ? 'run_command' : tool, params) && !['status', 'stop'].includes(String(params['action'])))) {
+      const codeCommand = /\b(?:npm|pnpm|yarn|bun|npx|tsc|vitest|jest|pytest|cargo|gradle|mvn)\b|\bgit\s+(?:apply|checkout|switch|merge|cherry-pick|reset)\b|\bgo\s+(?:build|test|run)\b/i.test(command);
+      const isGitVCS = /^\s*git\s+(?:push|pull|fetch|remote|status|diff|log|add|commit|branch|tag|rev-parse|show)\b/i.test(command);
+      if ((['write_file', 'apply_edit'].includes(tool) && codeFile) || (['run_command', 'ssh_exec'].includes(tool) && !isGitVCS && codeCommand && !isDeploymentAction(tool === 'ssh_exec' ? 'run_command' : tool, params) && !['status', 'stop'].includes(String(params['action'])))) {
         return { ok: false, output: 'Main Agent Gitu owns repository coding. Call gitu_task with the full task brief and project location; its visible task returns implementation and verification results to you for reporting.' };
       }
     }

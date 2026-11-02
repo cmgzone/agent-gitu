@@ -1,5 +1,5 @@
 import { execFile, spawn } from 'node:child_process';
-import { mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { readdir, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { SubAgentJob } from '../agent/subagent.js';
@@ -20,6 +20,7 @@ import { diffFileContents, formatDiffBlock, formatLineCounts } from './diff.js';
 import { SearchMatcher } from './search-matcher.js';
 import { readSearchText } from './search-text.js';
 import { isGeneratedIndexDirectory } from '../context/generated-directory.js';
+import { readRuntimeSelection } from '../workspace/runtime-selection.js';
 
 export interface ToolContext {
   appManagement?: (params: Record<string, unknown>, actor: { agentId: string; conversationId?: string }) => Promise<ToolResult>;
@@ -314,7 +315,7 @@ export function validateToolParams(tool: string, params: unknown): ToolValidatio
     }
     case 'run_command': {
       const action = p['action'] === undefined ? 'run' : String(p['action']);
-      const schema = `run_command({ action?: "run"|"status"|"stop", command?: string, timeoutMs?: number, waitMs?: number, background?: boolean, startupWaitMs?: number, id?: string })`;
+      const schema = `run_command({ action?: "run"|"status"|"stop", command?: string, cwd?: string, timeoutMs?: number, waitMs?: number, background?: boolean, startupWaitMs?: number, id?: string })`;
       if (!['run', 'status', 'stop'].includes(action)) {
         return {
           valid: false,
@@ -1819,7 +1820,32 @@ export function toolRunCommand(ctx: ToolContext, params: Record<string, unknown>
   const command = String(params['command'] ?? '');
   if (!command) return Promise.resolve(fail('run_command: missing "command"'));
   if (ctx.signal?.aborted) return Promise.resolve(fail('Command cancelled before launch.'));
-  if (params['background'] === true) return registry.start(command, ctx.cwd, Number(params['startupWaitMs'] ?? 1500));
+  let runCwd = ctx.cwd;
+  const rawCwd = typeof params['cwd'] === 'string' && params['cwd'].trim() ? params['cwd'].trim() : undefined;
+  if (rawCwd) {
+    try {
+      const resolved = ctx.guard ? ctx.guard.resolve(rawCwd) : path.resolve(ctx.cwd, rawCwd);
+      if (ctx.guard) {
+        try {
+          ctx.guard.assertInside(resolved);
+        } catch {
+          ctx.guard.assertReadable(resolved);
+        }
+      }
+      runCwd = resolved;
+    } catch (err) {
+      return Promise.resolve(fail(`run_command: invalid cwd "${rawCwd}": ${(err as Error).message}`));
+    }
+  } else if (/^\s*git\b/i.test(command) && !existsSync(path.join(ctx.cwd, '.git'))) {
+    try {
+      const preferred = readRuntimeSelection().projectPath;
+      if (preferred && existsSync(path.join(preferred, '.git'))) {
+        runCwd = preferred;
+      }
+    } catch { /* ignore */ }
+  }
+
+  if (params['background'] === true) return registry.start(command, runCwd, Number(params['startupWaitMs'] ?? 1500));
 
   let timeoutMs: number;
   let waitMs: number;
@@ -1829,7 +1855,7 @@ export function toolRunCommand(ctx: ToolContext, params: Record<string, unknown>
   } catch (err) {
     return Promise.resolve(fail((err as Error).message));
   }
-  return registry.run(command, ctx.cwd, { timeoutMs, waitMs, signal: ctx.signal });
+  return registry.run(command, runCwd, { timeoutMs, waitMs, signal: ctx.signal });
 }
 
 /**

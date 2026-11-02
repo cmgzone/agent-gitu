@@ -31,7 +31,7 @@ const schemas: Record<string, { fields: Fields; required?: string[] }> = {
   },
   write_file: { fields: { path: text, content: text }, required: ['path', 'content'] },
   apply_edit: { fields: { path: text, oldString: text, newString: text, replaceAll: boolean }, required: ['path', 'oldString', 'newString'] },
-  run_command: { fields: { command: text, action: text, id: text, waitMs: number, timeoutMs: number, background: boolean, startupWaitMs: number } },
+  run_command: { fields: { command: text, cwd: text, action: text, id: text, waitMs: number, timeoutMs: number, background: boolean, startupWaitMs: number } },
   browse: { fields: { action: text, url: text, selector: text, text, key: text, path: text, direction: text, timeoutMs: number }, required: ['action'] },
   share_file: { fields: { path: text }, required: ['path'] },
   receive_file: { fields: { artifactId: text, path: text }, required: ['artifactId', 'path'] },

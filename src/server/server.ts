@@ -3060,8 +3060,18 @@ export class GituServer {
       };
       this.coworkTools.set(this.coworkRuntimeKey(agent.id,agent.companyId), context);
     }
-    if(!agent.companyId&&agent.id===this.proactivity().status().assistantId&&agent.useHostComputer){
-      context.guard.setTaggedReadFolders(()=>{const current=this.cowork().getAgent(agent.id);return current?.chiefOfStaff&&current.useHostComputer?this.mainAgentRepositories().map(repository=>repository.path):[];});
+    if (!agent.companyId && agent.useHostComputer) {
+      const getRepoPaths = () => {
+        const current = this.cowork().getAgent(agent.id);
+        if (!current?.useHostComputer) return [];
+        const paths = [
+          ...this.mainAgentRepositories().map(repository => repository.path),
+          ...(readRuntimeSelection().projectPath ? [readRuntimeSelection().projectPath!] : []),
+        ];
+        return Array.from(new Set(paths.filter(Boolean)));
+      };
+      context.guard.setTaggedReadFolders(getRepoPaths);
+      context.guard.setTaggedWriteFolders(getRepoPaths);
     }
     if(agent.companyId){
       const companyId=agent.companyId,scope=this.companyScope.getStore();

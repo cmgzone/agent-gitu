@@ -1213,7 +1213,19 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       if (openFirst && cw.convs.length > 0 && !cwActiveConv()) cwOpenConv(cw.convs[cw.convs.length - 1].id);
       else if (!cw.active) cwRenderChat();
       else { cwRenderMembers(); cwRenderTyping(); cwRenderInfo(); }
-      if(cw.homeAction){var action=cw.homeAction;cw.homeAction=null;if(action.kind==='new')cwAgentModal(null);else if(action.kind==='profile')cwOpenProfile(action.agentId);else if(action.kind==='connections')cwOpenConnections(action.agentId);else if(action.agentId)cwOpenDm(action.agentId);}
+      if(cw.homeAction){
+        var action=cw.homeAction;cw.homeAction=null;
+        if(action.kind==='new')cwAgentModal(null);
+        else if(action.kind==='profile')cwOpenProfile(action.agentId);
+        else if(action.kind==='connections')cwOpenConnections(action.agentId);
+        else if(action.kind==='chat'){
+          if(action.agentId)cwOpenDm(action.agentId);
+          else if(cw.active)cwOpenConv(cw.active);
+          else if(cw.convs.length)cwOpenConv(cw.convs[cw.convs.length-1].id);
+          else if(cw.selectedAgentId)cwOpenDm(cw.selectedAgentId);
+          else if(cw.agents.length)cwOpenDm(cw.agents[0].id);
+        } else if(action.agentId)cwOpenDm(action.agentId);
+      }
     }).catch(function (e) {
       try {
         var cached = JSON.parse(localStorage.getItem(CW_OFFLINE_ROSTER_KEY) || 'null');
@@ -1225,6 +1237,18 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
           cwRenderRail();
           if (active && openFirst) cwOpenConv(active);
           else if (!cw.active) cwRenderChat();
+          if (cw.homeAction) {
+            var action = cw.homeAction; cw.homeAction = null;
+            if (action.kind === 'new') cwAgentModal(null);
+            else if (action.kind === 'profile') cwOpenProfile(action.agentId);
+            else if (action.kind === 'connections') cwOpenConnections(action.agentId);
+            else if (action.kind === 'chat') {
+              if (action.agentId) cwOpenDm(action.agentId);
+              else if (active) cwOpenConv(active);
+              else if (cw.selectedAgentId) cwOpenDm(cw.selectedAgentId);
+              else if (cw.agents.length) cwOpenDm(cw.agents[0].id);
+            } else if (action.agentId) cwOpenDm(action.agentId);
+          }
           toast('Showing saved conversations offline. Reconnect to refresh.');
           return;
         }

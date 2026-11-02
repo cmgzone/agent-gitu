@@ -7,8 +7,10 @@ export const WORKSPACE_SEARCH_CSS = String.raw`
   }
   :is(#view,#settings,#workspaceSearch) :is(button[aria-selected=true],button[aria-pressed=true],button.cur):not(:disabled):hover { background:color-mix(in srgb,var(--brand-blue) 90%,#000)!important; }
   :is(#view,#settings,.cw-modal,.cw-desktop-dialog) .btn.dark { background:var(--brand-blue)!important; color:var(--brand-on-blue)!important; }
-  .cw-chat-face .cw-ava { width:30px; height:34px; border-radius:0; overflow:visible; background:transparent!important; }
-  .cw-chat-face .cw-ava img { position:static; width:100%; height:100%; max-width:100%; left:auto; top:auto; object-fit:contain; transform:none; }
+  .cw-chat-face { display:inline-flex; align-items:center; justify-content:center; flex:none; width:22px; height:22px; }
+  .cw-chat-face .cw-ava { position:relative; width:22px!important; height:22px!important; border-radius:50%!important; overflow:hidden!important; display:inline-flex; align-items:center; justify-content:center; background:color-mix(in srgb,var(--accent) 15%,transparent)!important; box-shadow:0 0 0 1px rgba(255,255,255,.25); }
+  .cw-chat-face .cw-ava .cw-plush { width:100%; height:100%; display:flex; align-items:center; justify-content:center; transform:scale(1.25); transform-origin:50% 50%; }
+  .cw-chat-face .cw-ava img { position:relative!important; width:100%!important; height:100%!important; max-width:100%!important; left:0!important; top:0!important; object-fit:contain!important; transform:none!important; }
   .workspace-search-trigger,.home-settings-trigger { position:absolute; top:18px; left:16px; z-index:11; display:grid; place-items:center; width:38px; height:38px; padding:0; border-radius:50%; color:var(--muted); }
   .workspace-search-trigger svg,.home-settings-trigger svg { width:20px; height:20px; }
   .home-settings-trigger { left:auto; right:16px; }

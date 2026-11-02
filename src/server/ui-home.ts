@@ -13,9 +13,15 @@ export const HOME_CSS = String.raw`
   .home-main { position:relative; width:min(760px,100%); display:flex; flex-direction:column; gap:28px; flex:none; }
   .home-sky .home-main > .home-brand { position:absolute; bottom:calc(100% + 28px); }
   :root[data-theme=light] .home.home-sky { --home-sidebar-surface:#edf5fc; background:radial-gradient(ellipse at 64% 4%,#dcecf9 0%,transparent 65%),#f5f8fc; }
-  .home-sky .cw-page-nav { top:22px; left:calc(50% + 124px); }
-  .home-sky .cw-top-nav { position:static; transform:none; background:color-mix(in srgb,var(--card) 85%,transparent); border:1px solid var(--border); box-shadow:none; padding:4px; }
-  .home-sky .cw-top-nav button { color:var(--text); min-height:36px; padding:0 18px; }
+  .home-sky .cw-page-nav { position:fixed; top:calc(18px + env(safe-area-inset-top, 0px)); left:calc(50% + 124px); transform:translateX(-50%); z-index:10; display:flex; justify-content:center; pointer-events:none; }
+  .home-sky .cw-top-nav { position:static; transform:none; display:inline-flex; align-items:center; gap:3px; padding:3px; border-radius:999px; pointer-events:auto; background:color-mix(in srgb,var(--card) 68%,transparent); border:1px solid color-mix(in srgb,var(--border) 75%,transparent); box-shadow:0 4px 20px -6px rgba(18,44,70,.12),inset 0 1px 0 rgba(255,255,255,.35); backdrop-filter:blur(20px) saturate(1.2); -webkit-backdrop-filter:blur(20px) saturate(1.2); }
+  :root[data-theme=dark] .home-sky .cw-top-nav { background:color-mix(in srgb,var(--card) 55%,transparent); border-color:rgba(255,255,255,.16); box-shadow:0 8px 24px -12px rgba(0,0,0,.5),inset 0 1px 0 rgba(255,255,255,.12); }
+  .home-sky .cw-top-nav button { display:inline-flex; align-items:center; justify-content:center; gap:7px; min-height:34px; padding:0 16px; border:0; border-radius:999px; background:transparent; color:var(--muted); font:inherit; font-size:12.5px; font-weight:500; cursor:pointer; white-space:nowrap; user-select:none; transition:background-color .18s ease,color .18s ease,box-shadow .18s ease,transform .14s cubic-bezier(.16,1,.3,1); }
+  .home-sky .cw-top-nav button:hover { background:color-mix(in srgb,var(--card) 45%,transparent)!important; color:var(--text); }
+  .home-sky .cw-top-nav button:active { transform:scale(.96); }
+  .home-sky .cw-top-nav button[aria-pressed=true] { background:var(--brand-blue,#226bd6)!important; color:#ffffff!important; font-weight:600; box-shadow:0 2px 8px -1px rgba(34,107,214,.45); }
+  .home-sky .cw-top-nav button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  .home-sky .cw-top-nav button svg { width:16px; height:16px; flex:none; }
   .home-sky .home-brand { width:min(760px,100%); margin:0; padding:0; text-align:left; }
   .home-sky .home-brand-lockup { flex-direction:row; justify-content:flex-start; gap:14px; }
   .home-sky .home-character,.home-sky .cw-plush.home-character { width:48px; height:48px; animation:none; flex:none; }
@@ -131,8 +137,8 @@ export const HOME_CSS = String.raw`
     .run.code-workspace .cw-page-nav { left:50%; }
     .run.code-workspace .home-sidebar { background:var(--home-sidebar-surface); }
     .home.home-sky { padding:94px 20px; gap:24px; }
-    .home-sky .cw-page-nav { left:50%; top:20px; }
-    .home-menu-trigger { position:absolute; top:22px; left:18px; z-index:14; display:grid; place-items:center; width:36px; height:36px; border-radius:8px; color:var(--text); }
+    .home-sky .cw-page-nav { left:50%; top:calc(16px + env(safe-area-inset-top, 0px)); }
+    .home-menu-trigger { position:fixed; top:calc(16px + env(safe-area-inset-top, 0px)); left:16px; z-index:14; display:grid; place-items:center; width:36px; height:36px; border-radius:8px; color:var(--text); }
     .home-menu-trigger svg { width:20px; height:20px; }
     .home-sidebar { display:none; inset:70px auto auto 16px; width:min(264px,calc(100vw - 32px)); max-height:calc(100dvh - 90px); overflow:auto; border:1px solid var(--border); border-radius:14px; padding:20px 12px 12px; background:var(--home-sidebar-surface); z-index:14; box-shadow:var(--shadow-float); }
     .home-sidebar-brand { margin-bottom:20px; }
@@ -147,7 +153,7 @@ export const HOME_CSS = String.raw`
     .home-sky .home-brand-copy { font-size:12px; }
     .home-sky .home-character,.home-sky .cw-plush.home-character { width:40px; height:40px; }
     .home-sky .home-brand-lockup { gap:10px; }
-    .home-sky .cw-top-nav button { padding:0 12px; }
+    .home-sky .cw-top-nav button { padding:0 12px; min-height:34px; font-size:12px; gap:6px; }
   }
   @media(max-height:600px) {
     .home.home-sky { justify-content:flex-start; padding-top:96px; padding-bottom:24px; }

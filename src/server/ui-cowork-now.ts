@@ -44,9 +44,10 @@ export const COWORK_NOW_CSS = String.raw`
   #cw .cw-top-nav button[aria-pressed=true] { background:var(--text) !important; color:var(--bg); }
   .cw-top-nav button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
   .cw .cw-chat-head .cw-top-nav #cwInfoBtn { position:static; }
-  .cw-chat-face { display:inline-flex; flex:none; }
-  .cw-chat-face .cw-ava { position:relative; width:28px; height:28px; border-radius:50%; overflow:hidden; }
-  .cw-chat-face img { position:absolute; width:200%; height:200%; max-width:none; left:-50%; top:-46%; object-fit:contain; }
+  .cw-chat-face { display:inline-flex; align-items:center; justify-content:center; flex:none; width:22px; height:22px; }
+  .cw-chat-face .cw-ava { position:relative; width:22px; height:22px; border-radius:50%; overflow:hidden; display:inline-flex; align-items:center; justify-content:center; background:color-mix(in srgb,var(--accent) 15%,transparent); box-shadow:0 0 0 1px rgba(255,255,255,.25); }
+  .cw-chat-face .cw-ava .cw-plush { width:100%; height:100%; display:flex; align-items:center; justify-content:center; transform:scale(1.25); transform-origin:50% 50%; }
+  .cw-chat-face .cw-ava img { position:relative; width:100%; height:100%; max-width:100%; left:0; top:0; object-fit:contain; transform:none; }
   /* Reserve room inside the transcript, so it scrolls beneath the floating
      controls instead of clipping at a separate header-sized viewport. */
   .cw .cw-msgs { margin-top:0; padding:calc(88px + env(safe-area-inset-top, 0px)) max(24px,calc((100% - var(--chat-column-width,620px))/2)) calc(var(--cw-composer-height,148px) + 24px + env(safe-area-inset-bottom, 0px)); gap:14px; scroll-padding:calc(88px + env(safe-area-inset-top, 0px)) 0 calc(var(--cw-composer-height,148px) + 24px + env(safe-area-inset-bottom, 0px)); }

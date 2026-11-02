@@ -190,7 +190,7 @@
         $('cwSetName').value = (d.profile && d.profile.name) || '';
         $('cwSetAbout').value = (d.profile && d.profile.about) || '';
         $('cwSetPrefs').value = (d.profile && d.profile.preferences) || '';
-        if ($('cwEnableCompanies')) $('cwEnableCompanies').checked = d.enableCompanies !== false;
+        if ($('cwEnableCompanies')) $('cwEnableCompanies').checked = d.enableCompanies === true;
       }).catch(function () {});
       // Skill-write approval: a review panel that lists staged teammate skill
       // changes, plus the toggle that turns staging on.
@@ -211,6 +211,10 @@
           api('/api/cowork/companies/toggle', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled: checked }) })
             .then(function () {
               cwEnsure().enableCompanies = checked;
+              try { localStorage.setItem('hermes.cowork.enableCompanies', checked ? '1' : '0'); } catch (e) {}
+              var companyNavBtn = document.querySelector('[data-company-nav]');
+              if (!checked && companyNavBtn) companyNavBtn.remove();
+              else if (checked && !companyNavBtn && typeof cwRenderChat === 'function' && S.active === 'cowork') cwRenderChat();
               toast(checked ? 'Company workspaces enabled' : 'Company workspaces switched off');
               renderSettings();
             })

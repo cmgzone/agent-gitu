@@ -772,8 +772,11 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
   }
 
   function cwEnsure() {
-    if (!S.cw) S.cw = { agents: [], convs: [], skills: [], active: null, msgs: [], lastSeq: 0, lastChange: 0, busy: false, working: null, progress: null, progresses: [], timer: null, computerStream: null, infoOpen: true, missions: [], artifacts: [], todos: [], requests: [], pendingFiles: [], threads: [], folders: [], widgets: [], threadId: null, learn: null, searchQuery: '', searchHits: [] };
+    if (!S.cw) S.cw = { agents: [], convs: [], skills: [], active: null, msgs: [], lastSeq: 0, lastChange: 0, busy: false, working: null, progress: null, progresses: [], timer: null, computerStream: null, infoOpen: true, missions: [], artifacts: [], todos: [], requests: [], pendingFiles: [], threads: [], folders: [], widgets: [], threadId: null, learn: null, searchQuery: '', searchHits: [], enableCompanies: (function(){ try { return localStorage.getItem('hermes.cowork.enableCompanies') === '1'; } catch(e){ return false; } })() };
     var cw = S.cw;
+    if (cw.enableCompanies === undefined) {
+      try { cw.enableCompanies = localStorage.getItem('hermes.cowork.enableCompanies') === '1'; } catch(e) { cw.enableCompanies = false; }
+    }
     if (!cw.lastChange) cw.lastChange = 0;
     if (!cw.outbox) cw.outbox = Object.create(null);
     if (!cw.messageLocks) cw.messageLocks = Object.create(null);
@@ -794,7 +797,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
   }
   function cwPersistOfflineRoster() {
     var cw = cwEnsure();
-    try { localStorage.setItem(CW_OFFLINE_ROSTER_KEY, JSON.stringify({ agents: cw.agents || [], conversations: cw.convs || [], active: cw.active || null })); } catch (error) {}
+    try { localStorage.setItem(CW_OFFLINE_ROSTER_KEY, JSON.stringify({ agents: cw.agents || [], conversations: cw.convs || [], active: cw.active || null, enableCompanies: cw.enableCompanies === true })); } catch (error) {}
   }
   function cwPersistOfflineChat() {
     var cw = cwEnsure();
@@ -1196,10 +1199,17 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       if ((cw.computerRevision || 0) === computerRevision) cw.computers = d.computers || [];
       cw.cloudServers = d.cloudServers || [];
       cw.profile = d.profile || {};
-      cw.enableCompanies = d.enableCompanies !== false;
+      cw.enableCompanies = d.enableCompanies === true;
+      try { localStorage.setItem('hermes.cowork.enableCompanies', cw.enableCompanies ? '1' : '0'); } catch (e) {}
       cw.convs = results[1].conversations || [];
       cwPersistOfflineRoster();
       cwRenderRail();
+      var companyBtn = document.querySelector('[data-company-nav]');
+      if (!cw.enableCompanies && companyBtn) {
+        companyBtn.remove();
+      } else if (cw.enableCompanies && !companyBtn && typeof cwRenderChat === 'function' && cw.active) {
+        cwRenderChat();
+      }
       if (openFirst && cw.convs.length > 0 && !cwActiveConv()) cwOpenConv(cw.convs[cw.convs.length - 1].id);
       else if (!cw.active) cwRenderChat();
       else { cwRenderMembers(); cwRenderTyping(); cwRenderInfo(); }
@@ -1209,6 +1219,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
         var cached = JSON.parse(localStorage.getItem(CW_OFFLINE_ROSTER_KEY) || 'null');
         if (cached && Array.isArray(cached.agents) && Array.isArray(cached.conversations) && S.active === 'cowork' && cw.loadRevision === revision) {
           cw.agents = cached.agents; cw.convs = cached.conversations;
+          if (typeof cached.enableCompanies === 'boolean') cw.enableCompanies = cached.enableCompanies;
           var active = cached.active && cw.convs.some(function (conversation) { return conversation.id === cached.active; })
             ? cached.active : cw.convs.length ? cw.convs[cw.convs.length - 1].id : null;
           cwRenderRail();
@@ -1523,7 +1534,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
           '<button type="button" id="cwHomeBtn" aria-label="Code mode" title="Code mode">' + cwIcon('home') + '<span>Code</span></button>' +
           '<button type="button" id="cwCurrentChat" aria-label="Cowork mode" title="Cowork mode" aria-pressed="true"><span class="cw-chat-face" id="cwChatAvatar" aria-hidden="true">' + headAva + '</span><span>Cowork</span></button>' +
           '<button type="button" id="cwInfoBtn" aria-label="Agent profile" title="Agent profile" aria-controls="cwChat" aria-pressed="false">' + cwIcon('user') + '<span>Profile</span></button>' +
-          (cw.enableCompanies !== false ? '<button type="button" data-company-nav aria-label="Companies" title="Cowork company workspaces">' + cwIcon('users') + '<span>Companies</span></button>' : '') +
+          (cw.enableCompanies === true ? '<button type="button" data-company-nav aria-label="Companies" title="Cowork company workspaces">' + cwIcon('users') + '<span>Companies</span></button>' : '') +
           '<button type="button" id="cwAssistantSettings" data-pa-settings aria-label="Personal assistant preferences" title="P.A preferences and background health">' + cwIcon('crown') + '<span>P.A</span></button>' +
           cwSessionNavHtml() +
         '</nav>' +

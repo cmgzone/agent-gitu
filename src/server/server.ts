@@ -136,7 +136,7 @@ import { UniversalCapabilityRegistry } from '../connections/runtime/universal-re
 import type { ModelContextAttachment } from '../context/model-context.js';
 import type { CompletionReport, ProjectIdentity, ProjectLock, RiskTier, ToolResult } from '../types.js';
 import { nowIso, sha256, shortId } from '../util.js';
-import { createProject, ensureGituHome, gituHomeRoot, isDriveRoot, listProjects, loadWorkspaceSettings, projectsDir, sanitizeCustomProviders, updateWorkspaceSettings } from '../workspace/home.js';
+import { companiesEnabled, createProject, ensureGituHome, gituHomeRoot, isDriveRoot, listProjects, loadWorkspaceSettings, projectsDir, sanitizeCustomProviders, updateWorkspaceSettings } from '../workspace/home.js';
 import { UI_HTML } from './ui.js';
 import { credentialChatInput } from './credential-chat.js';
 import { coworkActivityView } from './cowork-activity.js';
@@ -1678,7 +1678,15 @@ export class GituServer {
   private uploads(): UploadStore { return this.uploadStore ??= new UploadStore(nodePath.join(ensureGituHome().root,'Files')); }
   private storage():StorageRegistry{return this.storageRegistry??=new StorageRegistry(this.companies(),new SecretVault(nodePath.join(ensureGituHome().settings,'ConnectorSecrets')));}
   private selectedFileLimit(companyId=this.companyScope.getStore()?.id): number|null { return effectiveFileLimit(this.companies().workspaceFileLimit(),companyId?this.companies().get(companyId)?.maxFileBytes:undefined); }
+  private companiesEnabled(): boolean { return companiesEnabled(); }
   private ensureCompanyCoordinator(): void {
+    if (!this.companiesEnabled()) {
+      if (this.companyCoordinator) {
+        this.companyCoordinator.stop();
+        this.companyCoordinator = undefined;
+      }
+      return;
+    }
     if(this.companyCoordinator)return;
     const coordinator=new CompanyCoordinator(this.companies(),job=>this.executeCompanyJob(job),()=>logger.error({ subsystem: 'company' }, 'Company work failed; review the company transcript'),()=>{for(const run of this.companyQuestionRuns.values())run.abort.abort();for(const c of this.companies().companies())this.companyScope.run({id:c.id,version:c.directionVersion},()=>{for(const conv of this.cowork().listConversations())this.coworkRuns.get(conv.id)?.abort.abort(new Error('Company scheduler ownership lost.'));});},recovering=>{if(recovering)for(const company of this.companies().companies())this.companyCalendar(company.id).recover();this.prepareCompanyManagement();this.companyMeetings().prepare(recovering);for(const meetingId of this.companyMeetingTurns.keys())this.checkCompanyMeetingTurn(meetingId);});
     coordinator.start();this.companyCoordinator=coordinator;
@@ -1999,6 +2007,7 @@ export class GituServer {
   }
 
   private async reconcileCompanyComputers():Promise<void>{
+    if (!this.companiesEnabled()) return;
     for(const c of this.companies().companies())await this.companyScope.run({id:c.id,version:c.directionVersion},async()=>{
       const agents=this.cowork().listAgents();
       for(const record of this.companies().list<{id:string;computerServerId?:string|null;heldSlot?:boolean;state:string}>('computer',c.id)){
@@ -2929,10 +2938,11 @@ export class GituServer {
         }
         if(action==='set_project'){const selected=realpathSync(String(params['projectPath']??''));if(!statSync(selected).isDirectory())throw Error('Choose a project folder.');return output(saveRuntimeSelection({projectPath:selected}));}
         const input=params['input'];if(!input||typeof input!=='object'||Array.isArray(input))throw Error('Provide a settings input object.');
-        const patch=input as Record<string,unknown>,allowed=['theme','mode','autonomy','fallbackModels','coworkLearning'];
+        const patch=input as Record<string,unknown>,allowed=['theme','mode','autonomy','fallbackModels','coworkLearning','enableCompanies'];
         if(Object.keys(patch).some(key=>!allowed.includes(key)))throw Error('Unknown app setting. Credentials and security grants use their dedicated controls.');
         if('theme' in patch||'mode' in patch)saveOnboarding({...readOnboarding(),...('theme'in patch?{theme:patch['theme']}:{}),...('mode'in patch?{mode:patch['mode']}:{} )});
-        const settings=updateWorkspaceSettings({...('autonomy'in patch?{autonomy:patch['autonomy'] as any}:{}),...('fallbackModels'in patch?{fallbackModels:patch['fallbackModels'] as any}:{}),...('coworkLearning'in patch?{coworkLearning:patch['coworkLearning'] as any}:{})});
+        const settings=updateWorkspaceSettings({...('autonomy'in patch?{autonomy:patch['autonomy'] as any}:{}),...('fallbackModels'in patch?{fallbackModels:patch['fallbackModels'] as any}:{}),...('coworkLearning'in patch?{coworkLearning:patch['coworkLearning'] as any}:{}),...('enableCompanies'in patch?{enableCompanies:patch['enableCompanies'] as any}:{})});
+        if('enableCompanies' in patch){if(!patch['enableCompanies']&&this.companyCoordinator){this.companyCoordinator.stop();this.companyCoordinator=undefined;}else if(patch['enableCompanies']){this.ensureCompanyCoordinator();}}
         return output({settings,appearance:readOnboarding()});
       }
       const send=(conversationId:string,agentId:string,text:string,allowSelf=false):ToolResult=>{
@@ -3548,7 +3558,8 @@ export class GituServer {
       const accepted=this.dispatchAgentWake(job.conversationId,job.agentId,job.instruction,'schedule',{triggerId:'background-'+job.id+'-'+job.leaseId,timeoutMs:job.kind==='coding_review'?180000:undefined,onSettled:error=>{
         if(job.kind==='coding_review'){this.codingReviewContext.delete(job.conversationId);const review=job.completedAt?ledger.codingReview(job.sourceId,job.completedAt):undefined;if(!error&&review?.status==='queued')error=Error('The coding review ended without a verified result.');}
         ledger.settle(job.id,error?.message);
-        if(!error){if(job.kind==='followup')store.takeFollowUp(job.sourceId);if(job.kind==='inbox')store.markInboxDelivered([job.sourceId]);if(job.kind==='schedule'){const conversation=store.getConversation(job.conversationId);if(conversation?.schedule&&'schedule:'+conversation.id+':'+JSON.stringify(conversation.schedule)===job.sourceId)store.updateConversation(conversation.id,{schedule:{...conversation.schedule,lastRunAt:nowIso()}});}}
+        if(job.kind==='schedule'){const conversation=store.getConversation(job.conversationId);if(conversation?.schedule&&'schedule:'+conversation.id+':'+JSON.stringify(conversation.schedule)===job.sourceId)store.updateConversation(conversation.id,{schedule:{...conversation.schedule,lastRunAt:nowIso()}});}
+        if(!error){if(job.kind==='followup')store.takeFollowUp(job.sourceId);if(job.kind==='inbox')store.markInboxDelivered([job.sourceId]);}
         this.publishCowork(job.conversationId);
       }});
       if(!accepted){this.codingReviewContext.delete(job.conversationId);ledger.settle(job.id,'The teammate or conversation is not currently available.');}
@@ -5003,7 +5014,7 @@ export class GituServer {
         const agents = store.listAgents();
         const memoryCounts: Record<string, number> = {};
         for (const agent of agents) memoryCounts[agent.id] = this.coworkMemory().count(agent);
-        this.sendJson(res, 200, { agents, availableSkills, memoryCounts, computers: agents.map((a) => this.coworkComputer(a.id).status()), cloudServers: this.cloudServers(), profile: store.userProfile() });
+        this.sendJson(res, 200, { agents, availableSkills, memoryCounts, computers: agents.map((a) => this.coworkComputer(a.id).status()), cloudServers: this.cloudServers(), profile: store.userProfile(), enableCompanies: this.companiesEnabled() });
         return true;
       }
       if (method === 'POST') {
@@ -5210,7 +5221,7 @@ export class GituServer {
 
     if (path === '/api/cowork/profile') {
       if (method === 'GET') {
-        this.sendJson(res, 200, { profile: store.userProfile() });
+        this.sendJson(res, 200, { profile: store.userProfile(), enableCompanies: this.companiesEnabled() });
         return true;
       }
       if (method === 'POST') {
@@ -5224,6 +5235,20 @@ export class GituServer {
         return true;
       }
       return false;
+    }
+
+    if (path === '/api/cowork/companies/toggle' && method === 'POST') {
+      const body = await this.readBody(req);
+      const enabled = typeof body['enabled'] === 'boolean' ? body['enabled'] : !this.companiesEnabled();
+      updateWorkspaceSettings({ enableCompanies: enabled });
+      if (!enabled && this.companyCoordinator) {
+        this.companyCoordinator.stop();
+        this.companyCoordinator = undefined;
+      } else if (enabled) {
+        this.ensureCompanyCoordinator();
+      }
+      this.sendJson(res, 200, { ok: true, enableCompanies: enabled });
+      return true;
     }
 
     // Discord pairing: list the guilds/channels the bot can post to, mirroring
@@ -6911,6 +6936,10 @@ export class GituServer {
     }
 
     if(path.startsWith('/api/companies')){
+      if(!this.companiesEnabled()){
+        if(method==='GET'&&path==='/api/companies'){this.sendJson(res,200,{enabled:false,companies:[],usage:{knownCostUsd:0,unknownCalls:0,inputTokens:0,outputTokens:0}});return;}
+        this.sendJson(res,403,{error:'Company workspaces are currently switched off.'});return;
+      }
       if(!['GET','HEAD'].includes(method)&&!this.isSameOrigin(req)){this.sendJson(res,403,{error:'cross-origin request rejected'});return;}
       const companyFile=path.match(/^\/api\/companies\/([\w-]+)(\/files\/.*)$/);
       if(companyFile){const c=this.companies().get(companyFile[1]!);if(!c){this.sendJson(res,404,{error:'Company not found.'});return;}try{await this.companyScope.run({id:c.id,version:c.directionVersion},()=>this.fileRoutes(req,res,'/api'+companyFile[2]!,method));}catch(error){this.sendJson(res,400,{error:(error as Error).message});}return;}
@@ -7113,6 +7142,7 @@ export class GituServer {
         ...home,
         projectsPath: projectsDir(),
         customProjectsPath: settings.projectsPath ? !isDriveRoot(settings.projectsPath) : false,
+        enableCompanies: this.companiesEnabled(),
         // The policy a new run starts with. A run may override it per request.
         autonomy: resolveAutonomy(settings.autonomy),
       });

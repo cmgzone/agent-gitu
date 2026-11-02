@@ -590,7 +590,7 @@ export const COWORK_CSS = String.raw`
     .cw-panel-backdrop { position: absolute; inset: 0; z-index: 50; border: 0; padding: 0; background: var(--overlay); }
     .cw.overlay-open .cw-panel-backdrop { display: block; }
   }
-  @media (max-width: 720px) { .cw-msgs { padding: 98px 12px 8px; gap: 14px; } .cw-row, .cw-row.me { max-width: 100%; } .cw-composer-wrap { padding: 8px 12px 12px; } .cw-chat-avatar { top: 7px; } .cw-chat-head .cw-ava { width: 62px; height: 62px; } .cw-file { min-width: 0; flex-wrap: wrap; } .cw-file-actions { margin-left: auto; } .cw-modal .box { max-width: 96vw; } .cw-modal .cw-2col { grid-template-columns: 1fr; } .cw-info-toggle, .cw-panel-toggle, .cw-send, .cw-attach { min-height: 40px; min-width: 40px; } }
+  @media (max-width: 720px) { .cw-msgs { padding: 112px 12px 8px; scroll-padding-top: 112px; gap: 14px; } .cw-row, .cw-row.me { max-width: 100%; } .cw-composer-wrap { padding: 8px 12px 12px; } .cw-chat-avatar { top: 7px; } .cw-chat-head .cw-ava { width: 62px; height: 62px; } .cw-file { min-width: 0; flex-wrap: wrap; } .cw-file-actions { margin-left: auto; } .cw-modal .box { max-width: 96vw; } .cw-modal .cw-2col { grid-template-columns: 1fr; } .cw-info-toggle, .cw-panel-toggle, .cw-send, .cw-attach { min-height: 40px; min-width: 40px; } }
   @media (max-width: 720px) { .cw-info { width: 100%; border-left: 0; } .cw-profile-close { min-width: 40px; min-height: 40px; }
     .cw.info-open .cw-chat { display: none; }
     .cw-rail { width: min(300px, 86vw); position: fixed; inset: 0 auto 0 0; z-index: 80; transform: translateX(-105%); transition: transform .18s ease; box-shadow: none; background: var(--bg); }
@@ -1196,6 +1196,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       if ((cw.computerRevision || 0) === computerRevision) cw.computers = d.computers || [];
       cw.cloudServers = d.cloudServers || [];
       cw.profile = d.profile || {};
+      cw.enableCompanies = d.enableCompanies !== false;
       cw.convs = results[1].conversations || [];
       cwPersistOfflineRoster();
       cwRenderRail();
@@ -1522,7 +1523,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
           '<button type="button" id="cwHomeBtn" aria-label="Code mode" title="Code mode">' + cwIcon('home') + '<span>Code</span></button>' +
           '<button type="button" id="cwCurrentChat" aria-label="Cowork mode" title="Cowork mode" aria-pressed="true"><span class="cw-chat-face" id="cwChatAvatar" aria-hidden="true">' + headAva + '</span><span>Cowork</span></button>' +
           '<button type="button" id="cwInfoBtn" aria-label="Agent profile" title="Agent profile" aria-controls="cwChat" aria-pressed="false">' + cwIcon('user') + '<span>Profile</span></button>' +
-          '<button type="button" data-company-nav aria-label="Companies" title="Cowork company workspaces">'+cwIcon('users')+'<span>Companies</span></button>'+
+          (cw.enableCompanies !== false ? '<button type="button" data-company-nav aria-label="Companies" title="Cowork company workspaces">' + cwIcon('users') + '<span>Companies</span></button>' : '') +
           '<button type="button" id="cwAssistantSettings" data-pa-settings aria-label="Personal assistant preferences" title="P.A preferences and background health">' + cwIcon('crown') + '<span>P.A</span></button>' +
           cwSessionNavHtml() +
         '</nav>' +

@@ -30,6 +30,8 @@
  * a Cowork agent with a company assignment, so it shares the Cowork rules and
  * additionally satisfies the `company` requirements below.
  */
+import { companiesEnabled } from '../workspace/home.js';
+
 export type ToolProfile = 'coding' | 'cowork' | 'company';
 
 /** The existing layer that performs the effect. No new dispatcher may be added
@@ -412,6 +414,8 @@ function gateOpen(gate: ToolGate | undefined, grants: CoworkAccessInput): boolea
 export function coworkDenial(id: string, grants: CoworkAccessInput): string | undefined {
   const route = TOOL_CATALOG.get(id)?.routes.cowork;
   if (!route) return `${id} is not a Cowork capability.`;
+  if ((route.company === 'required' || id === 'company_manage' || id === 'company_files') && !companiesEnabled())
+    return `${id} is unavailable because company workspaces are disabled.`;
   if (route.company === 'required' && !grants.company)
     return `${id} is only available to an agent with a company assignment.`;
   if (route.mcpWritePath && !(grants.allowConfig && grants.allowShell && grants.allowWrites))

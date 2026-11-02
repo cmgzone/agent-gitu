@@ -36,3 +36,35 @@ it('presents a durable company card from a real isolated server tool context wit
     rmSync(root, { recursive: true, force: true });
   }
 }, 60000);
+
+it('withholds company tools when companies are disabled via settings or environment', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'gitu-company-disabled-'));
+  const prevHome = process.env['AGENT_GITU_HOME'];
+  const prevEnv = process.env['AGENT_GITU_ENABLE_COMPANIES'];
+  process.env['AGENT_GITU_HOME'] = root;
+  try {
+    const { updateWorkspaceSettings, companiesEnabled } = await import('../src/workspace/home.js');
+    const { coworkDenial } = await import('../src/tools/catalog.js');
+    const grants = { allowConfig: true, allowWrites: true, allowShell: true, company: true };
+
+    expect(companiesEnabled()).toBe(true);
+    expect(coworkDenial('company_manage', grants)).toBeUndefined();
+
+    updateWorkspaceSettings({ enableCompanies: false });
+    expect(companiesEnabled()).toBe(false);
+    expect(coworkDenial('company_manage', grants)).toMatch(/unavailable because company workspaces are disabled/i);
+    expect(coworkDenial('company_handbook', grants)).toMatch(/unavailable because company workspaces are disabled/i);
+
+    updateWorkspaceSettings({ enableCompanies: true });
+    expect(companiesEnabled()).toBe(true);
+    expect(coworkDenial('company_manage', grants)).toBeUndefined();
+
+    process.env['AGENT_GITU_ENABLE_COMPANIES'] = '0';
+    expect(companiesEnabled()).toBe(false);
+    expect(coworkDenial('company_manage', grants)).toMatch(/unavailable because company workspaces are disabled/i);
+  } finally {
+    if (prevHome === undefined) delete process.env['AGENT_GITU_HOME']; else process.env['AGENT_GITU_HOME'] = prevHome;
+    if (prevEnv === undefined) delete process.env['AGENT_GITU_ENABLE_COMPANIES']; else process.env['AGENT_GITU_ENABLE_COMPANIES'] = prevEnv;
+    rmSync(root, { recursive: true, force: true });
+  }
+});

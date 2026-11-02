@@ -293,8 +293,12 @@ export async function runNativeCoworkTurn(input: {
       text = lastCommentary.trim();
     }
     if (!text.trim()) {
-      input.store?.clearNativeCodexSession(key);
-      throw new LlmError('Native Cowork returned no final response. Progress is saved; it was not automatically restarted.', { kind: 'protocol_error' });
+      if (acted) {
+        text = lastCommentary.trim() || 'Completed the requested actions.';
+      } else {
+        input.store?.clearNativeCodexSession(key);
+        throw new LlmError('Native Cowork returned no final response. Progress is saved; it was not automatically restarted.', { kind: 'protocol_error' });
+      }
     }
     if (!waiting && !input.scope?.isSubAgent) {
       const question = ensureQuestionCard(input.store,input.conversationId,input.agent.id,text);

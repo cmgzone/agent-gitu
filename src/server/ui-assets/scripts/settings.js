@@ -161,19 +161,15 @@
         '<textarea id="cwSetAbout" rows="4" placeholder="About you — role, company, current focus…" style="background:var(--card2);border:1px solid var(--border2);color:var(--text);border-radius:8px;padding:7px 10px;font:inherit;font-size:13px;resize:vertical"></textarea>' +
         '<textarea id="cwSetPrefs" rows="3" placeholder="Working preferences — tone, hours, tools to prefer or avoid…" style="background:var(--card2);border:1px solid var(--border2);color:var(--text);border-radius:8px;padding:7px 10px;font:inherit;font-size:13px;resize:vertical"></textarea>' +
         '<div><button class="btn dark" id="cwSetProfileSave">Save</button></div></div></div>' +
-        '<div class="setcard" style="margin-bottom:12px"><div class="setrow"><div class="grow"><div class="t">Learning mode</div><div class="d">Choose how your team learns from its conversations.</div></div><select id="cwLearningMode" aria-label="Cowork learning mode"><option value="off">Off</option><option value="reactive">When asked</option><option value="proactive">Proactive</option></select></div><div class="setrow"><div class="grow"><div class="t">Require approval for skill changes</div><div class="d">When on, teammates cannot save or improve skills directly — their changes are staged here for your review first. Applies to the whole team.</div></div><input type="checkbox" id="cwSkillApproval" style="width:18px;height:18px;flex:none"' + '></div>' +
+        '<div class="setcard" style="margin-bottom:12px"><div class="setrow"><div class="grow"><div class="t">Learning mode</div><div class="d">Choose how your team learns from its conversations.</div></div><select id="cwLearningMode" aria-label="Cowork learning mode"><option value="off">Off</option><option value="reactive">When asked</option><option value="proactive">Proactive</option></select></div><div class="setrow"><div class="grow"><div class="t">Require approval for skill changes</div><div class="d">When on, teammates cannot save or improve skills directly — their changes are staged here for your review first. Applies to the whole team.</div></div><input type="checkbox" id="cwSkillApproval" style="width:18px;height:18px;flex:none"></div>' +
+        '<div class="setrow"><div class="grow"><div class="t">Enable company workspaces (Experimental)</div><div class="d">When enabled, company workspaces, teams, and background coordination are active. Switch off if not needed or unstable.</div></div><input type="checkbox" id="cwEnableCompanies" style="width:18px;height:18px;flex:none"></div>' +
         '<div id="cwPendingBody"></div></div>';
       api('/api/cowork/profile').then(function (d) {
         if (S.setSection !== 'cowork' || !$('cwSetName')) return;
         $('cwSetName').value = (d.profile && d.profile.name) || '';
         $('cwSetAbout').value = (d.profile && d.profile.about) || '';
         $('cwSetPrefs').value = (d.profile && d.profile.preferences) || '';
-      }).catch(function () {});
-      api('/api/cowork/profile').then(function (d) {
-        if (S.setSection !== 'cowork' || !$('cwSetName')) return;
-        $('cwSetName').value = (d.profile && d.profile.name) || '';
-        $('cwSetAbout').value = (d.profile && d.profile.about) || '';
-        $('cwSetPrefs').value = (d.profile && d.profile.preferences) || '';
+        if ($('cwEnableCompanies')) $('cwEnableCompanies').checked = d.enableCompanies !== false;
       }).catch(function () {});
       // Skill-write approval: a review panel that lists staged teammate skill
       // changes, plus the toggle that turns staging on.
@@ -188,6 +184,18 @@
           .then(function () { toast($('cwSkillApproval').checked ? 'Skill changes now need your approval' : 'Skill changes apply directly'); renderSettings(); })
           .catch(function (e) { toast(e.message, true); });
       };
+      if ($('cwEnableCompanies')) {
+        $('cwEnableCompanies').onchange = function () {
+          var checked = this.checked;
+          api('/api/cowork/companies/toggle', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled: checked }) })
+            .then(function () {
+              cwEnsure().enableCompanies = checked;
+              toast(checked ? 'Company workspaces enabled' : 'Company workspaces switched off');
+              renderSettings();
+            })
+            .catch(function (e) { toast(e.message, true); });
+        };
+      }
       var pendingBody = $('cwPendingBody');
       api('/api/cowork/skills/pending').then(function (d) {
         if (S.setSection !== 'cowork' || !$('cwPendingBody')) return;

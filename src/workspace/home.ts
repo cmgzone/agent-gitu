@@ -164,6 +164,8 @@ export interface WorkspaceSettings {
    *  skillApproval stages every cowork skill write for user review instead of
    *  applying it directly. */
   coworkLearning?: { mode?: 'reactive' | 'proactive' | 'off'; consolidate?: boolean; review?: boolean; reviewEvery?: string; skillApproval?: boolean };
+  /** Toggle company workspaces (experimental). Defaults to on; off hides the company UI and pauses company schedulers. */
+  enableCompanies?: boolean;
 }
 
 export interface CustomProviderProfile {
@@ -261,6 +263,7 @@ export function loadWorkspaceSettings(): WorkspaceSettings {
   const customProviders = sanitizeCustomProviders(data['customProviders']);
   const coworkLearning = sanitizeCoworkLearning(data['coworkLearning']);
   const autonomy = sanitizeAutonomy(data['autonomy']);
+  const enableCompanies = typeof data['enableCompanies'] === 'boolean' ? data['enableCompanies'] : undefined;
   return {
     projectsPath,
     ...(data['codingAccess'] === 'ask' || data['codingAccess'] === 'full' ? { codingAccess: data['codingAccess'] } : {}),
@@ -268,6 +271,7 @@ export function loadWorkspaceSettings(): WorkspaceSettings {
     ...(customProviders ? { customProviders } : {}),
     ...(coworkLearning ? { coworkLearning } : {}),
     ...(autonomy ? { autonomy } : {}),
+    ...(enableCompanies !== undefined ? { enableCompanies } : {}),
   };
 }
 
@@ -298,12 +302,23 @@ export function updateWorkspaceSettings(patch: Partial<WorkspaceSettings>): Work
     if (autonomy) merged.autonomy = autonomy;
     else delete merged.autonomy;
   }
+  if ('enableCompanies' in patch) {
+    if (typeof patch.enableCompanies === 'boolean') merged.enableCompanies = patch.enableCompanies;
+    else delete merged.enableCompanies;
+  }
   saveWorkspaceSettings(merged);
   return merged;
 }
 
 export function saveWorkspaceSettings(settings: WorkspaceSettings): void {
   writeJson(settingsFile(), settings);
+}
+
+export function companiesEnabled(): boolean {
+  const env = process.env['AGENT_GITU_ENABLE_COMPANIES'];
+  if (env === '0' || env === 'false' || env === 'off') return false;
+  if (env === '1' || env === 'true' || env === 'on') return true;
+  return loadWorkspaceSettings().enableCompanies !== false;
 }
 
 export function isDriveRoot(p: string): boolean {

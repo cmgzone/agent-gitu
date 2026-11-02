@@ -715,7 +715,7 @@ export interface TaskLedgerData {
   /** Durable execution ownership; changing providers requires an explicit continuation. */
   execution?: {
     mode: 'gitu' | NativeExecutionMode | 'codex-legacy';
-    native?: { threadId: string; turnId?: string; cwd: string; toolExecution?: 'gitu-guarded'; phaseId?: string; status: 'starting' | 'running' | 'completed' | 'interrupted' | 'failed'; planStepIds?: string[]; processedItems: string[]; model?: string; requestedEffort?: string; effectiveEffort?: string };
+    native?: { threadId?: string; turnId?: string; cwd: string; toolExecution?: 'gitu-guarded'; phaseId?: string; status: 'starting' | 'running' | 'completed' | 'interrupted' | 'failed'; planStepIds?: string[]; processedItems: string[]; model?: string; requestedEffort?: string; effectiveEffort?: string };
   };
   taskId: string;
   goal: string;

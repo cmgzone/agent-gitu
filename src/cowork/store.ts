@@ -1887,6 +1887,14 @@ export class CoworkStore {
     this.save();
   }
 
+  clearNativeCodexSession(key: string): void {
+    const sessions = this.load().nativeCodexSessions;
+    if (sessions && key in sessions) {
+      delete sessions[key];
+      this.save();
+    }
+  }
+
   saveContextCheckpoint(input: Omit<CoworkContextCheckpoint, 'updatedAt'>): void {
     const data = this.load();
     if (!data.conversations.some(item => item.id === input.conversationId) || !data.agents.some(item => item.id === input.agentId)) return;

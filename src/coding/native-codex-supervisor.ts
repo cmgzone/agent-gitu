@@ -502,7 +502,13 @@ export async function runNativeCodexTask(input: {
   try {
     const settings = nativeCodexPermissions(guard, ledger, config.scopeFiles);
     const previous = ledger.data.execution?.native;
-    if (previous && previous.cwd !== guard.activeWritableRoot) throw new Error('The saved native session belongs to another workspace. Explicitly create a new task.');
+    if (previous && previous.cwd !== guard.activeWritableRoot) {
+      if (ledger.data.execution?.native) {
+        delete ledger.data.execution.native.threadId;
+        ledger.save();
+      }
+      throw new Error('The saved native session belongs to another workspace. Explicitly create a new task.');
+    }
     if (config.criteria?.length && !currentCriteria().length) {
       const provided = ledger.appendCriteriaFromSpecs(EvidenceEngine.normalizeCriteria(config.criteria));
       for (const criterion of provided) if (criterion.verification) criterion.verificationUserPinned = true;
@@ -687,8 +693,13 @@ export async function runNativeCodexTask(input: {
     }
 
     if (runtimeResult === 'interrupted' || signal.aborted) exited = 'aborted';
-    else if (!finalAnswer) ledger.addBlocker('The native turn ended without a final answer. Progress messages are not completion; no automatic restart was made.');
-    else if (discussion || input.conversationControl?.()) {
+    else if (!finalAnswer) {
+      if (ledger.data.execution?.native) {
+        delete ledger.data.execution.native.threadId;
+        ledger.save();
+      }
+      ledger.addBlocker('The native turn ended without a final answer. Progress messages are not completion; no automatic restart was made.');
+    } else if (discussion || input.conversationControl?.()) {
       answeredDiscussion = discussion;
       ledger.addBlocker('Paused for discussion with the user.');
     } else {
@@ -789,7 +800,13 @@ export async function runNativeCodexTask(input: {
       ledger.addBlocker((error as Error).message);
       if (error instanceof LlmError) providerError = error;
     }
-    if (ledger.data.execution?.native) ledger.data.execution.native.status = exited === 'aborted' ? 'interrupted' : 'failed';
+    if (ledger.data.execution?.native) {
+      ledger.data.execution.native.status = exited === 'aborted' ? 'interrupted' : 'failed';
+      if (error instanceof Error && error.message.includes('The saved session for this task no longer exists')) {
+        delete ledger.data.execution.native.threadId;
+        ledger.save();
+      }
+    }
   } finally {
     executor.dispose();
     activeTasks.delete(taskKey);

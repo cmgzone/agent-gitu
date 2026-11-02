@@ -302,4 +302,29 @@ describe('native Cowork execution', () => {
     expect(toolEvents[0]).toMatchObject({ text: 'Inspecting a.txt to verify its contents…', tool: 'read_file', ok: undefined, detail: 'read a.txt' });
     expect(toolEvents[1]).toMatchObject({ text: 'Inspecting a.txt to verify its contents…', tool: 'read_file', ok: true, detail: 'read a.txt' });
   });
+
+  it('accepts meaningful commentary as final answer when no separate non-commentary message was emitted', async () => {
+    const f = fixture(async (input) => {
+      await input.onEvent('item/completed', {
+        item: {
+          id: 'meaningful-status',
+          type: 'agentMessage',
+          phase: 'commentary',
+          text: 'News feed already up to date for 2026-11-01 — nothing to publish, no changes made.',
+        },
+      });
+    });
+    const result = await f.run();
+    expect(result.text).toBe('News feed already up to date for 2026-11-01 — nothing to publish, no changes made.');
+  });
+
+  it('clears the saved native session when the model returns no final response so subsequent turns do not stay stuck', async () => {
+    const f = fixture(async (input) => {
+      await input.onEvent('item/completed', { item: { id: 'progress', type: 'agentMessage', phase: 'commentary', text: 'Working…' } });
+    });
+    const key = [f.conversation.id, f.agent.id, '', 'chat'].join(':');
+    await expect(f.run()).rejects.toThrow('no final response');
+    // Session is self-healed and cleared rather than permanently dangling
+    expect(f.store.nativeCodexSession(key)).toBeUndefined();
+  });
 });

@@ -59,6 +59,7 @@ export async function runNativeCoworkTurn(input: {
   const savedSession = session;
   if (session && session.cwd !== cwd) {
     active.delete(key);
+    input.store?.clearNativeCodexSession(key);
     throw new Error('The native session belongs to a different workspace. Start an explicit new task.');
   }
   const history = input.messages.filter((message) => message.role !== 'system');
@@ -288,7 +289,13 @@ export async function runNativeCoworkTurn(input: {
         input.onProgress?.(`Retrying the model — attempt ${attempt}/${maxAttempts} in ${(delayMs / 1000).toFixed(1)}s. Saved work is preserved.`),
     });
     if (result.status !== 'completed') throw new LlmError('Native Cowork turn was interrupted; its session is preserved.', { kind: 'aborted' });
-    if (!text.trim()) throw new LlmError('Native Cowork returned no final response. Progress is saved; it was not automatically restarted.', { kind: 'protocol_error' });
+    if (!text.trim() && lastCommentary.trim() && !/^(?:working|thinking)[\s.…]*$/i.test(lastCommentary.trim())) {
+      text = lastCommentary.trim();
+    }
+    if (!text.trim()) {
+      input.store?.clearNativeCodexSession(key);
+      throw new LlmError('Native Cowork returned no final response. Progress is saved; it was not automatically restarted.', { kind: 'protocol_error' });
+    }
     if (!waiting && !input.scope?.isSubAgent) {
       const question = ensureQuestionCard(input.store,input.conversationId,input.agent.id,text);
       if (question) { waiting = true; input.onTool?.('ask_user',{question:question.title,options:question.options},{ok:true,output:'Question '+question.id+' posted. Waiting for the user’s answer.'}); }
@@ -296,6 +303,17 @@ export async function runNativeCoworkTurn(input: {
     session!.historyKeys = keys;
     persist();
     return { text, waiting };
+  } catch (err) {
+    if (
+      err instanceof Error &&
+      ((err instanceof LlmError && err.details.kind === 'protocol_error') ||
+        err.message.includes('The saved session for this task no longer exists') ||
+        err.message.includes('repeated a denied or waiting request without progress') ||
+        err.message.includes('repeated the same Cowork operation and unchanged result without progress'))
+    ) {
+      input.store?.clearNativeCodexSession(key);
+    }
+    throw err;
   } finally {
     active.delete(key);
   }

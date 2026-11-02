@@ -20,7 +20,7 @@ function isolatedHome() {
 describe('onboarding preferences', () => {
   it('starts incomplete, persists choices across reads, and excludes credentials', () => {
     const root = isolatedHome();
-    expect(readOnboarding()).toEqual({ completed: false, theme: 'system', mode: 'coding', model: '' });
+    expect(readOnboarding()).toEqual({ completed: false, theme: 'system', mode: 'cowork', model: '' });
     saveOnboarding({ theme: 'dark', mode: 'cowork', model: 'openai::test-model', apiKey: 'do-not-save' });
     expect(readOnboarding()).toEqual({ completed: true, theme: 'dark', mode: 'cowork', model: 'openai::test-model' });
     expect(readFileSync(path.join(root, 'Settings', 'onboarding.json'), 'utf8')).not.toContain('do-not-save');
@@ -113,7 +113,7 @@ describe('setup wizard flow', () => {
     expect(u.context.setupState.busy).toBe(false);
     expect(u.elements.setupMessage.setAttribute).toHaveBeenCalledWith('role', 'alert');
     await u.context.finishSetup();
-    expect(u.context.cwExit).toHaveBeenCalledOnce();
+    expect(u.context.openCowork).toHaveBeenCalledOnce();
   });
 
   it('skips completed setup on a new origin and restores saved theme and mode', async () => {

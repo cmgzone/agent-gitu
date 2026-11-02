@@ -56,9 +56,11 @@
     renderSidebar();
     renderTopbar();
     applyLayout();
-    var cwWasOpen = false;
-    try { cwWasOpen = localStorage.getItem('hermes.cowork') === 'open'; } catch (e) {}
-    if (cwWasOpen) openCowork(); else openHome();
+    var modePref = null;
+    try { modePref = localStorage.getItem('hermes.cowork'); } catch (e) {}
+    // Cowork chat is the primary first page.
+    if (modePref === 'closed' && S.settings.startMode === 'coding') openHome();
+    else openCowork();
 
     // One global Escape: closes the TOPMOST layer (tool panel → settings →
     // browse modal → dynamic modals) and returns focus to where it was.

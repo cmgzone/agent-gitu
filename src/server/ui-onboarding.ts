@@ -96,7 +96,7 @@ export const ONBOARDING_JS = String.raw`
     var titles = ['Make yourself at home', 'Connect your intelligence', 'How would you like to work?'];
     var descriptions = ['Choose the look that feels right. You can change it anytime.', 'Connect a provider and pick a model for your tasks.', 'Choose where to start. You can switch between both workspaces anytime.'];
     var content = step === 0 ? themeOptionsHtml().replace(/name="appearance"/g, 'name="setupAppearance"') : step === 1 ? setupConnectionHtml() :
-      '<div class="setup-modes" role="radiogroup" aria-label="Starting workspace">' + [{ id: 'coding', title: 'Coding', description: 'Build apps, fix bugs, and work directly with your code and project files.' }, { id: 'cowork', title: 'Cowork', description: 'Work with a team of agents on research, documents, planning, and everyday tasks.' }].map(function (mode) {
+      '<div class="setup-modes" role="radiogroup" aria-label="Starting workspace">' + [{ id: 'cowork', title: 'Cowork (Recommended)', description: 'Work with your personal team of agents on everyday tasks, documents, research, and planning.' }, { id: 'coding', title: 'Coding', description: 'Build apps, fix bugs, and work directly with local code and project files.' }].map(function (mode) {
         return '<label class="setup-mode"><input type="radio" name="setupMode" value="' + mode.id + '"' + (setupState.mode === mode.id ? ' checked' : '') + '><span><b>' + mode.title + '</b><small>' + mode.description + '</small></span></label>';
       }).join('') + '</div>';
     root.innerHTML = '<div class="setup-frame"><aside class="setup-aside"><div class="setup-brand"><img src="/brand/agent-gitu-mark.svg" alt=""><span>Agent Gitu</span></div><p>Your ideas. A little help.<br>Let’s get you set up.</p><ol class="setup-steps">' + ['Appearance', 'Connection', 'Workspace'].map(function (name, i) {
@@ -172,7 +172,7 @@ export const ONBOARDING_JS = String.raw`
     });
   }
   function openSetupWizard() {
-    setupState = { step: 0, provider: (S.sel.model || '').split('::')[0], model: S.sel.model || '', mode: S.settings.startMode || 'coding', busy: false };
+    setupState = { step: 0, provider: (S.sel.model || '').split('::')[0], model: S.sel.model || '', mode: S.settings.startMode || 'cowork', busy: false };
     document.querySelector('.shell').inert = true;
     $('startupCover').className = 'gitu-opening';
     var cw = $('cw'); if (cw) cw.inert = true;
@@ -225,7 +225,8 @@ export const ONBOARDING_JS = String.raw`
         }
         var lastMode = null;
         try { lastMode = localStorage.getItem('hermes.cowork'); } catch (e) {}
-        if (lastMode === 'open' || (!lastMode && prefs.mode === 'cowork')) openCowork();
+        if (prefs.mode === 'coding' && lastMode === 'closed') openHome();
+        else openCowork();
         document.querySelector('.shell').inert = false;
       }
       $('startupCover').hidden = true;

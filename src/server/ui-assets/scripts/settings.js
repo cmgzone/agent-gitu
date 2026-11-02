@@ -63,6 +63,7 @@
         '<div class="setrow"><div class="grow"><div class="t">Intelligence level</div><div class="d">Reasoning effort sent to the model (dynamic per provider).</div></div><select id="gEffort"></select></div>' +
         '<div class="setrow"><div class="grow"><div class="t">Keep going until done</div><div class="d">The agent recovers from provider and protocol errors — empty completions, malformed replies, repeated calls — instead of stopping itself mid-task. Off restores the original fail-fast limits.</div></div><input type="checkbox" id="gPersist" style="width:18px;height:18px;flex:none"></div>' +
         '<div class="setrow"><div class="grow"><div class="t">Spend ceiling</div><div class="d">Optional per-run limit in USD. Left empty, a run is never stopped for cost — only by you, or by finishing the task.</div></div><input type="text" id="gSpend" inputmode="decimal" placeholder="none" style="width:96px;background:var(--card2);border:1px solid var(--border2);color:var(--text);border-radius:8px;padding:6px 9px;font:inherit;font-size:13px"></div>' +
+        '<div class="setrow"><div class="grow"><div class="t">Primary workspace</div><div class="d">Choose the default first page when opening Agent Gitu.</div></div><select id="gStartMode"><option value="cowork">Cowork (Recommended)</option><option value="coding">Coding</option></select></div>' +
         '</div>';
       b.insertAdjacentHTML('beforeend','<h2>Account</h2><div class="setcard" id="googleAccountSettings"><div class="setrow"><div class="grow"><div class="t">Google sign-in</div><div class="d">Checking configuration…</div></div></div></div>');
       if (window.ReactNativeWebView) {
@@ -111,6 +112,26 @@
       };
       if (gPersist) gPersist.onchange = saveAutonomy;
       if (gSpend) gSpend.onchange = saveAutonomy;
+      var gStartMode = $('gStartMode');
+      if (gStartMode) {
+        gStartMode.value = S.settings.startMode === 'coding' ? 'coding' : 'cowork';
+        gStartMode.onchange = function () {
+          var mode = gStartMode.value === 'coding' ? 'coding' : 'cowork';
+          S.settings.startMode = mode;
+          persist();
+          try { localStorage.setItem('hermes.cowork', mode === 'cowork' ? 'open' : 'closed'); } catch (e) {}
+          api('/api/onboarding', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ theme: S.settings.theme, mode: mode, model: S.sel.model || '' })
+          }).then(function () {
+            toast('Primary workspace set to ' + (mode === 'cowork' ? 'Cowork' : 'Coding'));
+          }).catch(function (e) { toast(e.message, true); });
+        };
+      }
+      api('/api/onboarding').then(function (prefs) {
+        if (!$('gStartMode') || S.setSection !== 'general') return;
+        $('gStartMode').value = prefs.mode === 'coding' ? 'coding' : 'cowork';
+      }).catch(function () {});
       api('/api/home').then(function (h) {
         if (!$('gPersist') || S.setSection !== 'general') return;
         var a = (h && h.autonomy) || {};

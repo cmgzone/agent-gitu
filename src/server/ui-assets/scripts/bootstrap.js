@@ -43,7 +43,7 @@
   /* GITU_BINDING_CHAT_CREDENTIAL_HELPERS_JS */
   /* GITU_BINDING_UI_MODEL_CATALOG_JS */
   var S = {
-    active: 'home', project: null, models: [], sessions: {}, es: null, poll: null, files: [],
+    active: 'cowork', project: null, models: [], sessions: {}, es: null, poll: null, files: [],
     modelsLoaded: false,
     draft: '',
     sel: { model: '', effort: 'high', persistent: true, spendCeilingUsd: '' },

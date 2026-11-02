@@ -14,7 +14,7 @@ export function readOnboarding(): OnboardingPreferences {
   return {
     completed: saved?.completed === true,
     theme: saved?.theme === 'light' || saved?.theme === 'dark' ? saved.theme : 'system',
-    mode: saved?.mode === 'cowork' ? 'cowork' : 'coding',
+    mode: saved?.mode === 'coding' ? 'coding' : 'cowork',
     model: typeof saved?.model === 'string' ? saved.model : '',
   };
 }

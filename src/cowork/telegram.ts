@@ -219,7 +219,16 @@ export function telegramAgentMessage(agentName: string | undefined, text: string
   return `${name}\n${cleanTelegramText(text, fallback)}`;
 }
 
+function isComputerControlRequest(request: CoworkRequest): boolean {
+  return Boolean(
+    request.desktopHandoff ||
+    request.permission === 'host' ||
+    /control over (the )?computer|return (desktop |computer )?control|take (desktop |computer )?control|computer control|desktop handoff/i.test(`${request.title} ${request.detail}`)
+  );
+}
+
 function telegramRequestLabel(request: CoworkRequest): string {
+  if (isComputerControlRequest(request)) return 'Computer control needed';
   if (request.kind === 'permission') return 'Approval needed';
   if (request.kind === 'recommendation') return 'Recommendation';
   if ((request.kind === 'credential' || request.kind === 'browser-auth')) return 'Credential needed';
@@ -240,7 +249,8 @@ export function telegramRequestCardText(request: CoworkRequest, agentName?: stri
     request.options.forEach((option, index) => lines.push(`${index + 1}. ${cleanTelegramLine(option, `Option ${index + 1}`)}`));
   }
   lines.push('', `Request id: ${request.id}`);
-  if (request.kind === 'permission') lines.push('Tap Allow or Deny, or reply approve / deny.');
+  if (isComputerControlRequest(request)) lines.push('Open the computer in the Agent Gitu app to give or return control, or reply with your answer.');
+  else if (request.kind === 'permission') lines.push('Tap Allow or Deny, or reply approve / deny.');
   else if (request.kind === 'recommendation') lines.push('Tap Accept or Dismiss, or reply accept / dismiss.');
   else if ((request.kind === 'credential' || request.kind === 'browser-auth')) lines.push('Never send passwords, verification codes, keys or tokens in chat. Open the Cowork page in the Agent Gitu web app and use the secure credential form on this request.');
   else lines.push(request.options.length > 0 ? 'Tap an option, reply with the option number, or type your answer.' : 'Reply with your answer.');

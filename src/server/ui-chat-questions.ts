@@ -61,9 +61,16 @@ export const CHAT_QUESTION_JS = String.raw`
   function chatQuestionHtml(request,owner,scope){
     var presentation=cardRequestPresentation(request),state=chatQuestionState(owner,scope,request.id),closed=request.status!=='open'||state.answered,answer=state.answered?state.response:request.response,
       inputId='question-'+encodeURIComponent(scope)+'-'+encodeURIComponent(request.id),errorId=inputId+'-error',hintId=inputId+'-hint',pending=state.pending?' disabled':'';
-    return '<section class="chat-question" data-question-card="'+esc(request.id)+'" aria-label="Question: '+esc(request.title)+'" aria-busy="'+String(state.pending)+'">'+
-      '<div class="chat-question-heading"><span class="chat-question-label"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 5 0c0 2-2.5 2-2.5 4m0 3h.01"/></svg>Question</span><span class="chat-question-state">'+(closed?(request.status==='answered'||state.answered?'Answered':esc(request.status)):state.pending?'Sending…':'Needs your answer')+'</span></div>'+
-      '<h3>'+esc(presentation.title)+'</h3>'+(presentation.detail?'<p class="chat-question-detail">'+esc(presentation.detail)+'</p>':'')+cardTechnicalDetails(presentation.technical,request.id)+
+    var isComputer=Boolean(request.desktopHandoff||request.permission==='host'||/control over (the )?computer|return (desktop |computer )?control|take (desktop |computer )?control|computer control|desktop handoff/i.test(String(request.title||'')+' '+String(request.detail||'')));
+    var icon=isComputer
+      ? '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>'
+      : '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 5 0c0 2-2.5 2-2.5 4m0 3h.01"/></svg>';
+    var label=isComputer?'Computer control':'Question';
+    var stateLabel=closed?(request.status==='answered'||state.answered?'Answered':esc(request.status)):state.pending?'Sending…':(isComputer?'Needs computer action':'Needs your answer');
+    var handoffBtn=(isComputer&&!closed&&request.agentId)?'<div style="margin:10px 0 6px"><button type="button" class="btn dark chat-question-handoff" data-cwhandoff="'+esc(request.agentId)+'">Open computer</button></div>':'';
+    return '<section class="chat-question" data-question-card="'+esc(request.id)+'" aria-label="'+esc(label)+': '+esc(request.title)+'" aria-busy="'+String(state.pending)+'">'+
+      '<div class="chat-question-heading"><span class="chat-question-label">'+icon+esc(label)+'</span><span class="chat-question-state">'+stateLabel+'</span></div>'+
+      '<h3>'+esc(presentation.title)+'</h3>'+(presentation.detail?'<p class="chat-question-detail">'+esc(presentation.detail)+'</p>':'')+cardTechnicalDetails(presentation.technical,request.id)+handoffBtn+
       (closed?(answer?'<div class="chat-question-answer cw-request-result"><strong>Your answer</strong>'+esc(answer)+'</div>':''):
       '<form class="chat-question-form" data-question-form="'+esc(request.id)+'">'+
       ((request.options||[]).length?'<div class="chat-question-choices" role="group" aria-label="Suggested answers">'+request.options.map(function(option){var isRec=Boolean(request.recommended&&request.recommended===option);return '<button type="button" class="chat-question-choice'+(isRec?' is-recommended':'')+'" data-question-choice="'+esc(option)+'" aria-pressed="'+String(state.text===option)+'"'+pending+'>'+(isRec?'<span class="chat-question-rec-badge">Recommended</span>':'')+esc(option)+'</button>';}).join('')+'</div>':'')+
@@ -71,6 +78,13 @@ export const CHAT_QUESTION_JS = String.raw`
       '<div class="chat-question-footer"><span id="'+esc(hintId)+'" class="chat-question-hint">Suggestions are editable · Ctrl / ⌘ + Enter to send</span><button type="submit" class="btn dark chat-question-submit"'+pending+'>'+(state.pending?'Sending…':'Send answer')+'</button></div><p id="'+esc(errorId)+'" class="chat-question-error" role="alert">'+esc(state.error)+'</p></form>')+'</section>';
   }
   function chatBindQuestions(root,owner,scope,submit,settled){
+    root.querySelectorAll('[data-cwhandoff]').forEach(function(btn){
+      btn.onclick=function(){
+        var agentId=btn.getAttribute('data-cwhandoff');
+        if(typeof cwOpenDesktop==='function')cwOpenDesktop(agentId);
+        else if(typeof window!=='undefined'&&typeof window.cwOpenDesktop==='function')window.cwOpenDesktop(agentId);
+      };
+    });
     root.querySelectorAll('[data-question-form]').forEach(function(form){
       var id=form.getAttribute('data-question-form'),state=chatQuestionState(owner,scope,id),input=form.querySelector('[data-question-answer]'),card=form.closest('[data-question-card]'),error=form.querySelector('.chat-question-error'),button=form.querySelector('[type=submit]');
       function sync(){state.text=input.value;state.error='';error.textContent='';input.setAttribute('aria-invalid','false');form.querySelectorAll('[data-question-choice]').forEach(function(choice){choice.setAttribute('aria-pressed',String(choice.getAttribute('data-question-choice')===input.value));});}

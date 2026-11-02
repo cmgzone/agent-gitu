@@ -172,6 +172,16 @@ describe('authenticated Android push API and event hooks', () => {
       title: 'Fixture needs input',
       body: 'Private question',
     });
+    store.addRequest({ conversationId: conversation.id, agentId: agent.id, kind: 'question', desktopHandoff: true, title: 'Your turn on the desktop', detail: 'Sign in to the site', options: ['Done — continue'] });
+    await hooks.mobilePush.drain();
+    const handoffNotice = transport.send.mock.calls.filter(([, , event]) => event.kind === 'attention').at(-1)?.[2];
+    expect(handoffNotice).toMatchObject({
+      kind: 'attention',
+      target: 'cowork',
+      targetId: conversation.id,
+      title: 'Fixture needs control over computer',
+      body: 'Sign in to the site',
+    });
     const api = new GituApi(base, key, password, email);
     await api.connect();
     const { runId } = await api.start('Say hello', project, 'chat');

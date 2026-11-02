@@ -1742,8 +1742,13 @@ export class GituServer {
       for (const request of store.requests(conversationId).filter(item => item.status === 'open' && !item.hiddenAt)) {
         const reqAgent = store.getAgent(request.agentId);
         const teammateName = reqAgent?.name || 'Teammate';
-        const title = `${teammateName} needs input`;
-        const body = formatMessageHint(request.title || request.detail) || 'Gitu is waiting for your review or answer.';
+        const isComputer = Boolean(
+          request.desktopHandoff ||
+          request.permission === 'host' ||
+          /control over (the )?computer|return (desktop |computer )?control|take (desktop |computer )?control|computer control|desktop handoff/i.test(`${request.title} ${request.detail}`)
+        );
+        const title = isComputer ? `${teammateName} needs control over computer` : `${teammateName} needs input`;
+        const body = formatMessageHint(isComputer ? (request.detail || request.title) : (request.title || request.detail)) || (isComputer ? 'Open computer to hand off control / return control to your teammate.' : 'Gitu is waiting for your review or answer.');
         this.mobilePush.notify({
           ...target,
           id: 'request:' + request.id,
@@ -1758,7 +1763,10 @@ export class GituServer {
         const agent = message.agentId ? store.getAgent(message.agentId) : undefined;
         const conv = store.getConversation(conversationId);
         const teammateName = message.agentName || agent?.name || 'Teammate';
-        const title = conv && conv.kind !== 'dm' && conv.title ? `${teammateName} (${conv.title})` : teammateName;
+        const isComputer = /control over (the )?computer|return (desktop |computer )?control|take (desktop |computer )?control|computer control|desktop handoff/i.test(message.text);
+        const title = isComputer
+          ? `${teammateName} needs control over computer`
+          : conv && conv.kind !== 'dm' && conv.title ? `${teammateName} (${conv.title})` : teammateName;
         const body = formatMessageHint(message.text) || 'A teammate has replied.';
         this.mobilePush.notify({
           ...target,
@@ -1914,7 +1922,7 @@ export class GituServer {
           return { connections: this.connections.scoped(id => this.companies().get(companyId)?.connectionIds.includes(id) === true && !organization.authorizeTool(agentId, 'connection_read', { connectionId: id })), write: current.allowWrites };
         }, signal);
       };
-      const store=this.cowork(),scopeKey=agent?.companyId?'company:'+agent.companyId:'personal',transfer={beforeStart:agent?.companyId?()=>this.companies().reserveComputer(agent.companyId!,agentId,cloudId):undefined,onState:(state:string)=>{if(agent?.companyId)this.companies().computerState(agent.companyId,agentId,state);this.publishComputers(scopeKey);},onControl:()=>this.publishComputers(scopeKey),limits:agent?.companyId?()=>{const c=this.companies().get(agent.companyId!)!;return{cpu:c.cpu,memoryMb:c.memoryMb,diskMb:c.diskMb};}:undefined,maxFileBytes:()=>this.selectedFileLimit(agent?.companyId),resolveArtifact:(id:string,conversationId:string)=>{const artifact=store.getArtifact(id);return artifact?.conversationId===conversationId?store.artifactPath(id):undefined;}};
+      const store=this.cowork(),scopeKey=agent?.companyId?'company:'+agent.companyId:'personal',transfer={beforeStart:agent?.companyId?()=>this.companies().reserveComputer(agent.companyId!,agentId,cloudId):undefined,onState:(state:string)=>{if(agent?.companyId)this.companies().computerState(agent.companyId,agentId,state);this.publishComputers(scopeKey);},onControl:()=>this.publishComputers(scopeKey),onNeedsControl:(id:string,tool:string,convId?:string)=>this.notifyAgentNeedsComputerControl(id,tool,convId),limits:agent?.companyId?()=>{const c=this.companies().get(agent.companyId!)!;return{cpu:c.cpu,memoryMb:c.memoryMb,diskMb:c.diskMb};}:undefined,maxFileBytes:()=>this.selectedFileLimit(agent?.companyId),resolveArtifact:(id:string,conversationId:string)=>{const artifact=store.getArtifact(id);return artifact?.conversationId===conversationId?store.artifactPath(id):undefined;}};
       computer = cloudId && cloudId !== 'hosted'
         ? new CoworkComputer(agentId, nodePath.join(root, 'cloud', cloudId), this.cloudComputer(cloudId).execute, { key: 'ssh:' + cloudId, cloud: true, prepareGit,...transfer })
         : new CoworkComputer(agentId, root, cloudId === 'hosted' ? hostedComputerExec : undefined, { key: 'default', cloud: cloudId === 'hosted', prepareGit,...transfer });
@@ -1938,6 +1946,41 @@ export class GituServer {
       try { send(); } catch { subscribers.delete(send); }
     }
     if (!subscribers.size) this.computerSubscribers.delete(scopeKey);
+  }
+
+  private lastComputerControlNotification = new Map<string, number>();
+
+  private notifyAgentNeedsComputerControl(agentId: string, _tool: string, conversationId?: string): void {
+    const now = Date.now();
+    const last = this.lastComputerControlNotification.get(agentId) ?? 0;
+    if (now - last < 60_000) return;
+    this.lastComputerControlNotification.set(agentId, now);
+
+    const store = this.cowork();
+    const agent = store.getAgent(agentId);
+    const teammateName = agent?.name || 'Teammate';
+
+    const convId = conversationId ?? store.listConversations().find(c => c.memberIds.includes(agentId))?.id;
+    if (!convId) return;
+
+    if (this.mobilePush.hasDevices && !this.stopping && this.appAuth.configured) {
+      try {
+        const companyId = this.companyScope.getStore()?.id;
+        const target = { target: 'cowork' as const, targetId: convId, ...(companyId ? { companyId } : {}) };
+        this.mobilePush.notify({
+          ...target,
+          id: `computer-control:${agentId}:${Math.floor(now / 60000)}`,
+          at: now,
+          kind: 'attention',
+          title: `${teammateName} needs control over computer`,
+          body: `${teammateName} is waiting to use the computer. Open computer to return control.`,
+        });
+      } catch {
+        logger.warn({ subsystem: 'push' }, 'Computer control notification unavailable');
+      }
+    }
+
+    this.publishCowork(convId);
   }
 
   /** In-memory status for every teammate visible in the current scope. */

@@ -602,6 +602,21 @@ describe('telegram gateway helpers', () => {
     expect(note).toMatch(/no open approval/i);
   });
 
+  it('formats computer control request cards with handoff guidance on Telegram and Discord', () => {
+    const handoffRequest: CoworkRequest = {
+      id: 'cr-handoff', conversationId: 'conv', agentId: 'a1', kind: 'question',
+      desktopHandoff: true,
+      title: 'Your turn on the desktop', detail: 'Please sign in to the site', options: ['Done — continue'], status: 'open',
+      createdAt: new Date().toISOString(),
+    };
+    const tg = telegramRequestCardText(handoffRequest, 'atlas');
+    expect(tg).toContain('Computer control needed');
+    expect(tg).toContain('Open the computer in the Agent Gitu app');
+    const dc = discordRequestText(handoffRequest, 'atlas');
+    expect(dc).toContain('Computer control needed');
+    expect(dc).toContain('Open the computer in the Agent Gitu web app');
+  });
+
   it('escapes HTML for Telegram', () => {
     expect(escapeTelegramHtml('<b>me & you</b>')).toBe('&lt;b&gt;me &amp; you&lt;/b&gt;');
   });

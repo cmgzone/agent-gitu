@@ -208,7 +208,7 @@ export class CoworkComputer {
     readonly agentId: string,
     private readonly root: string,
     private readonly exec: ComputerExec = computerExec,
-    private readonly runtime: { key: string; cloud?: boolean; prepareGit?:(computer:CoworkComputer,signal?:AbortSignal)=>Promise<void>; beforeStart?:()=>void;onState?:(state:ComputerStatus['state'])=>void;onControl?:()=>void;limits?:()=>{cpu:number;memoryMb:number;diskMb:number};maxFileBytes?: () => number|null; resolveArtifact?: (id:string,conversationId:string)=>string|undefined } = { key: 'default' },
+    private readonly runtime: { key: string; cloud?: boolean; prepareGit?:(computer:CoworkComputer,signal?:AbortSignal)=>Promise<void>; beforeStart?:()=>void;onState?:(state:ComputerStatus['state'])=>void;onControl?:()=>void;onNeedsControl?:(agentId:string,tool:string,conversationId?:string)=>void;limits?:()=>{cpu:number;memoryMb:number;diskMb:number};maxFileBytes?: () => number|null; resolveArtifact?: (id:string,conversationId:string)=>string|undefined } = { key: 'default' },
   ) {
     const key = createHash('sha256')
       .update(`${path.resolve(root)}:${agentId}`)
@@ -466,8 +466,14 @@ export class CoworkComputer {
       signal?.throwIfAborted();
       if (tool === 'computer_status') return { ok: true, output: JSON.stringify(this.status()) };
       if (this.state === 'stopped' && this.control === 'user') await this.refreshStatus();
-      if (this.state === 'sleeping') return { ok: false, output: 'The user put this desktop to sleep. Wait for them to wake it; do not switch computers.' };
-      if (this.control === 'user' && ['desktop_input', 'browse', 'browser_auth_prepare', 'browser_auth_submit', 'run_command', 'computer_process', 'write_file', 'apply_edit', 'receive_file'].includes(tool)) return { ok: false, output: 'The user has control of this desktop. Wait for the handoff response or ask_user; do not interact with their apps or fall back to another computer.' };
+      if (this.state === 'sleeping') {
+        this.runtime.onNeedsControl?.(this.agentId, tool, conversationId);
+        return { ok: false, output: 'The user put this desktop to sleep. Wait for them to wake it; do not switch computers.' };
+      }
+      if (this.control === 'user' && ['desktop_input', 'browse', 'browser_auth_prepare', 'browser_auth_submit', 'run_command', 'computer_process', 'write_file', 'apply_edit', 'receive_file'].includes(tool)) {
+        this.runtime.onNeedsControl?.(this.agentId, tool, conversationId);
+        return { ok: false, output: 'The user has control of this desktop. Wait for the handoff response or ask_user; do not interact with their apps or fall back to another computer.' };
+      }
       // A recent provisioning failure is retried only after the cooldown, so
       // callers can fall back to the user's computer without 15s Docker probes
       // on every tool call.

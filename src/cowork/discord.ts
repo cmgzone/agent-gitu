@@ -265,7 +265,8 @@ export function discordRequestText(request: CoworkRequest, agentName?: string): 
     lines.push('', 'Options:');
     request.options.forEach((option, index) => lines.push(`${index + 1}. ${option}`));
   }
-  if (request.kind === 'permission') lines.push('', 'Reply approve or deny.');
+  if (isComputerControlRequest(request)) lines.push('', 'Open the computer in the Agent Gitu web app to give or return control, or reply with your answer.');
+  else if (request.kind === 'permission') lines.push('', 'Reply approve or deny.');
   else if (request.kind === 'recommendation') lines.push('', 'Reply accept or dismiss.');
   else if ((request.kind === 'credential' || request.kind === 'browser-auth')) lines.push('', 'Never send passwords, verification codes, keys or tokens in chat. Open the Cowork page in the Agent Gitu web app and use the secure credential form on this request.');
   else lines.push('', request.options.length > 0 ? 'Reply with the option number, or type your answer.' : 'Reply with your answer.');
@@ -310,7 +311,16 @@ export function parseDiscordRequestReply(
   return undefined;
 }
 
+function isComputerControlRequest(request: CoworkRequest): boolean {
+  return Boolean(
+    request.desktopHandoff ||
+    request.permission === 'host' ||
+    /control over (the )?computer|return (desktop |computer )?control|take (desktop |computer )?control|computer control|desktop handoff/i.test(`${request.title} ${request.detail}`)
+  );
+}
+
 function discordRequestLabel(request: CoworkRequest): string {
+  if (isComputerControlRequest(request)) return '**Computer control needed**';
   if (request.kind === 'permission') return '**Approval needed**';
   if (request.kind === 'recommendation') return '**Recommendation**';
   if ((request.kind === 'credential' || request.kind === 'browser-auth')) return '**Credential needed**';

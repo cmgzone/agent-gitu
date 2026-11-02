@@ -262,6 +262,21 @@ export function delegationProgressFor(event: CodingEvent): string | undefined {
     // Verification worth surfacing is the verification that did not pass.
     case 'evidence_recorded':
       return event.passed ? undefined : `Verification failed: ${event.evidenceId}`;
+    case 'checkpoint_created':
+      return `Checkpoint saved: ${event.label || event.checkpointId}`;
+    case 'checkpoint_restored':
+      return `Restored checkpoint: ${event.checkpointId}`;
+    case 'file_read':
+      return `Inspecting ${event.path}`;
+    case 'test_started':
+      return `Running tests: ${event.framework || event.command}`;
+    case 'test_finished':
+      return `Tests ${event.status}${event.durationMs !== undefined ? ` (${event.durationMs}ms)` : ''}`;
+    case 'log':
+      if (event.text.startsWith('recover ') || event.text.startsWith('verify ') || event.text.startsWith('commit ')) {
+        return event.text;
+      }
+      return undefined;
     case 'completed':
       return `Finished: ${event.summary}`;
     case 'failed':

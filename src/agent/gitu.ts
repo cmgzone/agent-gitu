@@ -11,7 +11,7 @@ import { parentReverifyCriterion, type OracleRunner } from '../evidence/reverify
 import { bindCriterionVerification, inspectVerificationCommand } from '../evidence/verification-command.js';
 import { MissionGraph } from '../execution/mission.js';
 import { Executor } from '../executor/executor.js';
-import { getWorkspaceFingerprint, gitExec } from '../git/git.js';
+import { generateSmartCommitMessage, getWorkspaceFingerprint, gitExec, gitInfo } from '../git/git.js';
 import { ProjectGuard, ProjectGuardError } from '../guard/project-guard.js';
 import { TaskLedger } from '../ledger/task-ledger.js';
 import { DEFAULT_LOOP_POLICY, LoopDetector } from '../loop/loop-detector.js';
@@ -32,6 +32,7 @@ import { resolveEmbedder } from '../llm/providers.js';
 import { recoveryBudgetTokens, reduceEffortOneLevel, type EffortLevel } from '../llm/output-budget.js';
 import { isNativeExecutionMode } from '../llm/native-task.js';
 import { computeResilientDelay, resilientLlm, sleepWithSignal } from '../llm/resilient.js';
+import { recoveringLlm } from './task-recovery.js';
 import {
   EMPTY_REPLY_RETRY_BASE_MS,
   EMPTY_REPLY_RETRY_MAX_MS,
@@ -462,11 +463,16 @@ export class Gitu {
     };
     // Dynamic auto-retry: network blips and provider outages delay the run
     // (with visible events) instead of failing it.
-    const llm = resilientLlm(this.config.llm, {
-      label: 'main agent',
-      onRetry: ({ attempt, maxRetries, delayMs, error }) =>
-        this.emit(`recover  ${error.message.slice(0, 120)} — retry ${attempt}/${maxRetries} in ${(delayMs / 1000).toFixed(1)}s`),
-    });
+    const llm = recoveringLlm(
+      resilientLlm(this.config.llm, {
+        label: 'main agent',
+        onRetry: ({ attempt, maxRetries, delayMs, error }) =>
+          this.emit(`recover  ${error.message.slice(0, 120)} — retry ${attempt}/${maxRetries} in ${(delayMs / 1000).toFixed(1)}s`),
+      }),
+      {
+        onWait: (delay) => this.emit(`recover  Model temporarily unavailable. Waiting ${Math.ceil(delay / 1000)}s…`),
+      },
+    );
 
     let guard: ProjectGuard;
     try {
@@ -491,6 +497,10 @@ export class Gitu {
     );
     if (guard.fullAccess) {
       this.emit('access   Full Access enabled by the owner: project-only filesystem restrictions are lifted; Gitu and Git private state stay protected.');
+    }
+    const initialGit = await gitInfo(guard.lock.repoRoot).catch(() => undefined);
+    if (initialGit?.available && (initialGit.files?.length ?? 0) > 0) {
+      this.emit(`workspace uncommitted changes detected before task start (${initialGit.files!.length} modified/untracked files) — preserving existing changes`);
     }
 
     const memory = MemoryStore.forProject(guard.lock.repoRoot);
@@ -1528,8 +1538,13 @@ export class Gitu {
             // real action — try the structured object that CLOSES LAST.
             parsed = parseAction(extractLastJsonObject(r));
           }
+          if (!parsed && /```(?:json)?\s*([\s\S]*?)```/i.test(r)) {
+            const match = /```(?:json)?\s*([\s\S]*?)```/i.exec(r);
+            if (match && match[1]) {
+              parsed = parseReplyAction(match[1]) ?? parseAction(extractLastJsonObject(match[1]));
+            }
+          }
           if (!parsed) {
-            // Thinking models under long context sometimes keep the action JSON
             // in the reasoning trace and only emit commentary as visible content.
             const reasoning = llm.lastReasoning;
             if (reasoning) parsed = parseReplyAction(reasoning) ?? parseAction(extractLastJsonObject(reasoning));
@@ -1561,7 +1576,7 @@ export class Gitu {
 
           const persistent = autonomy.persistent;
           const wait = this.config.recoverySleep ?? ((ms: number) => sleepWithSignal(ms, this.abortController?.signal));
-          const retries = persistent ? MAX_EMPTY_REPLY_RETRIES : 0;
+          const retries = persistent ? MAX_EMPTY_REPLY_RETRIES : 2;
           for (let attempt = 1; attempt <= retries; attempt += 1) {
             if (this.aborted) return { turn, reply, parsed };
             const delayMs = computeResilientDelay(attempt - 1, EMPTY_REPLY_RETRY_BASE_MS, EMPTY_REPLY_RETRY_MAX_MS);
@@ -1572,7 +1587,7 @@ export class Gitu {
             if (await settle(await callOnce(actionProtocolMode, 2))) return { turn, reply, parsed };
           }
 
-          if (!persistent && (!first.metadata.reasoning || emptyEscalationUsed)) {
+          if (!persistent && emptyEscalationUsed) {
             return { turn, reply, parsed };
           }
           emptyEscalationUsed = true;
@@ -4286,6 +4301,18 @@ export class Gitu {
         filesChanged: phaseFiles ?? ledger.data.filesChanged.slice(activeWorkPhase.fileStartIndex ?? 0),
       });
       ledger.data.report = report;
+      if (exitReason === 'complete' && (report.filesChanged?.length ?? 0) > 0) {
+        try {
+          const diff = await gitExec(guard.lock.repoRoot, ['diff', 'HEAD']).catch(() => '');
+          if (diff) {
+            const suggestedCommit = generateSmartCommitMessage(diff, activeGoal);
+            this.emit(`commit   Suggested commit: ${suggestedCommit}`);
+            if (report.summary && !report.summary.includes('Suggested commit:')) {
+              report.summary += `\n\nSuggested commit: \`${suggestedCommit}\``;
+            }
+          }
+        } catch {}
+      }
       ledger.save();
 
       if ((this.config.autoLearn ?? true) && exitReason === 'complete' && !conversationCompleted && !this.aborted) {

@@ -161,8 +161,8 @@ export const COWORK_CSS = String.raw`
   .cw-persona-tool[hidden] { display: none; }
   .cw-chat-head button { pointer-events: auto; }
   .cw-visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
-  .cw-chat-head #cwInfoBtn { position: absolute; right: 16px; top: 16px; }
-  .cw-chat-head #cwBack { position: absolute; left: 12px; top: 12px; }
+  .cw-chat-head #cwInfoBtn { position: absolute; right: 16px; top: calc(14px + env(safe-area-inset-top, 0px)); }
+  .cw-chat-head #cwBack { position: absolute; left: 12px; top: calc(12px + env(safe-area-inset-top, 0px)); }
   .cw-chat-head .chip { flex: none; display: inline-flex; align-items: center; gap: 5px; }
   .cw-chat-head .chip svg { width: 12px; height: 12px; }
   .cw-info-toggle { border: 1px solid var(--border2); background: transparent; color: var(--muted); border-radius: 8px; padding: 4px 10px; font-size: 12px; flex: none; }

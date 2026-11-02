@@ -292,7 +292,7 @@ export class ProjectGuard {
       testCommand: pickScript(scripts, ['test', 'test:unit']),
       buildCommand: pickScript(scripts, ['build']),
       lintCommand: pickScript(scripts, ['lint']),
-      typecheckCommand: pickScript(scripts, ['typecheck', 'type-check', 'tsc']),
+      typecheckCommand: pickScript(scripts, ['typecheck', 'type-check', 'tsc']) ?? (existsSync(path.join(root, 'tsconfig.json')) ? 'npx tsc --noEmit' : undefined),
       ignorePaths: DEFAULT_IGNORES,
       lockedAt: nowIso(),
     };

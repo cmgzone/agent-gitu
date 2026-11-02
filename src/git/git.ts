@@ -312,3 +312,49 @@ export async function gitDiscard(root: string, file: string): Promise<string> {
 export async function gitInit(root: string): Promise<string> {
   return gitExec(root, ['init']);
 }
+
+export async function gitStash(root: string, message?: string): Promise<string> {
+  const args = ['stash', 'push', '-u'];
+  if (message) args.push('-m', message);
+  return (await gitExec(root, args)).trim();
+}
+
+export async function gitStashPop(root: string): Promise<string> {
+  return (await gitExec(root, ['stash', 'pop'])).trim();
+}
+
+export function generateSmartCommitMessage(diff: string, goal?: string): string {
+  const trimmedGoal = (goal ?? '').trim().replace(/^(?:please\s+|can you\s+|could you\s+)/i, '');
+  const lines = diff.split(/\r?\n/);
+  const changedFiles: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith('+++ b/')) {
+      changedFiles.push(line.slice(6));
+    }
+  }
+  const isDoc = changedFiles.length > 0 && changedFiles.every((f) => /\.(?:md|txt|rst)$/i.test(f));
+  const isTest = changedFiles.length > 0 && changedFiles.every((f) => /(?:test|spec)\.[a-z]+$/i.test(f));
+  const isFix = /fix|bug|error|issue|repair|fail/i.test(trimmedGoal);
+  const prefix = isDoc ? 'docs' : isTest ? 'test' : isFix ? 'fix' : 'feat';
+
+  let scope = '';
+  if (changedFiles.length === 1) {
+    const parts = changedFiles[0]!.split('/');
+    scope = parts.length > 1 ? parts[parts.length - 2]! : parts[0]!.replace(/\.[^.]+$/, '');
+  } else if (changedFiles.length > 1) {
+    const commonPrefix = changedFiles.map((f) => f.split('/')[0]).filter(Boolean);
+    if (new Set(commonPrefix).size === 1 && commonPrefix[0]) {
+      scope = commonPrefix[0]!;
+    }
+  }
+
+  const scopeTag = scope ? `(${scope})` : '';
+  let summary = trimmedGoal;
+  if (!summary) {
+    summary = isFix ? 'resolve issue' : 'update implementation';
+  } else if (summary.length > 70) {
+    summary = summary.slice(0, 67) + '…';
+  }
+  summary = summary.charAt(0).toLowerCase() + summary.slice(1);
+  return `${prefix}${scopeTag}: ${summary}`;
+}

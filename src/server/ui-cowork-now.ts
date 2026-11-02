@@ -36,8 +36,8 @@ export const COWORK_NOW_CSS = String.raw`
   .cw .cw-chat-head { position:absolute; inset:0 0 auto; height:0; display:block; padding:0; border:0; background:transparent; box-shadow:none; backdrop-filter:none; pointer-events:none; }
   .cw .cw-chat-head .cw-persona-status { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; background:transparent; border:0; box-shadow:none; backdrop-filter:none; -webkit-backdrop-filter:none; }
   .cw .cw-chat-head .cw-persona-status > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .cw .cw-chat-head #cwBack { position:absolute; left:12px; top:12px; }
-  .cw-top-nav { position:absolute; top:12px; left:50%; transform:translateX(-50%); display:flex; gap:2px; padding:4px; border:1px solid rgba(255,255,255,.25); border-radius:999px; background:color-mix(in srgb,var(--card) 54%,transparent); box-shadow:inset 0 1px 0 rgba(255,255,255,.25),0 8px 26px -18px rgba(18,44,70,.3); backdrop-filter:blur(20px) saturate(1.15); -webkit-backdrop-filter:blur(20px) saturate(1.15); pointer-events:auto; }
+  .cw .cw-chat-head #cwBack { position:absolute; left:12px; top:calc(12px + env(safe-area-inset-top, 0px)); }
+  .cw-top-nav { position:absolute; top:calc(12px + env(safe-area-inset-top, 0px)); left:50%; transform:translateX(-50%); display:flex; gap:2px; padding:4px; border:1px solid rgba(255,255,255,.25); border-radius:999px; background:color-mix(in srgb,var(--card) 54%,transparent); box-shadow:inset 0 1px 0 rgba(255,255,255,.25),0 8px 26px -18px rgba(18,44,70,.3); backdrop-filter:blur(20px) saturate(1.15); -webkit-backdrop-filter:blur(20px) saturate(1.15); pointer-events:auto; }
   .cw-top-nav button { display:flex; align-items:center; justify-content:center; gap:7px; min-height:38px; padding:0 14px; border:0; border-radius:999px; background:transparent; color:var(--muted); font:inherit; font-size:12px; cursor:pointer; transition:background .18s ease,color .18s ease; }
   .cw-top-nav svg { width:16px; height:16px; flex:none; }
   #cw .cw-top-nav button:hover { background:color-mix(in srgb,var(--card) 35%,transparent) !important; color:var(--text); }
@@ -49,7 +49,7 @@ export const COWORK_NOW_CSS = String.raw`
   .cw-chat-face img { position:absolute; width:200%; height:200%; max-width:none; left:-50%; top:-46%; object-fit:contain; }
   /* Reserve room inside the transcript, so it scrolls beneath the floating
      controls instead of clipping at a separate header-sized viewport. */
-  .cw .cw-msgs { margin-top:0; padding:92px max(24px,calc((100% - var(--chat-column-width,620px))/2)) calc(var(--cw-composer-height,148px) + 24px); gap:14px; scroll-padding:92px 0 calc(var(--cw-composer-height,148px) + 24px); }
+  .cw .cw-msgs { margin-top:0; padding:calc(88px + env(safe-area-inset-top, 0px)) max(24px,calc((100% - var(--chat-column-width,620px))/2)) calc(var(--cw-composer-height,148px) + 24px + env(safe-area-inset-bottom, 0px)); gap:14px; scroll-padding:calc(88px + env(safe-area-inset-top, 0px)) 0 calc(var(--cw-composer-height,148px) + 24px + env(safe-area-inset-bottom, 0px)); }
   .cw .cw-row { align-self:flex-start; max-width:min(100%,520px); width:fit-content; }
   .cw .cw-row.me { align-self:flex-end; width:auto; max-width:82%; }
   .cw .cw-bubble { font-size:14px; line-height:1.5; }
@@ -61,7 +61,7 @@ export const COWORK_NOW_CSS = String.raw`
   .cw .cw-bubble .cw-meta .nm { font-weight:500; }
   .cw .cw-message-more { opacity:0; }
   .cw .cw-bubble:hover .cw-message-more, .cw .cw-bubble:focus-within .cw-message-more { opacity:1; }
-  .cw .cw-composer-wrap { position:absolute; inset:auto 0 0; z-index:3; padding:12px max(24px,calc((100% - var(--chat-column-width,620px))/2)) 22px; background:transparent; border:0; box-shadow:none; pointer-events:none; }
+  .cw .cw-composer-wrap { position:absolute; inset:auto 0 0; z-index:3; padding:12px max(24px,calc((100% - var(--chat-column-width,620px))/2)) calc(16px + env(safe-area-inset-bottom, 0px)); background:transparent; border:0; box-shadow:none; pointer-events:none; }
   .cw .cw-composer-wrap > * { pointer-events:auto; }
   .cw .cw-composer { border-radius:24px; padding:10px; background:var(--chat-composer-surface); backdrop-filter:blur(20px) saturate(1.15); -webkit-backdrop-filter:blur(20px) saturate(1.15); box-shadow:var(--chat-composer-shadow); }
   .cw .cw-composer textarea { padding:8px 4px; font-size:14px; }
@@ -71,15 +71,18 @@ export const COWORK_NOW_CSS = String.raw`
   @media(max-width:720px) {
     .cw .cw-rail { background:color-mix(in srgb,var(--cw-sidebar-tint) 92%,transparent); }
     .cw .cw-chat-head { height:0; padding:0; }
+    .cw .cw-chat-head #cwBack { left:8px; top:calc(10px + env(safe-area-inset-top, 0px)); }
+    .cw-top-nav { top:calc(10px + env(safe-area-inset-top, 0px)); max-width:calc(100% - 96px); }
     .cw .cw-chat-head .cw-persona-status { max-width:calc(100vw - 190px); overflow:hidden; }
-    .cw-top-nav button { min-height:40px; padding:0 12px; }
-    .cw .cw-msgs { margin-top:0; padding:88px 16px calc(var(--cw-composer-height,128px) + 18px); gap:12px; scroll-padding:88px 0 calc(var(--cw-composer-height,128px) + 18px); }
-    .cw .cw-composer-wrap { padding:8px 12px 12px; }
+    .cw-top-nav button { min-height:36px; padding:0 10px; font-size:11.5px; }
+    .cw .cw-msgs { margin-top:0; padding:calc(80px + env(safe-area-inset-top, 0px)) 16px calc(var(--cw-composer-height,128px) + 18px + env(safe-area-inset-bottom, 0px)); gap:12px; scroll-padding:calc(80px + env(safe-area-inset-top, 0px)) 0 calc(var(--cw-composer-height,128px) + 18px + env(safe-area-inset-bottom, 0px)); }
+    .cw .cw-composer-wrap { padding:8px 12px calc(12px + env(safe-area-inset-bottom, 0px)); }
     .cw .cw-message-more { opacity:1; }
     .cw .cw-row.me { max-width:92%; }
   }
   @media(hover:none) { .cw .cw-message-more { opacity:1; } }
-  @media(max-width:380px) { .cw .cw-chat-head #cwBack { top:70px; left:68px; } }
+  @media(max-width:480px) { .cw-top-nav button > span:not(.cw-chat-face) { display:none; } .cw-top-nav button { padding:0 8px; min-height:34px; } }
+  @media(max-width:380px) { .cw .cw-chat-head #cwBack { top:calc(8px + env(safe-area-inset-top, 0px)); left:6px; } }
   @media(prefers-reduced-motion:reduce) { .cw-top-nav button { transition:none; } }
 `;
 

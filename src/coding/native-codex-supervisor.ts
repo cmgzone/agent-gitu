@@ -5,7 +5,7 @@ import { bindCriterionVerification, inspectVerificationCommand } from '../eviden
 import { isConsequentialChange, selectVerificationCommands, verifiedDocumentationWrites, verifiedHostConfirmedWrites } from '../evidence/verification-policy.js';
 import { planRisk } from '../agent/risk-planner.js';
 import { Executor } from '../executor/executor.js';
-import { getWorkspaceFingerprint } from '../git/git.js';
+import { generateSmartCommitMessage, getWorkspaceFingerprint, gitExec, gitInfo } from '../git/git.js';
 import type { ProjectGuard } from '../guard/project-guard.js';
 import type { TaskLedger } from '../ledger/task-ledger.js';
 import { LoopDetector } from '../loop/loop-detector.js';
@@ -83,6 +83,10 @@ export async function runNativeCodexTask(input: {
   activeTasks.add(taskKey);
   const emit = config.onEvent ?? (() => {});
   const typed = config.onCodingEvent;
+  const initialGit = await gitInfo(guard.lock.repoRoot).catch(() => undefined);
+  if (initialGit?.available && (initialGit.files?.length ?? 0) > 0) {
+    emit(`workspace uncommitted changes detected before task start (${initialGit.files!.length} modified/untracked files) — preserving existing changes`);
+  }
   let lastFingerprint = 'unknown-fp';
   const workspaceFingerprint = async (): Promise<string> => {
     lastFingerprint = await getWorkspaceFingerprint(guard.activeWritableRoot, {
@@ -841,6 +845,18 @@ export async function runNativeCodexTask(input: {
     },
   );
   if (answeredDiscussion) report.responseKind = 'discussion';
+  if (exited === 'complete' && report.filesChanged.length > 0) {
+    try {
+      const diff = await gitExec(guard.lock.repoRoot, ['diff', 'HEAD']).catch(() => '');
+      if (diff) {
+        const suggestedCommit = generateSmartCommitMessage(diff, goal);
+        emit(`commit   Suggested commit: ${suggestedCommit}`);
+        if (report.summary && !report.summary.includes('Suggested commit:')) {
+          report.summary += `\n\nSuggested commit: \`${suggestedCommit}\``;
+        }
+      }
+    } catch {}
+  }
   ledger.data.report = report;
   ledger.save();
   memory.add({

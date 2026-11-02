@@ -630,21 +630,24 @@ export function actionReplyFromTurn(turn: LlmTurnResult): string {
         return JSON.stringify({ action: actionObj });
       }
       const first = turn.calls[0]!;
-      if (KNOWN_ACTION_TYPES.has(first.name)) {
-        return JSON.stringify({ action: { type: first.name, ...first.arguments } });
+      const cleanName = first.name.replace(/^(?:default_api:|functions\.|tool_|agent_)/, '');
+      const actionName = KNOWN_ACTION_TYPES.has(first.name) ? first.name : KNOWN_ACTION_TYPES.has(cleanName) ? cleanName : undefined;
+      if (actionName) {
+        return JSON.stringify({ action: { type: actionName, ...first.arguments } });
       }
-      if (KNOWN_TOOL_NAMES.has(first.name) || first.name.startsWith('mcp:')) {
+      const toolName = (KNOWN_TOOL_NAMES.has(first.name) || first.name.startsWith('mcp:')) ? first.name : (KNOWN_TOOL_NAMES.has(cleanName) || cleanName.startsWith('mcp:')) ? cleanName : first.name;
+      if (KNOWN_TOOL_NAMES.has(toolName) || toolName.startsWith('mcp:')) {
         return JSON.stringify({
           action: {
             type: 'tool_call',
-            tool: first.name,
+            tool: toolName,
             params: first.arguments,
             reason: String(first.arguments['reason'] ?? ''),
             expected: String(first.arguments['expected'] ?? ''),
           },
         });
       }
-      return JSON.stringify({ action: { type: 'tool_call', tool: first.name, params: first.arguments, reason: '', expected: '' } });
+      return JSON.stringify({ action: { type: 'tool_call', tool: toolName, params: first.arguments, reason: '', expected: '' } });
     }
   }
 }

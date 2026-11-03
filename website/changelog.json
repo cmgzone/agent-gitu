@@ -1,0 +1,100 @@
+{
+  "updated": "2026-11-03",
+  "entries": [
+    {
+      "date": "2026-11-03",
+      "kind": "news",
+      "title": "AI news digest — 3 November 2026",
+      "summary": "Six stories added to the digest: Anthropic's amended S-1, Western Australia's facial-recognition trial, 42AI, Trajectory, the BBC neoclouds report and Indigenous art licensing.",
+      "link": "news.html"
+    },
+    {
+      "date": "2026-11-03",
+      "kind": "release",
+      "version": "v0.4.14",
+      "title": "Agent Gitu v0.4.14",
+      "summary": "Mobile navigation and company-mode fixes, git commands in Cowork, and the new Pi runtime.",
+      "items": [
+        "Home and Cowork now keep a clean horizontal switcher on narrow screens.",
+        "Company workspaces can be switched off, hiding the company icon and features.",
+        "Git push and version control commands run directly in Cowork.",
+        "Coding loop resiliency, verification rigor and safe git operations improved.",
+        "New Pi runtime with OAuth subscription sign-in and sign-out."
+      ],
+      "link": "https://github.com/cmgzone/agent-gitu/releases/tag/v0.4.14"
+    },
+    {
+      "date": "2026-11-03",
+      "kind": "website",
+      "title": "Changelog published",
+      "summary": "This page is new. Product releases and site updates are recorded here, newest first, and refreshed whenever the news digest is checked."
+    },
+    {
+      "date": "2026-09-18",
+      "kind": "release",
+      "version": "v0.3.1",
+      "title": "Agent Gitu v0.3.1",
+      "summary": "Quality release on top of the v0.3.0 architecture work.",
+      "items": [
+        "24 bug fixes across the model layer, server, memory and tools.",
+        "Memory learning loop wired through the session.",
+        "DeepSeek thinking-mode tool calls, vision gating and native streaming fixed.",
+        "Thinking indicator restored on resumed runs; desktop and connections UI refined."
+      ],
+      "link": "https://github.com/cmgzone/agent-gitu/releases/tag/v0.3.1"
+    },
+    {
+      "date": "2026-08-23",
+      "kind": "release",
+      "version": "v0.2.1",
+      "title": "Agent Gitu v0.2.1",
+      "summary": "Reliability hardening: work that survives interruptions, automatic retries and a UI overhaul.",
+      "items": [
+        "Specialists checkpoint every productive turn and can resume where they paused.",
+        "Network and provider failures retry automatically with backoff; real errors still fail fast.",
+        "Vision-checked completion gate for interface work, plus hybrid semantic retrieval.",
+        "Three-phase UI/UX overhaul and 50+ bug fixes."
+      ],
+      "link": "https://github.com/cmgzone/agent-gitu/releases/tag/v0.2.1"
+    },
+    {
+      "date": "2026-08-20",
+      "kind": "release",
+      "version": "v0.2.0",
+      "title": "Agent Gitu v0.2.0",
+      "summary": "Language Server Protocol intelligence during coding, not just exposed tools.",
+      "items": [
+        "Five LSP tools: diagnostics, definition, references, hover and symbols.",
+        "Servers start lazily per language, restart once on crash, then fall back cleanly.",
+        "Post-edit diagnostics reach the model before the evidence gate.",
+        "Task type now selects an investigation strategy at intake."
+      ],
+      "link": "https://github.com/cmgzone/agent-gitu/releases/tag/v0.2.0"
+    },
+    {
+      "date": "2026-08-19",
+      "kind": "release",
+      "version": "v0.1.9",
+      "title": "Agent Gitu v0.1.9",
+      "summary": "Specialist delegation contracts made explicit.",
+      "items": [
+        "Clearer delegation contract for specialist sub-agents.",
+        "Defensive lookups and a refreshed Windows installer."
+      ],
+      "link": "https://github.com/cmgzone/agent-gitu/releases/tag/v0.1.9"
+    },
+    {
+      "date": "2026-08-18",
+      "kind": "release",
+      "version": "v0.1.8",
+      "title": "Agent Gitu v0.1.8",
+      "summary": "Acceptance criteria and evidence gates for delegated work.",
+      "items": [
+        "Orchestrators can specify exact verification commands per acceptance criterion.",
+        "Specialists record command evidence into the task ledger before claiming a criterion.",
+        "Unverified specialist work is rejected and its worktree discarded."
+      ],
+      "link": "https://github.com/cmgzone/agent-gitu/releases/tag/v0.1.8"
+    }
+  ]
+}

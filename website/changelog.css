@@ -1,0 +1,123 @@
+/* --- Changelog ------------------------------------------------------------ */
+.changelog-list {
+  max-width: 780px;
+}
+.changelog-month {
+  margin: 0 0 27px;
+  padding-bottom: 13px;
+  border-bottom: 1px solid #ffffff25;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #7197d6;
+}
+.changelog-month + .changelog-entry {
+  margin-top: 0;
+}
+.changelog-entry {
+  position: relative;
+  padding: 0 0 34px 26px;
+  border-left: 1px solid #4a6b9e3b;
+  margin-left: 4px;
+}
+.changelog-entry::before {
+  content: '';
+  position: absolute;
+  left: -4px;
+  top: 7px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #4d8cff;
+  box-shadow: 0 0 0 3px #0a0f18;
+}
+.changelog-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 11px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #7d91b3;
+}
+.changelog-tag {
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid #4a6b9e5c;
+  color: #9dc0ff;
+  letter-spacing: 0.08em;
+}
+.changelog-tag-release {
+  border-color: #4d8cff7a;
+  color: #b9d4ff;
+}
+.changelog-tag-website {
+  border-color: #35c2a04d;
+  color: #8fe0ce;
+}
+.changelog-tag-news {
+  border-color: #f0a63a4d;
+  color: #f2c88a;
+}
+.changelog-version {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  color: #7d91b3;
+}
+.changelog-entry h3 {
+  font-size: 21px;
+  line-height: 1.32;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+.changelog-entry h3 a {
+  color: var(--text);
+}
+.changelog-entry h3 a:hover {
+  color: var(--light);
+}
+.changelog-summary {
+  margin-top: 11px;
+  font-size: 13px;
+  line-height: 1.9;
+  color: var(--muted, #9aa8bf);
+}
+.changelog-items {
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.changelog-items li {
+  position: relative;
+  padding-left: 17px;
+  margin-top: 7px;
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--muted, #9aa8bf);
+}
+.changelog-items li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 10px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #4a6b9e99;
+}
+.changelog-empty,
+.changelog-footnote {
+  font-size: 13px;
+  line-height: 1.9;
+  color: var(--muted, #9aa8bf);
+}
+.changelog-footnote {
+  margin-top: 33px;
+  padding-top: 21px;
+  border-top: 1px solid #ffffff1f;
+  font-size: 12px;
+}
+.changelog-footnote a {
+  color: #9dc0ff;
+}

@@ -1,15 +1,15 @@
 /** Session controls shared by Cowork chat, profile, and search surfaces. */
 export const COWORK_SESSIONS_CSS = String.raw`
   @media(max-width:600px) {
-    #cw .cw-top-nav button { padding:0 10px; }
-    #cw .cw-top-nav button > span:not(.cw-chat-face) { display:none; }
+    #cw .cw-top-nav button { padding:0 12px; }
+
   }
 `;
 
 export const COWORK_SESSIONS_JS = String.raw`
   function cwSessionNavHtml() {
-    return '<button type="button" id="cwSessionsBtn" aria-label="Sessions" title="Browse and delete sessions">'+cwIcon('chat')+'<span>Sessions</span></button>'+
-      '<button type="button" id="cwNewSessionBtn" aria-label="New session" title="New session">'+cwIcon('plus')+'<span>New session</span></button>';
+    return '<button type="button" class="cw-tool-item" id="cwSessionsBtn" aria-label="Sessions" title="Browse and delete sessions">'+cwIcon('chat')+'<span>Sessions</span></button>'+
+      '<button type="button" class="cw-tool-item" id="cwNewSessionBtn" aria-label="New session" title="New session">'+cwIcon('plus')+'<span>New session</span></button>';
   }
   function cwNewSessionModal() {
     var cw=cwEnsure();

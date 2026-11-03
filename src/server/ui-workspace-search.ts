@@ -11,8 +11,8 @@ export const WORKSPACE_SEARCH_CSS = String.raw`
   .cw-chat-face .cw-ava { position:relative; width:22px!important; height:22px!important; border-radius:50%!important; overflow:hidden!important; display:inline-flex; align-items:center; justify-content:center; background:color-mix(in srgb,var(--accent) 15%,transparent)!important; box-shadow:0 0 0 1px rgba(255,255,255,.25); }
   .cw-chat-face .cw-ava .cw-plush { width:100%; height:100%; display:flex; align-items:center; justify-content:center; transform:scale(1.25); transform-origin:50% 50%; }
   .cw-chat-face .cw-ava img { position:relative!important; width:100%!important; height:100%!important; max-width:100%!important; left:0!important; top:0!important; object-fit:contain!important; transform:none!important; }
-  .workspace-search-trigger,.home-settings-trigger { position:absolute; top:18px; left:16px; z-index:11; display:grid; place-items:center; width:38px; height:38px; padding:0; border-radius:50%; color:var(--muted); }
-  .workspace-search-trigger svg,.home-settings-trigger svg { width:20px; height:20px; }
+  .workspace-search-trigger,.home-settings-trigger { position:absolute; top:calc(12px + env(safe-area-inset-top, 0px)); left:16px; z-index:11; display:grid; place-items:center; width:36px; height:36px; padding:0; border-radius:50%; color:var(--muted); }
+  .workspace-search-trigger svg,.home-settings-trigger svg { width:18px; height:18px; }
   .home-settings-trigger { left:auto; right:16px; }
   .modal.cw-modal:not(.cw-agent-editor):not(.cw-doc-modal) { background:color-mix(in srgb,var(--overlay) 30%,transparent); backdrop-filter:blur(14px) saturate(.9); -webkit-backdrop-filter:blur(14px) saturate(.9); padding:24px; }
   .modal.cw-modal:not(.cw-agent-editor):not(.cw-doc-modal) .box { width:min(560px,100%); max-height:min(88dvh,calc(100dvh - 48px)); border-radius:28px; background:var(--cw-chat-surface); border:1px solid color-mix(in srgb,var(--border2) 65%,transparent); box-shadow:inset 0 1px 0 #ffffff35,0 24px 80px -24px #15345066; }
@@ -77,7 +77,7 @@ export const WORKSPACE_SEARCH_CSS = String.raw`
   .settings-directory .ws-result + .ws-result { border-top:0; }
   .settings-top-back { position:absolute; top:22px; left:22px; display:flex; align-items:center; gap:8px; color:var(--muted); font-size:12px; padding:10px; border-radius:999px; }
   .settings-top-back svg { width:18px; height:18px; }
-  @media(max-width:600px) { .workspace-search-main { padding:112px 16px 32px; }.ws-search-field { min-height:54px; padding:0 16px; }.ws-search-field input[type=search] { font-size:14px; }.ws-search-field kbd { display:none; }.ws-result-action { padding:12px; gap:10px; }.ws-aux { padding:8px; }.settings { padding:82px 16px 28px; }.settings .setnav { flex-wrap:nowrap; overflow-x:auto; border-radius:999px; }.settings .setnav .item { flex:none; white-space:nowrap; }.settings-directory .ws-result-list { grid-template-columns:1fr; }.settings .setrow { flex-wrap:wrap; }.settings .setrow .grow { min-width:180px; }.workspace-search-close,.settings-close { right:14px; top:16px; } }
+  @media(max-width:600px) { .workspace-search-trigger { top:calc(10px + env(safe-area-inset-top, 0px)); left:12px; }.workspace-search-main { padding:112px 16px 32px; }.ws-search-field { min-height:54px; padding:0 16px; }.ws-search-field input[type=search] { font-size:14px; }.ws-search-field kbd { display:none; }.ws-result-action { padding:12px; gap:10px; }.ws-aux { padding:8px; }.settings { padding:82px 16px 28px; }.settings .setnav { flex-wrap:nowrap; overflow-x:auto; border-radius:999px; }.settings .setnav .item { flex:none; white-space:nowrap; }.settings-directory .ws-result-list { grid-template-columns:1fr; }.settings .setrow { flex-wrap:wrap; }.settings .setrow .grow { min-width:180px; }.workspace-search-close,.settings-close { right:14px; top:16px; } }
   @media(prefers-reduced-motion:reduce) { .workspace-search,.settings { animation:none!important; } }
 `;
 

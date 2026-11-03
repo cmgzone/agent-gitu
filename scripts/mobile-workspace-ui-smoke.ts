@@ -101,6 +101,7 @@ try {
       return { accent, actual: ['cwWidgetToggle', 'cwComputerBtn', 'cwMediaBtn'].map(id => getComputedStyle(document.getElementById(id)!.querySelector('svg')!).color) };
     });
     for (const actual of colors.actual) assert.equal(actual, colors.accent);
+    if (await page.locator('#cwToolsBtn').isVisible()) await page.locator('#cwToolsBtn').tap();
     await page.locator('#cwWidgetToggle').tap();
     const card = page.locator('.cw-panel-card').first();
     await card.waitFor({ state: 'visible' });
@@ -117,6 +118,7 @@ try {
     await page.locator('#cwPlusMenu').waitFor({ state: 'visible' });
     assert.equal(await page.locator('#cwPlusMenu').evaluate(menu => getComputedStyle(menu).getPropertyValue('--cw-control-color').trim()), await page.locator('body').evaluate(body => getComputedStyle(body).getPropertyValue('--cw-control-color').trim()));
     await page.keyboard.press('Escape');
+    if (await page.locator('#cwToolsBtn').isVisible()) await page.locator('#cwToolsBtn').tap();
     await page.locator('#cwComputerBtn').tap();
     const desktop = page.locator('.cw-desktop-dialog');
     await desktop.waitFor({ state: 'visible' });
@@ -130,6 +132,7 @@ try {
     await desktop.locator('[data-close]').tap();
     await desktop.waitFor({ state: 'detached' });
   }
+  if (await page.locator('#cwToolsBtn').isVisible()) await page.locator('#cwToolsBtn').tap();
   await page.locator('#cwInfoBtn').tap();
   const profile = page.locator('.cw-profile-page');
   await profile.waitFor({ state: 'visible' }).catch(async error => {

@@ -12,7 +12,7 @@ let chatHtml = '';
 const captured = new Error('Markup captured');
 const chat = { getAttribute: () => null, setAttribute: () => {}, set innerHTML(value: string) { chatHtml = value; throw captured; } };
 const context = createContext({
-  S: { active: 'cowork', cw: { active: 'conversation', threadId: null,
+  S: { active: 'cowork', cw: { active: 'conversation', threadId: null, enableCompanies: true,
     agents: [{ id: 'ari', name: 'Ari', avatar: { shape: 'dot-blue', color: '#5ba8ff' } }],
     convs: [{ id: 'conversation', kind: 'dm', title: 'Ari', memberIds: ['ari'] }], msgs: [], requests: [], missions: [], pendingFiles: [] } },
   $: (id: string) => id === 'cwChat' ? chat : null,

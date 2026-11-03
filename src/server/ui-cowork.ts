@@ -161,7 +161,6 @@ export const COWORK_CSS = String.raw`
   .cw-persona-tool[hidden] { display: none; }
   .cw-chat-head button { pointer-events: auto; }
   .cw-visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
-  .cw-chat-head #cwInfoBtn { position: absolute; right: 16px; top: calc(14px + env(safe-area-inset-top, 0px)); }
   .cw-chat-head #cwBack { position: absolute; left: 12px; top: calc(12px + env(safe-area-inset-top, 0px)); }
   .cw-tools-menu { min-width: 190px; max-width: 260px; padding: 6px; border-radius: 16px; background: color-mix(in srgb, var(--card) 94%, transparent); border: 1px solid color-mix(in srgb, var(--border2) 80%, transparent); backdrop-filter: blur(24px) saturate(1.3); -webkit-backdrop-filter: blur(24px) saturate(1.3); box-shadow: 0 14px 40px rgba(0,0,0,.28), 0 2px 10px rgba(0,0,0,.12); z-index: 1000; }
   .cw-tools-menu .cw-tool-item { position: relative !important; inset: auto !important; display: flex !important; align-items: center !important; gap: 10px !important; width: 100% !important; height: auto !important; min-height: 38px !important; box-sizing: border-box !important; padding: 8px 12px !important; border: 0 !important; border-radius: 10px !important; background: transparent !important; color: var(--text) !important; font: inherit !important; font-size: 13px !important; font-weight: 500 !important; text-align: left !important; cursor: pointer !important; user-select: none !important; box-shadow: none !important; transform: none !important; transition: background .14s ease, color .14s ease; }
@@ -1564,13 +1563,10 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     chat.innerHTML =
       '<div class="cw-chat-head">' +
         '<button class="cw-info-toggle" id="cwBack" aria-label="Search agents and tools" title="Search">' + cwIcon('search') + '</button>' +
-        '<nav class="cw-top-nav" aria-label="Agent navigation">' +
+        '<nav class="cw-top-nav" aria-label="App modes">' +
           '<button type="button" id="cwHomeBtn" aria-label="Code mode" title="Code mode">' + cwIcon('home') + '<span>Code</span></button>' +
           '<button type="button" id="cwCurrentChat" aria-label="Cowork mode" title="Cowork mode" aria-pressed="true"><span class="cw-chat-face" id="cwChatAvatar" aria-hidden="true">' + headAva + '</span><span>Cowork</span></button>' +
-          '<button type="button" id="cwInfoBtn" aria-label="Agent profile" title="Agent profile" aria-controls="cwChat" aria-pressed="false">' + cwIcon('user') + '<span>Profile</span></button>' +
           (cw.enableCompanies === true ? '<button type="button" data-company-nav aria-label="Companies" title="Cowork company workspaces">' + cwIcon('users') + '<span>Companies</span></button>' : '') +
-          '<button type="button" id="cwAssistantSettings" data-pa-settings aria-label="Personal assistant preferences" title="P.A preferences and background health">' + cwIcon('crown') + '<span>P.A</span></button>' +
-          cwSessionNavHtml() +
         '</nav>' +
         '<div class="cw-visually-hidden"><span id="cwChatTitle">' + esc(activeThread ? activeThread.title : conv.title) + '</span>' +
         '<span class="cw-persona-status" id="cwCharacterStatus" role="status" aria-live="polite" aria-atomic="true"><span>AI teammate · Ready</span><i class="cw-persona-tool" aria-hidden="true" hidden></i></span>' +
@@ -1580,6 +1576,9 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
         (conv.schedule && conv.schedule.enabled ? '<span class="chip" title="Scheduled messages on">' + cwIcon('clock') + esc(conv.schedule.every) + '</span>' : '') + '</div>' +
         '<button type="button" class="cw-tools-toggle" id="cwToolsBtn" aria-label="Tools and activities" title="Tools and activities" popovertarget="cwToolsMenu">' + cwIcon('dots') + '<span class="cw-tools-badge" id="cwToolsBadge" hidden></span></button>' +
         '<div class="cw-message-menu cw-tools-menu" id="cwToolsMenu" popover="auto" aria-label="Tools and activities">' +
+          '<button type="button" class="cw-tool-item" id="cwInfoBtn" aria-label="Agent profile" title="Agent profile" aria-controls="cwChat" aria-pressed="false">' + cwIcon('user') + '<span>Profile</span></button>' +
+          '<button type="button" class="cw-tool-item" id="cwAssistantSettings" data-pa-settings aria-label="Personal assistant preferences" title="Personal assistant">' + cwIcon('crown') + '<span>Personal assistant</span></button>' +
+          cwSessionNavHtml() +
           '<button type="button" class="cw-tool-item cw-computer-toggle" id="cwComputerBtn" aria-label="Computer activity" title="Computer activity" aria-controls="cwInlineComputer" hidden>' + cwIcon('monitor') + '<span>Computer</span><span class="cw-tool-dot" id="cwComputerDot" aria-hidden="true"></span></button>' +
           '<button type="button" class="cw-tool-item cw-gallery-toggle" id="cwMediaBtn" aria-label="Media and files" title="Media and files">' + cwIcon('image') + '<span>Media &amp; files</span></button>' +
           (typeof cwWidgetToggleHtml === 'function' ? cwWidgetToggleHtml() : '') +
@@ -1635,7 +1634,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
         }
       });
     }
-    $('cwInfoBtn').onclick = function () { cwOpenProfile(); };
+    var infoBtn = $('cwInfoBtn'); if (infoBtn) infoBtn.onclick = function () { cwOpenProfile(); };
     cwBindTopNav();
     cwRenderTeammateSwitcher();
     $('cwVoiceCall').onclick=function(){if(typeof startGituVoice==='function')startGituVoice({kind:'cowork',conversationId:cw.active,threadId:cw.threadId||undefined,agentId:cw.selectedAgentId||(conv.kind==='dm'?conv.memberIds[0]:conv.chiefId||conv.memberIds[0])});};

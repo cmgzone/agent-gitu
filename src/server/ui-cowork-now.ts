@@ -43,11 +43,12 @@ export const COWORK_NOW_CSS = String.raw`
   .cw .cw-chat-head .cw-tools-toggle:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
   .cw .cw-chat-head .cw-tools-toggle svg { width:17px; height:17px; }
   .cw .cw-chat-head .cw-tools-toggle[data-handoff=true]::after { content:''; position:absolute; top:4px; right:4px; width:7px; height:7px; border-radius:50%; background:#ff5252; box-shadow:0 0 6px #ff5252; }
-  .cw .cw-top-nav { position:absolute; top:calc(12px + env(safe-area-inset-top, 0px)); left:50%; transform:translateX(-50%); display:flex; gap:2px; padding:4px; border:1px solid rgba(255,255,255,.25); border-radius:999px; background:color-mix(in srgb,var(--card) 54%,transparent); box-shadow:inset 0 1px 0 rgba(255,255,255,.25),0 8px 26px -18px rgba(18,44,70,.3); backdrop-filter:blur(20px) saturate(1.15); -webkit-backdrop-filter:blur(20px) saturate(1.15); pointer-events:auto; }
-  .cw .cw-top-nav button { display:flex; align-items:center; justify-content:center; gap:7px; min-height:38px; padding:0 14px; border:0; border-radius:999px; background:transparent; color:var(--muted); font:inherit; font-size:12px; cursor:pointer; transition:background .18s ease,color .18s ease; }
+  .cw .cw-top-nav { position:absolute; top:calc(12px + env(safe-area-inset-top, 0px)); left:50%; transform:translateX(-50%); display:flex; gap:2px; padding:3px; border:1px solid rgba(255,255,255,.25); border-radius:999px; background:color-mix(in srgb,var(--card) 54%,transparent); box-shadow:inset 0 1px 0 rgba(255,255,255,.25),0 8px 26px -18px rgba(18,44,70,.3); backdrop-filter:blur(20px) saturate(1.15); -webkit-backdrop-filter:blur(20px) saturate(1.15); pointer-events:auto; }
+  .cw .cw-top-nav button { display:inline-flex; align-items:center; justify-content:center; gap:7px; min-height:34px; padding:0 14px; border:0; border-radius:999px; background:transparent; color:var(--muted); font:inherit; font-size:12.5px; font-weight:500; cursor:pointer; white-space:nowrap; transition:background-color .18s ease,color .18s ease; }
+  .cw .cw-top-nav button > span { display:inline!important; }
   .cw .cw-top-nav svg { width:16px; height:16px; flex:none; }
   #cw .cw-top-nav button:hover { background:color-mix(in srgb,var(--card) 35%,transparent) !important; color:var(--text); }
-  #cw .cw-top-nav button[aria-pressed=true] { background:var(--text) !important; color:var(--bg); }
+  #cw .cw-top-nav button[aria-pressed=true] { background:var(--brand-blue,#226bd6) !important; color:#ffffff !important; font-weight:600; box-shadow:0 2px 8px -1px rgba(34,107,214,.45); }
   .cw .cw-top-nav button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
   .cw .cw-chat-head .cw-top-nav #cwInfoBtn { position:static; }
   .cw-chat-face { display:inline-flex; align-items:center; justify-content:center; flex:none; width:22px; height:22px; }
@@ -82,14 +83,14 @@ export const COWORK_NOW_CSS = String.raw`
     .cw .cw-chat-head .cw-tools-toggle { right:8px; top:calc(10px + env(safe-area-inset-top, 0px)); }
     .cw .cw-top-nav { top:calc(10px + env(safe-area-inset-top, 0px)); max-width:calc(100% - 96px); }
     .cw .cw-chat-head .cw-persona-status { max-width:calc(100vw - 190px); overflow:hidden; }
-    .cw .cw-top-nav button { min-height:36px; padding:0 10px; font-size:11.5px; }
+    .cw .cw-top-nav button { min-height:34px; padding:0 12px; font-size:12px; }
     .cw .cw-msgs { margin-top:0; padding:calc(80px + env(safe-area-inset-top, 0px)) 16px calc(var(--cw-composer-height,128px) + 18px + env(safe-area-inset-bottom, 0px)); gap:12px; scroll-padding:calc(80px + env(safe-area-inset-top, 0px)) 0 calc(var(--cw-composer-height,128px) + 18px + env(safe-area-inset-bottom, 0px)); }
     .cw .cw-composer-wrap { padding:8px 12px calc(12px + env(safe-area-inset-bottom, 0px)); }
     .cw .cw-message-more { opacity:1; }
     .cw .cw-row.me { max-width:92%; }
   }
   @media(hover:none) { .cw .cw-message-more { opacity:1; } }
-  @media(max-width:480px) { .cw .cw-top-nav button > span:not(.cw-chat-face) { display:none; } .cw .cw-top-nav button { padding:0 8px; min-height:34px; } }
+  @media(max-width:480px) { .cw .cw-top-nav button > span { display:inline!important; } .cw .cw-top-nav button { padding:0 10px; min-height:34px; } }
   @media(max-width:380px) { .cw .cw-chat-head #cwBack { top:calc(8px + env(safe-area-inset-top, 0px)); left:6px; } .cw .cw-chat-head .cw-tools-toggle { top:calc(8px + env(safe-area-inset-top, 0px)); right:6px; } }
   @media(prefers-reduced-motion:reduce) { :is(#cw, .home-sky, .run-chat) .cw-top-nav button { transition:none; } }
 `;

@@ -3,11 +3,12 @@ export const COWORK_PROFILE_SETTINGS_CSS = String.raw`
   #cw.cw.profile-open {
     background:var(--cw-chat-surface,var(--bg)); color:var(--text);
   }
-  .cw.profile-open .cw-top-nav { background:color-mix(in srgb,var(--card) 54%,transparent); border-color:color-mix(in srgb,var(--border2) 60%,transparent); backdrop-filter:blur(20px) saturate(1.15); -webkit-backdrop-filter:blur(20px) saturate(1.15); }
-  .cw.profile-open .cw-top-nav button { color:var(--text); }
-  .cw.profile-open .cw-top-nav button[aria-pressed=true] { background:var(--text); color:var(--bg); }
-  .cw-profile-close { position:absolute; right:22px; top:18px; z-index:11; width:46px; height:46px; display:grid; place-items:center; border:1px solid color-mix(in srgb,var(--border2) 50%,transparent); border-radius:50%; background:color-mix(in srgb,var(--card) 74%,transparent); color:var(--text); backdrop-filter:blur(18px); -webkit-backdrop-filter:blur(18px); cursor:pointer; }
-  .cw-profile-close svg { width:20px; height:20px; }
+  .cw.profile-open .cw-top-nav { background:color-mix(in srgb,var(--card) 54%,transparent); border-color:color-mix(in srgb,var(--border2) 60%,transparent); backdrop-filter:blur(20px) saturate(1.15); -webkit-backdrop-filter:blur(20px) saturate(1.15); padding:3px; gap:2px; border-radius:999px; }
+  .cw.profile-open .cw-top-nav button { color:var(--muted); min-height:34px; padding:0 14px; border-radius:999px; font-size:12.5px; font-weight:500; }
+  .cw.profile-open .cw-top-nav button > span { display:inline!important; }
+  .cw.profile-open .cw-top-nav button[aria-pressed=true] { background:var(--brand-blue,#226bd6)!important; color:#ffffff!important; font-weight:600; box-shadow:0 2px 8px -1px rgba(34,107,214,.45); }
+  .cw-profile-close { position:absolute; right:16px; top:calc(12px + env(safe-area-inset-top, 0px)); z-index:11; width:36px; height:36px; display:grid; place-items:center; border:1px solid color-mix(in srgb,var(--border2) 50%,transparent); border-radius:50%; background:color-mix(in srgb,var(--card) 74%,transparent); color:var(--text); backdrop-filter:blur(18px); -webkit-backdrop-filter:blur(18px); cursor:pointer; }
+  .cw-profile-close svg { width:18px; height:18px; }
   .cw.profile-open .cw-profile-page { padding:112px 28px 40px; color:var(--text); scroll-padding-top:90px; }
   .cw-settings-dashboard { max-width:640px; }
   .cw-settings-dashboard .cw-identity { grid-template-columns:64px minmax(0,1fr) auto; gap:16px; margin:0 0 20px; }
@@ -56,5 +57,5 @@ export const COWORK_PROFILE_SETTINGS_CSS = String.raw`
     .cw-settings-dashboard .cw-profile-tabs button { min-width:106px; }
     .cw-profile-task-row { padding:14px 18px; }
   }
-  @media(max-width:440px) { .cw-profile-close { top:66px; right:16px; width:34px; height:34px; }.cw-settings-dashboard .cw-profile-task-row p { max-width:160px; }.cw-settings-dashboard .cw-profile-task-row .btn { flex:none; } }
+  @media(max-width:440px) { .cw-profile-close { top:calc(10px + env(safe-area-inset-top, 0px)); right:12px; width:34px; height:34px; }.cw-settings-dashboard .cw-profile-task-row p { max-width:160px; }.cw-settings-dashboard .cw-profile-task-row .btn { flex:none; } }
 `;

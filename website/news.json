@@ -1,6 +1,60 @@
 {
-  "updated": "2026-11-01",
+  "updated": "2026-11-03",
   "items": [
+    {
+      "title": "Trajectory raises $45M to make AI model training accessible to nontechnical experts",
+      "summary": "The one-year-old startup is now valued at $300m; it sells tools that let people without machine-learning backgrounds train and tune models.",
+      "source": "TechCrunch",
+      "url": "https://techcrunch.com/2026/11/02/trajectory-raises-45m-to-make-ai-model-training-accessible-to-nontechnical-experts/",
+      "image": "https://techcrunch.com/wp-content/uploads/2026/11/Trajectory_3.jpg?resize=1200,900",
+      "imageAlt": "Three Trajectory co-founders standing in front of a slatted wood wall",
+      "published": "2026-11-02T23:13:53Z"
+    },
+    {
+      "title": "42AI comes out of stealth with $62.5M and a world model that can 'predict human behavior'",
+      "summary": "The startup left stealth with $62.5m for a world model it says can anticipate what people will do in situations it has not seen before.",
+      "source": "TechCrunch",
+      "url": "https://techcrunch.com/2026/11/02/42ai-comes-out-of-stealth-with-62-5m-and-a-world-model-that-can-predict-human-behavior/",
+      "image": "https://techcrunch.com/wp-content/uploads/2026/11/IMG_3572.jpeg?resize=1200,895",
+      "imageAlt": "Three 42AI founders sitting together on a couch in an office",
+      "published": "2026-11-02T16:30:00Z"
+    },
+    {
+      "title": "Anthropic reports $17 billion in Q3 revenue, $895.4 billion in commitments",
+      "summary": "Amended S-1 shows $33.2bn revenue for the nine months to 30 Sept, up roughly 1,200% year on year, and a $104bn net loss driven mostly by convertible-note revaluation.",
+      "source": "CNBC",
+      "url": "https://www.cnbc.com/2026/11/02/anthropic-ant-s-1-quarter-financials.html",
+      "image": "https://image.cnbcfm.com/api/v1/image/108369526-1790698647709-gettyimages-2297195052-AFP_C9PK8G7.jpeg?v=1790698665&w=1920&h=1080",
+      "imageAlt": "Anthropic CEO Dario Amodei in glasses and a suit outside the White House in Washington",
+      "published": "2026-11-02T14:32:13Z"
+    },
+    {
+      "title": "Police use facial recognition to scan one million faces in WA trial leading to 122 arrests",
+      "summary": "Five months of WA police surveillance-van deployments scanned about one million faces, producing 122 arrests and nine false alerts, documents show.",
+      "source": "The Guardian",
+      "url": "https://www.theguardian.com/australia-news/2026/nov/02/wa-police-facial-recognition-technology-trial",
+      "image": "https://i.guim.co.uk/img/media/52be4530d7e3640e661d83a08791923838efe95f/514_0_5031_4024/master/5031.jpg?width=1200&height=630&quality=85&auto=format&fit=crop&precrop=40:21,offset-x50,offset-y0&overlay-align=bottom%2Cleft&overlay-width=100p&overlay-base64=L2ltZy9zdGF0aWMvb3ZlcmxheXMvdGctZGVmYXVsdC5wbmc&enable=upscale&s=4a0fc4b5b00e1dadb20dbeadb455f101",
+      "imageAlt": "A Western Australia Police van with roof-mounted cameras parked on a street",
+      "published": "2026-11-02T06:12:52Z"
+    },
+    {
+      "title": "AI is stealing Indigenous Australian art and churning out 'Temu slop', artist says",
+      "summary": "Pitjantjatjara artist Sally Scales says generative AI is copying First Nations art without consent, as Australia weighs copyright changes for AI training.",
+      "source": "The Guardian",
+      "url": "https://www.theguardian.com/artanddesign/2026/nov/02/ai-stealing-indigenous-australian-art-temu-slop-artist-says-ntwnfb",
+      "image": "https://i.guim.co.uk/img/media/d42e0956def730a6b1eb335fab858536fb224a9c/224_0_6880_5504/master/6880.jpg?width=1200&height=630&quality=85&auto=format&fit=crop&precrop=40:21,offset-x50,offset-y0&overlay-align=bottom%2Cleft&overlay-align=100p&overlay-base64=L2ltZy9zdGF0aWMvb3ZlcmxheXMvdGctZGVmYXVsdC5wbmc&enable=upscale&s=a512af4d09236ad3d151d20d51c1b1e2",
+      "imageAlt": "Artist Sally Scales photographed near Uluru in a black top, red desert and blue sky behind her",
+      "published": "2026-11-01T14:00:13Z"
+    },
+    {
+      "title": "Neoclouds: These firms you've never heard of are feeding fears the AI bubble could burst",
+      "summary": "BBC looks at neoclouds like CoreWeave and Nebius, which lease GPU capacity to OpenAI, Anthropic and Meta, as investors question their finances amid the AI stock sell-off.",
+      "source": "BBC News",
+      "url": "https://www.bbc.co.uk/news/articles/cje36degrgv5o",
+      "image": "https://ichef.bbci.co.uk/ace/branded_news/1200/cpsprodpb/16f5/live/d2c08770-d493-11f1-93e1-3b657b665bcf.jpg",
+      "imageAlt": "Yellow fibre cables plugged into servers and GPUs inside the Nebius AI UK data centre in Chertsey",
+      "published": "2026-11-01T01:37:26Z"
+    },
     {
       "title": "Anthropic's watermark rollout leaves a loophole on two older Claude models",
       "summary": "Anthropic is watermarking four more Claude models ahead of the EU AI Act deadline, but on Opus 4.6 and Sonnet 4.6 changing sampling settings strips the mark.",

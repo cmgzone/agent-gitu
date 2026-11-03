@@ -223,8 +223,13 @@ test('a story with a why line renders it as escaped text', () => {
   assert.ok(html.includes('class="news-why"'), 'the why paragraph is rendered');
   assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;Robots'), 'the why line is escaped');
   assert.ok(
-    html.includes('<span class="news-why-label">Why it matters</span>&lt;script&gt;'),
+    html.includes('<span class="news-why-label">Why it matters</span> &lt;script&gt;'),
     'the label directly precedes the escaped text'
+  );
+  assert.ok(!html.includes('Why it matters&lt;script&gt;'), 'the label and sentence are separate words');
+  assert.ok(
+    html.replace(/<[^>]*>/g, '').includes('Why it matters &lt;script&gt;'),
+    'the space is real text, not styling'
   );
   assert.ok(!html.includes('<script'), 'the why line cannot inject markup');
 });

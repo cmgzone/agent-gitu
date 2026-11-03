@@ -75,7 +75,7 @@ function newsCard(item) {
   if (summary) parts.push(`<p class="news-summary">${escapeHtml(summary)}</p>`);
 
   const why = text(item.why);
-  if (why) parts.push(`<p class="news-why"><span class="news-why-label">Why it matters</span>${escapeHtml(why)}</p>`);
+  if (why) parts.push(`<p class="news-why"><span class="news-why-label">Why it matters</span> ${escapeHtml(why)}</p>`);
 
   const source = text(item.source);
   const published = parseDate(item.published ?? item.date);

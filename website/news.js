@@ -107,7 +107,7 @@
       const label = document.createElement('span');
       label.className = 'news-why-label';
       label.textContent = 'Why it matters';
-      paragraph.append(label, document.createTextNode(why));
+      paragraph.append(label, document.createTextNode(' ' + why));
       article.append(paragraph);
     }
 

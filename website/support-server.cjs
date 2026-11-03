@@ -1,6 +1,7 @@
 'use strict';
 const fs = require('node:fs'), path = require('node:path'), http = require('node:http');
 const { MAX_BODY_LENGTH, createRateLimiter, persistSupportTicket, processSupportTicket } = require('./support-ticket.cjs');
+const { renderFeedHtml } = require('./feed-render.cjs');
 const STATIC_ROOT = __dirname, PORT = Number(process.env.PORT) || 3000, C = '; charset=utf-8';
 const MIME_TYPES = { '.html':'text/html'+C, '.htm':'text/html'+C, '.css':'text/css'+C, '.js':'text/javascript'+C, '.mjs':'text/javascript'+C, '.cjs':'text/javascript'+C, '.json':'application/json'+C, '.map':'application/json'+C, '.txt':'text/plain'+C, '.xml':'application/xml'+C, '.svg':'image/svg+xml', '.png':'image/png', '.jpg':'image/jpeg', '.jpeg':'image/jpeg', '.webp':'image/webp', '.gif':'image/gif', '.ico':'image/x-icon', '.woff2':'font/woff2', '.woff':'font/woff', '.ttf':'font/ttf', '.webmanifest':'application/manifest+json' };
 const UNAVAILABLE = { ok:false, code:'temporarily_unavailable', message:'Support is temporarily unavailable. Please try again later.' };
@@ -41,8 +42,16 @@ function serveStatic(req, res) {
   const contentType = MIME_TYPES[path.extname(target).toLowerCase()] || 'application/octet-stream';
   fs.readFile(target, (error, data) => {
     if (error) { logCode('static', 'read_failed'); notFound(res); return; }
-    res.writeHead(200, { 'content-type':contentType, 'content-length':data.length, 'cache-control':contentType.startsWith('text/html') ? 'no-cache' : 'public, max-age=300', 'x-content-type-options':'nosniff' });
-    res.end(req.method === 'HEAD' ? undefined : data);
+    /* news.html and changelog.html carry a feed marker inside their list container:
+       render the current JSON into the page at request time so a plain GET returns
+       the entries without JavaScript and never serves stale markup. */
+    let body = data;
+    if (contentType.startsWith('text/html')) {
+      const html = data.toString('utf8'), rendered = renderFeedHtml(html, path.basename(target));
+      if (rendered !== html) body = Buffer.from(rendered, 'utf8');
+    }
+    res.writeHead(200, { 'content-type':contentType, 'content-length':body.length, 'cache-control':contentType.startsWith('text/html') ? 'no-cache' : 'public, max-age=300', 'x-content-type-options':'nosniff' });
+    res.end(req.method === 'HEAD' ? undefined : body);
   });
 }
 const readBody = (req, limit) => new Promise((resolve) => {

@@ -137,6 +137,15 @@
   function start() {
     const container = document.getElementById(LIST_ID);
     if (!container) return;
+    /* The server may already have rendered the list into the page. Keep that markup
+       instead of rendering a second copy of the same entries, and keep the same
+       broken-image fallback the client rendering applies. */
+    if (container.querySelector('.news-card, .news-empty')) {
+      for (const image of container.querySelectorAll('img.news-card-image')) {
+        image.addEventListener('error', () => image.remove(), { once: true });
+      }
+      return;
+    }
     void load(container);
   }
 

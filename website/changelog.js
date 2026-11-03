@@ -142,6 +142,9 @@
   function start() {
     const container = document.getElementById(LIST_ID);
     if (!container) return;
+    /* The server may already have rendered the changelog into the page. Keep that
+       markup instead of fetching and rendering a second copy of the same entries. */
+    if (container.querySelector('.changelog-entry, .changelog-empty')) return;
     void load(container);
   }
 

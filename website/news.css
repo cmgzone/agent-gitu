@@ -50,6 +50,22 @@
 .news-meta time {
   color: #7d91b3;
 }
+.news-why {
+  margin-top: 10px;
+  padding-left: 12px;
+  border-left: 1px solid #4a6b9e5c;
+  font-size: 12px;
+  line-height: 1.9;
+  color: var(--muted);
+}
+.news-why-label {
+  display: inline-block;
+  margin-right: 0.45em;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #7197d6;
+}
 .news-empty {
   grid-column: 1 / -1;
   font-size: 14px;

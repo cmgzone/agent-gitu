@@ -206,6 +206,51 @@ test('links are limited to http(s) and values are escaped', () => {
   assert.equal(escapeHtml(newsCard({ title: '<b>x</b>', url: 'https://example.com' })).includes('<b>'), false);
 });
 
+/* --- the optional editorial "Why it matters" line --- */
+
+test('a story with a why line renders it as escaped text', () => {
+  const html = renderNewsList({
+    items: [
+      {
+        title: 'Robot story',
+        url: 'https://example.com/robots',
+        summary: 'A summary.',
+        why: '<script>alert(1)</script>Robots',
+      },
+    ],
+  });
+
+  assert.ok(html.includes('class="news-why"'), 'the why paragraph is rendered');
+  assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;Robots'), 'the why line is escaped');
+  assert.ok(
+    html.includes('<span class="news-why-label">Why it matters</span>&lt;script&gt;'),
+    'the label directly precedes the escaped text'
+  );
+  assert.ok(!html.includes('<script'), 'the why line cannot inject markup');
+});
+
+test('a story without a why line renders no why block', () => {
+  const withMeta = newsCard({
+    title: 'Quiet story',
+    url: 'https://example.com/quiet',
+    summary: 'A summary.',
+    source: 'The Verge',
+    published: '2026-11-03T00:00:00Z',
+  });
+  const bare = newsCard({ title: 'Quiet story', url: 'https://example.com/quiet', summary: 'A summary.' });
+  const blank = newsCard({ title: 'Quiet story', url: 'https://example.com/quiet', summary: 'A summary.', why: '   ' });
+
+  assert.ok(!withMeta.includes('news-why'), 'a missing why adds no block');
+  assert.ok(withMeta.includes('class="news-summary"'), 'the summary is still rendered');
+  assert.ok(withMeta.includes('class="news-meta"'), 'the meta line is still rendered');
+
+  /* Absent and whitespace-only why render exactly the markup they rendered before. */
+  const unchanged =
+    '<article class="news-card"><h2><a href="https://example.com/quiet" target="_blank" rel="noopener noreferrer">Quiet story</a></h2><p class="news-summary">A summary.</p></article>';
+  assert.equal(bare, unchanged);
+  assert.equal(blank, unchanged);
+});
+
 test('an unreadable feed renders the empty state instead of a blank container', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikpam-feed-'));
 

@@ -4,6 +4,7 @@
     {
       "title": "Trajectory raises $45M to make AI model training accessible to nontechnical experts",
       "summary": "The one-year-old startup is now valued at $300m; it sells tools that let people without machine-learning backgrounds train and tune models.",
+      "why": "Model training is moving from research teams to domain experts. If that works, the bottleneck becomes data and judgement rather than ML engineering.",
       "source": "TechCrunch",
       "url": "https://techcrunch.com/2026/11/02/trajectory-raises-45m-to-make-ai-model-training-accessible-to-nontechnical-experts/",
       "image": "https://techcrunch.com/wp-content/uploads/2026/11/Trajectory_3.jpg?resize=1200,900",
@@ -13,6 +14,7 @@
     {
       "title": "42AI comes out of stealth with $62.5M and a world model that can 'predict human behavior'",
       "summary": "The startup left stealth with $62.5m for a world model it says can anticipate what people will do in situations it has not seen before.",
+      "why": "Predicting what a person will do next is what turns a chat model into automation that can act on someone's behalf, and that is a much harder bar to clear than answering questions.",
       "source": "TechCrunch",
       "url": "https://techcrunch.com/2026/11/02/42ai-comes-out-of-stealth-with-62-5m-and-a-world-model-that-can-predict-human-behavior/",
       "image": "https://techcrunch.com/wp-content/uploads/2026/11/IMG_3572.jpeg?resize=1200,895",
@@ -22,6 +24,7 @@
     {
       "title": "Anthropic reports $17 billion in Q3 revenue, $895.4 billion in commitments",
       "summary": "Amended S-1 shows $33.2bn revenue for the nine months to 30 Sept, up roughly 1,200% year on year, and a $104bn net loss driven mostly by convertible-note revaluation.",
+      "why": "The commitments figure shows AI demand is now booked years ahead, which means the bill has become a board-level cost line rather than an experiment.",
       "source": "CNBC",
       "url": "https://www.cnbc.com/2026/11/02/anthropic-ant-s-1-quarter-financials.html",
       "image": "https://image.cnbcfm.com/api/v1/image/108369526-1790698647709-gettyimages-2297195052-AFP_C9PK8G7.jpeg?v=1790698665&w=1920&h=1080",
@@ -31,6 +34,7 @@
     {
       "title": "Police use facial recognition to scan one million faces in WA trial leading to 122 arrests",
       "summary": "Five months of WA police surveillance-van deployments scanned about one million faces, producing 122 arrests and nine false alerts, documents show.",
+      "why": "Nine false alerts in a million scans is the number regulators will argue over, and that argument is now running in a real police deployment rather than a trial lab.",
       "source": "The Guardian",
       "url": "https://www.theguardian.com/australia-news/2026/nov/02/wa-police-facial-recognition-technology-trial",
       "image": "https://i.guim.co.uk/img/media/52be4530d7e3640e661d83a08791923838efe95f/514_0_5031_4024/master/5031.jpg?width=1200&height=630&quality=85&auto=format&fit=crop&precrop=40:21,offset-x50,offset-y0&overlay-align=bottom%2Cleft&overlay-width=100p&overlay-base64=L2ltZy9zdGF0aWMvb3ZlcmxheXMvdGctZGVmYXVsdC5wbmc&enable=upscale&s=4a0fc4b5b00e1dadb20dbeadb455f101",
@@ -40,6 +44,7 @@
     {
       "title": "AI is stealing Indigenous Australian art and churning out 'Temu slop', artist says",
       "summary": "Pitjantjatjara artist Sally Scales says generative AI is copying First Nations art without consent, as Australia weighs copyright changes for AI training.",
+      "why": "Australia's copyright review is one of the first places where consent, not just fair use, could become a condition of training on other people's work.",
       "source": "The Guardian",
       "url": "https://www.theguardian.com/artanddesign/2026/nov/02/ai-stealing-indigenous-australian-art-temu-slop-artist-says-ntwnfb",
       "image": "https://i.guim.co.uk/img/media/d42e0956def730a6b1eb335fab858536fb224a9c/224_0_6880_5504/master/6880.jpg?width=1200&height=630&quality=85&auto=format&fit=crop&precrop=40:21,offset-x50,offset-y0&overlay-align=bottom%2Cleft&overlay-align=100p&overlay-base64=L2ltZy9zdGF0aWMvb3ZlcmxheXMvdGctZGVmYXVsdC5wbmc&enable=upscale&s=a512af4d09236ad3d151d20d51c1b1e2",
@@ -49,6 +54,7 @@
     {
       "title": "Neoclouds: These firms you've never heard of are feeding fears the AI bubble could burst",
       "summary": "BBC looks at neoclouds like CoreWeave and Nebius, which lease GPU capacity to OpenAI, Anthropic and Meta, as investors question their finances amid the AI stock sell-off.",
+      "why": "GPU landlords are the credit risk sitting underneath the AI trade. If their financing tightens, so does the capacity everyone else has planned on.",
       "source": "BBC News",
       "url": "https://www.bbc.co.uk/news/articles/cje36degrgv5o",
       "image": "https://ichef.bbci.co.uk/ace/branded_news/1200/cpsprodpb/16f5/live/d2c08770-d493-11f1-93e1-3b657b665bcf.jpg",
@@ -58,6 +64,7 @@
     {
       "title": "Anthropic's watermark rollout leaves a loophole on two older Claude models",
       "summary": "Anthropic is watermarking four more Claude models ahead of the EU AI Act deadline, but on Opus 4.6 and Sonnet 4.6 changing sampling settings strips the mark.",
+      "why": "A watermark that disappears when sampling settings change will not satisfy the EU AI Act's provenance expectations, however well it works in the default configuration.",
       "source": "The Decoder",
       "url": "https://the-decoder.com/anthropics-watermark-rollout-leaves-a-loophole-on-two-older-claude-models/",
       "image": "https://the-decoder.com/wp-content/uploads/2026/08/Claude-Watermark.png",
@@ -67,6 +74,7 @@
     {
       "title": "SpaceX loses bid to toss NAACP lawsuit over Memphis data center air pollution",
       "summary": "A federal judge refused to dismiss the NAACP's Clean Air Act suit, rejecting SpaceXAI's claim that its 27 gas turbines near Memphis were exempt from permits.",
+      "why": "Data-centre power is turning into an environmental-permit fight, and courts are where AI build-out schedules actually slip.",
       "source": "CNBC",
       "url": "https://www.cnbc.com/2026/10/31/xai-naacp-clean-air-act-lawsuit-dismissal.html",
       "image": "https://image.cnbcfm.com/api/v1/image/108334421-1783985304743-xAI_Power_Plant_12.jpg?v=1784162069&w=1920&h=1080",
@@ -76,6 +84,7 @@
     {
       "title": "I built an AI Tamagotchi before Meta could",
       "summary": "Sean Hollister turned a $50 Waveshare ESP32 pendant into a Muse-compatible AI pet using Claude Code, adding avatars and a Tamagotchi game before Meta ships Muse Charm.",
+      "why": "A $50 pendant running a local assistant shows how quickly hobby hardware is absorbing a product category that shipped commercially this year.",
       "source": "The Verge",
       "url": "https://www.theverge.com/gadgets/1013375/muse-charm-gadgets-preview-waveshare-esp32-claude-vibe-code",
       "image": "https://platform.theverge.com/wp-content/uploads/sites/2/2026/10/verge-sean-hollister-muse-gadget-331A2564-01-3.jpg?quality=90&strip=all&crop=4%2C9.7534360513847%2C96%2C75.393048208485&w=1200",
@@ -85,6 +94,7 @@
     {
       "title": "Ollie, a privacy-focused AI assistant, is shutting down",
       "summary": "Ollie, an SOC 2-certified AI assistant backed by Khosla Ventures, told users it is shutting down on 6 November after failing to compete with better-funded rivals.",
+      "why": "A private AI assistant is proving hard to sell as a standalone subscription once the same capability is bundled free inside a chat product.",
       "source": "TechCrunch",
       "url": "https://techcrunch.com/2026/10/30/ollie-a-privacy-focused-ai-assistant-is-shutting-down/",
       "image": "https://techcrunch.com/wp-content/uploads/2026/09/Ollie_Hero.png?resize=1200,847",
@@ -94,6 +104,7 @@
     {
       "title": "Apple Intelligence is finally coming to China with iOS 27.3",
       "summary": "Apple will ship Apple Intelligence in China: an iOS 27.3 beta on 4 November and a full release in December, with Alibaba's Qwen chatbot integrated but no new Siri AI.",
+      "why": "Routing through Alibaba's Qwen is the template for how foreign AI reaches China, and it decides how much of the product a partner actually localises.",
       "source": "The Verge",
       "url": "https://www.theverge.com/tech/1023974/apple-intelligence-china-ios-27-3",
       "image": "https://platform.theverge.com/wp-content/uploads/sites/2/chorus/uploads/chorus_asset/file/25699392/DSC08596_processed.jpg?quality=90&strip=all&crop=0%2C10.723165084465%2C100%2C78.55366983107&w=1200",
@@ -103,6 +114,7 @@
     {
       "title": "Zest's new AI agent finds restaurants and books reservations over text",
       "summary": "Zest launched an AI concierge that collects a group's tastes over text, puts restaurant options to a vote and books the table for everyone.",
+      "why": "Booking a table for a group is the kind of errand that needs other people's consent, not just an API call, and that is the part agents still cannot do alone.",
       "source": "TechCrunch",
       "url": "https://techcrunch.com/2026/10/30/zests-new-ai-agent-finds-restaurants-and-books-reservations-over-text/",
       "image": "https://techcrunch.com/wp-content/uploads/2026/10/zest.jpg?resize=1200,764",
@@ -112,6 +124,7 @@
     {
       "title": "Google's first data center satellite is online and writing poetry",
       "summary": "Google's Project Suncatcher prototype, carrying four TPUs and running DeepMind's Gemma 4, sent its first AI response from orbit and now faces radiation tests.",
+      "why": "Orbit is the next test of where AI compute can live, and radiation tolerance decides whether Suncatcher becomes infrastructure or stays a demonstration.",
       "source": "TechCrunch",
       "url": "https://techcrunch.com/2026/10/30/googles-first-data-center-satellite-is-online-and-writing-poetry/",
       "image": "https://techcrunch.com/wp-content/uploads/2026/10/DSC_0298.jpg?resize=1200,800",
@@ -121,6 +134,7 @@
     {
       "title": "DoorDash said it's only received 'several hundred' orders from AI agents",
       "summary": "DoorDash said AI agents have placed only several hundred orders so far, and that it is open to working with third-party agent makers on integration.",
+      "why": "Agentic commerce is still a rounding error in real order volume. The integration terms being negotiated now decide whether it stays that way.",
       "source": "TechCrunch",
       "url": "https://techcrunch.com/2026/10/30/doordash-said-its-only-received-several-hundred-orders-from-ai-agents/",
       "image": "https://techcrunch.com/wp-content/uploads/2022/08/GettyImages-1232015093.jpg?resize=1200,800",

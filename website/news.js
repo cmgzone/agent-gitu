@@ -100,6 +100,17 @@
       article.append(paragraph);
     }
 
+    const why = text(item.why);
+    if (why) {
+      const paragraph = document.createElement('p');
+      paragraph.className = 'news-why';
+      const label = document.createElement('span');
+      label.className = 'news-why-label';
+      label.textContent = 'Why it matters';
+      paragraph.append(label, document.createTextNode(why));
+      article.append(paragraph);
+    }
+
     const meta = metaLine(item);
     if (meta) article.append(meta);
     return article;

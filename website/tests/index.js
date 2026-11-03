@@ -3,3 +3,4 @@
 // It simply loads the CommonJS suites below.
 import './support-ticket.test.cjs';
 import './news-prerender.test.cjs';
+import './sitemap-build.test.cjs';

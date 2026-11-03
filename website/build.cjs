@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const config = require('./site.config.json');
 const pkg = require('../package.json');
+const { sitemapXml } = require('./sitemap-build.cjs');
 const root = __dirname;
 const esc = (value) => String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 const icon = (name, cls = '') => {
@@ -237,10 +238,35 @@ function document(p) {
   return `<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n<title>${esc(p.title)}</title>\n<meta name="description" content="${esc(p.description)}">\n<meta name="robots" content="index,follow,max-image-preview:large">\n<meta name="theme-color" content="#06080d">\n<link rel="canonical" href="${url}">\n<meta property="og:site_name" content="Agent Gitu">\n<meta property="og:title" content="${esc(p.title)}">\n<meta property="og:description" content="${esc(p.description)}">\n<meta property="og:type" content="${p.type === 'article' ? 'article' : 'website'}">\n<meta property="og:url" content="${url}">\n<meta property="og:image" content="${config.origin}/assets/${preview}.jpg">\n<meta property="og:image:width" content="1600">\n<meta property="og:image:height" content="900">\n<meta property="og:image:alt" content="Agent Gitu’s actual Windows app interface">\n<meta name="twitter:card" content="summary_large_image">\n<meta name="twitter:title" content="${esc(p.title)}">\n<meta name="twitter:description" content="${esc(p.description)}">\n<meta name="twitter:image" content="${config.origin}/assets/${preview}.jpg">\n<link rel="icon" type="image/svg+xml" href="assets/agent-gitu-mark.svg">\n<link rel="apple-touch-icon" href="assets/agent-gitu-icon.png">\n<link rel="preload" href="assets/fonts/inter-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>\n<link rel="preload" href="assets/fonts/inter-latin-600-normal.woff2" as="font" type="font/woff2" crossorigin>\n<link rel="stylesheet" href="styles.css">\n<script type="application/ld+json">${JSON.stringify({ '@context': 'https://schema.org', '@graph': graph }).replace(/</g, '\\u003c')}</script>\n<script src="script.js" defer></script>\n</head>\n<body data-page="${p.file.replace('.html', '')}">\n${header(p.file)}\n<main id="main">${p.body}</main>\n${footer()}\n</body>\n</html>\n`;
 }
 for (const p of pages) fs.writeFileSync(path.join(root, p.file), document(p));
-const extraSitemap = ['news.html', 'changelog.html'].map((f) => `  <url><loc>${config.origin}/${f}</loc><lastmod>${config.updated}</lastmod></url>`).join('\n');
+// Ordered sitemap page table: the single source of truth for sitemap.xml.
+// news.html and changelog.html take their lastmod from the feed files below.
+const sitemapPages = [
+  { file: 'index.html', changefreq: 'weekly', priority: 1, lastmod: '2026-10-31' },
+  { file: 'cowork.html', changefreq: 'monthly', priority: 0.9, lastmod: '2026-10-31' },
+  { file: 'coding.html', changefreq: 'monthly', priority: 0.9, lastmod: '2026-10-31' },
+  { file: 'connections.html', changefreq: 'monthly', priority: 0.8, lastmod: '2026-10-31' },
+  { file: 'docs.html', changefreq: 'weekly', priority: 0.8, lastmod: '2026-10-31' },
+  { file: 'download.html', changefreq: 'monthly', priority: 0.9, lastmod: '2026-10-31' },
+  { file: 'blog.html', changefreq: 'weekly', priority: 0.8, lastmod: '2026-10-31' },
+  { file: 'security.html', changefreq: 'monthly', priority: 0.7, lastmod: '2026-10-31' },
+  { file: 'quiet-proactivity.html', changefreq: 'monthly', priority: 0.7, lastmod: '2026-10-31' },
+  { file: 'news.html', changefreq: 'daily', priority: 0.8 },
+  { file: 'changelog.html', changefreq: 'weekly', priority: 0.7 },
+];
+// Feed dates are best effort: a missing or malformed feed file must never fail the build.
+function feedDate(file, pick) {
+  try {
+    const value = pick(JSON.parse(fs.readFileSync(path.join(root, file), 'utf8')));
+    return value ? String(value) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+const newsUpdated = feedDate('news.json', (data) => data.updated);
+const changelogUpdated = feedDate('changelog.json', (data) => data.entries && data.entries[0] && data.entries[0].date);
 fs.writeFileSync(
   path.join(root, 'sitemap.xml'),
-  `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${pages.map((p) => `  <url><loc>${config.origin}${p.file === 'index.html' ? '/' : '/' + p.file}</loc><lastmod>${config.updated}</lastmod></url>`).join('\n')}\n${extraSitemap}\n</urlset>\n`,
+  sitemapXml({ origin: config.origin, updated: config.updated, pages: sitemapPages, newsUpdated, changelogUpdated }),
 );
 fs.writeFileSync(path.join(root, 'robots.txt'), `User-agent: *\nAllow: /\nDisallow: /build.cjs\nDisallow: /site.config.json\nSitemap: ${config.origin}/sitemap.xml\n`);
 fs.writeFileSync(

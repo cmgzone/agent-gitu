@@ -105,4 +105,41 @@ describe('independent desktop engine boundary', () => {
     expect(f.onStop).not.toHaveBeenCalled();
     await expect(connectEngine({ appRoot: path.join(f.state.appRoot, 'another-build'), env })).rejects.toThrow('Another Agent Gitu build');
   });
+
+  it('purges stale descriptors when lock is not held or port is refused without waiting out startupTimeoutMs', async () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'gitu-engine-stale-'));
+    directories.push(home);
+    const env = { ...process.env, AGENT_GITU_HOME: home };
+    const paths = enginePaths(env);
+    directories.push(paths.dir);
+    mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
+    // Write an SQLite lock file that is not held by any process
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(paths.lock);
+    db.exec('CREATE TABLE IF NOT EXISTS owner (id INTEGER);');
+    db.close();
+    // Write a descriptor pointing to a non-existent control port but using current process PID
+    const staleDescriptor = {
+      token: randomBytes(32).toString('hex'),
+      protocol: PROTOCOL,
+      pid: process.pid,
+      appRoot: path.resolve('.'),
+      controlPort: 59999, // port where nothing is listening
+    };
+    writeFileSync(paths.descriptor, JSON.stringify(staleDescriptor));
+
+    const statusUpdates: string[] = [];
+    const started = Date.now();
+    // Non-existent executable will throw immediately when spawn is attempted after purging stale descriptor
+    await expect(connectEngine({
+      appRoot: path.resolve('.'),
+      env,
+      executablePath: 'invalid-executable-path-for-testing',
+      startupTimeoutMs: 10_000,
+      onStatus: s => statusUpdates.push(s),
+    })).rejects.toThrow();
+
+    // Must have purged within a fraction of a second, not waited 10s
+    expect(Date.now() - started).toBeLessThan(3_000);
+  });
 });

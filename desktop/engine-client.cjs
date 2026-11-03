@@ -54,6 +54,24 @@ function controlRequest(descriptor, operation = 'status', timeout = 3_000) {
   });
 }
 
+function isLockHeld(lockPath) {
+  try {
+    if (!fs.existsSync(lockPath)) return false;
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(lockPath);
+    try {
+      db.exec('PRAGMA busy_timeout=0; BEGIN EXCLUSIVE;');
+      db.exec('ROLLBACK;');
+      return false;
+    } finally {
+      try { db.close(); } catch {}
+    }
+  } catch (error) {
+    if (/locked|busy/i.test(error.message)) return true;
+    return false;
+  }
+}
+
 function alive(pid) {
   try { process.kill(pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; }
 }
@@ -65,12 +83,33 @@ async function connectEngine({ appRoot, executablePath = process.execPath, env =
   appRoot = path.resolve(appRoot);
   let launched = false;
   let launchFailure;
+  let refusedCount = 0;
   const until = Date.now() + startupTimeoutMs;
   while (Date.now() < until) {
     const descriptor = readDescriptor(paths);
-    if (descriptor && alive(descriptor.pid)) {
+    if (descriptor) {
+      const lockFileExists = fs.existsSync(paths.lock);
+      const lockHeld = lockFileExists && isLockHeld(paths.lock);
+      // If the lock file exists but is not held, or if the recorded PID is dead,
+      // the descriptor is stale from a prior crashed run (and PID may have been recycled by OS).
+      if ((lockFileExists && !lockHeld) || !alive(descriptor.pid)) {
+        try { fs.unlinkSync(paths.descriptor); } catch {}
+        await sleep(50);
+        continue;
+      }
       let state;
-      try { state = await controlRequest(descriptor); } catch {
+      try {
+        state = await controlRequest(descriptor);
+        refusedCount = 0;
+      } catch (error) {
+        if (error.code === 'ECONNREFUSED') {
+          refusedCount++;
+          if (!lockHeld || refusedCount >= 3) {
+            try { fs.unlinkSync(paths.descriptor); } catch {}
+            refusedCount = 0;
+            continue;
+          }
+        }
         // A live engine can be busy. Never spawn a duplicate over its database.
         onStatus('Waiting for the running agent engine…'); await sleep(500); continue;
       }

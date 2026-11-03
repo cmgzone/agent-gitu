@@ -70,7 +70,7 @@ export const CHAT_SURFACE_CSS = String.raw`
   .run-chat .approach-panel { display:none; }
   .run-chat .approach-panel[open] { display:block; position:absolute; top:calc(68px + env(safe-area-inset-top, 0px)); left:50%; transform:translateX(-50%); z-index:12; width:min(760px,calc(100% - 32px)); max-height:50%; overflow:auto; margin:0; border:1px solid var(--border); border-radius:20px; background:color-mix(in srgb,var(--card) 90%,transparent); backdrop-filter:blur(28px); box-shadow:var(--chat-composer-shadow); }
   .run-chat .jump-latest { display:none; }
-  .run-chat .progress { position:absolute; inset:calc(66px + env(safe-area-inset-top, 0px)) 24px auto; z-index:2; }
+  .run-chat .progress { display:none!important; }
   body:has(.run-chat) .sb { position:fixed; inset:0 auto 0 0; z-index:80; width:min(320px,88vw)!important; transform:translateX(-105%); transition:transform .24s cubic-bezier(.16,1,.3,1); background:color-mix(in srgb,var(--sidebar) 78%,#6c9fc6); backdrop-filter:blur(28px); -webkit-backdrop-filter:blur(28px); box-shadow:14px 0 40px #18334c30; }
   :root[data-theme=light] body:has(.run-chat) .sb { background:color-mix(in srgb,#b5d2e8 92%,transparent); }
   body:has(.run-chat) .shell.mobile-nav-open .sb { transform:none; }

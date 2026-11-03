@@ -8,10 +8,10 @@
     var total = L.plan.length;
     if (L.mode === 'agent' && !total) { p.style.display = 'none'; return; }
     p.style.display = 'flex';
-    $('progText').textContent = total ? 'Plan step ' + done + ' of ' + total : 'Planning…';
-    $('progMeta').textContent = L.actions.length + ' actions · ' + L.evidence.length + ' checks';
+    var pt = $('progText'); if (pt) pt.textContent = total ? 'Plan step ' + done + ' of ' + total : 'Planning…';
+    var pm = $('progMeta'); if (pm) pm.textContent = L.actions.length + ' actions · ' + L.evidence.length + ' checks';
     var width = Math.min(100, Math.round((done / Math.max(1, total)) * 100));
-    $('progFill').style.width = width + '%';
+    var pf = $('progFill'); if (pf) pf.style.width = width + '%';
   }
 
   // Flatten plan steps into the small, actionable checklist shown immediately

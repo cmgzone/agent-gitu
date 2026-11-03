@@ -163,6 +163,15 @@ export const COWORK_CSS = String.raw`
   .cw-visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
   .cw-chat-head #cwInfoBtn { position: absolute; right: 16px; top: calc(14px + env(safe-area-inset-top, 0px)); }
   .cw-chat-head #cwBack { position: absolute; left: 12px; top: calc(12px + env(safe-area-inset-top, 0px)); }
+  .cw-tools-menu { min-width: 190px; max-width: 260px; padding: 6px; border-radius: 16px; background: color-mix(in srgb, var(--card) 94%, transparent); border: 1px solid color-mix(in srgb, var(--border2) 80%, transparent); backdrop-filter: blur(24px) saturate(1.3); -webkit-backdrop-filter: blur(24px) saturate(1.3); box-shadow: 0 14px 40px rgba(0,0,0,.28), 0 2px 10px rgba(0,0,0,.12); z-index: 1000; }
+  .cw-tools-menu .cw-tool-item { position: relative !important; inset: auto !important; display: flex !important; align-items: center !important; gap: 10px !important; width: 100% !important; height: auto !important; min-height: 38px !important; box-sizing: border-box !important; padding: 8px 12px !important; border: 0 !important; border-radius: 10px !important; background: transparent !important; color: var(--text) !important; font: inherit !important; font-size: 13px !important; font-weight: 500 !important; text-align: left !important; cursor: pointer !important; user-select: none !important; box-shadow: none !important; transform: none !important; transition: background .14s ease, color .14s ease; }
+  .cw-tools-menu .cw-tool-item:hover, .cw-tools-menu .cw-tool-item:focus-visible { background: color-mix(in srgb, var(--text) 8%, transparent) !important; color: var(--text) !important; outline: none !important; }
+  .cw-tools-menu .cw-tool-item svg { width: 16px !important; height: 16px !important; flex: none !important; color: var(--muted) !important; }
+  .cw-tools-menu .cw-tool-item:hover svg { color: var(--accent) !important; }
+  .cw-tools-menu .cw-tool-item[hidden] { display: none !important; }
+  .cw-tools-menu .cw-widget-count { margin-left: auto; min-width: 18px; height: 18px; padding: 0 6px; box-sizing: border-box; border-radius: 999px; font-size: 11px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+  .cw-tools-menu .cw-tool-dot { margin-left: auto; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); display: none; }
+  .cw-tools-menu .cw-computer-toggle[data-handoff=true] .cw-tool-dot { display: inline-block; background: #ff5252; box-shadow: 0 0 6px #ff5252; }
   .cw-chat-head .chip { flex: none; display: inline-flex; align-items: center; gap: 5px; }
   .cw-chat-head .chip svg { width: 12px; height: 12px; }
   .cw-info-toggle { border: 1px solid var(--border2); background: transparent; color: var(--muted); border-radius: 8px; padding: 4px 10px; font-size: 12px; flex: none; }
@@ -696,6 +705,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     ,map: CW_SVG_OPEN + '<path d="M20 10c0 6-8 12-8 12S4 16 4 10a8 8 0 1 1 16 0z"/><circle cx="12" cy="10" r="3"/></svg>'
     ,external: CW_SVG_OPEN + '<path d="M14 3h7v7m0-7-11 11M10 3H3v18h18v-7"/></svg>'
     ,phone: CW_SVG_OPEN + '<path d="M22 17v3a2 2 0 0 1-2.2 2A20 20 0 0 1 3 5.2 2 2 0 0 1 5 3h3l2 6-2 2a16 16 0 0 0 5 5l2-2 7 3z"/></svg>'
+    ,dots: '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.75"/><circle cx="12" cy="12" r="1.75"/><circle cx="19" cy="12" r="1.75"/></svg>'
   };
   function cwIcon(name) { return CW_ICONS[name] || ''; }
 
@@ -1037,7 +1047,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     $('view').innerHTML =
       '<div class="cw" id="cw">' +
         '<button class="cw-panel-backdrop" id="cwPanelBackdrop" aria-label="Close panel" hidden></button>' +
-        cwWidgetsShellHtml() +
+        cwWidgetsShellHtml(false) +
         '<section class="cw-chat" id="cwChat"></section>' +
         '<aside class="cw-workbench" id="cwWorkbench" aria-label="Live Workbench" hidden></aside>' +
       '</div>';
@@ -1204,7 +1214,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       cw.convs = results[1].conversations || [];
       cwPersistOfflineRoster();
       cwRenderRail();
-      var companyBtn = document.querySelector('[data-company-nav]');
+      var companyBtn = typeof document.querySelector === 'function' ? document.querySelector('[data-company-nav]') : null;
       if (!cw.enableCompanies && companyBtn) {
         companyBtn.remove();
       } else if (cw.enableCompanies && !companyBtn && typeof cwRenderChat === 'function' && cw.active) {
@@ -1568,8 +1578,12 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
         '<span id="cwMissionBadge"' + ((cw.missions || []).some(function (m) { return m.conversationId === conv.id && m.status === 'running'; }) ? '' : ' hidden') + '>Mission running</span>' +
         (conv.telegram && conv.telegram.enabled ? '<span class="chip ok" title="Telegram gateway on">' + cwIcon('plane') + 'Telegram</span>' : '') +
         (conv.schedule && conv.schedule.enabled ? '<span class="chip" title="Scheduled messages on">' + cwIcon('clock') + esc(conv.schedule.every) + '</span>' : '') + '</div>' +
-        '<button class="cw-gallery-toggle" id="cwMediaBtn" aria-label="Media and files" title="Media and files">' + cwIcon('image') + '</button>' +
-        '<button class="cw-computer-toggle" id="cwComputerBtn" aria-label="Computer activity" title="Computer activity" aria-controls="cwInlineComputer" hidden>' + cwIcon('monitor') + '</button>' +
+        '<button type="button" class="cw-tools-toggle" id="cwToolsBtn" aria-label="Tools and activities" title="Tools and activities" popovertarget="cwToolsMenu">' + cwIcon('dots') + '<span class="cw-tools-badge" id="cwToolsBadge" hidden></span></button>' +
+        '<div class="cw-message-menu cw-tools-menu" id="cwToolsMenu" popover="auto" aria-label="Tools and activities">' +
+          '<button type="button" class="cw-tool-item cw-computer-toggle" id="cwComputerBtn" aria-label="Computer activity" title="Computer activity" aria-controls="cwInlineComputer" hidden>' + cwIcon('monitor') + '<span>Computer</span><span class="cw-tool-dot" id="cwComputerDot" aria-hidden="true"></span></button>' +
+          '<button type="button" class="cw-tool-item cw-gallery-toggle" id="cwMediaBtn" aria-label="Media and files" title="Media and files">' + cwIcon('image') + '<span>Media &amp; files</span></button>' +
+          (typeof cwWidgetToggleHtml === 'function' ? cwWidgetToggleHtml() : '') +
+        '</div>' +
       '</div>' +
       '<nav class="cw-teammate-switcher" id="cwTeammateSwitcher" aria-label="Switch teammate" hidden></nav>' +
       '<div class="cw-msgs" id="cwMsgs"></div>' +
@@ -1602,7 +1616,25 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
           '<div class="cw-plus-context" id="cwPlusContext"></div>' +
         '</div></div>' +
       '</div>';
-    $('cwMediaBtn').onclick = function () { cwOpenGallery(); };
+    var mediaBtn = $('cwMediaBtn');
+    if (mediaBtn) mediaBtn.onclick = function () { cwOpenGallery(); };
+    var toolsBtn = $('cwToolsBtn');
+    var toolsMenu = $('cwToolsMenu');
+    if (toolsBtn && toolsMenu) {
+      toolsBtn.onclick = function () {
+        var rect = toolsBtn.getBoundingClientRect();
+        toolsMenu.style.left = 'auto';
+        toolsMenu.style.right = Math.max(12, Math.round(window.innerWidth - rect.right)) + 'px';
+        toolsMenu.style.top = Math.round(rect.bottom + 8) + 'px';
+        toolsMenu.style.bottom = 'auto';
+      };
+      toolsMenu.addEventListener('click', function (e) {
+        var item = e.target && e.target.closest && e.target.closest('button');
+        if (item && typeof toolsMenu.hidePopover === 'function') {
+          try { toolsMenu.hidePopover(); } catch (err) {}
+        }
+      });
+    }
     $('cwInfoBtn').onclick = function () { cwOpenProfile(); };
     cwBindTopNav();
     cwRenderTeammateSwitcher();

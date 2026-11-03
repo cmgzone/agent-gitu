@@ -80,9 +80,10 @@ export const COWORK_WIDGETS_CSS = String.raw`
   .cw-widget-new:hover { color: var(--text); opacity: 1; background: transparent; }
   .cw-widget-empty { margin: 0; padding: 14px 0; color: var(--text); opacity: .78; font-size: 11.5px; line-height: 1.6; }
   .cw-widget-toggle, .cw-widget-backdrop { display: none; }
+  .cw-tools-menu .cw-widget-toggle { display: flex; }
   @media(max-width:1024px) {
-    .cw .cw-msgs { padding-top:120px; scroll-padding-top:120px; }
-    .cw-widget-toggle { position: absolute; left: 12px; top: 70px; z-index: 5; display: inline-flex; align-items: center; gap: 7px; min-height: 40px; padding: 7px 10px; border: 0; border-radius: 0; font: inherit; font-size: 11px; color: var(--text); background: transparent; cursor: pointer; }
+
+    #cw > .cw-widget-toggle { position: absolute; left: 12px; top: 70px; z-index: 5; display: inline-flex; align-items: center; gap: 7px; min-height: 40px; padding: 7px 10px; border: 0; border-radius: 0; font: inherit; font-size: 11px; color: var(--text); background: transparent; cursor: pointer; }
     .cw-widget-toggle svg { width: 15px; height: 15px; }
     .cw-widget-count { min-width: 17px; height: 17px; padding: 0 3px; box-sizing: border-box; display: grid; place-items: center; border: 0; border-radius: 0; font-size: 10px; background: transparent; color: var(--text); opacity: .78; }
     .cw-widget-lane { display: none; position: absolute; z-index: 12; top: 118px; left: 12px; right: 12px; width: auto; max-width: 410px; max-height: calc(100% - 134px); padding: 14px 18px 16px; border: 0; border-radius: 24px; background: color-mix(in srgb,var(--card) 72%,transparent); backdrop-filter: blur(24px) saturate(1.1); -webkit-backdrop-filter: blur(24px) saturate(1.1); box-shadow: 0 18px 50px -28px rgba(18,44,70,.25); }
@@ -93,10 +94,10 @@ export const COWORK_WIDGETS_CSS = String.raw`
     #cw .cw-widget-backdrop { position: absolute; inset: 0; z-index: 11; border: 0; padding: 0; background: color-mix(in srgb,var(--bg) 15%,transparent) !important; backdrop-filter: blur(14px) saturate(.85); -webkit-backdrop-filter: blur(14px) saturate(.85); }
     .cw.widgets-open .cw-widget-backdrop { display: block; }
   }
-  @media(max-width:480px) { .cw-widget-toggle > .cw-widget-toggle-label { display: none; } .cw-widget-toggle { padding-inline: 10px; } }
+  @media(max-width:480px) { #cw > .cw-widget-toggle > .cw-widget-toggle-label { display: none; } #cw > .cw-widget-toggle { padding-inline: 10px; } }
   /* Overlay cards on small screens; desktop users can dock them beside chat. */
-  .cw .cw-msgs { padding-top: 120px; scroll-padding-top: 120px; }
-  .cw-widget-toggle { position: absolute; left: 12px; top: 70px; z-index: 5; display: inline-flex; align-items: center; gap: 7px; min-height: 40px; border: 0; padding: 7px 10px; background: transparent; color: var(--text); cursor: pointer; }
+
+  #cw > .cw-widget-toggle { position: absolute; left: 12px; top: 70px; z-index: 5; display: inline-flex; align-items: center; gap: 7px; min-height: 40px; border: 0; padding: 7px 10px; background: transparent; color: var(--text); cursor: pointer; }
   .cw-widget-toggle svg { width: 15px; height: 15px; }
   .cw-widget-lane { display: none; position: absolute; z-index: 12; top: 118px; left: 12px; right: 12px; width: auto; max-width: none; max-height: calc(100% - 134px); padding: 0 4px 12px; gap: 12px; border: 0; border-radius: 0; background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none; box-shadow: none; }
   .cw.widgets-open .cw-widget-lane { display: flex; }
@@ -145,8 +146,9 @@ export const COWORK_WIDGETS_JS = String.raw`
   }
   function cwWidgetsDocked() { return window.innerWidth > 1024 && cwWidgetPlacement() === 'left'; }
   function cwWidgetOrder(widget) { return typeof widget.order === 'number' ? widget.order : Date.parse(widget.createdAt); }
-  function cwWidgetsShellHtml() {
-    return '<button type="button" class="cw-widget-toggle" id="cwWidgetToggle" aria-label="Open widgets" aria-controls="cwWidgetLane" aria-expanded="false" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg><span class="cw-widget-toggle-label">Widgets</span><span class="cw-widget-count" id="cwWidgetCount" aria-live="polite" aria-atomic="true">0</span></button>' +
+  function cwWidgetToggleHtml() { return '<button type="button" class="cw-tool-item cw-widget-toggle" id="cwWidgetToggle" aria-label="Open widgets" aria-controls="cwWidgetLane" aria-expanded="false" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg><span class="cw-widget-toggle-label">Widgets</span><span class="cw-widget-count" id="cwWidgetCount" aria-live="polite" aria-atomic="true">0</span></button>'; }
+  function cwWidgetsShellHtml(includeToggle) {
+    return (includeToggle !== false ? cwWidgetToggleHtml() : '') +
       '<button type="button" class="cw-widget-backdrop" id="cwWidgetBackdrop" aria-label="Close widgets" tabindex="-1" hidden></button>' +
       '<aside class="cw-widget-lane" id="cwWidgetLane" aria-labelledby="cwWidgetLaneTitle" tabindex="-1" hidden><div class="cw-widget-lane-head"><h2 id="cwWidgetLaneTitle">Widgets</h2><span></span><select class="cw-widget-placement" id="cwWidgetPlacement" aria-label="Widget placement"><option value="left">Left side</option><option value="overlay">Over chat</option></select><button type="button" class="cw-widget-close" id="cwWidgetClose" aria-label="Close widgets">' + cwIcon('close') + '</button></div><div class="cw-widget-cards" id="cwWidgetCards"></div><div style="display:flex;gap:12px"><button type="button" class="cw-widget-new" id="cwWidgetNew">' + cwIcon('plus') + 'Create a widget</button><button type="button" class="cw-widget-new" id="cwWidgetUndo" hidden>Undo dismiss</button></div></aside>';
   }
@@ -199,7 +201,7 @@ export const COWORK_WIDGETS_JS = String.raw`
   }
   function cwWidgetsClose(returnFocus) {
     var cw = cwEnsure(); cw.widgetsOpen = false; cwRenderWidgets();
-    if (returnFocus !== false) { var trigger = $('cwWidgetToggle'); if (trigger && !trigger.hidden) trigger.focus(); }
+    if (returnFocus !== false) { var trigger = $('cwWidgetToggle'); if (trigger && !trigger.hidden && trigger.offsetParent) trigger.focus(); else { var tools = $('cwToolsBtn'); if (tools) tools.focus(); } }
   }
   function cwWidgetsToggle() {
     var cw = cwEnsure(); cw.widgetsOpen = !cw.widgetsOpen; cwRenderWidgets();

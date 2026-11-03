@@ -1,9 +1,9 @@
 /** Contextual computer activity, kept in the conversation rather than a sidebar. */
 export const COWORK_COMPUTER_CSS = String.raw`
-  .cw .cw-chat-head .cw-computer-toggle { position:absolute; right:56px; top:70px; pointer-events:auto; display:grid; place-items:center; width:38px; height:38px; padding:0; border:1px solid #ffffff45; border-radius:50%; background:color-mix(in srgb,var(--card) 48%,transparent); color:var(--text); cursor:pointer; }
+  .cw .cw-chat-head > .cw-computer-toggle { position:absolute; right:56px; top:70px; pointer-events:auto; display:grid; place-items:center; width:38px; height:38px; padding:0; border:1px solid #ffffff45; border-radius:50%; background:color-mix(in srgb,var(--card) 48%,transparent); color:var(--text); cursor:pointer; }
   .cw-computer-toggle svg { width:17px; height:17px; }
   .cw-computer-toggle[hidden],.cw-computer-inline[hidden],.cw-computer-preview[hidden] { display:none!important; }
-  .cw-computer-toggle[data-handoff=true]::after { content:''; position:absolute; width:6px; height:6px; top:6px; right:6px; border-radius:50%; background:var(--accent); }
+  .cw .cw-chat-head > .cw-computer-toggle[data-handoff=true]::after { content:''; position:absolute; width:6px; height:6px; top:6px; right:6px; border-radius:50%; background:var(--accent); }
   .cw-computer-inline { flex:none; width:100%; border:1px solid #ffffff55; border-radius:22px; overflow:hidden; background:color-mix(in srgb,var(--card) 52%,transparent); color:var(--text); box-shadow:0 12px 30px -24px #183d6b88; }
   .cw-computer-inline header { display:flex; align-items:center; gap:10px; padding:14px 16px; }
   .cw-computer-inline header > svg { width:20px; height:20px; flex:none; }
@@ -31,7 +31,7 @@ export const COWORK_COMPUTER_CSS = String.raw`
   .cw-desktop-dialog .cw-desktop-status,.cw-desktop-dialog .chip { color:var(--muted); }
   .cw-desktop-dialog .cw-desktop-handoff { background:var(--selected); color:var(--text); border-color:var(--border2); }
   .cw-desktop-dialog [data-control] { background:var(--text); border-color:var(--text); color:var(--bg); }
-  @media(max-width:720px) { .cw .cw-chat-head .cw-computer-toggle { right:60px; top:70px; width:40px; height:40px; }.cw-computer-inline header { flex-wrap:wrap; padding:12px; }.cw-computer-inline header > div { min-width:140px; }.cw .cw-chat:has(.cw-computer-toggle:not([hidden])) .cw-msgs { padding-top:120px; scroll-padding-top:120px; } }
+  @media(max-width:720px) { .cw .cw-chat-head > .cw-computer-toggle { right:60px; top:70px; width:40px; height:40px; }.cw-computer-inline header { flex-wrap:wrap; padding:12px; }.cw-computer-inline header > div { min-width:140px; } }
 `;
 
 export const COWORK_COMPUTER_JS = String.raw`
@@ -80,7 +80,7 @@ export const COWORK_COMPUTER_JS = String.raw`
     var activity=activities.find(function(item){return item.agent.id===cw.inlineComputerAgentId;})||activities.find(function(item){return item.handoff;})||activities[0];
     var conv=cwActiveConv(),members=conv?cwConvMembers(conv):[],shortcutAgent=members.find(function(agent){return agent.id===(cw.selectedAgentId||conv.chiefId);})||members[0];
     var shortcutActivity=shortcutAgent&&activities.find(function(item){return item.agent.id===shortcutAgent.id;}),shortcutCard=!!(activity&&shortcutAgent&&activity.agent.id===shortcutAgent.id);
-    if(button){button.hidden=!!(cw.profileOpen||cw.connectionsOpen||cw.galleryOpen||!shortcutAgent);button.setAttribute('data-handoff',String(!!(shortcutActivity&&shortcutActivity.handoff)));button.title=shortcutCard?(activity.handoff?'Your turn on the computer':'View computer activity'):shortcutAgent?'Open '+shortcutAgent.name+' computer':'Computer';button.setAttribute('aria-label',button.title);if(shortcutCard&&wrap)button.setAttribute('aria-controls','cwInlineComputer');else button.removeAttribute('aria-controls');button.onclick=function(){if(shortcutCard&&card){if(activity.agent.useHostComputer)cwRevealBrowser(card);else card.scrollIntoView({behavior:window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth',block:'center'});}else if(shortcutAgent)cwOpenDesktop(shortcutAgent.id);};}
+    if(button){button.hidden=!!(cw.profileOpen||cw.connectionsOpen||cw.galleryOpen||!shortcutAgent);button.setAttribute('data-handoff',String(!!(shortcutActivity&&shortcutActivity.handoff)));var toolsBtn=$('cwToolsBtn');if(toolsBtn)toolsBtn.setAttribute('data-handoff',String(!!(shortcutActivity&&shortcutActivity.handoff)));button.title=shortcutCard?(activity.handoff?'Your turn on the computer':'View computer activity'):shortcutAgent?'Open '+shortcutAgent.name+' computer':'Computer';button.setAttribute('aria-label',button.title);if(shortcutCard&&wrap)button.setAttribute('aria-controls','cwInlineComputer');else button.removeAttribute('aria-controls');button.onclick=function(){if(shortcutCard&&card){if(activity.agent.useHostComputer)cwRevealBrowser(card);else card.scrollIntoView({behavior:window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth',block:'center'});}else if(shortcutAgent)cwOpenDesktop(shortcutAgent.id);};}
     if(!wrap||!activity){if(card)card.remove();return;}
     var atBottom=wrap.scrollHeight-wrap.scrollTop-wrap.clientHeight<120;
     if(!card){card=document.createElement('section');card.id='cwInlineComputer';card.className='cw-computer-inline';card.setAttribute('aria-label','Computer activity');card.setAttribute('data-cwentrance','computer-'+(cw.computerCardRevision=(cw.computerCardRevision||0)+1));card.innerHTML='<header>'+cwIcon('monitor')+'<div><strong data-computer-title></strong><p data-computer-description></p></div><button type="button" data-expand-computer>'+cwIcon('panel')+'<span>Expand</span></button><button type="button" data-close-browser hidden>Close</button></header><div class="cw-computer-preview" data-computer-preview hidden></div>';wrap.appendChild(card);cwAnimateChatBubbles(wrap);}

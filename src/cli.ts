@@ -21,6 +21,7 @@ import {
 } from './llm/providers.js';
 import { chatgptLogout, chatgptSubscriptionInfo, startChatgptLogin, waitForChatgptLogin } from './llm/pi-chatgpt.js';
 import { mergedEnv } from './llm/keys.js';
+import { getVault } from './vault/vault.js';
 import { MemoryStore } from './memory/memory-store.js';
 import { Reporter } from './report/reporter.js';
 import { GituServer } from './server/server.js';
@@ -83,6 +84,7 @@ Usage:
   gitu skill import <path> [--global]  Import a SKILL.md folder (or file) into the skill store
   gitu serve [--port 8321] [--host ADDRESS] Headless server: cowork, schedules and learning run with no UI
   gitu service install|start|stop|status|uninstall [--data-dir DIR] Manage the background runtime
+  gitu vault [list|set|get|delete]     Manage encrypted secrets in the secure vault
 
 Run options:
   --fast                 Skip context-pack ceremony (small tasks)
@@ -626,6 +628,124 @@ async function main(): Promise<void> {
       }
       await chatgptLogout();
       console.log('Signed out of ChatGPT. Run `gitu login` to connect again.');
+      return;
+    }
+
+    case 'vault': {
+      const sub = positional[1]?.toLowerCase();
+      const vault = getVault();
+      const json = Boolean(flags.get('json'));
+
+      if (!sub || sub === 'list') {
+        const list = vault.list();
+        if (json) {
+          console.log(JSON.stringify(list, null, 2));
+          return;
+        }
+        if (list.length === 0) {
+          console.log('(no secrets stored in vault — use `gitu vault set <NAME> <VALUE>` to add one)');
+          return;
+        }
+        console.log(`\nSecrets Vault (${list.length} secret${list.length === 1 ? '' : 's'}):`);
+        console.log(`${'NAME'.padEnd(25)} ${'UPDATED'.padEnd(24)} DESCRIPTION`);
+        console.log('-'.repeat(70));
+        for (const item of list) {
+          const desc = item.description || (item.tags?.length ? `[${item.tags.join(', ')}]` : '');
+          console.log(`${item.name.padEnd(25)} ${item.updatedAt.slice(0, 19).padEnd(24)} ${desc}`);
+        }
+        return;
+      }
+
+      if (sub === 'set') {
+        const name = positional[2];
+        if (!name) {
+          console.error('Error: Secret name is required. Usage: gitu vault set <NAME> [VALUE]');
+          process.exitCode = 1;
+          return;
+        }
+        let value = positional[3];
+        if (!value) {
+          value = await askLine(`Enter secret value for "${name}": `);
+        }
+        if (!value) {
+          console.error('Error: Secret value cannot be empty.');
+          process.exitCode = 1;
+          return;
+        }
+        const description = typeof flags.get('description') === 'string' ? String(flags.get('description')) : undefined;
+        const tags = typeof flags.get('tags') === 'string' ? String(flags.get('tags')).split(',').map((t) => t.trim()).filter(Boolean) : undefined;
+        const saved = vault.set(name, value, { description, tags });
+        if (json) {
+          console.log(JSON.stringify({ ok: true, secret: saved }, null, 2));
+        } else {
+          console.log(`Secret "${saved.name}" securely saved in vault.`);
+        }
+        return;
+      }
+
+      if (sub === 'get') {
+        const name = positional[2];
+        if (!name) {
+          console.error('Error: Secret name is required. Usage: gitu vault get <NAME> [--reveal]');
+          process.exitCode = 1;
+          return;
+        }
+        const entry = vault.get(name);
+        if (!entry) {
+          console.error(`Error: Secret "${name}" not found in vault.`);
+          process.exitCode = 1;
+          return;
+        }
+        const reveal = Boolean(flags.get('reveal'));
+        if (json) {
+          console.log(
+            JSON.stringify(
+              {
+                name: entry.name,
+                description: entry.description,
+                tags: entry.tags,
+                createdAt: entry.createdAt,
+                updatedAt: entry.updatedAt,
+                ...(reveal ? { value: entry.value } : { value: '********' }),
+              },
+              null,
+              2,
+            ),
+          );
+          return;
+        }
+        console.log(`\nSecret:      ${entry.name}`);
+        console.log(`Description: ${entry.description || '(none)'}`);
+        console.log(`Tags:        ${entry.tags?.length ? entry.tags.join(', ') : '(none)'}`);
+        console.log(`Created:     ${entry.createdAt}`);
+        console.log(`Updated:     ${entry.updatedAt}`);
+        console.log(`Value:       ${reveal ? entry.value : '******** (use --reveal to display)'}`);
+        return;
+      }
+
+      if (sub === 'delete' || sub === 'remove' || sub === 'rm') {
+        const name = positional[2];
+        if (!name) {
+          console.error('Error: Secret name is required. Usage: gitu vault delete <NAME>');
+          process.exitCode = 1;
+          return;
+        }
+        const ok = vault.delete(name);
+        if (!ok) {
+          console.error(`Error: Secret "${name}" not found in vault.`);
+          process.exitCode = 1;
+          return;
+        }
+        if (json) {
+          console.log(JSON.stringify({ ok: true, deleted: name }, null, 2));
+        } else {
+          console.log(`Secret "${name}" removed from vault.`);
+        }
+        return;
+      }
+
+      console.error(`Unknown vault subcommand "${sub}". Available: list, set, get, delete`);
+      process.exitCode = 1;
       return;
     }
 

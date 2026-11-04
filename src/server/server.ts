@@ -122,6 +122,7 @@ import { ProviderError, allProviderSpecs, fetchModelCatalog, freeModelFallback, 
 import { resolveModelCatalog } from '../llm/resolved-model-catalog.js';
 import { resolveEmbedder } from '../llm/providers.js';
 import { removeStoredKey, setStoredKey, storedKeyVars } from '../llm/keys.js';
+import { getVault } from '../vault/vault.js';
 import { SessionStore, type SessionUsage, type StoredSessionFile } from './session-store.js';
 import { McpManager } from '../mcp/client.js';
 import { Reporter } from '../report/reporter.js';
@@ -7927,6 +7928,68 @@ export class GituServer {
       removeStoredKey(envVar);
       this.sendJson(res, 200, { ok: true });
       return;
+    }
+
+    if (method === 'GET' && path === '/api/vault/secrets') {
+      const vault = getVault();
+      this.sendJson(res, 200, { secrets: vault.list() });
+      return;
+    }
+
+    if (method === 'POST' && path === '/api/vault/secrets') {
+      try {
+        const body = await this.readBody(req);
+        const name = String(body['name'] ?? '').trim();
+        const value = typeof body['value'] === 'string' ? body['value'] : '';
+        const description = typeof body['description'] === 'string' ? body['description'] : undefined;
+        const tags = Array.isArray(body['tags']) ? body['tags'].map(String) : undefined;
+        if (!name) {
+          this.sendJson(res, 400, { error: 'Secret name is required.' });
+          return;
+        }
+        if (!value) {
+          this.sendJson(res, 400, { error: 'Secret value is required.' });
+          return;
+        }
+        const vault = getVault();
+        const saved = vault.set(name, value, { description, tags });
+        this.sendJson(res, 200, { ok: true, secret: saved });
+      } catch (err) {
+        this.sendJson(res, 400, { error: (err as Error).message });
+      }
+      return;
+    }
+
+    const vaultMatch = path.match(/^\/api\/vault\/secrets\/([A-Za-z0-9_-]+)$/);
+    if (vaultMatch) {
+      const secretName = vaultMatch[1]!;
+      const vault = getVault();
+      if (method === 'GET') {
+        const reveal = url.searchParams.get('reveal') === '1' || url.searchParams.get('reveal') === 'true';
+        const entry = vault.get(secretName);
+        if (!entry) {
+          this.sendJson(res, 404, { error: `Secret "${secretName}" not found.` });
+          return;
+        }
+        this.sendJson(res, 200, {
+          name: entry.name,
+          description: entry.description,
+          tags: entry.tags,
+          createdAt: entry.createdAt,
+          updatedAt: entry.updatedAt,
+          ...(reveal ? { value: entry.value } : {}),
+        });
+        return;
+      }
+      if (method === 'DELETE') {
+        const removed = vault.delete(secretName);
+        if (!removed) {
+          this.sendJson(res, 404, { error: `Secret "${secretName}" not found.` });
+          return;
+        }
+        this.sendJson(res, 200, { ok: true, deleted: secretName });
+        return;
+      }
     }
 
     if (method === 'GET' && path === '/api/chatgpt/auth') {

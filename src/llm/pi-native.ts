@@ -80,7 +80,8 @@ export interface PiModelTarget {
 /** Gitu provider spec → pi provider registration (pi's `custom-provider.md`). */
 export function piProviderConfig(target: PiModelTarget): PiProviderConfig {
   const isDirectOpenAi = target.providerId === 'openai' || target.providerId === 'gitu-openai' || target.baseUrl.includes('api.openai.com');
-  const supportsDeveloperRole = target.compat?.supportsDeveloperRole ?? isDirectOpenAi;
+  const isOpenRouter = target.providerId.includes('openrouter') || target.baseUrl.includes('openrouter.ai');
+  const supportsDeveloperRole = target.compat?.supportsDeveloperRole ?? (isDirectOpenAi && !isOpenRouter);
   return {
     name: target.label ?? target.providerId,
     baseUrl: target.baseUrl,
@@ -95,6 +96,7 @@ export function piProviderConfig(target: PiModelTarget): PiProviderConfig {
         input: target.vision ? ['text', 'image'] : ['text'],
         compat: {
           supportsDeveloperRole,
+          ...(isOpenRouter ? { thinkingFormat: 'openrouter' as const } : {}),
           ...target.compat,
         },
         // Provider pricing is unknown here; leaving it zero keeps cost reporting
@@ -186,10 +188,26 @@ function assistantText(message: NativeRecord, narration: string): string {
  * `providerId` is the namespaced registration id, scrubbed from the text so an
  * error the user reads never carries it.
  */
+function formatOpenRouterErrorMessage(rawMessage: string): string {
+  const jsonMatch = rawMessage.match(/(?:502|500|503|504):\s*(\{.*\})/);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[1]!) as { message?: string; error?: { message?: string; metadata?: { provider_name?: string } }; metadata?: { provider_name?: string } };
+      const provider = parsed.metadata?.provider_name || parsed.error?.metadata?.provider_name;
+      const base = parsed.message || parsed.error?.message || 'Upstream provider error';
+      return provider ? `502: ${base} (upstream provider: ${provider})` : `502: ${base}`;
+    } catch {
+      /* ignore */
+    }
+  }
+  return rawMessage;
+}
+
 export function classifyPiError(error: unknown, providerId?: string): LlmError {
   if (error instanceof LlmError) return error;
   const raw = error instanceof Error ? error.message : String(error);
-  const message = providerId ? withoutProviderNamespace(raw, providerId) : raw;
+  const clean = formatOpenRouterErrorMessage(raw);
+  const message = providerId ? withoutProviderNamespace(clean, providerId) : clean;
   const kind = /context.?(?:window|length)|too many tokens|maximum context/i.test(message)
     ? 'protocol_error'
     : /abort|cancell?ed/i.test(message)

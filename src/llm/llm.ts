@@ -306,8 +306,11 @@ function responseErrorParts(text: string): { message: string; type: string } {
   let message = trimmed;
   let type = '';
   try {
-    const parsed = JSON.parse(text) as { error?: { type?: string; message?: string } };
-    if (parsed.error?.message) message = parsed.error.message;
+    const parsed = JSON.parse(text) as { error?: { type?: string; message?: string; metadata?: { provider_name?: string } }; message?: string; metadata?: { provider_name?: string } };
+    const provider = parsed.error?.metadata?.provider_name || parsed.metadata?.provider_name;
+    const baseMsg = parsed.error?.message || parsed.message;
+    if (baseMsg) message = provider ? `${baseMsg} (upstream provider: ${provider})` : baseMsg;
+
     if (parsed.error?.type) type = parsed.error.type;
   } catch {
     /* keep raw text */
@@ -419,6 +422,7 @@ async function postChatCompletion(opts: {
         headers: {
           'content-type': 'application/json',
           authorization: `Bearer ${opts.apiKey}`,
+          ...(opts.baseUrl.includes('openrouter.ai') ? { 'HTTP-Referer': 'https://github.com/agent-gitu/agentgitu', 'X-Title': 'Agent Gitu' } : {}),
         },
         body: JSON.stringify(opts.body),
         signal: withTimeout(opts.signal, LLM_REQUEST_TIMEOUT_MS),
@@ -622,6 +626,7 @@ export class OpenAiCompatClient implements LlmClient {
       if (opts.onUsage) body['stream_options'] = { include_usage: true };
     }
     if (opts.json) body['response_format'] = { type: 'json_object' };
+    if (/\/\/openrouter\.ai(?:\/|$)/i.test(this.baseUrl)) { body['provider'] = { allow_fallbacks: true, ...(typeof body['provider'] === 'object' && body['provider'] ? (body['provider'] as Record<string, unknown>) : {}) }; }
     if (opts.onReasoningDelta && /\/\/openrouter\.ai(?:\/|$)/i.test(this.baseUrl)) {
       body['reasoning'] = { exclude: false, ...(opts.effort ? { effort: opts.effort } : { enabled: true }) };
     }

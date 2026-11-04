@@ -4,6 +4,7 @@ import path from 'node:path';
 import { ensureGituHome } from '../workspace/home.js';
 import { readCredentialJson, updateCredentialJson } from './credential-file.js';
 import { SecretVault } from '../connections/secret-vault.js';
+import { getVault } from '../vault/vault.js';
 
 const vaults = new Map<string, SecretVault>();
 function keyVault(file: string): SecretVault {
@@ -80,7 +81,7 @@ export function registryEnv(): Record<string, string> {
 }
 
 export function mergedEnv(): NodeJS.ProcessEnv {
-  return { ...registryEnv(), ...loadStoredKeys(), ...process.env } as NodeJS.ProcessEnv;
+  return { ...registryEnv(), ...loadStoredKeys(), ...getVault().getAllValues(), ...process.env } as NodeJS.ProcessEnv;
 }
 
 export function setStoredKey(envVar: string, key: string): void {

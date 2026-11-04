@@ -1,6 +1,6 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { readCredentialJson, writeCredentialFile, withCredentialFileLock } from '../llm/credential-file.js';
 
@@ -86,5 +86,12 @@ export class SecretVault {
     } catch {
       throw new Error('Connector credentials could not be decrypted.');
     }
+  }
+  list(): string[] {
+    if (!existsSync(this.root)) return [];
+    return readdirSync(this.root)
+      .filter((name) => name.endsWith('.secret') && !name.endsWith('.bak'))
+      .map((name) => name.slice(0, -'.secret'.length))
+      .filter((id) => /^[\w-]{1,150}$/.test(id));
   }
 }

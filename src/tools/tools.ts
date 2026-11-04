@@ -21,6 +21,7 @@ import { SearchMatcher } from './search-matcher.js';
 import { readSearchText } from './search-text.js';
 import { isGeneratedIndexDirectory } from '../context/generated-directory.js';
 import { readRuntimeSelection } from '../workspace/runtime-selection.js';
+import { getVault } from '../vault/vault.js';
 
 export interface ToolContext {
   appManagement?: (params: Record<string, unknown>, actor: { agentId: string; conversationId?: string }) => Promise<ToolResult>;
@@ -1367,7 +1368,8 @@ const delayMs = (ms: number): Promise<void> => new Promise<void>((resolve) => se
 
 /** The combined capture, formatted exactly as the legacy result always was. */
 function jobBody(job: CommandJob): string {
-  return [job.stdout, job.stderr].filter(Boolean).join('\n--- stderr ---\n');
+  const combined = [job.stdout, job.stderr].filter(Boolean).join('\n--- stderr ---\n');
+  return getVault().redact(combined);
 }
 
 function commandProgress(job: CommandJob) {
@@ -1600,6 +1602,8 @@ export class BackgroundCommandRegistry {
     const args = isWindows ? ['-NoProfile', '-NonInteractive', '-Command', command] : ['-c', command];
     const child = spawn(shell, args, {
       cwd,
+
+      env: { ...process.env, ...getVault().getAllValues() },
       windowsHide: true,
       // POSIX: own process group, so the whole tree can be signalled on timeout.
       detached: !isWindows,
@@ -1610,6 +1614,7 @@ export class BackgroundCommandRegistry {
       id: `cmd-${this.sequence}`,
       command,
       cwd,
+
       background,
       status: 'running',
       startedAt: Date.now(),

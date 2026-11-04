@@ -2591,70 +2591,21 @@ img {
 /* ==========================================================================
    PAGE IDENTITY LAYER
    --------------------------------------------------------------------------
-   Each page sets data-page on <body>. Three tokens are declared per page:
-     --page-accent       hue for text, rules, markers and link decoration
+   Each page sets data-page on <body>. One brand accent is declared here and
+   every page inherits it, so pages differ in structure, never in hue:
+     --page-accent       blue for text, rules, markers and link decoration
      --page-accent-soft  low-alpha wash used for panels and borders
      --page-glow         radial tint behind the closing section
    The base surface (#06080d) and body text (#f3f6fc) are deliberately
-   untouched: only accents, rules and structure move from page to page.
-   Every accent was measured against #06080d. The weakest pairing is the
-   cowork blue at 5.06:1, still above the 4.5:1 WCAG AA floor for text.
+   untouched: only rules and structure move from page to page.
+   The brand blue measures 5.06:1 against #06080d, above the 4.5:1 WCAG AA
+   floor for text.
    ========================================================================== */
 
 body[data-page] {
-  --page-accent: var(--blue);
-  --page-accent-soft: #3e78ff24;
-  --page-glow: radial-gradient(ellipse, #2065fd26, transparent 67%);
-}
-body[data-page="cowork"] {
   --page-accent: #3e78ff;
   --page-accent-soft: #3e78ff24;
-  --page-glow: radial-gradient(ellipse, #2065fd2b, transparent 67%);
-}
-body[data-page="coding"] {
-  --page-accent: #57d3a8;
-  --page-accent-soft: #57d3a81f;
-  --page-glow: radial-gradient(ellipse, #57d3a826, transparent 67%);
-}
-body[data-page="connections"] {
-  --page-accent: #2fd1c5;
-  --page-accent-soft: #2fd1c51f;
-  --page-glow: radial-gradient(ellipse, #2fd1c524, transparent 67%);
-}
-body[data-page="docs"] {
-  --page-accent: #82aaff;
-  --page-accent-soft: #82aaff1f;
-  --page-glow: radial-gradient(ellipse, #82aaff26, transparent 67%);
-}
-body[data-page="download"] {
-  --page-accent: #f2a33c;
-  --page-accent-soft: #f2a33c1c;
-  --page-glow: radial-gradient(ellipse, #f2a33c24, transparent 67%);
-}
-body[data-page="blog"] {
-  --page-accent: #a58bff;
-  --page-accent-soft: #a58bff1f;
-  --page-glow: radial-gradient(ellipse, #a58bff26, transparent 67%);
-}
-body[data-page="security"] {
-  --page-accent: #ff8a7a;
-  --page-accent-soft: #ff8a7a1c;
-  --page-glow: radial-gradient(ellipse, #ff8a7a24, transparent 67%);
-}
-body[data-page="quiet-proactivity"] {
-  --page-accent: #8fb3ff;
-  --page-accent-soft: #8fb3ff1f;
-  --page-glow: radial-gradient(ellipse, #8fb3ff26, transparent 67%);
-}
-body[data-page="news"] {
-  --page-accent: #4fc3f7;
-  --page-accent-soft: #4fc3f71f;
-  --page-glow: radial-gradient(ellipse, #4fc3f726, transparent 67%);
-}
-body[data-page="changelog"] {
-  --page-accent: #9be7a3;
-  --page-accent-soft: #9be7a31c;
-  --page-glow: radial-gradient(ellipse, #9be7a326, transparent 67%);
+  --page-glow: radial-gradient(ellipse, #2065fd26, transparent 67%);
 }
 
 /* accents drive labels, dots, numerals, links and the closing glow */

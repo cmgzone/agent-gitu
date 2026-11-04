@@ -1,6 +1,13 @@
 {
-  "updated": "2026-11-03",
+  "updated": "2026-11-04",
   "entries": [
+    {
+      "date": "2026-11-04",
+      "kind": "news",
+      "title": "AI news digest — 4 November 2026",
+      "summary": "6 stories added: Anthropic model identity, Fal $16B inference, Netflix AI Discover, Anthropic compute costs, Google schools, Squarespace layoffs",
+      "link": "news.html"
+    },
     {
       "date": "2026-11-03",
       "kind": "news",

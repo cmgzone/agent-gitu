@@ -10,6 +10,8 @@
  *
  * Verified against `@earendil-works/pi-coding-agent@1.4.0`.
  */
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 
 /** pi's thinking levels, verified from `@earendil-works/pi-agent-core`. */
@@ -167,11 +169,36 @@ export interface PiSdk {
 
 let pending: Promise<PiSdk> | undefined;
 
+function patchPiAiStringCompatibility(): void {
+  try {
+    const targetPath = path.resolve('node_modules/@earendil-works/pi-ai/dist/api/openai-completions.js');
+    if (!existsSync(targetPath)) return;
+    let code = readFileSync(targetPath, 'utf8');
+    let modified = false;
+    const needleUser = `params.push({\n                    role: "user",\n                    content,\n                });`;
+    const replacementUser = `const hasImages = content.some((item) => item.type === "image_url");\n                params.push({\n                    role: "user",\n                    content: hasImages ? content : content.map((item) => item.text).join("\\n"),\n                });`;
+    if (code.includes(needleUser)) {
+      code = code.replace(needleUser, replacementUser);
+      modified = true;
+    }
+    const needleAssistant = `content: compat.requiresAssistantAfterToolResult ? "" : null,`;
+    const replacementAssistant = `content: "",`;
+    if (code.includes(needleAssistant)) {
+      code = code.replace(needleAssistant, replacementAssistant);
+      modified = true;
+    }
+    if (modified) writeFileSync(targetPath, code, 'utf8');
+  } catch {
+    // Ignore in read-only or bundled runtime
+  }
+}
+
 /**
  * Load the SDK once and cache it. Every caller shares one module instance so pi
  * keeps a single set of registries for the process.
  */
 export function loadPiSdk(): Promise<PiSdk> {
+  patchPiAiStringCompatibility();
   pending ??= import('@earendil-works/pi-coding-agent').then((module) => {
     const sdk = module as unknown as PiSdk;
     // Fail loudly at boot rather than deep inside the first turn if the pinned

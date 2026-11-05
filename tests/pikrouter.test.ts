@@ -8,6 +8,7 @@ import {
   streamPikRouterCompletion,
 } from '../src/llm/pikrouter.js';
 import { PROVIDERS, resolveLlm } from '../src/llm/providers.js';
+import { effortStyleFor } from '../src/llm/llm.js';
 
 describe('PikRouter integration', () => {
   const originalFetch = globalThis.fetch;
@@ -129,5 +130,50 @@ describe('PikRouter integration', () => {
     }
 
     expect(received.join('')).toBe('Hello from PikRouter!');
+  });
+
+  it('applies deepseek effort style and flattens array messages to strings for PikRouter wire payloads', async () => {
+    expect(effortStyleFor(DEFAULT_PIKROUTER_BASE_URL)).toBe('deepseek');
+
+    let sentBody: Record<string, unknown> | undefined;
+    globalThis.fetch = vi.fn().mockImplementation(async (_url, opts) => {
+      sentBody = JSON.parse(opts.body);
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'));
+          controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+          controller.close();
+        },
+      });
+      return {
+        ok: true,
+        status: 200,
+        body: stream,
+      };
+    });
+
+    const client = createPikRouterClient({ token: 'test-token' });
+    const messages = [
+      { role: 'system', content: 'You are helpful' },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Hello' },
+          { type: 'text', text: 'world' },
+        ],
+      },
+    ] as unknown as Parameters<typeof client.completeTurnStream>[0];
+
+    let output = '';
+    await client.completeTurnStream!(messages, {}, (delta) => {
+      output += delta;
+    });
+
+    expect(output).toBe('ok');
+    expect(sentBody).toBeDefined();
+    // Verify that message content at index 1 is strictly a string (not an array)
+    const wireMessages = sentBody!.messages as Array<{ role: string; content: unknown }>;
+    expect(typeof wireMessages[1].content).toBe('string');
+    expect(wireMessages[1].content).toBe('Hello\nworld');
   });
 });

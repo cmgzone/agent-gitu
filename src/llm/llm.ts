@@ -207,7 +207,7 @@ export const DASHSCOPE_THINKING_BUDGETS: Record<EffortLevel, number> = {
 
 export function effortStyleFor(baseUrl: string): EffortStyle {
   if (/aliyuncs|dashscope/i.test(baseUrl)) return 'dashscope';
-  if (/api\.deepseek\.com(?:\/|$)/i.test(baseUrl)) return 'deepseek';
+  if (/api\.deepseek\.com(?:\/|$)|pikrouter\.pikpam\.com|pikrouter/i.test(baseUrl)) return 'deepseek';
   return 'openai';
 }
 
@@ -693,7 +693,7 @@ export class OpenAiCompatClient implements LlmClient {
       ? message.toolCalls.map(call => `<tool>${JSON.stringify({ name: call.name, params: call.arguments })}</tool>`).join('\n') : '';
     const wire: Record<string, unknown> = {
       role: message.role === 'tool' && !nativeResult ? 'user' : message.role,
-      content: callsAsText ? `${typeof message.content === 'string' ? message.content : ''}\n${callsAsText}` : message.content,
+      content: callsAsText ? `${typeof (message.content ?? '') === 'string' ? (message.content ?? '') : Array.isArray(message.content) ? message.content.map(p => p.type === 'text' ? p.text : '').join('\n') : ''}\n${callsAsText}` : (Array.isArray(message.content) ? message.content.map(p => p.type === 'text' ? p.text : '').join('\n') : (message.content ?? '')),
     };
     if (nativeCalls) wire['tool_calls'] = message.toolCalls!.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.arguments) } }));
     if (nativeResult) wire['tool_call_id'] = message.toolCallId;

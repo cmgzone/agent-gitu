@@ -32,6 +32,20 @@ export { TaskLedger } from './ledger/task-ledger.js';
 export { DEFAULT_LOOP_POLICY, LoopDetector, type LoopPolicy, type LoopVerdict } from './loop/loop-detector.js';
 export { OpenAiCompatClient, ScriptedMockLlm, extractJson, type LlmClient, type LlmMessage, LlmError } from './llm/llm.js';
 export { PROVIDERS, ProviderError, resolveLlm, type ProviderSpec, type ResolvedLlm } from './llm/providers.js';
+export {
+  DEFAULT_PIKROUTER_AUTH_URL,
+  DEFAULT_PIKROUTER_BASE_URL,
+  DEFAULT_PIKROUTER_MODEL,
+  createPikRouterClient,
+  loginPikRouter,
+  streamPikRouterCompletion,
+  type PikRouterClientOptions,
+  type PikRouterLoginOptions,
+  type PikRouterLoginResponse,
+  type PikRouterUser,
+  type StreamPikRouterMessage,
+  type StreamPikRouterOptions,
+} from './llm/pikrouter.js';
 export { MemoryStore } from './memory/memory-store.js';
 export {
   ConnectionRegistry,

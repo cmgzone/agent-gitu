@@ -20,6 +20,7 @@ import {
   type ProviderSpec,
 } from './llm/providers.js';
 import { chatgptLogout, chatgptSubscriptionInfo, startChatgptLogin, waitForChatgptLogin } from './llm/pi-chatgpt.js';
+import { loginPikRouter } from './llm/pikrouter.js';
 import { mergedEnv } from './llm/keys.js';
 import { getVault } from './vault/vault.js';
 import { MemoryStore } from './memory/memory-store.js';
@@ -39,7 +40,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   const flags = new Map<string, string | boolean>();
   // Flags that take an explicit value. Anything else is boolean — and the
   // literal tokens false/no/off/0 DISABLE it instead of truthy-enabling it.
-  const VALUE_FLAGS = new Set(['provider', 'model', 'base-url', 'port', 'host', 'type', 'criteria', 'limit', 'scope', 'visibility', 'agent', 'project', 'status']);
+  const VALUE_FLAGS = new Set(['provider', 'model', 'base-url', 'port', 'host', 'type', 'criteria', 'limit', 'scope', 'visibility', 'agent', 'project', 'status', 'email', 'password']);
   const FALSEY = new Set(['false', 'no', 'off', '0']);
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
@@ -69,7 +70,7 @@ Usage:
   gitu init                            Detect and lock the current project
   gitu run "<goal>" [options]          Run a task end-to-end
   gitu providers                       List LLM providers and key status
-  gitu login                           Sign in with ChatGPT (use your subscription, no API key)
+  gitu login [pikrouter]               Sign in with ChatGPT or PikRouter (no raw API key needed)
   gitu logout                          Sign out of ChatGPT
   gitu models [--provider <name>]      List models (live from endpoint when a key is set)
   gitu models --pick [provider]        Interactive model chooser
@@ -598,6 +599,26 @@ async function main(): Promise<void> {
     }
 
     case 'login': {
+      const targetProvider = (positional[1] || flags.get('provider') || '').toString().toLowerCase();
+      if (targetProvider === 'pikrouter') {
+        const email = typeof flags.get('email') === 'string' ? String(flags.get('email')).trim() : await askLine('PikRouter Email: ');
+        const password = typeof flags.get('password') === 'string' ? String(flags.get('password')) : await askLine('PikRouter Password: ');
+        if (!email || !password) {
+          console.error('Email and password are required to log in to PikRouter.');
+          process.exitCode = 1;
+          return;
+        }
+        try {
+          const res = await loginPikRouter({ email, password });
+          console.log(`Connected to PikRouter (${res.user?.email || email}). Token stored locally.`);
+          console.log('Use it with: gitu run "<goal>" --provider pikrouter');
+        } catch (err) {
+          console.error(`PikRouter sign-in failed: ${(err as Error).message}`);
+          process.exitCode = 2;
+        }
+        return;
+      }
+
       const started = await startChatgptLogin();
       if (started.alreadySignedIn) {
         const status = await chatgptSubscriptionInfo(true);

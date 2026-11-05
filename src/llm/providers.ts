@@ -359,6 +359,25 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     publicModels: true,
     capabilities: { streamingTools: true },
   },
+  pikrouter: {
+    id: 'pikrouter',
+    label: 'PikRouter (pikrouter.pikpam.com, OpenAI-compatible)',
+    baseUrl: 'https://pikrouter.pikpam.com/v1',
+    keyEnvVars: ['HERMES_PIKROUTER_API_KEY', 'PIKROUTER_API_KEY', 'PIKROUTER_TOKEN'],
+    defaultModel: 'gpt-4o-mini',
+    models: [
+      'gpt-4o-mini',
+      'gpt-4o',
+      'gemini-1.5-flash',
+      'gemini-1.5-pro',
+      'gemini-2.0-flash',
+      'claude-3-5-sonnet',
+      'deepseek-chat',
+    ],
+    effortLevels: ['low', 'medium', 'high'],
+    publicModels: true,
+    capabilities: { streamingTools: true },
+  },
 };
 
 function customProfileSpec(profile: CustomProviderProfile): ProviderSpec {

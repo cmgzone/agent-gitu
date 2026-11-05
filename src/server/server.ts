@@ -122,6 +122,7 @@ import { ProviderError, allProviderSpecs, fetchModelCatalog, freeModelFallback, 
 import { resolveModelCatalog } from '../llm/resolved-model-catalog.js';
 import { resolveEmbedder } from '../llm/providers.js';
 import { removeStoredKey, setStoredKey, storedKeyVars } from '../llm/keys.js';
+import { loginPikRouter } from '../llm/pikrouter.js';
 import { getVault } from '../vault/vault.js';
 import { SessionStore, type SessionUsage, type StoredSessionFile } from './session-store.js';
 import { McpManager } from '../mcp/client.js';
@@ -8002,6 +8003,27 @@ export class GituServer {
       try {
         const login = await (this.config.startChatgptLogin ?? startChatgptLogin)();
         this.sendJson(res, 202, { ...login, url: login.authUrl });
+      } catch (err) {
+        this.sendJson(res, 400, { error: (err as Error).message });
+      }
+      return;
+    }
+
+    if (method === 'POST' && path === '/api/pikrouter/login') {
+      try {
+        const body = await this.readBody(req);
+        const email = String(body['email'] || '').trim();
+        const password = String(body['password'] || '');
+        if (!email || !password) {
+          this.sendJson(res, 400, { error: 'Email and password are required.' });
+          return;
+        }
+        const result = await loginPikRouter({
+          email,
+          password,
+          saveKey: body['saveKey'] !== false,
+        });
+        this.sendJson(res, 200, { ok: true, token: result.token, user: result.user });
       } catch (err) {
         this.sendJson(res, 400, { error: (err as Error).message });
       }

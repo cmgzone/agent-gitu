@@ -2,7 +2,7 @@ import type { ModelCatalog, ModelInfo } from './providers.js';
 
 export interface ModelBrand { id: string; kind: 'lab' | 'provider'; iconUrl: string }
 const aliases: Record<string, string> = { qwen: 'alibaba', gemini: 'google', codex: 'openai', chatgpt: 'openai', mistralai: 'mistral', 'meta-llama': 'meta', 'x-ai': 'xai', 'z-ai': 'zai', 'moonshot-ai': 'moonshotai' };
-const routers = new Set(['openrouter', 'alibaba', 'opencode-zen', 'opencode-go', 'groq', 'together', 'fireworks', 'siliconflow', 'nvidia', 'azure']);
+const routers = new Set(['openrouter', 'pikrouter', 'alibaba', 'opencode-zen', 'opencode-go', 'groq', 'together', 'fireworks', 'siliconflow', 'nvidia', 'azure']);
 const offlineFamilies: Record<string, string> = { deepseek:'deepseek', qwen:'alibaba', claude:'anthropic', gpt:'openai', gemini:'google', glm:'zai', kimi:'moonshotai', grok:'xai', llama:'meta', minimax:'minimax', mistral:'mistral' };
 const slug = (value: string | undefined) => { const id = (value ?? '').trim().toLowerCase(); return /^[a-z0-9][a-z0-9-]{0,63}$/.test(id) ? aliases[id] ?? id : undefined; };
 const apiId = (value: string) => value.toLowerCase().replace(/:free$/, '');

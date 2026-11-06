@@ -57,6 +57,33 @@ export const WORKSPACE_SEARCH_CSS = String.raw`
   .ws-aux svg { width:16px; height:16px; }
   .ws-empty { padding:30px 16px; text-align:center; color:var(--muted); font-size:13px; line-height:1.6; }
   .ws-more { display:block; margin:12px auto 0; padding:10px 16px; font-size:12px; color:var(--run); border-radius:999px; }
+  .ws-schedule-card { display:flex; flex-direction:column; align-items:stretch; width:100%; padding:14px 16px; border-radius:18px; background:color-mix(in srgb,var(--card) 45%,transparent); border:1px solid color-mix(in srgb,var(--border2) 55%,transparent); margin:6px 0; box-sizing:border-box; transition:border-color .18s ease,background-color .18s ease,box-shadow .18s ease; }
+  .ws-schedule-card:hover { background:color-mix(in srgb,var(--card) 75%,transparent); border-color:color-mix(in srgb,var(--accent,#226bd6) 40%,var(--border2)); }
+  .ws-sc-header { display:flex; align-items:flex-start; gap:12px; min-width:0; width:100%; }
+  .ws-sc-icon-wrap { display:grid; place-items:center; width:38px; height:38px; flex:none; border-radius:12px; background:color-mix(in srgb,var(--run,#226bd6) 12%,var(--card)); color:var(--run,#226bd6); }
+  .ws-sc-icon-wrap svg { width:18px; height:18px; }
+  .ws-sc-main { flex:1; min-width:0; display:flex; flex-direction:column; gap:4px; }
+  .ws-sc-top-row { display:flex; align-items:center; justify-content:space-between; gap:8px; min-width:0; }
+  .ws-sc-title-btn { background:none; border:0; padding:0; margin:0; font:inherit; color:var(--text); font-size:14px; font-weight:600; letter-spacing:-.01em; text-align:left; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:1; min-width:0; display:block; }
+  .ws-sc-title-btn:hover { color:var(--accent,#226bd6); text-decoration:underline; }
+  .ws-sc-summary { font-size:12.5px; color:var(--muted); line-height:1.45; margin:0; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; word-break:break-word; }
+  .ws-sc-meta { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-top:8px; }
+  .ws-sc-badge { display:inline-flex; align-items:center; gap:4px; padding:3px 8px; border-radius:999px; font-size:11px; font-weight:500; line-height:1.3; border:1px solid transparent; flex:none; }
+  .ws-sc-badge.active { background:color-mix(in srgb,#2e9b5f 14%,var(--card)); color:#2e9b5f; border-color:color-mix(in srgb,#2e9b5f 30%,transparent); }
+  .ws-sc-badge.paused { background:color-mix(in srgb,var(--muted) 12%,var(--card)); color:var(--muted); border-color:color-mix(in srgb,var(--border2) 60%,transparent); }
+  .ws-sc-badge.frequency { background:color-mix(in srgb,var(--card2,#f5f5f5) 80%,transparent); color:var(--text); border-color:color-mix(in srgb,var(--border2) 50%,transparent); }
+  .ws-sc-badge.next { background:color-mix(in srgb,var(--accent,#226bd6) 10%,var(--card)); color:var(--accent,#226bd6); border-color:color-mix(in srgb,var(--accent,#226bd6) 24%,transparent); }
+  .ws-sc-badge.context { background:color-mix(in srgb,var(--muted) 8%,var(--card)); color:var(--muted); max-width:140px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .ws-sc-footer { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:10px; padding-top:8px; border-top:1px solid color-mix(in srgb,var(--border) 40%,transparent); }
+  .ws-sc-toggle { display:inline-flex; align-items:center; gap:6px; background:none; border:0; padding:6px 10px; margin:-6px -10px; font:inherit; font-size:11.5px; font-weight:500; color:var(--accent,#226bd6); cursor:pointer; border-radius:8px; min-height:36px; transition:background .15s ease,color .15s ease; }
+  .ws-sc-toggle:hover { background:color-mix(in srgb,var(--accent,#226bd6) 10%,transparent); }
+  .ws-sc-chevron { display:inline-block; font-size:11px; transition:transform .2s cubic-bezier(.16,1,.3,1); }
+  .ws-sc-toggle.expanded .ws-sc-chevron { transform:rotate(90deg); }
+  .ws-sc-instructions { margin-top:10px; padding:10px 14px; background:color-mix(in srgb,var(--card2,#f5f5f5) 60%,transparent); border:1px solid color-mix(in srgb,var(--border2) 50%,transparent); border-radius:12px; overflow:hidden; transition:opacity .2s ease,max-height .25s cubic-bezier(.16,1,.3,1); box-sizing:border-box; }
+  .ws-sc-instructions[hidden] { display:none!important; }
+  .ws-sc-instructions-label { font-size:10.5px; font-weight:600; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin-bottom:6px; }
+  .ws-sc-prompt { font-family:inherit; font-size:12px; line-height:1.55; color:var(--text); margin:0; white-space:pre-wrap; word-break:break-word; max-height:280px; overflow-y:auto; }
+  @media(max-width:600px) { .ws-schedule-card { padding:12px; margin:4px 0; }.ws-sc-icon-wrap { width:32px; height:32px; border-radius:10px; }.ws-sc-icon-wrap svg { width:16px; height:16px; }.ws-sc-title-btn { font-size:13.5px; }.ws-sc-summary { font-size:12px; }.ws-sc-meta { gap:4px; }.ws-sc-badge { font-size:10.5px; padding:2px 7px; }.ws-sc-toggle { font-size:11px; min-height:40px; } }
   .settings { display:block; overflow:auto; background:var(--cw-chat-surface); color:var(--text); padding:90px 24px 40px; }
   .settings .setnav { width:min(920px,100%); margin:0 auto 28px; display:flex; flex-wrap:wrap; gap:5px; padding:7px; border:1px solid color-mix(in srgb,var(--border2) 40%,transparent); border-radius:26px; background:color-mix(in srgb,var(--card) 60%,transparent); overflow:visible; backdrop-filter:blur(24px); -webkit-backdrop-filter:blur(24px); }
   .settings .setnav .sect { display:none; }
@@ -122,12 +149,12 @@ export const WORKSPACE_SEARCH_JS = String.raw`
       (data.agents||[]).forEach(function(agent){item('Agents',agent.name,agent.tagline||agent.description||'AI teammate','users','agent',agent.id,{agent:agent,aux:'profile',keywords:agent.description});});
       (data.conversations||[]).forEach(function(conv){
         item('Sessions',conv.title||'Conversation',conv.kind==='group'?'Group conversation':'Agent conversation','chat','conversation',conv.id,{aux:'delete-conversation'});
-        if(conv.schedule&&conv.schedule.every)item('Schedules',conv.schedule.goal||conv.title+' recurring task',(conv.schedule.enabled?'Active':'Paused')+' · Every '+conv.schedule.every+' · '+(conv.title||'Conversation'),'clock','conversation-schedule',conv.id,{keywords:conv.title});
+        if(conv.schedule&&conv.schedule.every)item('Schedules',conv.schedule.goal||conv.title+' recurring task',(conv.schedule.enabled?'Active':'Paused')+' · Every '+conv.schedule.every+' · '+(conv.title||'Conversation'),'clock','conversation-schedule',conv.id,{keywords:conv.title,schedule:conv.schedule,conversation:conv});
       });
       (data.followUps||[]).slice().sort(function(a,b){return Date.parse(a.dueAt)-Date.parse(b.dueAt);}).forEach(function(followUp){
         var conv=(data.conversations||[]).find(function(conv){return conv.id===followUp.conversationId;}),agent=(data.agents||[]).find(function(agent){return agent.id===followUp.agentId;});
         if(!conv)return;
-        item('Schedules',followUp.note,'One-time · Due '+new Date(followUp.dueAt).toLocaleString()+' · '+(agent?agent.name+' · ':'')+(conv.title||'Conversation'),'clock','followup',followUp.id,{conversationId:conv.id,keywords:followUp.dueAt});
+        item('Schedules',followUp.note,'One-time · Due '+new Date(followUp.dueAt).toLocaleString()+' · '+(agent?agent.name+' · ':'')+(conv.title||'Conversation'),'clock','followup',followUp.id,{conversationId:conv.id,keywords:followUp.dueAt,followUp:followUp,conversation:conv,agent:agent});
       });
       if(cwActiveConv()) {
         item('Tools','New thread','A separate topic in the current conversation','plus','new-thread');
@@ -140,7 +167,7 @@ export const WORKSPACE_SEARCH_JS = String.raw`
       }
     }
     (data.skills||[]).forEach(function(skill){item('Skills',skill.name,skill.description||'Reusable agent skill','bolt','skill',skill.name);});
-    if(mode==='main')(data.jobs||[]).forEach(function(job){item('Schedules',job.goal,'Every '+job.every,'clock','job',job.id);});
+    if(mode==='main')(data.jobs||[]).forEach(function(job){item('Schedules',job.goal,'Every '+job.every,'clock','job',job.id,{job:job});});
     return items;
   }
   function wsClose(refocus) {
@@ -192,6 +219,133 @@ export const WORKSPACE_SEARCH_JS = String.raw`
       state.hits=(data.hits||[]).map(function(hit){return {category:'Messages',title:hit.conversationTitle||'Conversation',detail:hit.snippet||'',icon:'chat',action:'conversation',id:hit.conversationId,threadId:hit.threadId};});wsRender(state);
     }catch(e){if(workspaceSearchState===state&&state.revision===revision){state.recallFailed=true;wsRender(state);}}
   }
+  function wsParseGoalText(goal,fallbackTitle){
+    var text=String(goal||'').trim();
+    if(!text)return {title:fallbackTitle||'Scheduled task',summary:'No instructions provided.'};
+    var colonMatch=/^([A-Z][A-Za-z0-9 _-]{1,35}):\s*([\s\S]+)$/.exec(text);
+    if(colonMatch){
+      var heading=colonMatch[1].trim(),body=colonMatch[2].trim(),firstLine=body.split(/\r?\n/)[0].slice(0,100);
+      return {title:heading,summary:firstLine+(body.length>firstLine.length?'…':'')};
+    }
+    var lines=text.split(/\r?\n/).map(function(l){return l.trim();}).filter(Boolean);
+    if(lines.length>1){
+      var lineTitle=lines[0].replace(/^#+\s*/,'').slice(0,50),rest=lines.slice(1).join(' ').slice(0,100);
+      return {title:fallbackTitle||lineTitle,summary:rest+(lines.slice(1).join(' ').length>rest.length?'…':'')};
+    }
+    if(fallbackTitle&&fallbackTitle!=='Conversation'){
+      var sum=text.slice(0,100);
+      return {title:fallbackTitle,summary:sum+(text.length>100?'…':'')};
+    }
+    var sentenceMatch=/^([^.!?\n]{6,60}[.!?])\s*([\s\S]*)$/.exec(text);
+    if(sentenceMatch){
+      var sTitle=sentenceMatch[1].replace(/[.!?]$/,'').trim(),sRest=sentenceMatch[2].trim(),sSummary=sRest?sRest.slice(0,100):text;
+      return {title:sTitle,summary:sSummary+(sRest&&sRest.length>100?'…':'')};
+    }
+    var shortTitle=text.length>44?text.slice(0,44).replace(/\s+\S*$/,'')+'…':text;
+    return {title:shortTitle,summary:text};
+  }
+
+  function wsFormatFrequency(every){
+    var s=String(every||'').trim();
+    if(!s||s==='One-time')return s||'One-time';
+    if(/^(\d+)\s*m(?:in(?:utes?)?)?$/i.test(s))return 'Every '+RegExp.$1+'m';
+    if(/^(\d+)\s*h(?:ours?)?$/i.test(s))return 'Every '+RegExp.$1+(RegExp.$1==='1'?' hour':' hours');
+    if(/^1\s*d(?:ays?)?$/i.test(s))return 'Daily';
+    if(/^(\d+)\s*d(?:ays?)?$/i.test(s))return 'Every '+RegExp.$1+' days';
+    if(/^1\s*w(?:eeks?)?$/i.test(s))return 'Weekly';
+    if(/^(\d+)\s*w(?:eeks?)?$/i.test(s))return 'Every '+RegExp.$1+' weeks';
+    if(/^\d+$/.test(s))return 'Every '+s+'m';
+    return s.toLowerCase().startsWith('every')?s:'Every '+s;
+  }
+
+  function wsComputeNextRun(lastRunAt,every){
+    if(!lastRunAt||!every)return '';
+    try{
+      var lastMs=Date.parse(lastRunAt);if(isNaN(lastMs))return '';
+      var trimmed=String(every).trim(),intervalMs=0;
+      var m=trimmed.match(/^(\d+)\s*(s|sec|seconds?|m|min|minutes?|h|hours?|d|days?|w|weeks?)?$/i);
+      if(m){
+        var n=Number(m[1]),unit=(m[2]||'m').toLowerCase();
+        if(unit.startsWith('s'))intervalMs=n*1000;
+        else if(unit.startsWith('h'))intervalMs=n*3600000;
+        else if(unit.startsWith('d'))intervalMs=n*86400000;
+        else if(unit.startsWith('w'))intervalMs=n*604800000;
+        else intervalMs=n*60000;
+      }
+      if(!intervalMs)return '';
+      var nextMs=lastMs+intervalMs,now=Date.now();
+      while(nextMs<=now)nextMs+=intervalMs;
+      var nextDate=new Date(nextMs);
+      var isToday=nextDate.toDateString()===new Date().toDateString();
+      return isToday?'Next: '+nextDate.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'Next: '+nextDate.toLocaleDateString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+    }catch(e){return '';}
+  }
+
+  function wsParseScheduleInfo(item){
+    var rawGoal='',title='',summary='',every='',enabled=true,lastRunAt=null,dueAt=null,context='';
+    if(item.schedule){
+      rawGoal=item.schedule.goal||'';every=item.schedule.every||'';enabled=item.schedule.enabled!==false;lastRunAt=item.schedule.lastRunAt||null;
+      title=(item.conversation&&item.conversation.title)||'';context=(item.conversation&&item.conversation.title)||'Chat';
+    }else if(item.followUp){
+      rawGoal=item.followUp.note||'';every='One-time';enabled=true;dueAt=item.followUp.dueAt||null;
+      var agentName=item.agent&&item.agent.name,convTitle=item.conversation&&item.conversation.title;
+      title=agentName?(agentName+' reminder'):'Reminder';if(convTitle)title+=' · '+convTitle;
+      context=convTitle||(agentName||'Follow-up');
+    }else if(item.job){
+      rawGoal=item.job.goal||'';every=item.job.every||'';enabled=item.job.enabled!==false;lastRunAt=item.job.lastRunAt||null;context='Cron';
+    }else{
+      rawGoal=item.title||'';enabled=(item.detail||'').indexOf('Paused')<0;
+      var mEvery=/Every\s+([^·]+)/i.exec(item.detail||'');
+      if(mEvery)every=mEvery[1].trim();else if((item.detail||'').indexOf('One-time')>=0)every='One-time';
+    }
+    var parsed=wsParseGoalText(rawGoal,title);
+    title=title||parsed.title;summary=parsed.summary||rawGoal;
+    var instructions=rawGoal||item.title||'';
+    var frequency=wsFormatFrequency(every);
+    var nextText='';
+    if(dueAt){
+      try{
+        var dueDate=new Date(dueAt);
+        var isToday=dueDate.toDateString()===new Date().toDateString();
+        nextText=isToday?'Due '+dueDate.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'Due '+dueDate.toLocaleDateString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+      }catch(e){}
+    }else if(lastRunAt&&every){
+      nextText=wsComputeNextRun(lastRunAt,every);
+    }
+    return {title:title||'Scheduled task',summary:summary,instructions:instructions,enabled:enabled,frequency:frequency,nextText:nextText,context:context};
+  }
+
+  function wsScheduleCardHtml(row,item){
+    var info=wsParseScheduleInfo(item);
+    var statusBadge='<span class="ws-sc-badge '+(info.enabled?'active':'paused')+'">'+(info.enabled?'Active':'Paused')+'</span>';
+    var freqBadge=info.frequency?'<span class="ws-sc-badge frequency">'+esc(info.frequency)+'</span>':'';
+    var nextBadge=info.nextText?'<span class="ws-sc-badge next">'+esc(info.nextText)+'</span>':'';
+    var contextBadge=info.context&&info.context!==info.title?'<span class="ws-sc-badge context" title="'+esc(info.context)+'">'+esc(info.context)+'</span>':'';
+    return '<div class="ws-result ws-schedule-card">'+
+      '<div class="ws-sc-header">'+
+        '<span class="ws-sc-icon-wrap" aria-hidden="true">'+wsIcon(item.icon||'clock')+'</span>'+
+        '<div class="ws-sc-main">'+
+          '<div class="ws-sc-top-row">'+
+            '<button type="button" class="ws-sc-title-btn" data-ws-result="'+row.index+'" title="'+esc(info.title)+'">'+esc(info.title)+'</button>'+
+            (item.aux?'<button class="ws-aux" data-ws-aux="'+row.index+'" aria-label="'+esc(item.aux==='profile'?'Profile for '+item.title:'Delete '+info.title)+'">'+(item.aux==='profile'?'Profile':actionSvg('trash'))+'</button>':'')+
+          '</div>'+
+          '<p class="ws-sc-summary">'+esc(info.summary)+'</p>'+
+          '<div class="ws-sc-meta">'+statusBadge+freqBadge+nextBadge+contextBadge+'</div>'+
+        '</div>'+
+      '</div>'+
+      '<div class="ws-sc-footer">'+
+        '<button type="button" class="ws-sc-toggle" data-ws-sc-toggle="'+row.index+'" aria-expanded="false" aria-controls="ws-sc-inst-'+row.index+'">'+
+          '<span class="ws-sc-chevron" aria-hidden="true">▸</span>'+
+          '<span class="ws-sc-toggle-label">View instructions</span>'+
+        '</button>'+
+      '</div>'+
+      '<div class="ws-sc-instructions" id="ws-sc-inst-'+row.index+'" hidden>'+
+        '<div class="ws-sc-instructions-label">Automation instructions</div>'+
+        '<pre class="ws-sc-prompt">'+esc(info.instructions||'No instructions provided.')+'</pre>'+
+      '</div>'+
+    '</div>';
+  }
+
   function wsRender(state) {
     if(workspaceSearchState!==state)return;
     var filters=state.mode==='cowork'?['all','Sessions','Threads','Agents','Tools','Skills','Schedules','Activity','Settings','Messages']:['all','Sessions','Projects','Tools','Skills','Schedules','Settings'];
@@ -202,7 +356,7 @@ export const WORKSPACE_SEARCH_JS = String.raw`
     var groups=new Map();items.forEach(function(item,index){if(!groups.has(item.category))groups.set(item.category,[]);groups.get(item.category).push({item:item,index:index});});
     var order=state.mode==='cowork'?['Tools','Sessions','Threads','Agents','Messages','Activity','Skills','Schedules','Settings']:['Tools','Sessions','Projects','Skills','Schedules','Settings'];
     $('workspaceSearchStatus').textContent=state.loading?'Loading your workspace…':state.failures.length?'Some '+state.failures.join(', ')+' could not load. You can retry.':state.recallFailed?'Message search is unavailable. Other results are still available.':state.query?items.length+' result'+(items.length===1?'':'s'):'';
-    var html=order.filter(function(group){return groups.has(group);}).map(function(group){var rows=groups.get(group);return '<section class="ws-group"><h2>'+group+'<span>'+rows.length+'</span></h2><div class="ws-result-list">'+rows.slice(0,state.limit).map(function(row){var item=row.item;return '<div class="ws-result"><button class="ws-result-action" data-ws-result="'+row.index+'"><span class="ws-result-icon" aria-hidden="true">'+(item.agent?cwAva(item.agent):wsIcon(item.icon))+'</span><span class="ws-result-copy"><strong>'+esc(item.title)+'</strong><small>'+esc(item.detail)+'</small></span></button>'+(item.aux?'<button class="ws-aux" data-ws-aux="'+row.index+'" aria-label="'+esc(item.aux==='profile'?'Profile for '+item.title:'Delete session '+item.title)+'">'+(item.aux==='profile'?'Profile':actionSvg('trash'))+'</button>':'')+'</div>';}).join('')+'</div>'+(rows.length>state.limit?'<button class="ws-more" data-ws-more="'+group+'">Show '+(rows.length-state.limit)+' more</button>':'')+'</section>';}).join('');
+    var html=order.filter(function(group){return groups.has(group);}).map(function(group){var rows=groups.get(group);return '<section class="ws-group"><h2>'+group+'<span>'+rows.length+'</span></h2><div class="ws-result-list">'+rows.slice(0,state.limit).map(function(row){var item=row.item;return group==='Schedules'?wsScheduleCardHtml(row,item):'<div class="ws-result"><button class="ws-result-action" data-ws-result="'+row.index+'"><span class="ws-result-icon" aria-hidden="true">'+(item.agent?cwAva(item.agent):wsIcon(item.icon))+'</span><span class="ws-result-copy"><strong>'+esc(item.title)+'</strong><small>'+esc(item.detail)+'</small></span></button>'+(item.aux?'<button class="ws-aux" data-ws-aux="'+row.index+'" aria-label="'+esc(item.aux==='profile'?'Profile for '+item.title:'Delete session '+item.title)+'">'+(item.aux==='profile'?'Profile':actionSvg('trash'))+'</button>':'')+'</div>';}).join('')+'</div>'+(rows.length>state.limit?'<button class="ws-more" data-ws-more="'+group+'">Show '+(rows.length-state.limit)+' more</button>':'')+'</section>';}).join('');
     if(!items.length&&!state.loading)html='<div class="ws-empty">'+(state.mode==='cowork'&&state.category==='Schedules'&&!state.query?(state.failures.includes('conversations')?'Schedules could not load. Retry loading.':'No scheduled tasks yet. Ask a teammate to schedule a reminder, or use Schedule in the chat’s + menu.'):'No matches. Try a session title, agent name, skill, or setting.')+'</div>';
     if(state.mode==='cowork'&&state.category==='Sessions')html='<button class="btn dark" id="workspaceSearchNewSession">'+icon('plus')+'New session</button>'+html;
     if(state.failures.length)html='<button class="btn" id="workspaceSearchRetry">'+icon('retry')+'Retry loading</button>'+html;
@@ -210,6 +364,30 @@ export const WORKSPACE_SEARCH_JS = String.raw`
     target.querySelectorAll('[data-ws-result]').forEach(function(button){button.onclick=function(){wsActivate(state.rendered[Number(button.dataset.wsResult)]);};});
     target.querySelectorAll('[data-ws-more]').forEach(function(button){button.onclick=function(){state.limit+=30;wsRender(state);};});
     target.querySelectorAll('[data-ws-aux]').forEach(function(button){button.onclick=function(){var item=state.rendered[Number(button.dataset.wsAux)];if(item.aux==='profile')wsActivate({action:'profile',id:item.id});else if(item.aux==='delete-conversation')wsDeleteConversation(state,item,button);else wsDeleteRun(state,item,button);};});
+    target.querySelectorAll('[data-ws-sc-toggle]').forEach(function(button){
+      button.onclick=function(event){
+        event.stopPropagation();event.preventDefault();
+        var card=button.closest('.ws-schedule-card');if(!card)return;
+        var inst=card.querySelector('.ws-sc-instructions');if(!inst)return;
+        var expanded=button.getAttribute('aria-expanded')==='true';
+        var next=!expanded;
+        button.setAttribute('aria-expanded',String(next));
+        button.classList.toggle('expanded',next);
+        var label=button.querySelector('.ws-sc-toggle-label');
+        if(label)label.textContent=next?'Hide instructions':'View instructions';
+        var chevron=button.querySelector('.ws-sc-chevron');
+        if(chevron)chevron.textContent=next?'▾':'▸';
+        if(next){
+          inst.hidden=false;inst.style.maxHeight='0px';inst.style.opacity='0';
+          void inst.offsetHeight;
+          inst.style.maxHeight=Math.min(inst.scrollHeight+30,320)+'px';
+          inst.style.opacity='1';
+        } else {
+          inst.style.maxHeight='0px';inst.style.opacity='0';
+          setTimeout(function(){if(button.getAttribute('aria-expanded')==='false')inst.hidden=true;},240);
+        }
+      };
+    });
     if($('workspaceSearchNewSession'))$('workspaceSearchNewSession').onclick=function(){wsActivate({action:'new-cowork-session'});};
     if($('workspaceSearchRetry'))$('workspaceSearchRetry').onclick=function(){state.loading=true;wsRender(state);wsLoad(state);};
   }

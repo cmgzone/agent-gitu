@@ -252,4 +252,115 @@ describe('Full-page workspace search', () => {
     expect(UI_HTML).not.toContain('id="homeOpenProject"');
     expect(() => new Script(UI_HTML.split('<script>')[1]!.split('</script>')[0]!)).not.toThrow();
   });
+
+  it('renders compact schedule cards with collapsible automation instructions and metadata badges', () => {
+    const f = fixture();
+    const state: any = {
+      mode: 'cowork',
+      items: [
+        {
+          category: 'Schedules',
+          id: 'sc-1',
+          title: 'Morning Sync',
+          detail: 'Active · Every 1d · Team',
+          action: 'conversation-schedule',
+          icon: 'calendar',
+          schedule: {
+            enabled: true,
+            every: '1d',
+            goal: 'Morning Sync\nCheck blockers and report status across all active repos.'
+          },
+          conversation: { id: 'conv-1', title: 'Team' }
+        },
+        {
+          category: 'Schedules',
+          id: 'sc-2',
+          title: 'Nightly Audit',
+          detail: 'Paused · Every 3h · Security',
+          action: 'conversation-schedule',
+          icon: 'calendar',
+          schedule: {
+            enabled: false,
+            every: '3h',
+            goal: 'Run dependency vulnerability scan and alert on CVEs.'
+          },
+          conversation: { id: 'conv-2', title: 'Security' }
+        }
+      ],
+      hits: [],
+      failures: [],
+      category: 'Schedules',
+      query: '',
+      limit: 8,
+      loading: false
+    };
+    f.context.workspaceSearchState = state;
+    f.context.wsRender(state);
+    const html = f.elements.workspaceSearchResults.innerHTML;
+
+    // Compact card structure
+    expect(html).toContain('class="ws-result ws-schedule-card"');
+    expect(html).toContain('class="ws-sc-header"');
+    expect(html).toContain('class="ws-sc-top-row"');
+    expect(html).toContain('class="ws-sc-title-btn"');
+    expect(html).toContain('class="ws-sc-summary"');
+    expect(html).toContain('class="ws-sc-meta"');
+    expect(html).toContain('class="ws-sc-footer"');
+
+    // Morning Sync badges and prompt
+    expect(html).toContain('Team');
+    expect(html).toContain('Check blockers and report status');
+    expect(html).toContain('class="ws-sc-badge active"');
+    expect(html).toContain('Daily');
+    expect(html).toContain('class="ws-sc-toggle"');
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain('View instructions');
+    expect(html).toContain('class="ws-sc-instructions" id="ws-sc-inst-0" hidden');
+    expect(html).toContain('Morning Sync\nCheck blockers and report status across all active repos.');
+
+    // Nightly Audit paused badge
+    expect(html).toContain('Security');
+    expect(html).toContain('class="ws-sc-badge paused"');
+    expect(html).toContain('Every 3 hours');
+    expect(html).toContain('Run dependency vulnerability scan and alert on CVEs.');
+  });
+
+  it('renders one-time follow-up schedule cards with due date badges', () => {
+    const f = fixture();
+    const state: any = {
+      mode: 'cowork',
+      items: [
+        {
+          category: 'Schedules',
+          id: 'reminder-1',
+          title: 'Follow up on PR review',
+          detail: 'One-time · Engineer · Code Review',
+          action: 'followup',
+          icon: 'clock',
+          followUp: {
+            id: 'reminder-1',
+            note: 'Please verify the unit tests pass on CI and merge the PR.',
+            dueAt: '2099-01-01T10:00:00Z'
+          },
+          agent: { name: 'Engineer' },
+          conversation: { title: 'Code Review' }
+        }
+      ],
+      hits: [],
+      failures: [],
+      category: 'Schedules',
+      query: '',
+      limit: 8,
+      loading: false
+    };
+    f.context.workspaceSearchState = state;
+    f.context.wsRender(state);
+    const html = f.elements.workspaceSearchResults.innerHTML;
+
+    expect(html).toContain('Engineer reminder · Code Review');
+    expect(html).toContain('class="ws-sc-badge active"');
+    expect(html).toContain('One-time');
+    expect(html).toContain('Due ');
+    expect(html).toContain('Please verify the unit tests pass on CI and merge the PR.');
+  });
 });

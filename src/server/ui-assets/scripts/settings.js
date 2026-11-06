@@ -903,15 +903,83 @@
       });
     } else if (S.setSection === 'cron') {
       api('/api/cron').then(function (d) {
+        var parseGoal = typeof wsParseGoalText === 'function' ? wsParseGoalText : function (g, fb) {
+          var t = String(g || '').trim();
+          var colon = /^([A-Z][A-Za-z0-9 _-]{1,35}):\s*([\s\S]+)$/.exec(t);
+          if (colon) return { title: colon[1].trim(), summary: colon[2].trim().slice(0, 100) };
+          var lines = t.split(/\r?\n/).filter(Boolean);
+          if (lines.length > 1) return { title: fb || lines[0].slice(0, 50), summary: lines.slice(1).join(' ').slice(0, 100) };
+          return { title: t.length > 44 ? t.slice(0, 44) + '…' : (t || fb || 'Cron job'), summary: t };
+        };
+        var formatFreq = typeof wsFormatFrequency === 'function' ? wsFormatFrequency : function (e) { return 'Every ' + e; };
+        var computeNext = typeof wsComputeNextRun === 'function' ? wsComputeNextRun : function () { return ''; };
         b.innerHTML = '<h1>Scheduled / heartbeat</h1><p style="color:var(--muted);font-size:12.5px">Cron jobs start agent runs on a schedule. A heartbeat periodically checks project health.</p>' +
           '<div class="setcard"><div class="setlist">' +
-          (d.jobs.length ? d.jobs.map(function (jb) {
-            return '<div class="row"><span class="grow">every <b>' + esc(jb.every) + '</b> — ' + esc(jb.goal) + (jb.lastRunAt ? ' <span class="meta">(last ' + new Date(jb.lastRunAt).toLocaleTimeString() + ')</span>' : '') + '</span><button class="x" data-x="' + esc(jb.id) + '" title="remove job">' + icon('x') + '</button></div>';
+          (d.jobs.length ? d.jobs.map(function (jb, idx) {
+            var parsed = parseGoal(jb.goal, 'Cron job');
+            var freq = formatFreq(jb.every);
+            var next = computeNext(jb.lastRunAt, jb.every);
+            var status = jb.enabled !== false ? 'Active' : 'Paused';
+            return '<div class="ws-schedule-card set-schedule-card">' +
+              '<div class="ws-sc-header">' +
+                '<span class="ws-sc-icon-wrap" aria-hidden="true">' + icon('clock') + '</span>' +
+                '<div class="ws-sc-main">' +
+                  '<div class="ws-sc-top-row">' +
+                    '<strong class="ws-sc-title" title="' + esc(parsed.title) + '">' + esc(parsed.title) + '</strong>' +
+                    '<button class="x" data-x="' + esc(jb.id) + '" title="Remove job" aria-label="Remove job ' + esc(parsed.title) + '">' + icon('x') + '</button>' +
+                  '</div>' +
+                  '<p class="ws-sc-summary">' + esc(parsed.summary) + '</p>' +
+                  '<div class="ws-sc-meta">' +
+                    '<span class="ws-sc-badge ' + (jb.enabled !== false ? 'active' : 'paused') + '">' + status + '</span>' +
+                    '<span class="ws-sc-badge frequency">' + esc(freq) + '</span>' +
+                    (next ? '<span class="ws-sc-badge next">' + esc(next) + '</span>' : '') +
+                    (jb.lastRunAt ? '<span class="ws-sc-badge context">Last: ' + esc(new Date(jb.lastRunAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })) + '</span>' : '') +
+                  '</div>' +
+                '</div>' +
+              '</div>' +
+              '<div class="ws-sc-footer">' +
+                '<button type="button" class="ws-sc-toggle" data-set-sc-toggle="' + idx + '" aria-expanded="false" aria-controls="set-sc-inst-' + idx + '">' +
+                  '<span class="ws-sc-chevron" aria-hidden="true">▸</span>' +
+                  '<span class="ws-sc-toggle-label">View instructions</span>' +
+                '</button>' +
+              '</div>' +
+              '<div class="ws-sc-instructions" id="set-sc-inst-' + idx + '" hidden>' +
+                '<div class="ws-sc-instructions-label">Automation instructions</div>' +
+                '<pre class="ws-sc-prompt">' + esc(jb.goal || 'No instructions provided.') + '</pre>' +
+              '</div>' +
+            '</div>';
           }).join('') : '<div class="meta">no jobs yet</div>') +
           '<div style="height:8px"></div><div class="row"><div style="flex:1"><div class="meta">Schedule (e.g. 30, 30s, 5m, 1h — bare numbers are minutes)</div><input id="crEvery" placeholder="30m" style="margin:0"></div><div style="flex:2"><div class="meta">Goal for the agent</div><input id="crGoal" placeholder="e.g. run tests and fix failures" style="margin:0"></div></div>' +
           '<div class="row"><button class="btn dark" id="crAdd">Add cron job</button><button class="btn ghost" id="crHeart">+ heartbeat (30m)</button></div></div></div>';
         b.querySelectorAll('[data-x]').forEach(function (el) {
           el.onclick = function () { api('/api/cron/' + el.getAttribute('data-x'), { method: 'DELETE' }).then(function () { renderSettings(); }).catch(function (e) { toast(e.message, true); }); };
+        });
+        b.querySelectorAll('[data-set-sc-toggle]').forEach(function (button) {
+          button.onclick = function (event) {
+            event.stopPropagation();
+            event.preventDefault();
+            var card = button.closest('.ws-schedule-card'); if (!card) return;
+            var inst = card.querySelector('.ws-sc-instructions'); if (!inst) return;
+            var expanded = button.getAttribute('aria-expanded') === 'true';
+            var next = !expanded;
+            button.setAttribute('aria-expanded', String(next));
+            button.classList.toggle('expanded', next);
+            var label = button.querySelector('.ws-sc-toggle-label');
+            if (label) label.textContent = next ? 'Hide instructions' : 'View instructions';
+            var chevron = button.querySelector('.ws-sc-chevron');
+            if (chevron) chevron.textContent = next ? '▾' : '▸';
+            if (next) {
+              inst.hidden = false; inst.style.maxHeight = '0px'; inst.style.opacity = '0';
+              void inst.offsetHeight;
+              inst.style.maxHeight = Math.min(inst.scrollHeight + 30, 320) + 'px';
+              inst.style.opacity = '1';
+            } else {
+              inst.style.maxHeight = '0px'; inst.style.opacity = '0';
+              setTimeout(function () {
+                if (button.getAttribute('aria-expanded') === 'false') inst.hidden = true;
+              }, 240);
+            }
+          };
         });
         $('crAdd').onclick = function () {
           api('/api/cron', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ every: $('crEvery').value, goal: $('crGoal').value }) })

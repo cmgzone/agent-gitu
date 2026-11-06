@@ -187,6 +187,12 @@ function patchPiAiStringCompatibility(): void {
       code = code.replace(needleAssistant, replacementAssistant);
       modified = true;
     }
+    const needleDeepSeek = `const isDeepSeek = provider === "deepseek" || baseUrl.toLowerCase().includes("deepseek.com");`;
+    const replacementDeepSeek = `const isDeepSeek = provider === "deepseek" || baseUrl.toLowerCase().includes("deepseek.com") || provider.includes("pikrouter") || baseUrl.toLowerCase().includes("pikrouter");`;
+    if (code.includes(needleDeepSeek)) {
+      code = code.replace(needleDeepSeek, replacementDeepSeek);
+      modified = true;
+    }
     if (modified) writeFileSync(targetPath, code, 'utf8');
   } catch {
     // Ignore in read-only or bundled runtime

@@ -1803,19 +1803,19 @@ export function stripToolMarkers(text: string, streaming = false): string {
   // call marker on is machine markup, never prose meant for the user.
   const source = compactDialectMarkers(text);
   const cut = findXmlCallStart(source);
-  const visible = (cut >= 0 ? source.slice(0, cut) : source)
+  let visible = (cut >= 0 ? source.slice(0, cut) : source)
     .replace(/<tool>[\s\S]*?<\/tool>/gi, '')
     .replace(/<tool[\s>][\s\S]*$/gi, '')
     .replace(/<tool$/i, '')
-    .replace(/<\/?tool>/gi, '')
-    .trim();
-  if (!streaming) return visible;
+    .replace(/<\/?tool>/gi, '');
+  if (!streaming) return visible.trim();
+  visible = visible.trimStart();
   // Mid-stream a marker can be split across chunks; hold back any tail that is
   // still a prefix of a marker (`<|DSM`, `<inv`, `<| DS`) until it resolves.
   const spacedHold = visible.match(SPACED_MARKER_TAIL_RE)?.[0].length ?? 0;
   const hold = Math.max(xmlMarkerHoldBack(visible), spacedHold);
   const stable = hold > 0 ? visible.slice(0, visible.length - hold) : visible;
-  return stable.replace(/<\/?(?:t(?:o(?:o(?:l)?)?)?)?$/i, '').trim();
+  return stable.replace(/<\/?(?:t(?:o(?:o(?:l)?)?)?)?$/i, '');
 }
 
 /**

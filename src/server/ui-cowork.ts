@@ -2345,7 +2345,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
         if (lower.slice(-length) === marker.slice(0, length)) return visible.slice(0, -length);
       }
       return visible;
-    }).join('').trim();
+    }).join('').replace(/^\s+/, '');
   }
 
   function cwTime(ts) {

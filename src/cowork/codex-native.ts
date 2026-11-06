@@ -188,13 +188,12 @@ export async function runNativeCoworkTurn(input: {
           narration += String(params['delta'] ?? '');
           const visible = visibleCoworkText(narration, true);
           if (visible) lastCommentary = visible;
-          input.onProgress?.(visible);
+          input.onProgress?.(visible, undefined, undefined, undefined, reasoning);
         }
         if (method.startsWith('item/reasoning/') && typeof params['delta'] === 'string') {
           reasoning += params['delta'];
           const visible = visibleCoworkText(narration, true);
-          if (visible) lastCommentary = visible;
-          input.onProgress?.(visible || lastCommentary, undefined, undefined, undefined, reasoning);
+          input.onProgress?.(visible, undefined, undefined, undefined, reasoning);
         }
         if (method === 'item/started' || method === 'item/completed') {
           const item = record(params['item']);

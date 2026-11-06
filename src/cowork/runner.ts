@@ -643,7 +643,11 @@ async function agentTurn(input: {
     const native = await runNativeCoworkTurn({ client, ctx, agent, conversationId: conversation.id, threadId, messages,
       tools: coworkNativeTools(agent, Boolean(deps.browser)), perms: { allowShell: agent.allowShell, allowWrites: agent.allowWrites, allowConfig: agent.allowConfig, chief: agent.chiefOfStaff, browser: Boolean(deps.browser) }, scope, store: deps.store, signal: deps.signal,
       takeSteering: () => (deps.takeSteering?.(agent.id, threadId) ?? []).map(message => message.text),
-      onProgress: (text, tool, ok, detail, nativeReasoning, args) => { reasoning = nativeReasoning ?? ''; progress(text, tool, ok, tool ? coworkWebOrigin(tool, args ?? {}) : undefined, detail, tool ? 'working' : nativeReasoning ? 'thinking' : 'responding', tool ? coworkMcpServer(tool, args ?? {}) : undefined, tool ? coworkAppService(tool, args ?? {}) : undefined); },
+      onProgress: (text, tool, ok, detail, nativeReasoning, args) => {
+        reasoning = nativeReasoning ?? '';
+        const phase: CoworkProgress['phase'] = tool ? 'working' : text ? 'responding' : (nativeReasoning || reasoning) ? 'reasoning' : 'thinking';
+        progress(text, tool, ok, tool ? coworkWebOrigin(tool, args ?? {}) : undefined, detail, phase, tool ? coworkMcpServer(tool, args ?? {}) : undefined, tool ? coworkAppService(tool, args ?? {}) : undefined);
+      },
       onTool: (tool, params, result) => { usedTools.push({ name: tool, ok: result.ok }); recordToolResult(scope, tool, result, lastPublicUpdate); },
     });
     reply = native.text;

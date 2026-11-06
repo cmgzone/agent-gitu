@@ -26,6 +26,15 @@ export function patchPiAi() {
     modified = true;
   }
 
+  // 3. Ensure pikrouter is treated as deepseek-compatible for thinking format & reasoning echo
+  const needleDeepSeek = `const isDeepSeek = provider === "deepseek" || baseUrl.toLowerCase().includes("deepseek.com");`;
+  const replacementDeepSeek = `const isDeepSeek = provider === "deepseek" || baseUrl.toLowerCase().includes("deepseek.com") || provider.includes("pikrouter") || baseUrl.toLowerCase().includes("pikrouter");`;
+
+  if (code.includes(needleDeepSeek)) {
+    code = code.replace(needleDeepSeek, replacementDeepSeek);
+    modified = true;
+  }
+
   if (modified) {
     writeFileSync(targetPath, code, 'utf8');
     console.log('[patch-pi-ai] Applied string content compatibility patch to openai-completions.js');

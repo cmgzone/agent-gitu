@@ -485,6 +485,14 @@ type CompatMessage = {
   tool_calls?: { id?: string; function?: { name?: string; arguments?: string } }[];
 };
 
+function extractDeltaText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.map(part => typeof part === 'string' ? part : typeof (part as { text?: unknown })?.text === 'string' ? (part as { text: string }).text : '').join('');
+  }
+  return '';
+}
+
 /** Ignore encrypted blocks and signatures; aliases must not duplicate text. */
 function compatReasoning(message: Pick<CompatMessage, 'reasoning_content' | 'reasoning' | 'reasoning_details'> | undefined): string {
   const details = message?.reasoning_details?.map(detail => detail.type === 'reasoning.text'
@@ -770,14 +778,14 @@ export class OpenAiCompatClient implements LlmClient {
           usage?: unknown;
         };
         sawEvent = true;
-        const delta = json.choices?.[0]?.delta?.content ?? json.choices?.[0]?.message?.content ?? '';
+        const delta = extractDeltaText(json.choices?.[0]?.delta?.content ?? json.choices?.[0]?.message?.content);
         if (delta) {
           full += delta;
           opts.onActivity?.({ type: 'content' });
           onDelta(delta);
           forwardedAnyDelta = true;
         }
-        const reasonDelta = compatReasoning(json.choices?.[0]?.delta);
+        const reasonDelta = compatReasoning(json.choices?.[0]?.delta ?? json.choices?.[0]?.message);
         if (reasonDelta) {
           reasoning += reasonDelta;
           opts.onReasoningDelta?.(reasonDelta);
@@ -907,6 +915,9 @@ export class OpenAiCompatClient implements LlmClient {
             };
             message?: {
               content?: string | null;
+              reasoning_content?: string;
+              reasoning?: string;
+              reasoning_details?: CompatMessage['reasoning_details'];
               refusal?: string;
               tool_calls?: {
                 index?: number;
@@ -920,13 +931,13 @@ export class OpenAiCompatClient implements LlmClient {
         sawEvent = true;
         if (typeof json.id === 'string') providerRequestId = json.id;
         const choice = json.choices?.[0];
-        const reasonDelta = compatReasoning(choice?.delta);
+        const reasonDelta = compatReasoning(choice?.delta ?? choice?.message);
         if (reasonDelta) {
           reasoning += reasonDelta;
           opts.onReasoningDelta?.(reasonDelta);
           opts.onActivity?.({ type: 'reasoning', text: reasoning });
         }
-        const textDelta = choice?.delta?.content ?? choice?.message?.content ?? '';
+        const textDelta = extractDeltaText(choice?.delta?.content ?? choice?.message?.content);
         if (textDelta) {
           full += textDelta;
           opts.onActivity?.({ type: 'content' });

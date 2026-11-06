@@ -81,7 +81,8 @@ export interface PiModelTarget {
 export function piProviderConfig(target: PiModelTarget): PiProviderConfig {
   const isDirectOpenAi = target.providerId === 'openai' || target.providerId === 'gitu-openai' || target.baseUrl.includes('api.openai.com');
   const isOpenRouter = target.providerId.includes('openrouter') || target.baseUrl.includes('openrouter.ai');
-  const supportsDeveloperRole = target.compat?.supportsDeveloperRole ?? (isDirectOpenAi && !isOpenRouter);
+  const isDeepSeekStyle = target.providerId.includes('deepseek') || target.baseUrl.includes('deepseek.com') || target.providerId.includes('pikrouter') || target.baseUrl.includes('pikrouter');
+  const supportsDeveloperRole = target.compat?.supportsDeveloperRole ?? (isDirectOpenAi && !isOpenRouter && !isDeepSeekStyle);
   return {
     name: target.label ?? target.providerId,
     baseUrl: target.baseUrl,
@@ -97,6 +98,12 @@ export function piProviderConfig(target: PiModelTarget): PiProviderConfig {
         compat: {
           supportsDeveloperRole,
           ...(isOpenRouter ? { thinkingFormat: 'openrouter' as const } : {}),
+          ...(isDeepSeekStyle ? {
+            thinkingFormat: 'deepseek' as const,
+            requiresReasoningContentOnAssistantMessages: true,
+            maxTokensField: 'max_tokens' as const,
+            supportsDeveloperRole: false,
+          } : {}),
           ...target.compat,
         },
         // Provider pricing is unknown here; leaving it zero keeps cost reporting

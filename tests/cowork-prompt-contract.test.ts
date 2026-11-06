@@ -40,6 +40,8 @@ describe('Cowork completion and autonomous decisions', () => {
     const suggestPrompt = String(buildCoworkMessages(suggest, s.conversation, [suggest], [])[0]?.content);
     expect(suggestPrompt).toContain('Finish the requested task first');
     expect(suggestPrompt).toContain('do not perform extra searches or app reads just to generate suggestions');
+    expect(suggestPrompt).toContain('OUTPUT LENGTH RULE: Keep every reply as short as possible.');
+    expect(suggestPrompt).toContain('keep text output as short as possible — state only what is important and what the user asked for, with no extra explanations.');
   });
   it('rejects a false delivered claim after a successful read, then accepts the actual file and attachment', async () => {
     const s = setup();

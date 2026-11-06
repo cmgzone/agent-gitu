@@ -45,7 +45,7 @@
     #cw .cw-chat::before, #cw .cw-chat::after { display:none!important; }
     :is(.stream,.cw-msgs,.home-brand,.workspace-search) { filter:none!important; }
     *, *::before, *::after { backdrop-filter:none!important; -webkit-backdrop-filter:none!important; }
-    :is(.cw-composer,.composer,.cw-top-nav,.cw-bubble,.abubble,.agent-report,.tl-note-row,.ub,.setcard,.appearance-card,.ws-search-field,.ws-result-list,.cw-panel-card,.cw-widget-lane) { background-color:var(--card)!important; }
+    :is(.cw-composer,.composer,.cw-top-nav,.cw-bubble,.abubble,.agent-report,.tl-note-row,.ub,.setcard,.appearance-card,.ws-search-field,.ws-filters,.ws-result-list:not([data-ws-group="Tools"]):not([data-ws-group="Agents"]):not([data-ws-group="Skills"]):not([data-ws-group="Projects"]):not([data-ws-group="Settings"]):not([data-ws-group="Schedules"]):not(.settings-directory .ws-result-list),.ws-result-list:is([data-ws-group="Tools"],[data-ws-group="Agents"],[data-ws-group="Skills"],[data-ws-group="Projects"],[data-ws-group="Settings"]) .ws-result,.settings-directory .ws-result,.ws-schedule-card,.cw-panel-card,.cw-widget-lane) { background-color:var(--card)!important; }
     :is(.cw-panel-backdrop,.cw-widget-backdrop,.mobile-backdrop,.modal.cw-modal) { background:var(--overlay)!important; }
   }
 

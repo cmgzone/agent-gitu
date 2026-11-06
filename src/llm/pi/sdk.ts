@@ -12,6 +12,7 @@
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 
 /** pi's thinking levels, verified from `@earendil-works/pi-agent-core`. */
@@ -32,11 +33,14 @@ export interface PiChatModelConfig {
   cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
   contextWindow: number;
   maxTokens: number;
+  thinkingLevelMap?: Readonly<Record<string, string | null>>;
   compat?: {
     supportsStore?: boolean;
     supportsDeveloperRole?: boolean;
     supportsReasoningEffort?: boolean;
     maxTokensField?: 'max_completion_tokens' | 'max_tokens';
+    thinkingFormat?: 'openai' | 'openrouter' | 'deepseek' | 'zai' | 'qwen' | 'together' | 'ant-ling';
+    requiresReasoningContentOnAssistantMessages?: boolean;
   };
 }
 
@@ -169,31 +173,42 @@ export interface PiSdk {
 
 let pending: Promise<PiSdk> | undefined;
 
-function patchPiAiStringCompatibility(): void {
+export function patchPiAiStringCompatibility(): void {
   try {
-    const targetPath = path.resolve('node_modules/@earendil-works/pi-ai/dist/api/openai-completions.js');
-    if (!existsSync(targetPath)) return;
-    let code = readFileSync(targetPath, 'utf8');
-    let modified = false;
-    const needleUser = `params.push({\n                    role: "user",\n                    content,\n                });`;
-    const replacementUser = `const hasImages = content.some((item) => item.type === "image_url");\n                params.push({\n                    role: "user",\n                    content: hasImages ? content : content.map((item) => item.text).join("\\n"),\n                });`;
-    if (code.includes(needleUser)) {
-      code = code.replace(needleUser, replacementUser);
-      modified = true;
+    const candidates = [
+      fileURLToPath(new URL('../../../node_modules/@earendil-works/pi-ai/dist/api/openai-completions.js', import.meta.url)),
+      path.resolve('node_modules/@earendil-works/pi-ai/dist/api/openai-completions.js'),
+    ];
+    for (const targetPath of new Set(candidates)) {
+      if (!existsSync(targetPath)) continue;
+      let code = readFileSync(targetPath, 'utf8');
+      let modified = false;
+      const userUnpatchedRe = /params\.push\(\{\r?\n\s*role:\s*"user",\r?\n\s*content,\r?\n\s*\}\);/;
+      const userOldPatchedRe = /const hasImages = content\.some\(\(item\) => item\.type === "image_url"\);/;
+      const replacementUser = `const hasImages = !compat.requiresReasoningContentOnAssistantMessages && content.some((item) => item.type === "image_url");\n                params.push({\n                    role: "user",\n                    content: hasImages ? content : content.map((item) => item.text || "").filter(Boolean).join("\\n"),\n                });`;
+      if (userUnpatchedRe.test(code)) {
+        code = code.replace(userUnpatchedRe, replacementUser);
+        modified = true;
+      } else if (userOldPatchedRe.test(code)) {
+        code = code.replace(
+          userOldPatchedRe,
+          `const hasImages = !compat.requiresReasoningContentOnAssistantMessages && content.some((item) => item.type === "image_url");`,
+        );
+        modified = true;
+      }
+      const needleAssistant = `content: compat.requiresAssistantAfterToolResult ? "" : null,`;
+      if (code.includes(needleAssistant)) {
+        code = code.replace(needleAssistant, `content: "",`);
+        modified = true;
+      }
+      const deepSeekRe = /const isDeepSeek = provider === "deepseek" \|\| baseUrl\.toLowerCase\(\)\.includes\("deepseek\.com"\)(?: \|\| provider\.includes\("pikrouter"\) \|\| baseUrl\.toLowerCase\(\)\.includes\("pikrouter"\))?;/;
+      const replacementDeepSeek = `const isDeepSeek = provider === "deepseek" || baseUrl.toLowerCase().includes("deepseek.com") || provider.includes("pikrouter") || baseUrl.toLowerCase().includes("pikrouter") || provider.includes("pikprovider") || baseUrl.toLowerCase().includes("pikprovider");`;
+      if (deepSeekRe.test(code) && !code.includes('pikprovider')) {
+        code = code.replace(deepSeekRe, replacementDeepSeek);
+        modified = true;
+      }
+      if (modified) writeFileSync(targetPath, code, 'utf8');
     }
-    const needleAssistant = `content: compat.requiresAssistantAfterToolResult ? "" : null,`;
-    const replacementAssistant = `content: "",`;
-    if (code.includes(needleAssistant)) {
-      code = code.replace(needleAssistant, replacementAssistant);
-      modified = true;
-    }
-    const needleDeepSeek = `const isDeepSeek = provider === "deepseek" || baseUrl.toLowerCase().includes("deepseek.com");`;
-    const replacementDeepSeek = `const isDeepSeek = provider === "deepseek" || baseUrl.toLowerCase().includes("deepseek.com") || provider.includes("pikrouter") || baseUrl.toLowerCase().includes("pikrouter");`;
-    if (code.includes(needleDeepSeek)) {
-      code = code.replace(needleDeepSeek, replacementDeepSeek);
-      modified = true;
-    }
-    if (modified) writeFileSync(targetPath, code, 'utf8');
   } catch {
     // Ignore in read-only or bundled runtime
   }

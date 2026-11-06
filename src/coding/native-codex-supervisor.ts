@@ -539,6 +539,7 @@ export async function runNativeCodexTask(input: {
     ledger.setStatus('executing');
     const nativeInstructions = [
       'You are the native execution runtime inside Agent Gitu. Use your own agent loop and tools; reply in normal prose, never Gitu action JSON. Gitu is the authority for scope, permissions, and verification.',
+      'When the user sends a greeting, question, or conversational message that does not ask to modify files or run commands, reply directly and concisely in plain text like a chat assistant (only what is important and what the user asked for, with no extra explanations or unnecessary tool calls).',
       config.autoApprove ? 'The owner enabled full coding access. Gitu automatically handles coding approvals under the owner’s grants. Perform authorized work through the registered tools; do not ask for duplicate approval or invent approval.request tools. Missing tools or credentials are actual prerequisites, not approval requests.' : '',
       config.deploymentAllowed?.() === false ? DEPLOYMENT_OWNERSHIP : '',
       'For nontrivial work, call gitu_task({operation:"update_plan",plan:[{step:"...",status:"inProgress"},{step:"...",status:"pending"}]}). Update the same checklist as work proceeds; mark each completed step with status:"completed". Small edits need no formal plan or criteria. Choose the smallest meaningful check; substantial work benefits from acceptance criteria with exact verification commands. Use state to recover saved facts and link_criterion only with real recorded evidence. Finish with a final answer reporting changes, checks, and concrete limitations.',
@@ -659,13 +660,14 @@ export async function runNativeCodexTask(input: {
     // Bounded autonomous continuation: when a non-chat coding task ends with
     // prose but no actual tool work was performed during this turn,
     // give the model one automatic prompt on the same session to execute through tools rather than narrating intentions.
+    const isConversationalTurn = Boolean(conversationIntent(goal) || conversationIntent(input.message));
     const isProseOnly =
       result.status !== 'interrupted' &&
       !signal.aborted &&
       !discussion &&
       !input.conversationControl?.() &&
       config.mode !== 'chat' &&
-      !conversationIntent(goal) &&
+      !isConversationalTurn &&
       !acted &&
       ledger.data.actions.slice(phase.actionStartIndex).length === 0 &&
       Boolean(finalAnswer);
@@ -696,6 +698,13 @@ export async function runNativeCodexTask(input: {
       if (!finalAnswer) finalAnswer = previousAnswer;
     }
 
+    const hasUnfinishedTask =
+      !conversationIntent(goal) ||
+      currentCriteria().length > 0 ||
+      ledger.data.plan.some((s) => s.status !== 'done' && s.status !== 'cancelled') ||
+      input.conversationControl?.() === 'pause' ||
+      conversationIntent(input.message) === 'pause';
+
     if (runtimeResult === 'interrupted' || signal.aborted) exited = 'aborted';
     else if (!finalAnswer) {
       if (ledger.data.execution?.native) {
@@ -703,7 +712,7 @@ export async function runNativeCodexTask(input: {
         ledger.save();
       }
       ledger.addBlocker('The native turn ended without a final answer. Progress messages are not completion; no automatic restart was made.');
-    } else if (discussion || input.conversationControl?.()) {
+    } else if ((discussion || input.conversationControl?.()) && hasUnfinishedTask) {
       answeredDiscussion = discussion;
       ledger.addBlocker('Paused for discussion with the user.');
     } else {
@@ -788,7 +797,7 @@ export async function runNativeCodexTask(input: {
           evidence.record(ledger.data, { kind: 'file', label: 'Task changes verified', passed: true, output: 'Changes verified through guarded host writes within task scope: ' + changedFiles.join(', '), workspaceFingerprint: fingerprint });
         } else ledger.addBlocker('Files changed without acceptance criteria or an independent verification command.');
       }
-      if (!currentCriteria().length && !ledger.data.actions.slice(phase.actionStartIndex).length && config.mode !== 'chat' && !conversationIntent(goal))
+      if (!currentCriteria().length && !ledger.data.actions.slice(phase.actionStartIndex).length && config.mode !== 'chat' && !isConversationalTurn)
         ledger.addBlocker('The model supplied prose without performing the requested work or defining acceptance criteria after an automatic continuation. Task saved without repeating further turns.');
       const gateFinding = evaluateInstructionGate(ledger.activeInstructions(), ledger.data.actions.slice(phase.actionStartIndex), ledger.data.evidence);
       if (gateFinding.unmetRequirements.length || gateFinding.denialUnrecovered)

@@ -38,7 +38,7 @@ function fakeSdk(
   return {
     ModelRuntime: { create: async () => modelRuntime },
     SettingsManager: { create: () => ({}) },
-    SessionManager: { create: () => manager, open: () => manager, findById: () => undefined },
+    SessionManager: { create: () => manager, open: () => manager, findById: () => '/sessions/pi-session-evidence-1.jsonl' },
     DefaultResourceLoader: class {
       async reload(): Promise<void> {}
     },
@@ -169,5 +169,81 @@ describe('Pi runtime evidence gate verification', () => {
     expect(readFileSync(path.join(f.root, 'service.cjs'), 'utf8')).toContain('8080');
     expect(f.ledger.data.execution?.mode).toBe('pi-native');
     expect(result.report.verificationDetails?.some((v) => v.passed && v.command === 'node --check service.cjs')).toBe(true);
+  });
+
+  it('chats naturally via Pi in coding mode on greetings and follow-ups without triggering prose recovery', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'gitu-pi-chat-'));
+    folders.push(root);
+    writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'pi-chat-test', version: '1.0.0' }));
+
+    let promptCount = 0;
+    const sdk = fakeSdk(async (session) => {
+      promptCount += 1;
+      const emit = (session as unknown as { emit: (event: PiSessionEvent) => void }).emit;
+      const replyText = promptCount === 1 ? 'Hello! How can I help?' : 'Doing well, ready when you are.';
+      emit({ type: 'message_start', message: { role: 'assistant' } });
+      emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: replyText } });
+      emit({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: replyText }],
+        },
+      });
+    });
+
+    const runtime = new PiNativeRuntime({
+      agentDir: root,
+      target: {
+        providerId: 'gitu-pikrouter',
+        baseUrl: 'https://pikrouter.pikpam.com/v1',
+        apiKey: 'pik-test',
+        modelId: 'deepseek-chat',
+      },
+      loadSdk: async () => sdk,
+    });
+
+    const guard = ProjectGuard.detect(root);
+    const ledger = TaskLedger.create({ repoRoot: root, project: guard.lock, goal: 'hi', mode: 'agent' });
+    ledger.ensureInitialWorkPhase(ledger.data.goal);
+    const llm = Object.assign(new ScriptedMockLlm([]), { nativeTask: runtime });
+    const config: GituConfig = {
+      cwd: root,
+      llm,
+      mode: 'agent',
+      requirePlanReview: false,
+      autoLearn: false,
+      approvalHandler: () => true,
+    };
+
+    const first = await runNativeCodexTask({
+      config,
+      guard,
+      ledger,
+      memory: MemoryStore.forProject(root),
+      policy: new PolicyEngine(true, () => true),
+      signal: new AbortController().signal,
+      goal: 'hi',
+      message: 'hi',
+    });
+    expect(first.report.status).toBe('complete');
+    expect(first.report.summary).toBe('Hello! How can I help?');
+    expect(promptCount).toBe(1);
+
+    config.resume = { taskId: ledger.data.taskId, message: 'how are you' };
+    ledger.startWorkPhase({ kind: 'follow-up', goal: 'hi', userMessage: 'how are you' });
+    const second = await runNativeCodexTask({
+      config,
+      guard,
+      ledger,
+      memory: MemoryStore.forProject(root),
+      policy: new PolicyEngine(true, () => true),
+      signal: new AbortController().signal,
+      goal: 'hi',
+      message: 'how are you',
+    });
+    expect(second.report.status).toBe('complete');
+    expect(second.report.summary).toBe('Doing well, ready when you are.');
+    expect(promptCount).toBe(2);
   });
 });

@@ -79,9 +79,12 @@ export interface PiModelTarget {
 
 /** Gitu provider spec → pi provider registration (pi's `custom-provider.md`). */
 export function piProviderConfig(target: PiModelTarget): PiProviderConfig {
-  const isDirectOpenAi = target.providerId === 'openai' || target.providerId === 'gitu-openai' || target.baseUrl.includes('api.openai.com');
-  const isOpenRouter = target.providerId.includes('openrouter') || target.baseUrl.includes('openrouter.ai');
-  const isDeepSeekStyle = target.providerId.includes('deepseek') || target.baseUrl.includes('deepseek.com') || target.providerId.includes('pikrouter') || target.baseUrl.includes('pikrouter');
+  const lowerProvider = target.providerId.toLowerCase();
+  const lowerUrl = target.baseUrl.toLowerCase();
+  const isDirectOpenAi = lowerProvider === 'openai' || lowerProvider === 'gitu-openai' || lowerUrl.includes('api.openai.com');
+  const isOpenRouter = lowerProvider.includes('openrouter') || lowerUrl.includes('openrouter.ai');
+  const isPikRouter = lowerProvider.includes('pikrouter') || lowerProvider.includes('pikprovider') || lowerUrl.includes('pikrouter') || lowerUrl.includes('pikprovider');
+  const isDeepSeekStyle = lowerProvider.includes('deepseek') || lowerUrl.includes('deepseek.com') || isPikRouter;
   const supportsDeveloperRole = target.compat?.supportsDeveloperRole ?? (isDirectOpenAi && !isOpenRouter && !isDeepSeekStyle);
   return {
     name: target.label ?? target.providerId,
@@ -94,7 +97,20 @@ export function piProviderConfig(target: PiModelTarget): PiProviderConfig {
         id: target.modelId,
         name: target.modelId,
         reasoning: target.reasoning ?? true,
-        input: target.vision ? ['text', 'image'] : ['text'],
+        input: isPikRouter ? ['text'] : target.vision ? ['text', 'image'] : ['text'],
+        ...(isDeepSeekStyle
+          ? {
+              thinkingLevelMap: {
+                off: null,
+                minimal: 'low',
+                low: 'low',
+                medium: 'high',
+                high: 'high',
+                xhigh: 'max',
+                max: 'max',
+              },
+            }
+          : {}),
         compat: {
           supportsDeveloperRole,
           ...(isOpenRouter ? { thinkingFormat: 'openrouter' as const } : {}),
@@ -103,6 +119,7 @@ export function piProviderConfig(target: PiModelTarget): PiProviderConfig {
             requiresReasoningContentOnAssistantMessages: true,
             maxTokensField: 'max_tokens' as const,
             supportsDeveloperRole: false,
+            supportsStore: false,
           } : {}),
           ...target.compat,
         },

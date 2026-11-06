@@ -7,8 +7,9 @@ import {
   loginPikRouter,
   streamPikRouterCompletion,
 } from '../src/llm/pikrouter.js';
-import { PROVIDERS, resolveLlm } from '../src/llm/providers.js';
+import { PROVIDERS, providerSpec, resolveLlm } from '../src/llm/providers.js';
 import { effortStyleFor } from '../src/llm/llm.js';
+import { piProviderConfig } from '../src/llm/pi-native.js';
 
 describe('PikRouter integration', () => {
   const originalFetch = globalThis.fetch;
@@ -175,5 +176,39 @@ describe('PikRouter integration', () => {
     const wireMessages = sentBody!.messages as Array<{ role: string; content: unknown }>;
     expect(typeof wireMessages[1].content).toBe('string');
     expect(wireMessages[1].content).toBe('Hello\nworld');
+  });
+
+  it('supports pikprovider alias and configures piProviderConfig for PiNativeRuntime', () => {
+    expect(providerSpec('pikprovider')?.id).toBe('pikrouter');
+    expect(providerSpec('pik')?.id).toBe('pikrouter');
+
+    const resolved = resolveLlm({
+      provider: 'pikprovider',
+      env: { PIKROUTER_API_KEY: 'test-token', HERMES_RUNTIME: 'pi' } as NodeJS.ProcessEnv,
+    });
+    expect(resolved.providerId).toBe('pikrouter');
+    expect(resolved.client.nativeTask?.mode).toBe('pi-native');
+
+    const piConfig = piProviderConfig({
+      providerId: 'gitu-pikrouter',
+      baseUrl: DEFAULT_PIKROUTER_BASE_URL,
+      apiKey: 'test-token',
+      modelId: 'deepseek-chat',
+      vision: true,
+    });
+    const model = piConfig.models?.[0];
+    expect(model?.input).toEqual(['text']);
+    expect(model?.thinkingLevelMap).toMatchObject({
+      medium: 'high',
+      high: 'high',
+      max: 'max',
+    });
+    expect(model?.compat).toMatchObject({
+      thinkingFormat: 'deepseek',
+      requiresReasoningContentOnAssistantMessages: true,
+      maxTokensField: 'max_tokens',
+      supportsDeveloperRole: false,
+      supportsStore: false,
+    });
   });
 });

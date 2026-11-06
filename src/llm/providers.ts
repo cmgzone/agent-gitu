@@ -373,6 +373,7 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
       'gemini-2.0-flash',
       'claude-3-5-sonnet',
       'deepseek-chat',
+      'deepseek-reasoner',
     ],
     effortLevels: ['low', 'medium', 'high', 'max'],
     effortLabels: { medium: 'medium (= high)' },
@@ -408,7 +409,9 @@ export function allProviderSpecs(): Record<string, ProviderSpec> {
 }
 
 export function providerSpec(providerId: string): ProviderSpec | undefined {
-  return allProviderSpecs()[providerId.toLowerCase()];
+  const normalized = providerId.trim().toLowerCase();
+  const key = normalized === 'pikprovider' || normalized === 'pik' ? 'pikrouter' : normalized;
+  return allProviderSpecs()[key];
 }
 
 export interface ModelInfo {
@@ -909,11 +912,14 @@ function piRuntimeFor(
       baseUrl,
       apiKey,
       modelId: model,
-      vision: resolveSupportedImages(
-        peekModelCatalog(),
-        providerId,
-        model,
-      ),
+      vision:
+        providerId === 'pikrouter' || /pikrouter|pikprovider/i.test(baseUrl)
+          ? false
+          : resolveSupportedImages(
+              peekModelCatalog(),
+              providerId,
+              model,
+            ),
       contextWindow: metadata?.contextTokens,
       maxTokens: metadata?.outputTokens,
     },

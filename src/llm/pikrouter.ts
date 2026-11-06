@@ -1,5 +1,8 @@
-import { OpenAiCompatClient } from './llm.js';
+import { OpenAiCompatClient, type LlmClient } from './llm.js';
 import { mergedEnv, setStoredKey } from './keys.js';
+import { PiNativeRuntime } from './pi-native.js';
+import { selectedRuntime } from './runtime-mode.js';
+import { ensureGituHome } from '../workspace/home.js';
 
 export const DEFAULT_PIKROUTER_AUTH_URL = 'https://pikrouter.pikpam.com/api/auth/login';
 export const DEFAULT_PIKROUTER_BASE_URL = 'https://pikrouter.pikpam.com/v1';
@@ -80,7 +83,7 @@ export async function loginPikRouter(opts: PikRouterLoginOptions): Promise<PikRo
 /**
  * Creates an OpenAI-compatible client targeted at PikRouter with the user's token.
  */
-export function createPikRouterClient(opts: PikRouterClientOptions = {}): OpenAiCompatClient {
+export function createPikRouterClient(opts: PikRouterClientOptions = {}): OpenAiCompatClient & LlmClient {
   const env = typeof process !== 'undefined' && process?.env ? mergedEnv() : {};
   const token =
     opts.token ??
@@ -98,13 +101,28 @@ export function createPikRouterClient(opts: PikRouterClientOptions = {}): OpenAi
   const baseUrl = opts.baseUrl ?? DEFAULT_PIKROUTER_BASE_URL;
   const model = opts.model ?? DEFAULT_PIKROUTER_MODEL;
 
-  return new OpenAiCompatClient({
+  const client = new OpenAiCompatClient({
     apiKey: token,
     baseUrl,
     model,
     rateLimitKey: 'pikrouter:user-token:chat',
     capabilities: { streamingTools: true },
   });
+  const nativeTask =
+    selectedRuntime(env) === 'pi'
+      ? new PiNativeRuntime({
+          agentDir: ensureGituHome().root,
+          target: {
+            providerId: 'gitu-pikrouter',
+            label: 'PikRouter (pikrouter.pikpam.com, OpenAI-compatible)',
+            baseUrl,
+            apiKey: token,
+            modelId: model,
+            vision: false,
+          },
+        })
+      : undefined;
+  return nativeTask ? Object.assign(client, { nativeTask }) : client;
 }
 
 export interface StreamPikRouterMessage {

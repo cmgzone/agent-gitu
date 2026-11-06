@@ -1,6 +1,56 @@
 {
-  "updated": "2026-11-04",
+  "updated": "2026-11-06",
   "items": [
+    {
+      "title": "Global stocks plunge amid AI slowdown fears after Democrats' midterm triumph",
+      "summary": "Wall Street's Nasdaq fell 5.5%, its worst day in 19 months, and the FTSE 100 dropped 1.9% as investors questioned data-centre spending and returns on AI.",
+      "why": "A funding scare offshore tends to reach Kenya slowly, so watch imported device, cloud and ad pricing before committing to annual contracts.",
+      "source": "The Guardian",
+      "url": "https://www.theguardian.com/business/2026/nov/06/global-stocks-plunge-amid-ai-slowdown-fears-after-democrats-midterm-triumph",
+      "image": "https://i.guim.co.uk/img/media/133fcf307a659f484d60938a125776efe501ba4e/407_0_3025_2422/master/3025.jpg?width=1200&height=630&quality=85&auto=format&fit=crop&precrop=40:21,offset-x50,offset-y0&overlay-align=bottom%2Cleft&overlay-width=100p&overlay-base64=L2ltZy9zdGF0aWMvb3ZlcmxheXMvdGctZGVmYXVsdC5wbmc&enable=upscale&s=d1888e60295c293926bcb97047ec36bf",
+      "imageAlt": "A trader at a share price board showing falling stock prices",
+      "published": "2026-11-06T08:58:22Z"
+    },
+    {
+      "title": "Egyptian and Nigerian English join the Open ASR Leaderboard",
+      "summary": "Hugging Face added Egyptian and Nigerian English accents to its open speech-recognition leaderboard through a data partnership with Liva AI, to test models on less-covered accents.",
+      "why": "Voice ordering and phone support tools are usually scored on American accents, so African-accent benchmarks give buyers a way to check accuracy first.",
+      "source": "Hugging Face",
+      "url": "https://huggingface.co/blog/open-asr-leaderboard-liva",
+      "image": "https://huggingface.co/blog/assets/open-asr-leaderboard-liva/thumbnail.png",
+      "imageAlt": "Blog graphic with an octopus and hugging-face emoji beside the Egyptian and Nigerian flags",
+      "published": "2026-11-06T00:00:00Z"
+    },
+    {
+      "title": "US warns of 'ongoing cyber threat' to retail and military freezers",
+      "summary": "CISA and the FBI say hackers are changing temperatures on internet-connected refrigeration and cold-chain systems, after attacks in a dozen countries spoiled food.",
+      "why": "If your cold room or fridge monitoring is online, changing default passwords and limiting remote access costs far less than losing a week of stock.",
+      "source": "TechCrunch",
+      "url": "https://techcrunch.com/2026/11/05/u-s-government-warns-of-ongoing-cyber-threat-amid-mass-hacks-of-industrial-retail-and-military-freezers/",
+      "image": "https://techcrunch.com/wp-content/uploads/2026/11/freezer-hacks-2299339780.jpg?resize=1200,800",
+      "imageAlt": "A commercial glass-door freezer cabinet with a printed information notice taped to the glass",
+      "published": "2026-11-05T18:48:34Z"
+    },
+    {
+      "title": "Claude AI can plug directly into your bank account",
+      "summary": "Claude can now link to bank and card accounts through Plaid on a read-only basis and explain balances and two years of transactions. Beta for US Pro, Max and Ultra users.",
+      "why": "Read-only access still means handing a foreign AI service your business transaction history, so weigh data exposure before you connect a business account.",
+      "source": "The Verge",
+      "url": "https://www.theverge.com/ai-artificial-intelligence/1027652/anthropic-claude-plaid-personal-finance",
+      "image": "https://platform.theverge.com/wp-content/uploads/sites/2/2026/11/Personal-Finance-in-Claude-hed.jpg?quality=90&strip=all&crop=0%2C10.732984293194%2C100%2C78.534031413613&w=1200",
+      "imageAlt": "Anthropic screenshots of the Personal Finance beta in Claude showing spending charts and phone mockups",
+      "published": "2026-11-05T18:00:00Z"
+    },
+    {
+      "title": "Gemini Omni 1.2 Flash: Fast and cost-effective with longer clips",
+      "summary": "Google's new video model makes clips up to 15 seconds, takes follow-up edits, keeps products and faces consistent, and costs 30% less. Generally available in the Gemini API.",
+      "why": "Cheaper 15-second clips with steadier product shots cut the cost of making social ads for a shop, without a studio, crew or reshoot.",
+      "source": "Google",
+      "url": "https://blog.google/innovation-and-ai/technology/developers-tools/introducing-gemini-omni-1-2-flash/",
+      "image": "https://storage.googleapis.com/gweb-uniblog-publish-prod/images/gemini-omni-1.2_FZLql41.width-1300.png",
+      "imageAlt": "Google launch graphic titled Introducing Gemini Omni 1.2 Flash with frames from generated clips",
+      "published": "2026-11-05T17:00:00Z"
+    },
     {
       "title": "Anthropic is working on a system to prove AI models' identity",
       "summary": "Anthropic says its FlashProve system would let anyone check that an AI response really came from the model it claims to be from.",

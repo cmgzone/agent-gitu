@@ -89,6 +89,29 @@ export interface ProviderSpec {
 }
 
 export const PROVIDERS: Record<string, ProviderSpec> = {
+  pikrouter: {
+    id: 'pikrouter',
+    label: 'PikRouter (pikrouter.pikpam.com, OpenAI-compatible)',
+    baseUrl: 'https://pikrouter.pikpam.com/v1',
+    keyEnvVars: ['HERMES_PIKROUTER_API_KEY', 'PIKROUTER_API_KEY', 'PIKROUTER_TOKEN'],
+    defaultModel: 'gpt-4o-mini',
+    models: [
+      'gpt-4o-mini',
+      'gpt-4o',
+      'gemini-1.5-flash',
+      'gemini-1.5-pro',
+      'gemini-2.0-flash',
+      'claude-3-5-sonnet',
+      'deepseek-chat',
+      'deepseek-reasoner',
+    ],
+    effortLevels: ['low', 'medium', 'high', 'max'],
+    effortLabels: { medium: 'medium (= high)' },
+    maxEffort: 'distinct',
+    toolMode: 'auto',
+    publicModels: true,
+    capabilities: { streamingTools: true },
+  },
   alibaba: {
     id: 'alibaba',
     label: 'Alibaba Cloud Model Studio (DashScope, OpenAI-compatible)',
@@ -356,29 +379,6 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
       'meta-llama/llama-3.3-70b-instruct:free',
     ],
     effortLevels: ['low', 'medium', 'high'],
-    publicModels: true,
-    capabilities: { streamingTools: true },
-  },
-  pikrouter: {
-    id: 'pikrouter',
-    label: 'PikRouter (pikrouter.pikpam.com, OpenAI-compatible)',
-    baseUrl: 'https://pikrouter.pikpam.com/v1',
-    keyEnvVars: ['HERMES_PIKROUTER_API_KEY', 'PIKROUTER_API_KEY', 'PIKROUTER_TOKEN'],
-    defaultModel: 'gpt-4o-mini',
-    models: [
-      'gpt-4o-mini',
-      'gpt-4o',
-      'gemini-1.5-flash',
-      'gemini-1.5-pro',
-      'gemini-2.0-flash',
-      'claude-3-5-sonnet',
-      'deepseek-chat',
-      'deepseek-reasoner',
-    ],
-    effortLevels: ['low', 'medium', 'high', 'max'],
-    effortLabels: { medium: 'medium (= high)' },
-    maxEffort: 'distinct',
-    toolMode: 'auto',
     publicModels: true,
     capabilities: { streamingTools: true },
   },
@@ -1009,6 +1009,12 @@ export function resolveLlm(opts: ResolveOptions = {}): ResolvedLlm {
       );
     }
     return build(spec.id, spec, env[keyEnvVar]!, keyEnvVar, opts, env);
+  }
+
+  const pikSpec = PROVIDERS['pikrouter'];
+  const pikKeyEnvVar = pikSpec?.keyEnvVars.find((v) => env[v]);
+  if (pikSpec && pikKeyEnvVar && !opts.baseUrl && !env['HERMES_BASE_URL'] && !env['HERMES_API_KEY']) {
+    return build(pikSpec.id, pikSpec, env[pikKeyEnvVar]!, pikKeyEnvVar, opts, env);
   }
 
   const genericKey = env['HERMES_API_KEY'] ?? env['OPENAI_API_KEY'];

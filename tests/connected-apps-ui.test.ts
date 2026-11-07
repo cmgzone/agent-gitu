@@ -264,14 +264,14 @@ describe('account and Connections UI', () => {
     expect(registration).toContain('name="name"');
     expect(registration).toContain('name="email"');
     expect(registration).toContain('id="confirm"');
-    expect(registration).toContain("fetch('/api/auth/register'");
-    expect(registration).toContain("location.replace('/auth')");
+    expect(registration).toContain("fetch('/api/auth/pikrouter'");
+    expect(registration).toContain("location.replace('/')");
     expect(authPage(true, false)).not.toContain('<form');
     const remoteRegistration = authPage(true, false, true, true);
     expect(remoteRegistration).toContain('name="registrationToken"');
-    expect(remoteRegistration).toContain('registrationToken:document.getElementById("registrationToken").value');
+    expect(remoteRegistration).toContain('registrationToken: document.getElementById("registrationToken").value');
     expect(authPage(false, true, true)).toContain('name="email"');
-    expect(authPage(false, true, false)).not.toContain('name="email"');
+    expect(authPage(false, true, false)).toContain('name="email"');
     for (const page of [registration, remoteRegistration, authPage(false, true, true), authPage(false, true, false)]) {
       expect(() => new Script(page.split('<script>')[1]!.split('</script>')[0]!)).not.toThrow();
     }

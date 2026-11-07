@@ -1,15 +1,22 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import {
   DEFAULT_PIKROUTER_AUTH_URL,
+  DEFAULT_PIKROUTER_REGISTER_URL,
+  DEFAULT_PIKROUTER_AUTHORIZE_URL,
+  DEFAULT_PIKROUTER_OAUTH_CLIENT_ID,
   DEFAULT_PIKROUTER_BASE_URL,
   DEFAULT_PIKROUTER_MODEL,
+  buildPikRouterAuthorizeUrl,
+  parsePikRouterOAuthCallback,
   createPikRouterClient,
   loginPikRouter,
+  registerPikRouter,
   streamPikRouterCompletion,
 } from '../src/llm/pikrouter.js';
 import { PROVIDERS, providerSpec, resolveLlm } from '../src/llm/providers.js';
 import { effortStyleFor } from '../src/llm/llm.js';
 import { piProviderConfig } from '../src/llm/pi-native.js';
+import { authPage } from '../src/server/ui-auth.js';
 
 describe('PikRouter integration', () => {
   const originalFetch = globalThis.fetch;
@@ -210,5 +217,71 @@ describe('PikRouter integration', () => {
       supportsDeveloperRole: false,
       supportsStore: false,
     });
+  });
+
+  it('makes pikrouter the first main/default provider in PROVIDERS and resolveLlm', () => {
+    expect(Object.keys(PROVIDERS)[0]).toBe('pikrouter');
+    const resolved = resolveLlm({
+      env: {
+        PIKROUTER_API_KEY: 'pik-token',
+        OPENAI_API_KEY: 'openai-token',
+      } as NodeJS.ProcessEnv,
+    });
+    expect(resolved.providerId).toBe('pikrouter');
+  });
+
+  it('registers a new PikRouter account via registerPikRouter', async () => {
+    const fakeToken = 'pikrouter_registered_jwt_999';
+    const fakeUser = { id: 'usr_new', email: 'newuser@app.com', name: 'New User' };
+
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ token: fakeToken, user: fakeUser }),
+    } as unknown as Response);
+
+    const result = await registerPikRouter({
+      name: 'New User',
+      email: 'newuser@app.com',
+      password: 'password123',
+      saveKey: false,
+    });
+
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      DEFAULT_PIKROUTER_REGISTER_URL,
+      expect.objectContaining({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'New User', email: 'newuser@app.com', password: 'password123' }),
+      }),
+    );
+    expect(result.token).toBe(fakeToken);
+    expect(result.user).toEqual(fakeUser);
+  });
+
+  it('builds the PikRouter Hosted OAuth authorize URL and parses callback tokens', () => {
+    const url = buildPikRouterAuthorizeUrl({
+      redirectUri: 'https://your-app.com/callback',
+      state: 'random_state',
+    });
+    expect(url).toBe(
+      `${DEFAULT_PIKROUTER_AUTHORIZE_URL}?client_id=${DEFAULT_PIKROUTER_OAUTH_CLIENT_ID}&redirect_uri=${encodeURIComponent('https://your-app.com/callback')}&state=random_state`,
+    );
+
+    const parsed = parsePikRouterOAuthCallback(
+      '?token=jwt_abc_123&user_id=uuid-456&email=user%40pikpam.com&state=random_state',
+      { saveKey: false },
+    );
+    expect(parsed).toEqual({
+      token: 'jwt_abc_123',
+      userId: 'uuid-456',
+      email: 'user@pikpam.com',
+      state: 'random_state',
+    });
+
+    const page = authPage(true, true);
+    expect(page).toContain('https://pikrouter.pikpam.com/oauth/authorize?client_id=client_nexus_65f8f5f9a0c92bf1');
+    expect(page).toContain("localStorage.setItem('auth_token'");
+    expect(page).toContain('/api/auth/pikrouter');
   });
 });

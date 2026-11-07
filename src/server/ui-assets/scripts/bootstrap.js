@@ -229,12 +229,41 @@
       (p.models || []).forEach(function (m) { if (current === p.id + '::' + m.id) found = true; });
     });
     if (found) return;
-    var firstProvider = (S.models || []).filter(function(p){return p.id!=='alibaba'&&providerIsUsable(p);})[0];
+    var pikProvider = (S.models || []).filter(function(p){return p.id==='pikrouter'&&providerIsUsable(p);})[0];
+    var firstProvider = pikProvider || (S.models || []).filter(function(p){return p.id!=='alibaba'&&providerIsUsable(p);})[0];
     if (!firstProvider) { S.sel.model = ''; return; }
     var firstModel = (firstProvider.models || []).filter(function (m) { return m.id === firstProvider.defaultModel; })[0] || firstProvider.models[0];
     S.sel.model = firstModel ? firstProvider.id + '::' + firstModel.id : '';
     persist();
   }
+  function startPikRouterOAuth(redirectPath) {
+    var state = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    try { localStorage.setItem('pikrouter_oauth_state', state); } catch (e) {}
+    var redirectUri = window.location.origin + (redirectPath || '/callback');
+    var authUrl = 'https://pikrouter.pikpam.com/oauth/authorize?client_id=client_nexus_65f8f5f9a0c92bf1&redirect_uri=' + encodeURIComponent(redirectUri) + '&state=' + encodeURIComponent(state);
+    window.location.href = authUrl;
+  }
+  (function handlePikRouterOAuthCallbackOnLoad() {
+    try {
+      if (typeof window === 'undefined' || !window.location || !window.location.search) return;
+      var params = new URLSearchParams(window.location.search);
+      var token = params.get('token');
+      var userEmail = params.get('email');
+      var userId = params.get('user_id');
+      if (!token) return;
+      try { localStorage.setItem('auth_token', token); } catch (e) {}
+      if (window.history && window.history.replaceState) {
+        window.history.replaceState({}, '', window.location.pathname + (window.location.hash || ''));
+      }
+      api('/api/pikrouter/oauth', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ token: token, email: userEmail, userId: userId })
+      }).then(function () {
+        if (typeof loadModelCatalog === 'function') loadModelCatalog(true);
+      }).catch(function () {});
+    } catch (e) {}
+  })();
   var TITLE_BASE = 'Agent Gitu';
   function updateTitle() {
     var anyWait = false;

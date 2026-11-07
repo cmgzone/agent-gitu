@@ -93,6 +93,29 @@ export class AppAuth {
     return this.record ? { id: this.record.userId, name: this.record.name, email: this.record.email } : undefined;
   }
   get googleLinked(): boolean { return Boolean(this.record?.googleSubject); }
+  /** Provision or update the workspace owner identity from a verified PikRouter login. */
+  pikrouterLogin(profile: { email: string; name?: string; userId?: string }): void {
+    const email = profile.email.trim().toLowerCase();
+    if (!AppAuth.validEmail(email)) throw new Error('Enter a valid PikRouter email address.');
+    const name = (profile.name?.trim() || email.split('@')[0] || 'PikRouter User').slice(0, 100);
+    const existing = this.record;
+    const record: PasswordRecord = existing
+      ? { ...existing, version: 2, name: existing.name || name, email: existing.email || email }
+      : {
+          version: 2,
+          userId: profile.userId?.trim() || randomUUID(),
+          name,
+          email,
+          salt: randomBytes(16).toString('hex'),
+          hash: randomBytes(32).toString('hex'),
+        };
+    const temporary = this.file + '.' + randomBytes(8).toString('hex') + '.tmp';
+    try {
+      writeFileSync(temporary, JSON.stringify(record), { mode: 0o600, flag: 'wx' });
+      renameSync(temporary, this.file);
+      this.record = record;
+    } finally { if (existsSync(temporary)) unlinkSync(temporary); }
+  }
   /** Only verified Google identities reach here. Never create/replace an owner. */
   googleLogin(identity: { sub: string; email: string; authoritative: boolean }, link = false): void {
     const record = this.record;

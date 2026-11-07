@@ -22,7 +22,7 @@ it('configures Google without a restart and protects hosted initiation, settings
     expect((await call('/api/auth/google/settings',credentials,session,'https://attacker.example')).status).toBe(403);
     const configured=await call('/api/auth/google/settings',credentials,session);expect(configured.status).toBe(200);
     const settings=await configured.json();expect(settings).toMatchObject({enabled:true,hasSecret:true,callback:credentials.origin+'/auth/google/callback'});expect(JSON.stringify(settings)).not.toContain(credentials.clientSecret);
-    expect(await(await call('/auth')).text()).toContain('Sign in with Google');
+    expect(await(await call('/auth')).text()).toContain('Sign in with PikRouter');
     const hosted=(route:string,body?:object,cookie?:string,secure=true)=>new Promise<{status:number;body:string;cookies:string[]}>((resolve,reject)=>{const req=request(base+route,{method:body?'POST':'GET',headers:{host:'gitu.example.test',origin:(secure?'https:':'http:')+'//gitu.example.test',...(secure?{'x-forwarded-proto':'https'}:{}),...(body?{'content-type':'application/json'}:{}),...(cookie?{cookie}:{})}},res=>{let data='';res.on('data',chunk=>{data+=chunk;});res.on('end',()=>resolve({status:res.statusCode!,body:data,cookies:res.headers['set-cookie']??[]}));});req.on('error',reject);req.end(body?JSON.stringify(body):undefined);});
     expect((await hosted('/api/auth/google/start',{},undefined,false)).status).toBe(400);
     const started=await hosted('/api/auth/google/start',{});expect(started.status).toBe(200);expect(started.cookies[0]).toContain('; Secure');expect(started.cookies[0]).toContain('HttpOnly; SameSite=Strict');

@@ -346,13 +346,18 @@
         var body = $('provBody');
         if (!body || S.setSection !== 'providers') return;
         var cur = S.sel.model || '';
-        var prov = S.models.slice().sort(function (a, b) { return Number(providerIsUsable(b)) - Number(providerIsUsable(a)); });
+        var prov = S.models.slice().sort(function (a, b) {
+          if (a.id === 'pikrouter') return -1;
+          if (b.id === 'pikrouter') return 1;
+          return Number(providerIsUsable(b)) - Number(providerIsUsable(a));
+        });
         var readyCount = prov.filter(providerIsUsable).length;
         if ($('providerSummary')) $('providerSummary').textContent = readyCount + ' ready · ' + (prov.length - readyCount) + ' need setup';
         body.innerHTML = prov.map(function (p, i) {
           var storedVar = (p.keyEnvVars || []).filter(function (v) { return stored.indexOf(v) >= 0; })[0];
           var usable = providerIsUsable(p);
-          var keyChip = p.hasKey ? '<span class="chip ok">key ready</span>' : '<span class="chip bad">needs key</span>';
+          var defaultChip = p.id === 'pikrouter' ? '<span class="chip ok">default</span> ' : '';
+          var keyChip = p.hasKey ? '<span class="chip ok">' + (p.id === 'pikrouter' ? 'signed in' : 'key ready') + '</span>' : '<span class="chip bad">' + (p.id === 'pikrouter' ? 'not signed in' : 'needs key') + '</span>';
           var storedChip = storedVar ? '<span class="chip">stored</span>' : '';
           var liveChip = p.live ? '<span class="chip">live</span>' : '';
           var models = p.models || [];
@@ -366,13 +371,13 @@
               ? '<span class="chip ok">signed in' + (p.planType ? ' · ' + esc(p.planType) : '') + '</span>'
               : '<span class="chip bad">' + (p.available === false ? 'unavailable' : 'not signed in') + '</span>';
           }
-          var setupLabel = p.auth === 'chatgpt-subscription' ? 'Sign in first' : 'Add key first';
+          var setupLabel = (p.auth === 'chatgpt-subscription' || p.id === 'pikrouter') ? 'Sign in first' : 'Add key first';
           var modelTitle = usable ? 'Search ' + esc(p.label) + ' models' : setupLabel;
-          var manageTitle = p.auth === 'chatgpt-subscription' ? 'manage ChatGPT sign-in' : (storedVar || p.hasKey ? 'manage' : 'add') + ' the API key';
+          var manageTitle = p.auth === 'chatgpt-subscription' ? 'manage ChatGPT sign-in' : p.id === 'pikrouter' ? 'sign in or create a PikRouter account' : (storedVar || p.hasKey ? 'manage' : 'add') + ' the API key';
           return '<div class="setrow" data-provider-row="' + esc((p.label + ' ' + p.id).toLowerCase()) + '" style="align-items:flex-start"><div class="grow">' +
             '<div class="prov-head" data-provhead="' + i + '" role="button" tabindex="0" aria-expanded="false" title="Tap to ' + manageTitle + '">' +
               '<span class="prov-chev">&#9654;</span>' +
-              '<div><div class="t">' + esc(p.label) + ' <span class="meta">(' + esc(p.id) + ')</span> ' + keyChip + storedChip + ' ' + liveChip + activeChip + '</div>' +
+              '<div><div class="t">' + esc(p.label) + ' <span class="meta">(' + esc(p.id) + ')</span> ' + defaultChip + keyChip + storedChip + ' ' + liveChip + activeChip + '</div>' +
               '<div class="d">' + models.length + ' models' + (p.keyEnvVars && !p.hasKey ? ' · env: ' + esc(p.keyEnvVars.join(' | ')) : '') + '</div></div>' +
             '</div>' +
             '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px">' +
@@ -385,7 +390,26 @@
               '</div>' +
             '</div>' +
             '<div class="keysec">' +
-              (p.auth === 'chatgpt-subscription'
+              (p.id === 'pikrouter'
+                ? '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;width:100%;margin-bottom:8px">' +
+                    '<button type="button" class="btn dark" id="pikOAuthBtn">Continue with PikRouter (Hosted Authorize &amp; Register)</button>' +
+                    (usable ? '<button type="button" class="btn ghost" id="pikSignoutBtn">Sign out</button>' : '') +
+                  '</div>' +
+                  '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;width:100%">' +
+                    '<input type="text" id="pikName" placeholder="Name (new account)" style="margin:0;max-width:170px">' +
+                    '<input type="email" id="pikEmail" placeholder="PikRouter email" style="margin:0;max-width:210px">' +
+                    '<input type="password" id="pikPassword" placeholder="Password" style="margin:0;max-width:180px">' +
+                    '<button type="button" class="btn ghost" id="pikSigninBtn">Sign in</button>' +
+                    '<button type="button" class="btn ghost" id="pikRegisterBtn">Create account</button>' +
+                  '</div>' +
+                  '<div class="hint">Sign in or create a PikRouter account (pikrouter.pikpam.com) to configure your main default AI provider automatically.</div>' +
+                  '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;width:100%;margin-top:8px">' +
+                    '<input type="password" id="keyin-' + i + '" placeholder="or paste pikrouter API key" style="margin:0;max-width:260px">' +
+                    '<button class="btn ghost" data-savekey="' + i + '">Save key</button>' +
+                    '<button class="btn ghost" data-eye="' + i + '" title="show or hide the key">Show</button>' +
+                    (storedVar ? '<button class="btn ghost" data-delkey="' + esc(storedVar) + '">Remove stored key</button>' : '') +
+                  '</div>'
+                : p.auth === 'chatgpt-subscription'
                 ? (usable
                     ? '<button type="button" class="btn ghost" id="chatgptSignout">Sign out of ChatGPT</button>' +
                       '<div class="hint">Connected to your ChatGPT plan' + (p.planType ? ' (' + esc(p.planType) + ')' : '') + '. Your sign-in is stored on this device only; signing out removes it.</div>'
@@ -400,6 +424,49 @@
             '</div>' +
             '</div></div>';
         }).join('') || '<div class="meta">no providers available</div>';
+        function bindPikAction(btn, mode) {
+          if (!btn) return;
+          btn.onclick = function () {
+            var email = ($('pikEmail') && $('pikEmail').value || '').trim();
+            var password = ($('pikPassword') && $('pikPassword').value) || '';
+            var name = ($('pikName') && $('pikName').value || '').trim();
+            if (!email || !password) { toast('Enter your PikRouter email and password', true); return; }
+            btn.disabled = true;
+            var origText = btn.textContent;
+            btn.textContent = mode === 'register' ? 'Creating account…' : 'Signing in…';
+            api(mode === 'register' ? '/api/pikrouter/register' : '/api/pikrouter/login', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ email: email, password: password, name: name })
+            }).then(function () {
+              toast(mode === 'register' ? 'PikRouter account created & connected' : 'Signed in with PikRouter');
+              return loadModelCatalog(true);
+            }).then(function () {
+              renderSettings();
+            }).catch(function (e) {
+              btn.disabled = false;
+              btn.textContent = origText;
+              toast(((e && e.message) || 'PikRouter authentication failed'), true);
+            });
+          };
+        }
+        var pikOAuth = $('pikOAuthBtn');
+        if (pikOAuth) pikOAuth.onclick = function () { startPikRouterOAuth('/callback'); };
+        bindPikAction($('pikSigninBtn'), 'login');
+        bindPikAction($('pikRegisterBtn'), 'register');
+        var pikSignout = $('pikSignoutBtn');
+        if (pikSignout) pikSignout.onclick = function () {
+          pikSignout.disabled = true;
+          api('/api/pikrouter/auth', { method: 'DELETE' }).then(function () {
+            toast('Signed out of PikRouter');
+            return loadModelCatalog(true);
+          }).then(function () {
+            renderSettings();
+          }).catch(function (e) {
+            pikSignout.disabled = false;
+            toast(((e && e.message) || 'Could not sign out of PikRouter'), true);
+          });
+        };
         var cgSignin = $('chatgptSignin');
         if (cgSignin) cgSignin.onclick = function () {
           cgSignin.disabled = true;

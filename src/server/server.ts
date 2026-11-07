@@ -122,7 +122,7 @@ import { ProviderError, allProviderSpecs, fetchModelCatalog, freeModelFallback, 
 import { resolveModelCatalog } from '../llm/resolved-model-catalog.js';
 import { resolveEmbedder } from '../llm/providers.js';
 import { removeStoredKey, setStoredKey, storedKeyVars } from '../llm/keys.js';
-import { loginPikRouter } from '../llm/pikrouter.js';
+import { loginPikRouter, registerPikRouter } from '../llm/pikrouter.js';
 import { getVault } from '../vault/vault.js';
 import { SessionStore, type SessionUsage, type StoredSessionFile } from './session-store.js';
 import { McpManager } from '../mcp/client.js';
@@ -6815,7 +6815,7 @@ export class GituServer {
       res.end('<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Gitu sign-in</title><style>body{font:18px system-ui;padding:32px;max-width:540px;margin:auto}</style><h1>'+(ok?'Google verified your account':'Google sign-in did not complete')+'</h1><p>'+(ok?'Return to Gitu to finish signing in. You can close this browser tab.':'Return to Gitu and start sign-in again.')+'</p>'); return;
     }
 
-    if (path === '/auth' && method === 'GET') {
+    if ((path === '/auth' || path === '/callback' || path === '/auth/pikrouter/callback') && method === 'GET') {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'DENY', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'" });
       res.end(authPage(!this.appAuth.configured, AppAuth.local(req), this.appAuth.requiresEmail, this.appAuth.remoteRegistrationEnabled && this.appAuth.secure(req), this.appAuth.lanLogin(req), { google: this.googleSignIn.enabled && this.appAuth.requiresEmail && (AppAuth.local(req)||this.appAuth.secure(req)), link: url.searchParams.get('link') === 'google' && this.appAuth.authenticated(req) }));
       return;
@@ -6864,6 +6864,47 @@ export class GituServer {
           this.appAuth.issue(req, res);
           this.sendJson(res, 200, { ok: true });
         } catch { this.sendJson(res, 400, { error: 'Invalid login request.' }); }
+        return;
+      }
+      if (path === '/api/auth/pikrouter' && method === 'POST') {
+        if (!this.appAuth.canLogin(req) && !this.appAuth.canRegister(req)) {
+          this.sendJson(res, 403, { error: 'Sign in with PikRouter locally, over HTTPS, or on a trusted local network.' });
+          return;
+        }
+        try {
+          const body = await this.readBody(req);
+          const oauthToken = typeof body['token'] === 'string' ? body['token'].trim() : '';
+          if (oauthToken) {
+            const email = String(body['email'] || '').trim() || 'user@pikrouter.pikpam.com';
+            const userId = body['userId'] !== undefined ? String(body['userId']).trim() : body['user_id'] !== undefined ? String(body['user_id']).trim() : undefined;
+            const name = String(body['name'] || '').trim() || email.split('@')[0] || 'User';
+            setStoredKey('PIKROUTER_API_KEY', oauthToken);
+            this.appAuth.pikrouterLogin({ email, name, userId });
+            this.appAuth.issue(req, res);
+            this.sendJson(res, 200, { ok: true, token: oauthToken, user: { id: userId, email, name }, provider: 'pikrouter' });
+            return;
+          }
+          const mode = body['mode'] === 'register' ? 'register' : 'login';
+          const email = String(body['email'] || '').trim();
+          const password = String(body['password'] || '');
+          const name = String(body['name'] || '').trim() || email.split('@')[0] || 'User';
+          if (!email || !password) {
+            this.sendJson(res, 400, { error: 'Email and password are required.' });
+            return;
+          }
+          const result = mode === 'register'
+            ? await registerPikRouter({ name, email, password, saveKey: true })
+            : await loginPikRouter({ email, password, saveKey: true });
+          this.appAuth.pikrouterLogin({
+            email: result.user?.email || email,
+            name: result.user?.name || name,
+            userId: result.user?.id !== undefined ? String(result.user.id) : undefined,
+          });
+          this.appAuth.issue(req, res);
+          this.sendJson(res, 200, { ok: true, token: result.token, user: result.user, provider: 'pikrouter' });
+        } catch (err) {
+          this.sendJson(res, 400, { error: (err as Error).message });
+        }
         return;
       }
       if (path === '/api/auth/logout' && method === 'POST') {
@@ -8027,6 +8068,55 @@ export class GituServer {
       } catch (err) {
         this.sendJson(res, 400, { error: (err as Error).message });
       }
+      return;
+    }
+
+    if (method === 'POST' && path === '/api/pikrouter/register') {
+      try {
+        const body = await this.readBody(req);
+        const email = String(body['email'] || '').trim();
+        const password = String(body['password'] || '');
+        const name = String(body['name'] || '').trim() || email.split('@')[0] || 'User';
+        if (!email || !password) {
+          this.sendJson(res, 400, { error: 'Email and password are required.' });
+          return;
+        }
+        const result = await registerPikRouter({
+          name,
+          email,
+          password,
+          saveKey: body['saveKey'] !== false,
+        });
+        this.sendJson(res, 200, { ok: true, token: result.token, user: result.user });
+      } catch (err) {
+        this.sendJson(res, 400, { error: (err as Error).message });
+      }
+      return;
+    }
+
+    if (method === 'POST' && path === '/api/pikrouter/oauth') {
+      try {
+        const body = await this.readBody(req);
+        const token = String(body['token'] || '').trim();
+        if (!token) {
+          this.sendJson(res, 400, { error: 'OAuth token is required.' });
+          return;
+        }
+        setStoredKey('PIKROUTER_API_KEY', token);
+        const email = String(body['email'] || '').trim();
+        const userId = body['userId'] !== undefined ? String(body['userId']).trim() : body['user_id'] !== undefined ? String(body['user_id']).trim() : undefined;
+        this.sendJson(res, 200, { ok: true, token, user: { ...(userId ? { id: userId } : {}), ...(email ? { email } : {}) } });
+      } catch (err) {
+        this.sendJson(res, 400, { error: (err as Error).message });
+      }
+      return;
+    }
+
+    if (method === 'DELETE' && path === '/api/pikrouter/auth') {
+      removeStoredKey('PIKROUTER_API_KEY');
+      removeStoredKey('HERMES_PIKROUTER_API_KEY');
+      removeStoredKey('PIKROUTER_TOKEN');
+      this.sendJson(res, 200, { ok: true, signedIn: false });
       return;
     }
 

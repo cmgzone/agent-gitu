@@ -20,7 +20,7 @@ import {
   type ProviderSpec,
 } from './llm/providers.js';
 import { chatgptLogout, chatgptSubscriptionInfo, startChatgptLogin, waitForChatgptLogin } from './llm/pi-chatgpt.js';
-import { loginPikRouter } from './llm/pikrouter.js';
+import { loginPikRouter, registerPikRouter } from './llm/pikrouter.js';
 import { mergedEnv } from './llm/keys.js';
 import { getVault } from './vault/vault.js';
 import { MemoryStore } from './memory/memory-store.js';
@@ -40,7 +40,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   const flags = new Map<string, string | boolean>();
   // Flags that take an explicit value. Anything else is boolean — and the
   // literal tokens false/no/off/0 DISABLE it instead of truthy-enabling it.
-  const VALUE_FLAGS = new Set(['provider', 'model', 'base-url', 'port', 'host', 'type', 'criteria', 'limit', 'scope', 'visibility', 'agent', 'project', 'status', 'email', 'password']);
+  const VALUE_FLAGS = new Set(['provider', 'model', 'base-url', 'port', 'host', 'type', 'criteria', 'limit', 'scope', 'visibility', 'agent', 'project', 'status', 'email', 'password', 'name']);
   const FALSEY = new Set(['false', 'no', 'off', '0']);
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
@@ -599,21 +599,27 @@ async function main(): Promise<void> {
     }
 
     case 'login': {
-      const targetProvider = (positional[1] || flags.get('provider') || '').toString().toLowerCase();
-      if (targetProvider === 'pikrouter') {
+      const targetProvider = (positional[1] || flags.get('provider') || 'pikrouter').toString().toLowerCase();
+      if (targetProvider === 'pikrouter' || targetProvider === 'pikprovider') {
+        const isRegister = Boolean(flags.get('register'));
+        const name = isRegister
+          ? (typeof flags.get('name') === 'string' ? String(flags.get('name')).trim() : await askLine('Your Name: '))
+          : '';
         const email = typeof flags.get('email') === 'string' ? String(flags.get('email')).trim() : await askLine('PikRouter Email: ');
         const password = typeof flags.get('password') === 'string' ? String(flags.get('password')) : await askLine('PikRouter Password: ');
         if (!email || !password) {
-          console.error('Email and password are required to log in to PikRouter.');
+          console.error('Email and password are required to authenticate with PikRouter.');
           process.exitCode = 1;
           return;
         }
         try {
-          const res = await loginPikRouter({ email, password });
-          console.log(`Connected to PikRouter (${res.user?.email || email}). Token stored locally.`);
-          console.log('Use it with: gitu run "<goal>" --provider pikrouter');
+          const res = isRegister
+            ? await registerPikRouter({ name: name || email.split('@')[0] || 'User', email, password })
+            : await loginPikRouter({ email, password });
+          console.log(`Connected to PikRouter (${res.user?.email || email}). Token stored locally as default provider.`);
+          console.log('Use it with: gitu run "<goal>"');
         } catch (err) {
-          console.error(`PikRouter sign-in failed: ${(err as Error).message}`);
+          console.error(`PikRouter authentication failed: ${(err as Error).message}`);
           process.exitCode = 2;
         }
         return;

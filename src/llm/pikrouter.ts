@@ -5,8 +5,73 @@ import { selectedRuntime } from './runtime-mode.js';
 import { ensureGituHome } from '../workspace/home.js';
 
 export const DEFAULT_PIKROUTER_AUTH_URL = 'https://pikrouter.pikpam.com/api/auth/login';
+export const DEFAULT_PIKROUTER_REGISTER_URL = 'https://pikrouter.pikpam.com/api/auth/register';
+export const DEFAULT_PIKROUTER_AUTHORIZE_URL = 'https://pikrouter.pikpam.com/oauth/authorize';
+export const DEFAULT_PIKROUTER_OAUTH_CLIENT_ID = 'client_nexus_65f8f5f9a0c92bf1';
 export const DEFAULT_PIKROUTER_BASE_URL = 'https://pikrouter.pikpam.com/v1';
 export const DEFAULT_PIKROUTER_MODEL = 'gpt-4o-mini';
+
+export interface PikRouterAuthorizeOptions {
+  redirectUri: string;
+  state?: string;
+  clientId?: string;
+  authorizeUrl?: string;
+}
+
+export interface PikRouterOAuthCallbackResult {
+  token: string;
+  userId?: string;
+  email?: string;
+  state?: string;
+}
+
+/**
+ * Builds the Pikpam Hosted Authorize & Register OAuth URL.
+ */
+export function buildPikRouterAuthorizeUrl(opts: PikRouterAuthorizeOptions): string {
+  const authorizeUrl = opts.authorizeUrl ?? DEFAULT_PIKROUTER_AUTHORIZE_URL;
+  const clientId = opts.clientId ?? DEFAULT_PIKROUTER_OAUTH_CLIENT_ID;
+  const state = opts.state ?? 'random_state';
+  return `${authorizeUrl}?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(opts.redirectUri)}&state=${encodeURIComponent(state)}`;
+}
+
+/**
+ * Parses PikRouter OAuth callback query parameters (?token=<JWT>&user_id=<UUID>&email=<EMAIL>&state=<STATE>)
+ * and persists the token to localStorage (browser) and/or Agent Gitu's secure key store (Node).
+ */
+export function parsePikRouterOAuthCallback(
+  searchOrParams: string | URLSearchParams,
+  opts: { saveKey?: boolean } = {},
+): PikRouterOAuthCallbackResult | null {
+  const params =
+    typeof searchOrParams === 'string'
+      ? new URLSearchParams(searchOrParams.includes('?') ? searchOrParams.slice(searchOrParams.indexOf('?')) : searchOrParams)
+      : searchOrParams;
+  const token = params.get('token')?.trim();
+  if (!token) return null;
+  const userId = params.get('user_id')?.trim() || undefined;
+  const email = params.get('email')?.trim() || undefined;
+  const state = params.get('state')?.trim() || undefined;
+
+  if (typeof localStorage !== 'undefined') {
+    try {
+      localStorage.setItem('auth_token', token);
+    } catch {
+      // Ignore storage errors in restricted environments
+    }
+  }
+
+  const shouldSave = opts.saveKey ?? (typeof process !== 'undefined' && Boolean(process?.env));
+  if (shouldSave) {
+    try {
+      setStoredKey('PIKROUTER_API_KEY', token);
+    } catch {
+      // Best-effort storage in non-Node or restricted environments
+    }
+  }
+
+  return { token, userId, email, state };
+}
 
 export interface PikRouterUser {
   id?: string | number;
@@ -24,6 +89,16 @@ export interface PikRouterLoginOptions {
   email: string;
   password: string;
   authUrl?: string;
+  signal?: AbortSignal;
+  /** Save token to local persistent secure key storage (default: true in Node environment). */
+  saveKey?: boolean;
+}
+
+export interface PikRouterRegisterOptions {
+  name: string;
+  email: string;
+  password: string;
+  registerUrl?: string;
   signal?: AbortSignal;
   /** Save token to local persistent secure key storage (default: true in Node environment). */
   saveKey?: boolean;
@@ -81,6 +156,49 @@ export async function loginPikRouter(opts: PikRouterLoginOptions): Promise<PikRo
 }
 
 /**
+ * Creates a new user account on PikRouter and returns the JWT token and user profile.
+ * Automatically persists the token to Agent Gitu's secure keys when saveKey is true.
+ */
+export async function registerPikRouter(opts: PikRouterRegisterOptions): Promise<PikRouterLoginResponse> {
+  const registerUrl = opts.registerUrl ?? DEFAULT_PIKROUTER_REGISTER_URL;
+  const res = await fetch(registerUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: opts.name, email: opts.email, password: opts.password }),
+    signal: opts.signal,
+  });
+
+  if (!res.ok) {
+    let message = `HTTP ${res.status}`;
+    try {
+      const errJson = (await res.json()) as { error?: string; message?: string };
+      message = errJson.error || errJson.message || message;
+    } catch {
+      const errText = await res.text().catch(() => '');
+      if (errText) message = errText;
+    }
+    throw new Error(`PikRouter registration failed (${res.status}): ${message}`);
+  }
+
+  const data = (await res.json()) as { token?: string; user?: PikRouterUser };
+  if (!data || typeof data.token !== 'string' || !data.token.trim()) {
+    throw new Error('PikRouter registration succeeded but no authentication token was returned.');
+  }
+
+  const token = data.token.trim();
+  const shouldSave = opts.saveKey ?? (typeof process !== 'undefined' && Boolean(process?.env));
+  if (shouldSave) {
+    try {
+      setStoredKey('PIKROUTER_API_KEY', token);
+    } catch {
+      // Best-effort storage in non-Node or restricted environments
+    }
+  }
+
+  return { token, user: data.user };
+}
+
+/**
  * Creates an OpenAI-compatible client targeted at PikRouter with the user's token.
  */
 export function createPikRouterClient(opts: PikRouterClientOptions = {}): OpenAiCompatClient & LlmClient {
@@ -88,6 +206,7 @@ export function createPikRouterClient(opts: PikRouterClientOptions = {}): OpenAi
   const token =
     opts.token ??
     opts.apiKey ??
+    (typeof localStorage !== 'undefined' ? localStorage.getItem('auth_token') ?? undefined : undefined) ??
     env['HERMES_PIKROUTER_API_KEY'] ??
     env['PIKROUTER_API_KEY'] ??
     env['PIKROUTER_TOKEN'];

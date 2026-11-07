@@ -1,6 +1,56 @@
 {
-  "updated": "2026-11-06",
+  "updated": "2026-11-07",
   "items": [
+    {
+      "title": "Three men charged in US with using AI to impersonate CEOs and steal millions",
+      "summary": "US prosecutors charged three foreign nationals with using AI to fake executives' and lawyers' voices and images so staff would wire money. Losses exceed $129m.",
+      "why": "A voice or face on a call no longer proves who is paying, so payment approvals need a callback on a number you already hold.",
+      "source": "The Guardian",
+      "url": "https://www.theguardian.com/us-news/2026/nov/06/ai-ceo-impersonation-theft",
+      "image": "https://i.guim.co.uk/img/media/c3a832e799ac1dd8a85e6c73794399c038d7678b/250_0_2500_2001/master/2500.jpg?width=1200&height=630&quality=85&auto=format&fit=crop&precrop=40:21,offset-x50,offset-y0&overlay-align=bottom%2Cleft&overlay-width=100p&overlay-base64=L2ltZy9zdGF0aWMvb3ZlcmxheXMvdGctZGVmYXVsdC5wbmc&enable=upscale&s=fca24c099200a4119230c96f17695f31",
+      "imageAlt": "Stone facade of a New York courthouse photographed from the street.",
+      "published": "2026-11-06T21:20:49Z"
+    },
+    {
+      "title": "Microsoft plans to use fewer neoclouds as AI buildout shows signs of strain",
+      "summary": "Microsoft is reviewing which neocloud suppliers to keep and prioritising its own data centres, as borrowing costs and delivery delays strain the AI buildout.",
+      "why": "If Microsoft keeps fewer outside suppliers, the AI capacity market narrows for everyone else, which matters if your shop pays for cloud or AI tools.",
+      "source": "CNBC",
+      "url": "https://www.cnbc.com/2026/11/06/microsoft-moves-to-consolidate-its-relationships-with-neoclouds-in-ai.html",
+      "image": "https://image.cnbcfm.com/api/v1/image/108530430-1793940029707-gettyimages-2300856161-20090101261022-99-29725.jpeg?v=1793940103&w=1920&h=1080",
+      "imageAlt": "Satya Nadella speaking on stage at the Microsoft AI Tour in Cologne in front of a large 'Frontier' backdrop.",
+      "published": "2026-11-06T18:31:32Z"
+    },
+    {
+      "title": "Meta's Muse AI can create custom 'spaces' for the version of the app you need right now",
+      "summary": "Meta's Muse can now build 'spaces' inside the app from a description, such as a shopping hub that pulls prices and dates from connected apps and updates in the background.",
+      "why": "If Meta's assistant can build a shopping hub from connected apps and keep prices current, the chat app starts to look like the storefront itself.",
+      "source": "The Verge",
+      "url": "https://www.theverge.com/tech/1028871/meta-muse-ai-spaces",
+      "image": "https://platform.theverge.com/wp-content/uploads/sites/2/2026/11/meta-muse-spaces.png?quality=90&strip=all&crop=8.0752843063528%2C7.2758349524933%2C91.924715693647%2C59.9199899822&w=1200",
+      "imageAlt": "A phone screen showing a Muse space built as a Jolly Hall mall catalogue page with a wall clock listing.",
+      "published": "2026-11-06T18:10:00Z"
+    },
+    {
+      "title": "EU charges TikTok with failing to protect users' mental health",
+      "summary": "The European Commission's preliminary ruling says TikTok's feed can push vulnerable users into harmful repetitive content. TikTok disputes it; fines could reach 6% of turnover.",
+      "why": "If Brussels forces TikTok to change how its feed pushes repetitive content, reach on the app could shift for every seller who depends on it.",
+      "source": "The Guardian",
+      "url": "https://www.theguardian.com/technology/2026/nov/06/eu-charges-tiktok-failure-to-protect-users-mental-health",
+      "image": "https://i.guim.co.uk/img/media/73530bb71968af6a5b5d2dca4fd682c0f680fd80/0_253_3524_2819/master/3524.jpg?width=1200&height=630&quality=85&auto=format&fit=crop&precrop=40:21,offset-x50,offset-y0&overlay-align=bottom%2Cleft&overlay-width=100p&overlay-base64=L2ltZy9zdGF0aWMvb3ZlcmxheXMvdGctZGVmYXVsdC5wbmc&enable=upscale&s=5c6c96238f9e527b884bae4759e176ec",
+      "imageAlt": "Two phones showing TikTok in the App Store, with the App Store listing open on a laptop behind.",
+      "published": "2026-11-06T15:17:08Z"
+    },
+    {
+      "title": "After blocking Muse, Amazon now lets users text Alexa to help them shop",
+      "summary": "Amazon is letting select US customers shop by texting Alexa: search, compare, add to cart and buy, with photo search and order tracking.",
+      "why": "Your product page may soon be read aloud in a chat and bought from it, so titles and descriptions need to work as sentences, not just search keywords.",
+      "source": "TechCrunch",
+      "url": "https://techcrunch.com/2026/11/06/after-blocking-muse-amazon-now-lets-users-text-alexa-to-help-them-shop/",
+      "image": "https://techcrunch.com/wp-content/uploads/2026/11/Alexa-Shopping-Text-Hero.jpeg?resize=1200,725",
+      "imageAlt": "A hand holding an iPhone showing an Alexa Shopping text chat with grocery items, a cart and a $38.05 total.",
+      "published": "2026-11-06T14:10:00Z"
+    },
     {
       "title": "Global stocks plunge amid AI slowdown fears after Democrats' midterm triumph",
       "summary": "Wall Street's Nasdaq fell 5.5%, its worst day in 19 months, and the FTSE 100 dropped 1.9% as investors questioned data-centre spending and returns on AI.",

@@ -279,7 +279,7 @@ describe('PikRouter integration', () => {
       state: 'random_state',
     });
 
-    const page = authPage(true, true);
+    const page = authPage(true, false, true, false, false, { pikrouterOAuth: true });
     expect(page).toContain('https://pikrouter.pikpam.com/oauth/authorize?client_id=client_nexus_65f8f5f9a0c92bf1');
     expect(page).toContain("localStorage.setItem('auth_token'");
     expect(page).toContain('/api/auth/pikrouter');

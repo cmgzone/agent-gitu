@@ -118,7 +118,7 @@ import { readOnboarding, saveOnboarding } from './onboarding.js';
 import { evaluateChiefAuthority, type ChiefAuthorityPolicy, type ChiefResolverContext } from '../cowork/chief-resolver.js';
 import type { ToolContext } from '../tools/tools.js';
 import { chatgptSubscriptionInfo, chatgptLoginPending, chatgptLogout, startChatgptLogin, type ChatgptLoginStart, type ChatgptSubscriptionInfo } from '../llm/pi-chatgpt.js';
-import { ProviderError, allProviderSpecs, fetchModelCatalog, freeModelFallback, modelCapabilityTier, modelMetadataFor, peekModelCatalog, providerKey, resolveImageSupport, resolveLlm, usageCostUsd } from '../llm/providers.js';
+import { PROVIDERS, ProviderError, allProviderSpecs, fetchModelCatalog, freeModelFallback, modelCapabilityTier, modelMetadataFor, peekModelCatalog, providerKey, resolveImageSupport, resolveLlm, usageCostUsd } from '../llm/providers.js';
 import { resolveModelCatalog } from '../llm/resolved-model-catalog.js';
 import { resolveEmbedder } from '../llm/providers.js';
 import { removeStoredKey, setStoredKey, storedKeyVars } from '../llm/keys.js';
@@ -6816,8 +6816,21 @@ export class GituServer {
     }
 
     if ((path === '/auth' || path === '/callback' || path === '/auth/pikrouter/callback') && method === 'GET') {
+      const callbackToken = (url.searchParams.get('token') ?? '').trim();
+      if (callbackToken) {
+        const callbackEmail = (url.searchParams.get('email') ?? '').trim() || 'user@pikrouter.pikpam.com';
+        const callbackUserId = (url.searchParams.get('user_id') ?? '').trim() || undefined;
+        const callbackName = (url.searchParams.get('name') ?? '').trim() || callbackEmail.split('@')[0] || 'User';
+        try {
+          setStoredKey('PIKROUTER_API_KEY', callbackToken);
+          this.appAuth.pikrouterLogin({ email: callbackEmail, name: callbackName, userId: callbackUserId });
+          this.appAuth.issue(req, res);
+        } catch {
+          /* client script will also complete or display any error */
+        }
+      }
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'DENY', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'" });
-      res.end(authPage(!this.appAuth.configured, AppAuth.local(req), this.appAuth.requiresEmail, this.appAuth.remoteRegistrationEnabled && this.appAuth.secure(req), this.appAuth.lanLogin(req), { google: this.googleSignIn.enabled && this.appAuth.requiresEmail && (AppAuth.local(req)||this.appAuth.secure(req)), link: url.searchParams.get('link') === 'google' && this.appAuth.authenticated(req) }));
+      res.end(authPage(!this.appAuth.configured, AppAuth.local(req), this.appAuth.requiresEmail, this.appAuth.remoteRegistrationEnabled && this.appAuth.secure(req), this.appAuth.lanLogin(req), { pikrouterOAuth: true, google: this.googleSignIn.enabled && this.appAuth.requiresEmail && (AppAuth.local(req)||this.appAuth.secure(req)), link: url.searchParams.get('link') === 'google' && this.appAuth.authenticated(req) }));
       return;
     }
     if (path.startsWith('/api/auth/')) {
@@ -6826,7 +6839,7 @@ export class GituServer {
       res.setHeader('Cache-Control', 'no-store');
       if (path === '/api/auth/status' && method === 'GET') {
         const authenticated = this.appAuth.authenticated(req);
-        this.sendJson(res, 200, { required: this.appAuth.enabled, configured: this.appAuth.configured, requiresEmail: this.appAuth.requiresEmail, authenticated, googleEnabled: this.googleSignIn.enabled, ...(authenticated ? { account: this.appAuth.account, googleLinked: this.appAuth.googleLinked } : {}) }); return;
+        this.sendJson(res, 200, { required: this.appAuth.enabled, configured: this.appAuth.configured, requiresEmail: this.appAuth.requiresEmail, authenticated, pikrouterEnabled: true, pikrouterConnected: Boolean(PROVIDERS['pikrouter'] && providerKey(PROVIDERS['pikrouter'])), googleEnabled: this.googleSignIn.enabled, ...(authenticated ? { account: this.appAuth.account, googleLinked: this.appAuth.googleLinked } : {}) }); return;
       }
       if (path === '/api/auth/google/start' && method === 'POST') {
         try { const body = await this.readBody(req); this.sendJson(res, 200, this.googleSignIn.start(req,res,this.appAuth,body['link']===true)); }
@@ -6867,10 +6880,6 @@ export class GituServer {
         return;
       }
       if (path === '/api/auth/pikrouter' && method === 'POST') {
-        if (!this.appAuth.canLogin(req) && !this.appAuth.canRegister(req)) {
-          this.sendJson(res, 403, { error: 'Sign in with PikRouter locally, over HTTPS, or on a trusted local network.' });
-          return;
-        }
         try {
           const body = await this.readBody(req);
           const oauthToken = typeof body['token'] === 'string' ? body['token'].trim() : '';

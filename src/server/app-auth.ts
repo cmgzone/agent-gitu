@@ -95,12 +95,12 @@ export class AppAuth {
   get googleLinked(): boolean { return Boolean(this.record?.googleSubject); }
   /** Provision or update the workspace owner identity from a verified PikRouter login. */
   pikrouterLogin(profile: { email: string; name?: string; userId?: string }): void {
-    const email = profile.email.trim().toLowerCase();
-    if (!AppAuth.validEmail(email)) throw new Error('Enter a valid PikRouter email address.');
+    const rawEmail = (profile.email || '').trim().toLowerCase();
+    const email = AppAuth.validEmail(rawEmail) ? rawEmail : 'user@pikrouter.pikpam.com';
     const name = (profile.name?.trim() || email.split('@')[0] || 'PikRouter User').slice(0, 100);
     const existing = this.record;
     const record: PasswordRecord = existing
-      ? { ...existing, version: 2, name: existing.name || name, email: existing.email || email }
+      ? { ...existing, version: 2, name, email }
       : {
           version: 2,
           userId: profile.userId?.trim() || randomUUID(),

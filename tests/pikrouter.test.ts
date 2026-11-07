@@ -3,15 +3,20 @@ import {
   DEFAULT_PIKROUTER_AUTH_URL,
   DEFAULT_PIKROUTER_REGISTER_URL,
   DEFAULT_PIKROUTER_AUTHORIZE_URL,
+  DEFAULT_PIKROUTER_CREDITS_URL,
   DEFAULT_PIKROUTER_OAUTH_CLIENT_ID,
   DEFAULT_PIKROUTER_BASE_URL,
   DEFAULT_PIKROUTER_MODEL,
+  PIKROUTER_CREDITS_PER_USD,
   buildPikRouterAuthorizeUrl,
   parsePikRouterOAuthCallback,
   createPikRouterClient,
   loginPikRouter,
   registerPikRouter,
   streamPikRouterCompletion,
+  fetchPikRouterCredits,
+  usdToPikRouterCredits,
+  formatPikRouterCredits,
 } from '../src/llm/pikrouter.js';
 import { PROVIDERS, providerSpec, resolveLlm } from '../src/llm/providers.js';
 import { effortStyleFor } from '../src/llm/llm.js';
@@ -283,5 +288,64 @@ describe('PikRouter integration', () => {
     expect(page).toContain('https://pikrouter.pikpam.com/oauth/authorize?client_id=client_nexus_65f8f5f9a0c92bf1');
     expect(page).toContain("localStorage.setItem('auth_token'");
     expect(page).toContain('/api/auth/pikrouter');
+  });
+
+  it('converts USD to PikRouter credits accurately (100 credits = $1.00 USD)', () => {
+    expect(PIKROUTER_CREDITS_PER_USD).toBe(100);
+    expect(usdToPikRouterCredits(0)).toBe(0);
+    expect(usdToPikRouterCredits(1)).toBe(100);
+    expect(usdToPikRouterCredits(0.5)).toBe(50);
+    expect(usdToPikRouterCredits(0.01)).toBe(1);
+    expect(usdToPikRouterCredits(0.0015)).toBe(0.15);
+    expect(usdToPikRouterCredits(0.00004)).toBe(0.004);
+  });
+
+  it('formats PikRouter credits cleanly for user display', () => {
+    expect(formatPikRouterCredits(0)).toBe('0 credits');
+    expect(formatPikRouterCredits(1)).toBe('1 credit');
+    expect(formatPikRouterCredits(50)).toBe('50 credits');
+    expect(formatPikRouterCredits(49.8)).toBe('49.8 credits');
+    expect(formatPikRouterCredits(0.15)).toBe('0.15 credits');
+    expect(formatPikRouterCredits(50, { includeUnit: false })).toBe('50');
+    expect(formatPikRouterCredits(49.8, { includeUnit: false })).toBe('49.8');
+  });
+
+  it('fetches user credits balance and usage from PikRouter API', async () => {
+    const fakeCreditsPayload = {
+      credits: {
+        balance: 50,
+        available: 50,
+        usdValue: 0.5,
+        currencyFormatted: '$0.50',
+        creditRate: '100 Credits = $1.00 USD',
+      },
+      usage: {
+        lifetimeSpentCredits: 0.25,
+        totalUsageCalls: 4,
+      },
+    };
+
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => fakeCreditsPayload,
+    } as unknown as Response);
+
+    const creditsRes = await fetchPikRouterCredits({ token: 'test-pik-token' });
+
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      DEFAULT_PIKROUTER_CREDITS_URL,
+      expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({
+          Authorization: 'Bearer test-pik-token',
+        }),
+      }),
+    );
+    expect(creditsRes.ok).toBe(true);
+    expect(creditsRes.credits.balance).toBe(50);
+    expect(creditsRes.credits.available).toBe(50);
+    expect(creditsRes.credits.creditRate).toBe('100 Credits = $1.00 USD');
+    expect(creditsRes.usage?.lifetimeSpentCredits).toBe(0.25);
   });
 });

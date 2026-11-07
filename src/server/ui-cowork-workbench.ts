@@ -122,6 +122,23 @@ export const COWORK_WORKBENCH_JS = String.raw`
     return '$' + costUsd.toFixed(2);
   }
 
+  function cwFormatCredits(credits, opts) {
+    var includeUnit = !opts || opts.includeUnit !== false;
+    if (typeof credits !== 'number' || !isFinite(credits) || credits <= 0) {
+      return includeUnit ? '0 credits' : '0';
+    }
+    var numStr;
+    if (credits < 0.01) {
+      numStr = credits.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
+    } else if (credits % 1 === 0) {
+      numStr = credits.toFixed(0);
+    } else {
+      numStr = credits.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+    }
+    if (!includeUnit) return numStr;
+    return credits === 1 ? '1 credit' : numStr + ' credits';
+  }
+
   function cwEstimateContextUsage() {
     var cw = cwEnsure();
     var msgs = cw.msgs || [];
@@ -243,6 +260,40 @@ export const COWORK_WORKBENCH_JS = String.raw`
       ? serverUsage.budgetMaxCostUsd
       : (missionMaxBudgetUsd > 0 ? missionMaxBudgetUsd : null);
 
+    var isCredits = Boolean(
+      (serverUsage && (serverUsage.isCredits || /pikrouter|pikprovider|^pik$/i.test(serverUsage.provider || ''))) ||
+      (agent && /pikrouter|pikprovider|^pik$/i.test(agent.provider || '')) ||
+      (typeof window !== 'undefined' && (window.__pikRouterActive || (window.__pikRouterCredits && window.__pikRouterCredits.balance !== undefined)))
+    );
+    var creditsUsed = 0;
+    var creditsBalance = null;
+    var creditRate = (serverUsage && serverUsage.creditRate)
+      || (typeof window !== 'undefined' && window.__pikRouterCredits && window.__pikRouterCredits.creditRate)
+      || '100 Credits = $1.00 USD';
+    var costFormatted = '';
+
+    if (isCredits) {
+      if (serverUsage && typeof serverUsage.creditsUsed === 'number') {
+        creditsUsed = serverUsage.creditsUsed;
+      } else {
+        var rawCredits = costUsd * 100;
+        creditsUsed = rawCredits < 0.01 && rawCredits > 0 ? Number(rawCredits.toFixed(4)) : Number(rawCredits.toFixed(2));
+      }
+      if (serverUsage && typeof serverUsage.creditsBalance === 'number') {
+        creditsBalance = serverUsage.creditsBalance;
+      } else if (typeof window !== 'undefined' && window.__pikRouterCredits && typeof window.__pikRouterCredits.balance === 'number') {
+        creditsBalance = window.__pikRouterCredits.available !== undefined ? window.__pikRouterCredits.available : window.__pikRouterCredits.balance;
+      }
+      var usageStr = cwFormatCredits(creditsUsed);
+      if (creditsBalance !== null && creditsBalance !== undefined) {
+        costFormatted = usageStr + ' (' + cwFormatCredits(creditsBalance, { includeUnit: false }) + ' left)';
+      } else {
+        costFormatted = usageStr;
+      }
+    } else {
+      costFormatted = cwFormatUsd(costUsd);
+    }
+
     return {
       tokens: tokens,
       inputTokens: inputTokens,
@@ -251,10 +302,14 @@ export const COWORK_WORKBENCH_JS = String.raw`
       maxTokens: maxTokens,
       percent: pct,
       costUsd: costUsd,
-      costFormatted: cwFormatUsd(costUsd),
+      costFormatted: costFormatted,
       budgetMaxCostUsd: budgetMaxCostUsd,
       isReal: Boolean(hasRealSpend),
-      modelLabel: modelLabel
+      modelLabel: modelLabel,
+      isCredits: isCredits,
+      creditsUsed: creditsUsed,
+      creditsBalance: creditsBalance,
+      creditRate: creditRate
     };
   }
 
@@ -279,7 +334,14 @@ export const COWORK_WORKBENCH_JS = String.raw`
     if (usage.inputTokens || usage.outputTokens) {
       titleParts.push('Tokens: ' + usage.inputTokens + ' in / ' + usage.outputTokens + ' out' + (usage.cachedTokens ? ' (' + usage.cachedTokens + ' cached)' : ''));
     }
-    if (usage.budgetMaxCostUsd) {
+    if (usage.isCredits) {
+      var creditsTitle = 'PikRouter Credits: ' + cwFormatCredits(usage.creditsUsed) + ' used';
+      if (usage.creditsBalance !== null && usage.creditsBalance !== undefined) {
+        creditsTitle += ' · ' + cwFormatCredits(usage.creditsBalance) + ' remaining balance';
+      }
+      creditsTitle += ' (Rate: ' + (usage.creditRate || '100 Credits = $1.00 USD') + ')';
+      titleParts.push(creditsTitle);
+    } else if (usage.budgetMaxCostUsd) {
       titleParts.push('Spend: ' + usage.costFormatted + ' / $' + Number(usage.budgetMaxCostUsd).toFixed(2) + ' budget');
     } else {
       titleParts.push('Price: ' + usage.costFormatted + (usage.isReal ? ' actual' : ' est.'));

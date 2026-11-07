@@ -7,9 +7,60 @@ import { ensureGituHome } from '../workspace/home.js';
 export const DEFAULT_PIKROUTER_AUTH_URL = 'https://pikrouter.pikpam.com/api/auth/login';
 export const DEFAULT_PIKROUTER_REGISTER_URL = 'https://pikrouter.pikpam.com/api/auth/register';
 export const DEFAULT_PIKROUTER_AUTHORIZE_URL = 'https://pikrouter.pikpam.com/oauth/authorize';
+export const DEFAULT_PIKROUTER_CREDITS_URL = 'https://pikrouter.pikpam.com/api/user/credits';
 export const DEFAULT_PIKROUTER_OAUTH_CLIENT_ID = 'client_nexus_65f8f5f9a0c92bf1';
 export const DEFAULT_PIKROUTER_BASE_URL = 'https://pikrouter.pikpam.com/v1';
 export const DEFAULT_PIKROUTER_MODEL = 'gpt-4o-mini';
+export const PIKROUTER_CREDITS_PER_USD = 100;
+
+export interface PikRouterCreditsInfo {
+  balance: number;
+  available?: number;
+  usdValue?: number;
+  currencyFormatted?: string;
+  creditRate?: string;
+}
+
+export interface PikRouterUsageInfo {
+  lifetimeSpentCredits?: number;
+  totalUsageCalls?: number;
+}
+
+export interface PikRouterCreditsResponse {
+  ok?: boolean;
+  credits: PikRouterCreditsInfo;
+  usage?: PikRouterUsageInfo;
+}
+
+/**
+ * Converts a USD amount to PikRouter credits at the fixed exchange rate (100 Credits = $1.00 USD).
+ */
+export function usdToPikRouterCredits(usd: number): number {
+  if (typeof usd !== 'number' || !isFinite(usd) || usd <= 0) return 0;
+  const credits = usd * PIKROUTER_CREDITS_PER_USD;
+  return credits < 0.01 && credits > 0 ? Number(credits.toFixed(4)) : Number(credits.toFixed(2));
+}
+
+/**
+ * Formats PikRouter credits for display.
+ * Examples: 0 -> '0 credits', 0.005 -> '0.005 credits', 1 -> '1 credit', 50 -> '50 credits', 49.8 -> '49.8 credits'
+ */
+export function formatPikRouterCredits(credits: number, opts: { includeUnit?: boolean } = {}): string {
+  const includeUnit = opts.includeUnit !== false;
+  if (typeof credits !== 'number' || !isFinite(credits) || credits <= 0) {
+    return includeUnit ? '0 credits' : '0';
+  }
+  let numStr: string;
+  if (credits < 0.01) {
+    numStr = credits.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
+  } else if (credits % 1 === 0) {
+    numStr = credits.toFixed(0);
+  } else {
+    numStr = credits.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+  }
+  if (!includeUnit) return numStr;
+  return credits === 1 ? '1 credit' : `${numStr} credits`;
+}
 
 export interface PikRouterAuthorizeOptions {
   redirectUri: string;
@@ -153,6 +204,74 @@ export async function loginPikRouter(opts: PikRouterLoginOptions): Promise<PikRo
   }
 
   return { token, user: data.user };
+}
+
+export interface FetchPikRouterCreditsOptions {
+  token?: string;
+  creditsUrl?: string;
+  signal?: AbortSignal;
+}
+
+/**
+ * Fetches the user's current credit balance and usage from the PikRouter API.
+ */
+export async function fetchPikRouterCredits(
+  opts: FetchPikRouterCreditsOptions = {},
+): Promise<PikRouterCreditsResponse> {
+  const env = typeof process !== 'undefined' && process?.env ? mergedEnv() : {};
+  const token =
+    opts.token ??
+    (typeof localStorage !== 'undefined' ? localStorage.getItem('auth_token') : null) ??
+    env['HERMES_PIKROUTER_API_KEY'] ??
+    env['PIKROUTER_API_KEY'] ??
+    env['PIKROUTER_TOKEN'];
+
+  if (!token) {
+    throw new Error('PikRouter authentication token is required to fetch credits.');
+  }
+
+  const creditsUrl = opts.creditsUrl ?? DEFAULT_PIKROUTER_CREDITS_URL;
+  const res = await fetch(creditsUrl, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    signal: opts.signal,
+  });
+
+  if (!res.ok) {
+    let message = `HTTP ${res.status}`;
+    try {
+      const errJson = (await res.json()) as { error?: string; message?: string };
+      message = errJson.error || errJson.message || message;
+    } catch {
+      const errText = await res.text().catch(() => '');
+      if (errText) message = errText;
+    }
+    throw new Error(`Failed to fetch PikRouter credits (${res.status}): ${message}`);
+  }
+
+  const data = (await res.json()) as {
+    credits?: PikRouterCreditsInfo;
+    usage?: PikRouterUsageInfo;
+  };
+
+  if (!data || !data.credits || typeof data.credits.balance !== 'number') {
+    throw new Error('Invalid response received from PikRouter credits endpoint.');
+  }
+
+  return {
+    ok: true,
+    credits: {
+      balance: data.credits.balance,
+      available: data.credits.available ?? data.credits.balance,
+      usdValue: data.credits.usdValue ?? (data.credits.balance / PIKROUTER_CREDITS_PER_USD),
+      currencyFormatted: data.credits.currencyFormatted,
+      creditRate: data.credits.creditRate ?? '100 Credits = $1.00 USD',
+    },
+    usage: data.usage,
+  };
 }
 
 /**

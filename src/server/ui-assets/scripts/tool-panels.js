@@ -293,7 +293,32 @@
     }
     html += '</div><div class="section-h">Usage &amp; cost</div><div class="stat-grid">';
     stat('Messages', U ? U.messages : 0);
-    stat(U && U.costIncomplete ? 'Estimated cost' : 'Total cost', U && typeof U.costUsd === 'number' ? (U.costIncomplete ? '~$' : '$') + U.costUsd.toFixed(4) : '—', true);
+    var isCredits = Boolean(
+      (U && U.isCredits) ||
+      (session && session.provider && /pikrouter|pikprovider|^pik$/i.test(session.provider)) ||
+      (window.__pikRouterActive)
+    );
+    if (isCredits) {
+      var creditsUsed = (U && typeof U.creditsUsed === 'number')
+        ? U.creditsUsed
+        : (U && typeof U.costUsd === 'number' ? Number((U.costUsd * 100).toFixed(2)) : 0);
+      var creditsBalance = (U && typeof U.creditsBalance === 'number')
+        ? U.creditsBalance
+        : (window.__pikRouterCredits && typeof window.__pikRouterCredits.balance === 'number'
+          ? (window.__pikRouterCredits.available !== undefined ? window.__pikRouterCredits.available : window.__pikRouterCredits.balance)
+          : null);
+      function fmtCreds(c) {
+        if (typeof c !== 'number' || !isFinite(c)) return '—';
+        var s = (c % 1 === 0 ? c.toFixed(0) : c.toFixed(2)).replace(/0+$/, '').replace(/\.$/, '');
+        return c === 1 ? '1 credit' : (s || '0') + ' credits';
+      }
+      stat('Credit usage', fmtCreds(creditsUsed), true);
+      if (creditsBalance !== null && creditsBalance !== undefined) {
+        stat('Remaining balance', fmtCreds(creditsBalance), true);
+      }
+    } else {
+      stat(U && U.costIncomplete ? 'Estimated cost' : 'Total cost', U && typeof U.costUsd === 'number' ? (U.costIncomplete ? '~$' : '$') + U.costUsd.toFixed(4) : '—', true);
+    }
     html += '</div></details>';
     var wasOpen = $('contextRunDetails') && $('contextRunDetails').open;
     body.innerHTML = html;

@@ -122,7 +122,7 @@ import { PROVIDERS, ProviderError, allProviderSpecs, fetchModelCatalog, freeMode
 import { resolveModelCatalog } from '../llm/resolved-model-catalog.js';
 import { resolveEmbedder } from '../llm/providers.js';
 import { removeStoredKey, setStoredKey, storedKeyVars } from '../llm/keys.js';
-import { loginPikRouter, registerPikRouter } from '../llm/pikrouter.js';
+import { loginPikRouter, registerPikRouter, fetchPikRouterCredits, usdToPikRouterCredits, formatPikRouterCredits, type PikRouterCreditsResponse } from '../llm/pikrouter.js';
 import { getVault } from '../vault/vault.js';
 import { SessionStore, type SessionUsage, type StoredSessionFile } from './session-store.js';
 import { McpManager } from '../mcp/client.js';
@@ -573,6 +573,9 @@ export class GituServer {
   private readonly coworkUsage = new Map<string, { inputTokens: number; outputTokens: number; cachedTokens: number; contextTokens: number; turns: number; costUsd: number; pricedTurns: number }>();
   /** The envelope section as last written, so unchanged state is not rewritten. */
   private readonly budgetsPersisted = new Map<string, string>();
+  /** Cached PikRouter credits balance & usage info. */
+  private cachedPikCredits?: { data: PikRouterCreditsResponse; ts: number };
+  private fetchingPikCredits = false;
   /** Per-delegated-session teardown (MCP clients), released when the run settles. */
   private readonly delegatedSessionResources = new Map<string, () => void>();
   private readonly coworkSubscribers = new Map<string, Set<(progressOnly?: boolean) => void>>();
@@ -3344,10 +3347,38 @@ export class GituServer {
         bucket.pricedTurns += 1;
       }
       this.coworkUsage.set(key, bucket);
+      if (/pikrouter|pikprovider|^pik$/i.test(providerId)) {
+        this.refreshPikCreditsBackground();
+      }
     });
     if (!base.completeTurn) (tracked as { completeTurn?: unknown }).completeTurn = undefined;
     if (!base.completeTurnStream) (tracked as { completeTurnStream?: unknown }).completeTurnStream = undefined;
     return tracked;
+  }
+
+  private async getPikRouterCredits(force = false): Promise<PikRouterCreditsResponse | null> {
+    const now = Date.now();
+    if (!force && this.cachedPikCredits && now - this.cachedPikCredits.ts < 30_000) {
+      return this.cachedPikCredits.data;
+    }
+    const spec = PROVIDERS['pikrouter'];
+    const key = spec ? providerKey(spec)?.key : undefined;
+    if (!key) return null;
+    try {
+      this.fetchingPikCredits = true;
+      const res = await fetchPikRouterCredits({ token: key });
+      this.cachedPikCredits = { data: res, ts: now };
+      return res;
+    } catch {
+      return this.cachedPikCredits?.data ?? null;
+    } finally {
+      this.fetchingPikCredits = false;
+    }
+  }
+
+  private refreshPikCreditsBackground(): void {
+    if (this.fetchingPikCredits) return;
+    this.getPikRouterCredits(false).catch(() => {});
   }
 
   private coworkUsageView(conversationId: string, threadId: string | null = null) {
@@ -3406,6 +3437,15 @@ export class GituServer {
     );
     const directCostUsd = direct?.costUsd ?? 0;
     const totalCostUsd = Math.round((directCostUsd + delegatedSpendUsd) * 1e6) / 1e6;
+    const isPikRouter = /pikrouter|pikprovider|^pik$/i.test(providerId) || (!providerId && Boolean(PROVIDERS['pikrouter'] && providerKey(PROVIDERS['pikrouter'])));
+    if (isPikRouter && !this.cachedPikCredits && !this.fetchingPikCredits) {
+      this.refreshPikCreditsBackground();
+    }
+    const creditsUsed = isPikRouter ? usdToPikRouterCredits(totalCostUsd) : undefined;
+    const directCreditsUsed = isPikRouter ? usdToPikRouterCredits(directCostUsd) : undefined;
+    const delegatedCreditsUsed = isPikRouter ? usdToPikRouterCredits(delegatedSpendUsd) : undefined;
+    const creditsBalance = isPikRouter ? (this.cachedPikCredits?.data.credits.available ?? this.cachedPikCredits?.data.credits.balance) : undefined;
+    const creditRate = isPikRouter ? (this.cachedPikCredits?.data.credits.creditRate ?? '100 Credits = $1.00 USD') : undefined;
     const inputTokens = (direct?.inputTokens ?? 0) + codingInputTokens;
     const outputTokens = (direct?.outputTokens ?? 0) + codingOutputTokens;
     const cachedTokens = (direct?.cachedTokens ?? 0) + codingCachedTokens;
@@ -3429,6 +3469,12 @@ export class GituServer {
       directCostUsd: Math.round(directCostUsd * 1e6) / 1e6,
       delegatedCostUsd: Math.round(delegatedSpendUsd * 1e6) / 1e6,
       budgetMaxCostUsd: poolMaxCostUsd ?? (missionMaxBudgetUsd > 0 ? missionMaxBudgetUsd : undefined),
+      isCredits: isPikRouter || undefined,
+      creditsUsed,
+      directCreditsUsed,
+      delegatedCreditsUsed,
+      creditsBalance,
+      creditRate,
     };
   }
 
@@ -6839,7 +6885,25 @@ export class GituServer {
       res.setHeader('Cache-Control', 'no-store');
       if (path === '/api/auth/status' && method === 'GET') {
         const authenticated = this.appAuth.authenticated(req);
-        this.sendJson(res, 200, { required: this.appAuth.enabled, configured: this.appAuth.configured, requiresEmail: this.appAuth.requiresEmail, authenticated, pikrouterEnabled: true, pikrouterConnected: Boolean(PROVIDERS['pikrouter'] && providerKey(PROVIDERS['pikrouter'])), googleEnabled: this.googleSignIn.enabled, ...(authenticated ? { account: this.appAuth.account, googleLinked: this.appAuth.googleLinked } : {}) }); return;
+        const pikConnected = Boolean(PROVIDERS['pikrouter'] && providerKey(PROVIDERS['pikrouter']));
+        if (pikConnected && !this.cachedPikCredits) this.refreshPikCreditsBackground();
+        const pikCredits = this.cachedPikCredits?.data.credits ? {
+          balance: this.cachedPikCredits.data.credits.balance,
+          available: this.cachedPikCredits.data.credits.available,
+          creditRate: this.cachedPikCredits.data.credits.creditRate,
+        } : undefined;
+        this.sendJson(res, 200, {
+          required: this.appAuth.enabled,
+          configured: this.appAuth.configured,
+          requiresEmail: this.appAuth.requiresEmail,
+          authenticated,
+          pikrouterEnabled: true,
+          pikrouterConnected: pikConnected,
+          pikrouterCredits: pikCredits,
+          googleEnabled: this.googleSignIn.enabled,
+          ...(authenticated ? { account: this.appAuth.account, googleLinked: this.appAuth.googleLinked } : {}),
+        });
+        return;
       }
       if (path === '/api/auth/google/start' && method === 'POST') {
         try { const body = await this.readBody(req); this.sendJson(res, 200, this.googleSignIn.start(req,res,this.appAuth,body['link']===true)); }
@@ -8121,10 +8185,32 @@ export class GituServer {
       return;
     }
 
+    if (method === 'GET' && path === '/api/pikrouter/credits') {
+      try {
+        const spec = PROVIDERS['pikrouter'];
+        const key = spec ? providerKey(spec)?.key : undefined;
+        if (!key) {
+          this.sendJson(res, 401, { error: 'PikRouter is not connected. Sign in or add an API key first.' });
+          return;
+        }
+        const force = url.searchParams.get('refresh') === 'true';
+        const creditsData = await this.getPikRouterCredits(force);
+        if (!creditsData) {
+          this.sendJson(res, 502, { error: 'Failed to retrieve PikRouter credits.' });
+          return;
+        }
+        this.sendJson(res, 200, creditsData);
+      } catch (err) {
+        this.sendJson(res, 500, { error: (err as Error).message });
+      }
+      return;
+    }
+
     if (method === 'DELETE' && path === '/api/pikrouter/auth') {
       removeStoredKey('PIKROUTER_API_KEY');
       removeStoredKey('HERMES_PIKROUTER_API_KEY');
       removeStoredKey('PIKROUTER_TOKEN');
+      this.cachedPikCredits = undefined;
       this.sendJson(res, 200, { ok: true, signedIn: false });
       return;
     }

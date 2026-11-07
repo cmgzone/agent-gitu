@@ -37,6 +37,13 @@
     loadModelCatalog().then(function () {
       if (S.active === 'home') openHome();
     }).catch(function () { S.modelsLoaded = true; if (S.active === 'home') openHome(); });
+    api('/api/pikrouter/credits').then(function (res) {
+      if (res && res.ok && res.credits) {
+        window.__pikRouterCredits = res.credits;
+        window.__pikRouterActive = true;
+        if (typeof cwRenderContextMeter === 'function') cwRenderContextMeter();
+      }
+    }).catch(function () {});
     api('/api/files').then(function (data) { S.files = data.files || []; }).catch(function () {});
     $('gearBtn').onclick = function () { toggleMobileNav(false); openSettings('overview'); };
     $('gearBtn').innerHTML = icon('gear');

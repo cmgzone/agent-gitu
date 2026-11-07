@@ -89,7 +89,31 @@
           } catch (error) { toast(error.message || 'Could not log out. Check the connection and retry.', true); button.disabled = false; }
         };
       }
-      api('/api/auth/status').then(function(status){var pikDesc=$('pikAccountDesc');if(pikDesc&&status&&status.account){pikDesc.textContent='Signed in as '+(status.account.name?status.account.name+' ('+(status.account.email||'PikRouter')+')':(status.account.email||'PikRouter account'))+(status.pikrouterConnected?' · PikRouter AI active':'');}var card=$('googleAccountSettings');if(!card)return;card.querySelector('.d').textContent=status.googleEnabled?(status.googleLinked?'Your Google account is linked. You can use Google on the sign-in screen.':'Link the Google account matching your workspace owner email.'): 'The server owner can enable Google sign-in with a Google OAuth client and an HTTPS public address.';if(status.googleEnabled&&!status.googleLinked){var link=document.createElement('a');link.className='btn';link.href='/auth?link=google';link.textContent='Link Google account';card.querySelector('.setrow').appendChild(link);}}).catch(function(){});
+      api('/api/auth/status').then(function(status){
+        var pikDesc=$('pikAccountDesc');
+        if(pikDesc&&status&&status.account){
+          var baseText='Signed in as '+(status.account.name?status.account.name+' ('+(status.account.email||'PikRouter')+')':(status.account.email||'PikRouter account'))+(status.pikrouterConnected?' · PikRouter AI active':'');
+          if (status.pikrouterCredits) {
+            baseText += ' · Balance: ' + (status.pikrouterCredits.available !== undefined ? status.pikrouterCredits.available : status.pikrouterCredits.balance) + ' credits';
+          }
+          pikDesc.textContent = baseText;
+        }
+        api('/api/pikrouter/credits?refresh=true').then(function(creditsRes){
+          if (creditsRes && creditsRes.ok && creditsRes.credits) {
+            window.__pikRouterCredits = creditsRes.credits;
+            var pd = $('pikAccountDesc');
+            if (pd && pd.textContent && !pd.textContent.includes('Balance:')) {
+              var bal = creditsRes.credits.available !== undefined ? creditsRes.credits.available : creditsRes.credits.balance;
+              pd.textContent += ' · Balance: ' + bal + ' credits';
+            }
+            var provBal = $('pikProviderBalance');
+            if (provBal) {
+              var b = creditsRes.credits.available !== undefined ? creditsRes.credits.available : creditsRes.credits.balance;
+              provBal.textContent = 'Credits balance: ' + b + ' credits (' + (creditsRes.credits.creditRate || '100 Credits = $1.00 USD') + ')';
+            }
+          }
+        }).catch(function(){});
+        var card=$('googleAccountSettings');if(!card)return;card.querySelector('.d').textContent=status.googleEnabled?(status.googleLinked?'Your Google account is linked. You can use Google on the sign-in screen.':'Link the Google account matching your workspace owner email.'): 'The server owner can enable Google sign-in with a Google OAuth client and an HTTPS public address.';if(status.googleEnabled&&!status.googleLinked){var link=document.createElement('a');link.className='btn';link.href='/auth?link=google';link.textContent='Link Google account';card.querySelector('.setrow').appendChild(link);}}).catch(function(){});
       var googleCard=$('googleAccountSettings'),details=document.createElement('details');
       details.style.padding='12px';details.innerHTML='<summary>Configure Google sign-in</summary><p class="meta">Create a Web application OAuth client in Google Cloud. Register the callback shown below. Your client secret stays on this Gitu server.</p><form id="googleOAuthForm"><label>Public address<input name="origin" type="url" placeholder="https://gitu.example.com" required></label><label>Google client ID<input name="clientId" autocomplete="off" required></label><label>Client secret<input name="clientSecret" type="password" autocomplete="new-password" placeholder="Leave blank to keep saved secret"></label><p data-callback class="meta"></p><button type="submit" class="btn">Save Google configuration</button><p data-result role="status" class="meta"></p></form>';
       googleCard.appendChild(details);
@@ -411,6 +435,7 @@
                     '<button type="button" class="btn ghost" id="pikSigninBtn">Sign in</button>' +
                     '<button type="button" class="btn ghost" id="pikRegisterBtn">Create account</button>' +
                   '</div>' +
+                  (usable ? '<div class="meta" id="pikProviderBalance" style="margin:6px 0;font-weight:500;color:var(--text)">Credits balance: ' + (typeof window !== 'undefined' && window.__pikRouterCredits && typeof window.__pikRouterCredits.balance === 'number' ? (window.__pikRouterCredits.available !== undefined ? window.__pikRouterCredits.available : window.__pikRouterCredits.balance) + ' credits (' + (window.__pikRouterCredits.creditRate || '100 Credits = $1.00 USD') + ')' : 'loading…') + '</div>' : '') +
                   '<div class="hint">Sign in or create a PikRouter account (pikrouter.pikpam.com) to configure your main default AI provider automatically.</div>' +
                   '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;width:100%;margin-top:8px">' +
                     '<input type="password" id="keyin-' + i + '" placeholder="or paste pikrouter API key" style="margin:0;max-width:260px">' +

@@ -7,6 +7,7 @@ import { ensureGituHome } from '../workspace/home.js';
 export const DEFAULT_PIKROUTER_AUTH_URL = 'https://pikrouter.pikpam.com/api/auth/login';
 export const DEFAULT_PIKROUTER_REGISTER_URL = 'https://pikrouter.pikpam.com/api/auth/register';
 export const DEFAULT_PIKROUTER_AUTHORIZE_URL = 'https://pikrouter.pikpam.com/oauth/authorize';
+export const DEFAULT_PIKROUTER_TOPUP_URL = 'https://pikrouter.pikpam.com/oauth/topup';
 export const DEFAULT_PIKROUTER_CREDITS_URL = 'https://pikrouter.pikpam.com/api/user/credits';
 export const DEFAULT_PIKROUTER_OAUTH_CLIENT_ID = 'client_nexus_65f8f5f9a0c92bf1';
 export const DEFAULT_PIKROUTER_BASE_URL = 'https://pikrouter.pikpam.com/v1';
@@ -84,6 +85,38 @@ export function buildPikRouterAuthorizeUrl(opts: PikRouterAuthorizeOptions): str
   const clientId = opts.clientId ?? DEFAULT_PIKROUTER_OAUTH_CLIENT_ID;
   const state = opts.state ?? 'random_state';
   return `${authorizeUrl}?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(opts.redirectUri)}&state=${encodeURIComponent(state)}`;
+}
+
+export interface PikRouterTopupOptions {
+  token?: string;
+  clientId?: string;
+  redirectUri?: string;
+  topupUrl?: string;
+}
+
+/**
+ * Builds the PikRouter Top Up URL.
+ * When user clicks "Top Up" or runs out of credits:
+ * https://pikrouter.pikpam.com/oauth/topup?client_id=YOUR_CLIENT_ID&token=${userToken}&redirect_uri=${encodeURIComponent('https://your-app.com/dashboard')}
+ */
+export function buildPikRouterTopupUrl(opts: PikRouterTopupOptions = {}): string {
+  const topupUrl = opts.topupUrl ?? DEFAULT_PIKROUTER_TOPUP_URL;
+  const clientId = opts.clientId ?? DEFAULT_PIKROUTER_OAUTH_CLIENT_ID;
+  const browserOrigin = (globalThis as unknown as { location?: { origin?: string } }).location?.origin;
+  const redirectUri = opts.redirectUri ?? (browserOrigin ? `${browserOrigin}/` : 'https://pikrouter.pikpam.com/');
+  const env = typeof process !== 'undefined' && process?.env ? mergedEnv() : {};
+  const token =
+    opts.token ??
+    (typeof localStorage !== 'undefined' ? localStorage.getItem('auth_token') ?? undefined : undefined) ??
+    env['HERMES_PIKROUTER_API_KEY'] ??
+    env['PIKROUTER_API_KEY'] ??
+    env['PIKROUTER_TOKEN'];
+
+  const url = new URL(topupUrl);
+  url.searchParams.set('client_id', clientId);
+  if (token) url.searchParams.set('token', token);
+  url.searchParams.set('redirect_uri', redirectUri);
+  return url.toString();
 }
 
 /**

@@ -243,6 +243,27 @@
     var authUrl = 'https://pikrouter.pikpam.com/oauth/authorize?client_id=client_nexus_65f8f5f9a0c92bf1&redirect_uri=' + encodeURIComponent(redirectUri) + '&state=' + encodeURIComponent(state);
     window.location.href = authUrl;
   }
+  function openPikRouterTopup(redirectPath) {
+    var token = '';
+    try { token = localStorage.getItem('auth_token') || ''; } catch (e) {}
+    var redirectUri = window.location.origin + (redirectPath || window.location.pathname || '/');
+    if (token) {
+      var topupUrl = 'https://pikrouter.pikpam.com/oauth/topup?client_id=client_nexus_65f8f5f9a0c92bf1&token=' + encodeURIComponent(token) + '&redirect_uri=' + encodeURIComponent(redirectUri);
+      window.location.href = topupUrl;
+      return;
+    }
+    api('/api/pikrouter/topup-url?redirect_uri=' + encodeURIComponent(redirectUri)).then(function (res) {
+      if (res && res.url) {
+        window.location.href = res.url;
+      } else {
+        window.location.href = 'https://pikrouter.pikpam.com/oauth/topup?client_id=client_nexus_65f8f5f9a0c92bf1&redirect_uri=' + encodeURIComponent(redirectUri);
+      }
+    }).catch(function () {
+      window.location.href = 'https://pikrouter.pikpam.com/oauth/topup?client_id=client_nexus_65f8f5f9a0c92bf1&redirect_uri=' + encodeURIComponent(redirectUri);
+    });
+  }
+  window.startPikRouterOAuth = startPikRouterOAuth;
+  window.openPikRouterTopup = openPikRouterTopup;
   (function handlePikRouterOAuthCallbackOnLoad() {
     try {
       if (typeof window === 'undefined' || !window.location || !window.location.search) return;

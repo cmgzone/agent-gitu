@@ -262,7 +262,8 @@
         '<div class="fmsg" title="' + esc(failure) + '">' + esc(failure) + '</div>' +
         (failSummary.hint ? '<div class="fhint">' + esc(failSummary.hint) + '</div>' : '') +
         '<div class="facts">' +
-        (failSummary.canSwitchModel ? '<button type="button" class="btn dark" id="sideFailSwitch">Switch model &amp; retry</button><button type="button" class="btn ghost" id="sideFailSettings">Provider settings</button>' : '') +
+        (failSummary.canTopup ? '<button type="button" class="btn dark" id="sideFailTopup">Top up credits</button>' : '') +
+        (failSummary.canSwitchModel ? '<button type="button" class="' + (failSummary.canTopup ? 'btn ghost' : 'btn dark') + '" id="sideFailSwitch">Switch model &amp; retry</button><button type="button" class="btn ghost" id="sideFailSettings">Provider settings</button>' : '') +
         '<button type="button" class="btn ghost" id="sideFailCopy">Copy error</button></div></div>'
       : '';
     html += '<div class="side-summary"><div class="t">Task state</div><div class="d">' +
@@ -306,6 +307,10 @@
     if (visibleFiles.length > 12) html += '<details class="side-more"><summary>Show ' + (visibleFiles.length - 12) + ' more files</summary>' + visibleFiles.slice(12).map(function (f) { return projectFileChipHtml(runId, f, f); }).join('') + '</details>';
     body.innerHTML = html;
     if (failure) {
+      var failTopup = $('sideFailTopup');
+      if (failTopup) failTopup.onclick = function () {
+        if (typeof openPikRouterTopup === 'function') openPikRouterTopup();
+      };
       var failSwitch = $('sideFailSwitch');
       if (failSwitch) failSwitch.onclick = function () {
         closeToolPanel();

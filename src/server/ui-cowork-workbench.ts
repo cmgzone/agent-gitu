@@ -339,18 +339,27 @@ export const COWORK_WORKBENCH_JS = String.raw`
       if (usage.creditsBalance !== null && usage.creditsBalance !== undefined) {
         creditsTitle += ' · ' + cwFormatCredits(usage.creditsBalance) + ' remaining balance';
       }
-      creditsTitle += ' (Rate: ' + (usage.creditRate || '100 Credits = $1.00 USD') + ')';
+      creditsTitle += ' (Rate: ' + (usage.creditRate || '100 Credits = $1.00 USD') + ') · Click "Top up" to add credits';
       titleParts.push(creditsTitle);
     } else if (usage.budgetMaxCostUsd) {
       titleParts.push('Spend: ' + usage.costFormatted + ' / $' + Number(usage.budgetMaxCostUsd).toFixed(2) + ' budget');
     } else {
       titleParts.push('Price: ' + usage.costFormatted + (usage.isReal ? ' actual' : ' est.'));
     }
+    var topupBtn = usage.isCredits ? ' · <button type="button" class="cw-topup-link" id="cwMeterTopup" style="background:none;border:none;color:var(--accent,#8f80ff);font-weight:600;cursor:pointer;padding:0;text-decoration:underline" title="Top up PikRouter credits">Top up</button>' : '';
     host.innerHTML =
       '<div class="cw-context-pill" title="' + esc(titleParts.join(' · ')) + '">' +
         '<span class="cw-context-meter-track"><span class="cw-context-meter-fill' + tone + '" style="width:' + usage.percent + '%"></span></span>' +
-        '<span>' + esc(tokLabel) + '/' + esc(maxLabel) + ' tok · ' + usage.percent + '% · ' + esc(usage.costFormatted) + '</span>' +
+        '<span>' + esc(tokLabel) + '/' + esc(maxLabel) + ' tok · ' + usage.percent + '% · ' + esc(usage.costFormatted) + topupBtn + '</span>' +
       '</div>';
+    var topupEl = $('cwMeterTopup');
+    if (topupEl) {
+      topupEl.onclick = function (e) {
+        e.stopPropagation();
+        if (typeof openPikRouterTopup === 'function') openPikRouterTopup();
+        else window.location.href = 'https://pikrouter.pikpam.com/oauth/topup?client_id=client_nexus_65f8f5f9a0c92bf1&redirect_uri=' + encodeURIComponent(window.location.origin + window.location.pathname);
+      };
+    }
   }
 
   function cwExtractCitations(message) {

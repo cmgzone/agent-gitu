@@ -3,12 +3,14 @@ import {
   DEFAULT_PIKROUTER_AUTH_URL,
   DEFAULT_PIKROUTER_REGISTER_URL,
   DEFAULT_PIKROUTER_AUTHORIZE_URL,
+  DEFAULT_PIKROUTER_TOPUP_URL,
   DEFAULT_PIKROUTER_CREDITS_URL,
   DEFAULT_PIKROUTER_OAUTH_CLIENT_ID,
   DEFAULT_PIKROUTER_BASE_URL,
   DEFAULT_PIKROUTER_MODEL,
   PIKROUTER_CREDITS_PER_USD,
   buildPikRouterAuthorizeUrl,
+  buildPikRouterTopupUrl,
   parsePikRouterOAuthCallback,
   createPikRouterClient,
   loginPikRouter,
@@ -347,5 +349,15 @@ describe('PikRouter integration', () => {
     expect(creditsRes.credits.available).toBe(50);
     expect(creditsRes.credits.creditRate).toBe('100 Credits = $1.00 USD');
     expect(creditsRes.usage?.lifetimeSpentCredits).toBe(0.25);
+  });
+
+  it('builds the PikRouter topup URL with token and redirect URI', () => {
+    expect(DEFAULT_PIKROUTER_TOPUP_URL).toBe('https://pikrouter.pikpam.com/oauth/topup');
+    const url = buildPikRouterTopupUrl({
+      clientId: 'client_nexus_65f8f5f9a0c92bf1',
+      token: 'jwt_user_token_123',
+      redirectUri: 'https://your-app.com/dashboard',
+    });
+    expect(url).toBe('https://pikrouter.pikpam.com/oauth/topup?client_id=client_nexus_65f8f5f9a0c92bf1&token=jwt_user_token_123&redirect_uri=https%3A%2F%2Fyour-app.com%2Fdashboard');
   });
 });

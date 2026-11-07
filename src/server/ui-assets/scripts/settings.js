@@ -65,7 +65,8 @@
         '<div class="setrow"><div class="grow"><div class="t">Spend ceiling</div><div class="d">Optional per-run limit in USD. Left empty, a run is never stopped for cost — only by you, or by finishing the task.</div></div><input type="text" id="gSpend" inputmode="decimal" placeholder="none" style="width:96px;background:var(--card2);border:1px solid var(--border2);color:var(--text);border-radius:8px;padding:6px 9px;font:inherit;font-size:13px"></div>' +
         '<div class="setrow"><div class="grow"><div class="t">Primary workspace</div><div class="d">Choose the default first page when opening Agent Gitu.</div></div><select id="gStartMode"><option value="cowork">Cowork (Recommended)</option><option value="coding">Coding</option></select></div>' +
         '</div>';
-      b.insertAdjacentHTML('beforeend','<h2>Account</h2><div class="setcard" id="pikAccountSettings"><div class="setrow"><div class="grow"><div class="t">PikRouter account <span class="chip ok">main auth</span></div><div class="d" id="pikAccountDesc">Signed in with PikRouter. Routes AI requests and unlocks your workspace.</div></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn dark" id="pikAccountSwitch">Continue with PikRouter</button><button class="btn ghost" id="pikAccountLogout">Log out</button></div></div></div><div class="setcard" id="googleAccountSettings" style="margin-top:10px"><div class="setrow"><div class="grow"><div class="t">Google sign-in</div><div class="d">Checking configuration…</div></div></div></div>');
+      b.insertAdjacentHTML('beforeend','<h2>Account</h2><div class="setcard" id="pikAccountSettings"><div class="setrow"><div class="grow"><div class="t">PikRouter account <span class="chip ok">main auth</span></div><div class="d" id="pikAccountDesc">Signed in with PikRouter. Routes AI requests and unlocks your workspace.</div></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn dark" id="pikAccountTopup">Top up credits</button><button class="btn ghost" id="pikAccountSwitch">Continue with PikRouter</button><button class="btn ghost" id="pikAccountLogout">Log out</button></div></div></div><div class="setcard" id="googleAccountSettings" style="margin-top:10px"><div class="setrow"><div class="grow"><div class="t">Google sign-in</div><div class="d">Checking configuration…</div></div></div></div>');
+      if ($('pikAccountTopup')) $('pikAccountTopup').onclick = function () { openPikRouterTopup(); };
       if ($('pikAccountSwitch')) $('pikAccountSwitch').onclick = function () { startPikRouterOAuth('/callback'); };
       if ($('pikAccountLogout')) $('pikAccountLogout').onclick = async function () {
         var btn = this; btn.disabled = true;
@@ -435,7 +436,7 @@
                     '<button type="button" class="btn ghost" id="pikSigninBtn">Sign in</button>' +
                     '<button type="button" class="btn ghost" id="pikRegisterBtn">Create account</button>' +
                   '</div>' +
-                  (usable ? '<div class="meta" id="pikProviderBalance" style="margin:6px 0;font-weight:500;color:var(--text)">Credits balance: ' + (typeof window !== 'undefined' && window.__pikRouterCredits && typeof window.__pikRouterCredits.balance === 'number' ? (window.__pikRouterCredits.available !== undefined ? window.__pikRouterCredits.available : window.__pikRouterCredits.balance) + ' credits (' + (window.__pikRouterCredits.creditRate || '100 Credits = $1.00 USD') + ')' : 'loading…') + '</div>' : '') +
+                  (usable ? '<div class="meta" id="pikProviderBalance" style="margin:6px 0;font-weight:500;color:var(--text);display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span>Credits balance: ' + (typeof window !== 'undefined' && window.__pikRouterCredits && typeof window.__pikRouterCredits.balance === 'number' ? (window.__pikRouterCredits.available !== undefined ? window.__pikRouterCredits.available : window.__pikRouterCredits.balance) + ' credits (' + (window.__pikRouterCredits.creditRate || '100 Credits = $1.00 USD') + ')' : 'loading…') + '</span><button type="button" class="btn ghost" id="pikProviderTopup" style="padding:2px 8px;font-size:11px">Top up credits</button></div>' : '') +
                   '<div class="hint">Sign in or create a PikRouter account (pikrouter.pikpam.com) to configure your main default AI provider automatically.</div>' +
                   '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;width:100%;margin-top:8px">' +
                     '<input type="password" id="keyin-' + i + '" placeholder="or paste pikrouter API key" style="margin:0;max-width:260px">' +
@@ -486,6 +487,8 @@
         }
         var pikOAuth = $('pikOAuthBtn');
         if (pikOAuth) pikOAuth.onclick = function () { startPikRouterOAuth('/callback'); };
+        var pikProvTopup = $('pikProviderTopup');
+        if (pikProvTopup) pikProvTopup.onclick = function () { openPikRouterTopup(); };
         bindPikAction($('pikSigninBtn'), 'login');
         bindPikAction($('pikRegisterBtn'), 'register');
         var pikSignout = $('pikSignoutBtn');

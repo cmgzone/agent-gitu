@@ -122,7 +122,7 @@ import { PROVIDERS, ProviderError, allProviderSpecs, fetchModelCatalog, freeMode
 import { resolveModelCatalog } from '../llm/resolved-model-catalog.js';
 import { resolveEmbedder } from '../llm/providers.js';
 import { removeStoredKey, setStoredKey, storedKeyVars } from '../llm/keys.js';
-import { loginPikRouter, registerPikRouter, fetchPikRouterCredits, usdToPikRouterCredits, formatPikRouterCredits, type PikRouterCreditsResponse } from '../llm/pikrouter.js';
+import { loginPikRouter, registerPikRouter, fetchPikRouterCredits, usdToPikRouterCredits, formatPikRouterCredits, buildPikRouterTopupUrl, type PikRouterCreditsResponse } from '../llm/pikrouter.js';
 import { getVault } from '../vault/vault.js';
 import { SessionStore, type SessionUsage, type StoredSessionFile } from './session-store.js';
 import { McpManager } from '../mcp/client.js';
@@ -8203,6 +8203,18 @@ export class GituServer {
       } catch (err) {
         this.sendJson(res, 500, { error: (err as Error).message });
       }
+      return;
+    }
+
+    if (method === 'GET' && path === '/api/pikrouter/topup-url') {
+      const spec = PROVIDERS['pikrouter'];
+      const key = spec ? providerKey(spec)?.key : undefined;
+      const redirectUri = url.searchParams.get('redirect_uri') || (req.headers.referer ? String(req.headers.referer) : undefined);
+      const topupUrl = buildPikRouterTopupUrl({
+        token: key,
+        redirectUri,
+      });
+      this.sendJson(res, 200, { ok: true, url: topupUrl });
       return;
     }
 

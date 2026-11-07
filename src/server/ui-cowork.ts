@@ -2328,7 +2328,9 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
   // Shared by Cowork replies and the main agent's completion report.
   function cwReplyHtml(agent, meta, body, actions, messageId) {
     var resultOnly = /^<div class="out-card(?: |")/.test(body);
-    return '<div class="cw-row"' + (messageId ? ' data-cwentrance="' + esc(messageId) + '"' : '') + '>' + cwAva(agent) + '<div class="cw-bubble' + (resultOnly ? ' cw-result-bubble' : '') + '"><div class="cw-meta"><span class="nm">' + esc(agent.name) + '</span><span class="tg">' + esc(meta) + '</span></div>' + body + (actions || '') + '</div></div>';
+    var isCreditsErr = /(?:no credits|insufficient balance|insufficient credits|out of credits|purchase more credits|\b402\b)/i.test(body || '');
+    var topupCta = isCreditsErr ? '<div style="margin-top:8px"><button type="button" class="btn dark" style="font-size:12px;padding:4px 10px;display:inline-flex;align-items:center;gap:6px" onclick="if(typeof openPikRouterTopup===\'function\')openPikRouterTopup();">Top Up PikRouter Credits</button></div>' : '';
+    return '<div class="cw-row"' + (messageId ? ' data-cwentrance="' + esc(messageId) + '"' : '') + '>' + cwAva(agent) + '<div class="cw-bubble' + (resultOnly ? ' cw-result-bubble' : '') + '"><div class="cw-meta"><span class="nm">' + esc(agent.name) + '</span><span class="tg">' + esc(meta) + '</span></div>' + body + topupCta + (actions || '') + '</div></div>';
   }
 
   // Older stored replies can contain raw tool protocol text. Hide that display

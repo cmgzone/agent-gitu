@@ -117,10 +117,14 @@
       return { title: 'The local Codex runtime could not start', hint: 'Restart Agent Gitu; if it persists, repair or reinstall Agent Gitu (or update Codex), then retry. Changing models will not fix this runtime error.', canSwitchModel: false };
     }
     if (/usage (?:limit|cap)|quota (?:exceeded|exhausted)|insufficient[_ -]quota|purchase more credits|no credits|insufficient balance|\bbilling\b|\b402\b/i.test(text)) {
+      var isPik = /pikrouter|pikprovider/i.test(text) || (typeof window !== 'undefined' && window.__pikRouterActive);
       var reset = /(?:try again|resets?)\s+(at|in)\s+([^.;,)]+)/i.exec(text);
-      var title = /chatgpt/i.test(text) ? 'ChatGPT plan usage limit reached' : 'The selected model ran out of quota or credits';
+      var title = /chatgpt/i.test(text) ? 'ChatGPT plan usage limit reached' : (isPik ? 'PikRouter ran out of credits' : 'The selected model ran out of quota or credits');
       if (reset) title += ' — try again ' + reset[1].toLowerCase() + ' ' + reset[2].trim();
-      return { title: title, hint: 'Switch models to retry now, or wait for the quota to reset. Your task and history are preserved.', canSwitchModel: true };
+      var hint = isPik
+        ? 'Top up your PikRouter credits to continue this task, or switch to another provider.'
+        : 'Switch models to retry now, or wait for the quota to reset. Your task and history are preserved.';
+      return { title: title, hint: hint, canSwitchModel: true, canTopup: isPik };
     }
     if (/\b401\b|invalid api key|incorrect api key|unauthorized|authentication failed/i.test(text)) {
       return { title: 'The provider rejected its API key', hint: 'Check the key in provider settings, then retry. Your task and history are preserved.', canSwitchModel: true };
@@ -252,7 +256,13 @@
     sess.errShownKey = key;
     var div = document.createElement('div');
     div.className = 'run-stop-note';
-    div.textContent = 'Run stopped — see Task details in the left sidebar to review and retry.';
+    var isCreditsErr = /(?:no credits|insufficient balance|insufficient credits|out of credits|purchase more credits|\b402\b)/i.test(key) ||
+      Boolean((session && session.provider && /pikrouter|pikprovider/i.test(session.provider) || (typeof window !== 'undefined' && window.__pikRouterActive)) && /billing|quota|credits/i.test(key));
+    if (isCreditsErr) {
+      div.innerHTML = '<span>Ran out of credits — </span><button type="button" class="btn dark" style="padding:4px 10px;font-size:12px;margin-left:4px" onclick="if(typeof openPikRouterTopup===\'function\')openPikRouterTopup();">Top up credits</button>';
+    } else {
+      div.textContent = 'Run stopped — see Task details in the left sidebar to review and retry.';
+    }
     var w = $('working');
     if (w) stream.insertBefore(div, w); else stream.appendChild(div);
     stickScroll(stream, true);

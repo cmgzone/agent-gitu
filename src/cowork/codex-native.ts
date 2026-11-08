@@ -170,7 +170,11 @@ export async function runNativeCoworkTurn(input: {
       images,
       effort: input.agent.effort,
       onThread: (threadId) => {
-        session = { conversationId: input.conversationId, agentId: input.agent.id, threadId, cwd, historyKeys: savedSession?.historyKeys ?? [], admittedCalls: [...admitted] };
+        // A new provider session (a fresh task, or a transcript dropped for
+        // exceeding the prompt ceiling) cannot be appended to: the next turn
+        // must resend the visible history instead of only the delta.
+        const continued = session?.threadId === threadId;
+        session = { conversationId: input.conversationId, agentId: input.agent.id, threadId, cwd, historyKeys: continued ? savedSession?.historyKeys ?? [] : [], admittedCalls: [...admitted] };
         persist();
       },
       onTurn: (turnId) => {
@@ -309,7 +313,7 @@ export async function runNativeCoworkTurn(input: {
   } catch (err) {
     if (
       err instanceof Error &&
-      ((err instanceof LlmError && err.details.kind === 'protocol_error') ||
+      ((err instanceof LlmError && (err.details.kind === 'protocol_error' || err.details.kind === 'prompt_too_large')) ||
         err.message.includes('The saved session for this task no longer exists') ||
         err.message.includes('repeated a denied or waiting request without progress') ||
         err.message.includes('repeated the same Cowork operation and unchanged result without progress'))

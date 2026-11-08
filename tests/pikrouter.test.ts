@@ -13,6 +13,7 @@ import {
   buildPikRouterTopupUrl,
   parsePikRouterOAuthCallback,
   createPikRouterClient,
+  pikRouterPiTarget,
   loginPikRouter,
   registerPikRouter,
   streamPikRouterCompletion,
@@ -21,7 +22,7 @@ import {
   formatPikRouterCredits,
 } from '../src/llm/pikrouter.js';
 import { PROVIDERS, providerSpec, resolveLlm } from '../src/llm/providers.js';
-import { effortStyleFor } from '../src/llm/llm.js';
+import { effortStyleFor, PLATFORM_SAFETY_MAX_TOKENS } from '../src/llm/llm.js';
 import { piProviderConfig } from '../src/llm/pi-native.js';
 import { authPage } from '../src/server/ui-auth.js';
 
@@ -190,6 +191,19 @@ describe('PikRouter integration', () => {
     const wireMessages = sentBody!.messages as Array<{ role: string; content: unknown }>;
     expect(typeof wireMessages[1].content).toBe('string');
     expect(wireMessages[1].content).toBe('Hello\nworld');
+  });
+
+  it('registers the PikRouter client on pi with a bounded model window', () => {
+    const target = pikRouterPiTarget(
+      { contextWindow: 1_048_576 },
+      'DeepSeek-V4.1-Flash',
+      DEFAULT_PIKROUTER_BASE_URL,
+      'test-token',
+    );
+    expect(target.providerId).toBe('gitu-pikrouter');
+    expect(target.contextWindow).toBe(1_048_576);
+    // The advertised 1M window is clamped to the budget pi must compact within.
+    expect(piProviderConfig(target).models?.[0]?.contextWindow).toBe(PLATFORM_SAFETY_MAX_TOKENS);
   });
 
   it('supports pikprovider alias and configures piProviderConfig for PiNativeRuntime', () => {

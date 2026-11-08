@@ -13,10 +13,10 @@
  * admission, narration and usage reporting all keep working unchanged — and so
  * do cron and channel runs, which drive the same runners.
  */
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import type { AgentToolResult, ToolDefinition } from '@earendil-works/pi-coding-agent';
-import { LlmError, type LlmUsage } from './llm.js';
+import { LlmError, PLATFORM_SAFETY_MAX_CHARS, PLATFORM_SAFETY_MAX_TOKENS, type LlmUsage } from './llm.js';
 import type { NativeRecord, NativeTaskInput, NativeTaskResult, NativeTaskRuntime } from './native-task.js';
 import {
   piCompactionExtension,
@@ -77,6 +77,30 @@ export interface PiModelTarget {
   compat?: PiChatModelConfig['compat'];
 }
 
+/**
+ * The window pi plans compaction against. Pi compacts at
+ * (contextWindow - reserveTokens), so registering a model's advertised
+ * 1M-token window defers compaction until the request is already past the
+ * provider's platform character ceiling. Gitu's own prompt ceiling is the
+ * budget pi must plan against, whatever the model advertises.
+ */
+export function piContextWindow(advertised?: number): number {
+  const window = typeof advertised === 'number' && Number.isFinite(advertised) && advertised > 0 ? advertised : 128_000;
+  return Math.min(window, PLATFORM_SAFETY_MAX_TOKENS);
+}
+
+/** A prompt at or past the provider ceiling is never fixed by resending it. */
+const PROMPT_TOO_LARGE_MESSAGE = /total prompt length|exceeds platform safety limit|prompt (?:is )?too (?:large|long)|maximum context (?:length|window)|context.?(?:window|length)|too many tokens|reduce the length of the messages|input is too long/i;
+
+/** Transcript bytes are an upper bound on its characters, and stat is cheap. */
+function transcriptChars(file: string): number {
+  try {
+    return statSync(file).size;
+  } catch {
+    return 0;
+  }
+}
+
 /** Gitu provider spec → pi provider registration (pi's `custom-provider.md`). */
 export function piProviderConfig(target: PiModelTarget): PiProviderConfig {
   const lowerProvider = target.providerId.toLowerCase();
@@ -126,7 +150,7 @@ export function piProviderConfig(target: PiModelTarget): PiProviderConfig {
         // Provider pricing is unknown here; leaving it zero keeps cost reporting
         // from inventing a number. Gitu's own budgets own spend accounting.
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: target.contextWindow ?? 128_000,
+        contextWindow: piContextWindow(target.contextWindow),
         maxTokens: target.maxTokens ?? 8_192,
       },
     ],
@@ -232,8 +256,8 @@ export function classifyPiError(error: unknown, providerId?: string): LlmError {
   const raw = error instanceof Error ? error.message : String(error);
   const clean = formatOpenRouterErrorMessage(raw);
   const message = providerId ? withoutProviderNamespace(clean, providerId) : clean;
-  const kind = /context.?(?:window|length)|too many tokens|maximum context/i.test(message)
-    ? 'protocol_error'
+  const kind = PROMPT_TOO_LARGE_MESSAGE.test(message)
+    ? 'prompt_too_large'
     : /abort|cancell?ed/i.test(message)
       ? 'aborted'
       : /401|403|unauthor|invalid.?api.?key|authentication/i.test(message)
@@ -310,6 +334,13 @@ export class PiNativeRuntime implements NativeTaskRuntime {
     let unsubscribe: (() => void) | undefined;
     let onAbort: (() => void) | undefined;
     try {
+      const promptChars = input.text.length + input.instructions.length;
+      if (promptChars > PLATFORM_SAFETY_MAX_CHARS) {
+        throw new LlmError(
+          `The model turn was not sent: this prompt is ${promptChars.toLocaleString()} characters, above Gitu's ${PLATFORM_SAFETY_MAX_CHARS.toLocaleString()} character ceiling. Completed work is saved. Start a new task or shorten the request.`,
+          { kind: 'prompt_too_large' },
+        );
+      }
       const sdk = await (this.options.loadSdk ?? loadPiSdk)();
       const agentDir = this.options.agentDir;
       const sessionsDir = path.join(agentDir, 'pi', 'sessions');
@@ -339,9 +370,8 @@ export class PiNativeRuntime implements NativeTaskRuntime {
         );
       }
 
-      const sessionManager = input.threadId
-        ? this.resumeSession(sdk, input.threadId, input.cwd, sessionsDir)
-        : sdk.SessionManager.create(input.cwd, sessionsDir);
+      const resumed = input.threadId ? this.resumeSession(sdk, input.threadId, input.cwd, sessionsDir) : undefined;
+      const sessionManager = resumed?.manager ?? sdk.SessionManager.create(input.cwd, sessionsDir);
       const sessionId = sessionManager.getSessionId();
       input.onThread(sessionId);
 
@@ -500,7 +530,10 @@ export class PiNativeRuntime implements NativeTaskRuntime {
       input.signal.addEventListener('abort', onAbort, { once: true });
 
       const images = allowImages ? toImages(input.images ?? []) : [];
-      await session.prompt(input.text, images.length ? { images } : undefined);
+      const resetNote = resumed?.droppedChars
+        ? `CONTEXT RESET: the earlier transcript (${resumed.droppedChars.toLocaleString()} characters) was not resumed because sending it would exceed the provider's prompt limit. Continue from the task state in this message; completed work is saved.\n\n`
+        : '';
+      await session.prompt(resetNote + input.text, images.length ? { images } : undefined);
       await events;
       if (lastError) throw classifyPiError(lastError, this.options.target.providerId);
       return {
@@ -525,12 +558,24 @@ export class PiNativeRuntime implements NativeTaskRuntime {
     }
   }
 
-  /** Resume the transcript recorded for this thread, never a fresh session. */
-  private resumeSession(sdk: PiSdk, threadId: string, cwd: string, sessionsDir: string): PiSessionManager {
+  /** Resume the transcript recorded for this thread, never a fresh session —
+   *  unless that transcript is already past the prompt ceiling, where resending
+   *  it can only fail. Dropping it is the one request the provider accepts, and
+   *  Gitu's saved task state carries the work forward. */
+  private resumeSession(
+    sdk: PiSdk,
+    threadId: string,
+    cwd: string,
+    sessionsDir: string,
+  ): { manager: PiSessionManager; droppedChars?: number } {
     const file = sdk.SessionManager.findById(cwd, threadId, sessionsDir);
     if (!file) {
       throw new LlmError('The saved session for this task no longer exists. Start an explicit new task.', { kind: 'protocol_error' });
     }
-    return sdk.SessionManager.open(file, sessionsDir, cwd);
+    const chars = transcriptChars(file);
+    if (chars > PLATFORM_SAFETY_MAX_CHARS) {
+      return { manager: sdk.SessionManager.create(cwd, sessionsDir), droppedChars: chars };
+    }
+    return { manager: sdk.SessionManager.open(file, sessionsDir, cwd) };
   }
 }

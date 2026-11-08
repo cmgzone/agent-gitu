@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { LlmError } from '../src/llm/llm.js';
+import { LlmError, PLATFORM_SAFETY_MAX_CHARS, PLATFORM_SAFETY_MAX_TOKENS } from '../src/llm/llm.js';
 import type { NativeTaskInput, NativeTaskResult } from '../src/llm/native-task.js';
 import {
   classifyPiError,
   piAdmissionExtension,
+  piContextWindow,
   piProviderConfig,
   PiNativeRuntime,
   thinkingLevelFor,
@@ -265,6 +266,28 @@ describe('pi as a provider-owned loop', () => {
     expect(h.created).toHaveLength(0);
   });
 
+  it('drops a saved transcript that can no longer be sent instead of resending it', async () => {
+    const dir = workspace();
+    const file = path.join(dir, 'pi-session-huge.jsonl');
+    writeFileSync(file, 'x'.repeat(PLATFORM_SAFETY_MAX_CHARS + 1));
+    const h = harness(async () => {}, { 'pi-session-huge': file });
+    await h.runtime.runTurn(input({ threadId: 'pi-session-huge' }));
+    expect(h.opened).toEqual([]);
+    expect(h.created).toHaveLength(1);
+    expect(h.sessions[0]!.prompts[0]!.text).toContain('CONTEXT RESET');
+    expect(h.sessions[0]!.prompts[0]!.text).toContain('Do the work.');
+  });
+
+  it('refuses to send a prompt that is itself over the ceiling', async () => {
+    const h = harness(async () => {});
+    const failure = (await h.runtime
+      .runTurn(input({ text: 'x'.repeat(PLATFORM_SAFETY_MAX_CHARS + 1) }))
+      .catch((error: Error) => error)) as LlmError;
+    expect(failure.details.kind).toBe('prompt_too_large');
+    expect(h.created).toHaveLength(0);
+    expect(h.sessions).toHaveLength(0);
+  });
+
   it('steers an active turn and reports an interrupted status on abort', async () => {
     const controller = new AbortController();
     const h = harness(async (session) => {
@@ -359,6 +382,29 @@ describe('pi mapping helpers', () => {
     expect(classifyPiError(error)).toBe(error);
     expect(classifyPiError(new Error('fetch failed')).details.kind).toBe('network');
     expect(classifyPiError(new Error('insufficient quota')).details.kind).toBe('quota_exhausted');
+  });
+
+  it('classifies an oversized prompt as fatal instead of a transient outage', () => {
+    expect(
+      classifyPiError(new Error('400: {"message":"Total prompt length (6,286,646 chars) exceeds platform safety limit of 2,000,000"}')).details.kind,
+    ).toBe('prompt_too_large');
+    expect(
+      classifyPiError(new Error("400: This model's maximum context length is 1048576 tokens. However, you requested 11556942 tokens")).details.kind,
+    ).toBe('prompt_too_large');
+  });
+
+  it('plans pi compaction against Gitu’s prompt ceiling, not the advertised window', () => {
+    expect(piContextWindow(1_048_576)).toBe(PLATFORM_SAFETY_MAX_TOKENS);
+    expect(piContextWindow(64_000)).toBe(64_000);
+    expect(piContextWindow(undefined)).toBe(128_000);
+    const config = piProviderConfig({
+      providerId: 'gitu-deepseek',
+      baseUrl: 'https://api.deepseek.com',
+      apiKey: 'k',
+      modelId: 'm',
+      contextWindow: 1_048_576,
+    });
+    expect(config.models![0]!.contextWindow).toBe(PLATFORM_SAFETY_MAX_TOKENS);
   });
 
   it('reports a failed turn without naming the runtime or the registration namespace', async () => {

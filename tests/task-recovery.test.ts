@@ -29,13 +29,25 @@ describe('shared task recovery', () => {
     expect(providerRecoveryDelay(error, 99)).toBe(300_000);
   });
 
-  it.each(['auth', 'access', 'billing', 'quota_exhausted', 'aborted', 'protocol_error'] as const)('does not retry %s', kind => {
+  it.each(['auth', 'access', 'billing', 'quota_exhausted', 'aborted', 'protocol_error', 'prompt_too_large'] as const)('does not retry %s', kind => {
     expect(providerRecoveryDelay(new LlmError('fatal', { kind }), 1)).toBeUndefined();
   });
 
   it('respects Retry-After beyond its normal backoff cap', () => {
     expect(providerRecoveryDelay(new LlmError('rate limit', { kind: 'rate_limit_temporary', retryAfterMs: 600_000 }), 10)).toBe(600_000);
     expect(providerRecoveryDelay(new TypeError('invalid implementation'), 1)).toBeUndefined();
+  });
+
+  it('never retries a prompt at the provider ceiling, whatever class the transport guessed', () => {
+    const platformLimit = new LlmError(
+      '400: {"message":"Total prompt length (12,588,156 chars) exceeds platform safety limit of 2,000,000"}',
+      { kind: 'provider_unavailable' },
+    );
+    const contextLimit = new LlmError("This model's maximum context length is 1048576 tokens. However, you requested 11556942 tokens", {
+      kind: 'provider_unavailable',
+    });
+    expect(providerRecoveryDelay(platformLimit, 1)).toBeUndefined();
+    expect(providerRecoveryDelay(contextLimit, 1)).toBeUndefined();
   });
 
   it('requires verified completion and distinguishes dependencies', () => {

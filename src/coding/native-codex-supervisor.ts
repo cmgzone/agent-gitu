@@ -815,7 +815,14 @@ export async function runNativeCodexTask(input: {
     }
     if (ledger.data.execution?.native) {
       ledger.data.execution.native.status = exited === 'aborted' ? 'interrupted' : 'failed';
-      if (error instanceof Error && error.message.includes('The saved session for this task no longer exists')) {
+      // A thread whose transcript is over the prompt ceiling, or already gone,
+      // must not be resumed again: the next turn starts a fresh provider
+      // session seeded with the saved task state instead.
+      const resetThread =
+        error instanceof LlmError
+          ? error.details.kind === 'prompt_too_large'
+          : error instanceof Error && error.message.includes('The saved session for this task no longer exists');
+      if (resetThread) {
         delete ledger.data.execution.native.threadId;
         ledger.save();
       }

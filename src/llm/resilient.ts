@@ -51,8 +51,15 @@ export function clearCooldownsForTest(): void {
   cooldowns.clear();
 }
 
+/** A prompt at or past the provider ceiling cannot be fixed by resending it,
+ *  whatever failure class the transport guessed from the raw message. */
+function isPromptTooLargeMessage(message: string): boolean {
+  return /prompt.*too (?:large|long)|total prompt length|exceeds platform safety limit|maximum context (?:length|window)|context.?(?:window|length)|too many tokens|safety limit|\b2,?000,?000\b/i.test(message);
+}
+
 /** Errors that will NEVER succeed by waiting. */
 function isFatalLlmError(err: Error): boolean {
+  if (isPromptTooLargeMessage(err.message)) return true;
   if (err instanceof LlmError) {
     return ['auth', 'access', 'billing', 'quota_exhausted', 'tool_protocol_incompatible', 'protocol_error', 'prompt_too_large', 'aborted'].includes(err.details.kind);
   }
@@ -84,6 +91,7 @@ function assertSafePromptSize(messages: LlmMessage[], opts?: LlmOptions): void {
 
 /** Transient-shaped failures: worth another attempt after a delay. */
 export function isTransientLlmError(err: Error): boolean {
+  if (isPromptTooLargeMessage(err.message)) return false;
   if (err instanceof LlmError) return ['network', 'rate_limit_temporary', 'provider_unavailable'].includes(err.details.kind);
   if (isRetryableNetworkError(err)) return true;
   return (

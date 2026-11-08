@@ -1,6 +1,7 @@
 import { OpenAiCompatClient, type LlmClient } from './llm.js';
 import { mergedEnv, setStoredKey } from './keys.js';
-import { PiNativeRuntime } from './pi-native.js';
+import { PiNativeRuntime, type PiModelTarget } from './pi-native.js';
+import { modelMetadataFor, peekModelCatalog } from './providers.js';
 import { selectedRuntime } from './runtime-mode.js';
 import { ensureGituHome } from '../workspace/home.js';
 
@@ -193,6 +194,31 @@ export interface PikRouterClientOptions {
   apiKey?: string;
   baseUrl?: string;
   model?: string;
+  /** Model window for the pi registration. Resolved from the live catalog when
+   *  omitted, and clamped to Gitu's prompt ceiling by `piProviderConfig`. */
+  contextWindow?: number;
+}
+
+/**
+ * The pi registration target for a PikRouter token client. PikRouter always
+ * runs through pi, so its registration needs the same model window `resolveLlm`
+ * supplies; without it pi falls back to 128k and compacts at the wrong point.
+ */
+export function pikRouterPiTarget(
+  opts: PikRouterClientOptions,
+  model: string,
+  baseUrl: string,
+  apiKey: string,
+): PiModelTarget {
+  return {
+    providerId: 'gitu-pikrouter',
+    label: 'PikRouter (pikrouter.pikpam.com, OpenAI-compatible)',
+    baseUrl,
+    apiKey,
+    modelId: model,
+    vision: false,
+    contextWindow: opts.contextWindow ?? modelMetadataFor(peekModelCatalog(), 'pikrouter', model)?.contextTokens,
+  };
 }
 
 /**
@@ -383,14 +409,7 @@ export function createPikRouterClient(opts: PikRouterClientOptions = {}): OpenAi
     selectedRuntime(env) === 'pi'
       ? new PiNativeRuntime({
           agentDir: ensureGituHome().root,
-          target: {
-            providerId: 'gitu-pikrouter',
-            label: 'PikRouter (pikrouter.pikpam.com, OpenAI-compatible)',
-            baseUrl,
-            apiKey: token,
-            modelId: model,
-            vision: false,
-          },
+          target: pikRouterPiTarget(opts, model, baseUrl, token),
         })
       : undefined;
   return nativeTask ? Object.assign(client, { nativeTask }) : client;

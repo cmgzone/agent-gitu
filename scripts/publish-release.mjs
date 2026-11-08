@@ -30,8 +30,8 @@ const body = `## What's Changed in Agent Gitu v0.4.14
 
 ### Verification Checksums (SHA-256)
 \`\`\`
-2704349fce671bbe90210dee2317f2480ee9eca0b281c278eaba37ebf7d9eaae *Agent-Gitu-Setup-0.4.14.exe
-27b48f73ab58160936621d0a91b4c5c516ab1f3933c3e1cee0cf48aee7a0029e *Agent-Gitu-Portable-0.4.14.exe
+0894932be78cd778dd2a610c54f8573d094f39f8235801273b41889dd33a397d *Agent-Gitu-Setup-0.4.14.exe
+2d331f20dd4ac0a2b0626b4ee56199bbf3934dee6f332d3723a9b431e24f1108 *Agent-Gitu-Portable-0.4.14.exe
 \`\`\`
 `;
 

@@ -46,6 +46,7 @@
   "build": {
     "appId": "dev.agentgitu.desktop",
     "productName": "Agent Gitu",
+    "electronDist": "node_modules/electron/dist",
     "asar": false,
     "extraResources": [
       {

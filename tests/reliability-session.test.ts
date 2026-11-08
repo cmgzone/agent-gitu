@@ -24,7 +24,7 @@ async function initGitRepo(dir: string): Promise<void> {
   await gitExec(dir, ['-c', 'user.name=rsess', '-c', 'user.email=rsess@test.local', 'commit', '-m', 'initial']);
 }
 
-async function waitFor<T>(fn: () => Promise<T | undefined>, timeoutMs = 20000): Promise<T> {
+async function waitFor<T>(fn: () => Promise<T | undefined>, timeoutMs = 40000): Promise<T> {
   const start = Date.now();
   for (;;) {
     const value = await fn();

@@ -27,6 +27,9 @@ import {
   type LlmToolDefinition,
   type LlmTurnResult,
   type LlmUsage,
+  estimatePromptChars,
+  estimatePromptTokens,
+  PLATFORM_SAFETY_MAX_CHARS,
 } from '../llm/llm.js';
 import { resolveEmbedder } from '../llm/providers.js';
 import { recoveryBudgetTokens, reduceEffortOneLevel, type EffortLevel } from '../llm/output-budget.js';
@@ -85,7 +88,7 @@ import {
 } from '../types.js';
 import { buildStateMessage, buildSystemPrompt, renderFullPlanMessage } from './prompt.js';
 import { applyOutputHygiene } from './output-style.js';
-import { formatToolOutput } from './tool-output.js';
+import { formatToolOutput, DEFAULT_MAX_TOOL_OUTPUT_CHARS, storeLargeToolOutput } from './tool-output.js';
 import { buildTaskStrategySection, classifyTaskKind, determineInvestigationDepth } from './task-strategy.js';
 import { agentCompletionReady, agentVerificationGate, agentWorkflowPrompt, asksOnlyForVerificationChoice, FINALIZATION_ACTION_BUDGET, FINALIZATION_ERROR_CODE, finalizationRejection, isFinalizationAction, isObservationTool } from './agent-workflow.js';
 import { applyFollowUpToLedger, classifyFollowUp, conversationIntent, persistVisualAssets, evaluateInstructionGate, recoverProgressNudgeGoal } from './follow-up.js';
@@ -1413,7 +1416,32 @@ export class Gitu {
           : '';
         const liveConnections = this.config.connectionContext?.();
         const liveContext = liveConnections ? `CURRENT REGISTERED CONNECTIONS AND CAPABILITIES (refresh, metadata only):\n${liveConnections}` : '';
-        messages.push({ role: 'user', content: buildStateMessage(ledger, [note, conversationNote, liveContext].filter(Boolean).join('\n\n'), activeSkillsSection(), activePhaseStateScope(), fileKnowledgeSection()) });
+        const stateMsgContent = buildStateMessage(ledger, [note, conversationNote, liveContext].filter(Boolean).join('\n\n'), activeSkillsSection(), activePhaseStateScope(), fileKnowledgeSection());
+        const lastMsg = messages[messages.length - 1];
+        if (lastMsg && lastMsg.role === 'user' && typeof lastMsg.content === 'string' && (lastMsg.content.startsWith('TASK AUTHORITY') || lastMsg.content.includes('TASK AUTHORITY (Precedence:'))) {
+          lastMsg.content = stateMsgContent;
+        } else {
+          messages.push({ role: 'user', content: stateMsgContent });
+        }
+        const compactionPolicy = compactionPolicyForWindow(this.config.contextWindowTokens, this.config.compaction);
+        const estChars = estimatePromptChars(messages);
+        const estTokens = estimatePromptTokens(messages);
+        const maxTokensAllowed = this.config.contextWindowTokens
+          ? Math.floor(this.config.contextWindowTokens * 0.85)
+          : 350_000;
+        const maxCharsAllowed = Math.min(
+          1_200_000,
+          this.config.contextWindowTokens ? Math.floor(this.config.contextWindowTokens * 3.5 * 0.85) : 1_200_000,
+        );
+
+        if (estChars > maxCharsAllowed || estTokens > maxTokensAllowed) {
+          compactHistory(messages, (t) => this.emit(t), {
+            force: true,
+            keepRecent: 2,
+            charBudget: Math.min(compactionPolicy.charBudget, 800_000),
+            snapshot: renderContextSnapshot(buildContextSnapshot(ledger.data)),
+          });
+        }
         this.emit('think  reviewing task state and choosing the next action');
         let pending = '';
         let lastFlush = Date.now();
@@ -1482,6 +1510,7 @@ export class Gitu {
           logicalRequestId,
           maxTransportAttempts,
           protocolMode,
+          maxContextTokens: this.config.contextWindowTokens,
           ...(override?.outputBudgetTokens !== undefined ? { outputBudgetTokens: override.outputBudgetTokens } : {}),
           ...(protocolMode === 'native' ? { tools: [GITU_ACTION_TOOL], toolChoice: 'required' as const } : protocolMode === 'structured_text' ? { json: true } : {}),
           onUsage: (u: LlmUsage) => {
@@ -1581,6 +1610,19 @@ export class Gitu {
             if (this.aborted) return { turn, reply, parsed };
             const delayMs = computeResilientDelay(attempt - 1, EMPTY_REPLY_RETRY_BASE_MS, EMPTY_REPLY_RETRY_MAX_MS);
             this.emit(`recover  empty completion from provider — retry ${attempt}/${retries} in ${Math.round(delayMs / 1000)}s`);
+            const compactionPolicy = compactionPolicyForWindow(this.config.contextWindowTokens, this.config.compaction);
+            const retryChars = estimatePromptChars(messages);
+            const retryTokens = estimatePromptTokens(messages);
+            const retryMaxTokens = this.config.contextWindowTokens ? Math.floor(this.config.contextWindowTokens * 0.85) : 350_000;
+            const retryMaxChars = Math.min(1_200_000, this.config.contextWindowTokens ? Math.floor(this.config.contextWindowTokens * 3.5 * 0.85) : 1_200_000);
+            if (retryChars > retryMaxChars || retryTokens > retryMaxTokens) {
+              compactHistory(messages, (t) => this.emit(t), {
+                force: true,
+                keepRecent: 2,
+                charBudget: Math.min(compactionPolicy.charBudget, 800_000),
+                snapshot: renderContextSnapshot(buildContextSnapshot(ledger.data)),
+              });
+            }
             await wait(delayMs);
             if (this.aborted) return { turn, reply, parsed };
             resetProse();
@@ -1802,6 +1844,12 @@ export class Gitu {
       };
 
       const observe = (content: string | LlmContentPart[]): void => {
+        if (typeof content === 'string' && messages.length > 0) {
+          const last = messages[messages.length - 1];
+          if (last && last.role === 'user' && typeof last.content === 'string' && last.content === content) {
+            return;
+          }
+        }
         messages.push({ role: 'user', content });
         const lengthBefore = messages.length;
         // Protocol-drift hygiene: a reply without an executable action forces
@@ -2700,9 +2748,13 @@ export class Gitu {
 
               // Failed commands get the failure DIGEST (error lines + tail) rather
               // than a head slice that typically misses the actual cause.
+              const rawOutput = outcome.result.output;
+              const refPath = rawOutput.length > DEFAULT_MAX_TOOL_OUTPUT_CHARS
+                ? storeLargeToolOutput(rawOutput, guard.activeWritableRoot, action.tool, ledger.data.taskId)
+                : undefined;
               const outputForModel = outcome.result.ok
-                ? formatToolOutput(action.tool, outcome.result.output)
-                : `${extractFailureDigest(outcome.result.output)}${outcome.result.output.length > 2500 ? `\n[... ${outcome.result.output.length} chars total; showing failure-relevant lines]` : ''}`;
+                ? formatToolOutput(action.tool, rawOutput, DEFAULT_MAX_TOOL_OUTPUT_CHARS, refPath)
+                : `${extractFailureDigest(rawOutput)}${rawOutput.length > 2500 ? `\n[... ${rawOutput.length} chars total; showing failure-relevant lines${refPath ? `; full output stored at: ${refPath}` : ''}]` : ''}`;
               let observedResult = `RESULT [${outcome.result.ok ? 'success' : 'error'}] ${outcome.record.paramsSummary}\n${outputForModel}${evidenceNote}${lspNote}`;
               telemetry.noteToolCall();
               if (!outcome.result.ok) {
@@ -3719,7 +3771,11 @@ export class Gitu {
                   if (o.result.ok) await completeVerifiedPlanSteps(command);
                   }
                 }
-                parts.push(`[${i + 1}] ${o.record.paramsSummary} → ${o.result.ok ? 'success' : 'error'}\n${formatToolOutput(o.record.tool, o.result.output)}${evidenceNote}`);
+                const rawOutput = o.result.output;
+                const refPath = rawOutput.length > DEFAULT_MAX_TOOL_OUTPUT_CHARS
+                  ? storeLargeToolOutput(rawOutput, guard.activeWritableRoot, o.record.tool, ledger.data.taskId)
+                  : undefined;
+                parts.push(`[${i + 1}] ${o.record.paramsSummary} → ${o.result.ok ? 'success' : 'error'}\n${formatToolOutput(o.record.tool, rawOutput, DEFAULT_MAX_TOOL_OUTPUT_CHARS, refPath)}${evidenceNote}`);
               }
               observe(`PARALLEL RESULTS:\n${parts.join('\n\n')}`);
               break;

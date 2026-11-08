@@ -285,7 +285,7 @@ export class SessionStore {
       );
   }
 
-  addEvent(runId: string, ev: StoredEvent): void {
+  addEvent(runId: string, ev: StoredEvent, keep = 5_000): void {
     // `typed` rides beside the prose so a restored row keeps the structured
     // event it was projected from, not just the words. Best-effort parse on the
     // way out: an unreadable companion degrades that row to prose, never fails
@@ -293,6 +293,13 @@ export class SessionStore {
     this.db
       .prepare(`INSERT OR REPLACE INTO events (runId, idx, t, text, typed) VALUES (?, ?, ?, ?, ?)`)
       .run(runId, ev.i, ev.t, ev.text, ev.typed === undefined ? null : JSON.stringify(ev.typed));
+    if (keep > 0 && ev.i > keep && ev.i % 50 === 0) {
+      // Long-term storage growth policy: periodically prune verbose intermediate events
+      // older than the retention window while preserving durable conversation history (user-msg, say, file)
+      this.db
+        .prepare(`DELETE FROM events WHERE runId = ? AND idx <= ? AND text NOT LIKE 'user-msg%' AND text NOT LIKE 'say%' AND text NOT LIKE 'file%'`)
+        .run(runId, ev.i - keep);
+    }
   }
 
   /**

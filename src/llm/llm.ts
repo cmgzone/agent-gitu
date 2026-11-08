@@ -75,6 +75,8 @@ export interface LlmOptions {
   outputBudgetTokens?: number;
   /** Enforce a caller's paid output reservation even when a model ceiling is unknown. */
   requireOutputLimit?:boolean;
+  /** Enforce maximum context window token limit for provider-aware preflight. */
+  maxContextTokens?: number;
 }
 
 export interface LlmUsage {
@@ -144,6 +146,7 @@ export type LlmErrorKind =
   | 'network'
   | 'tool_protocol_incompatible'
   | 'protocol_error'
+  | 'prompt_too_large'
   | 'aborted'
   | 'unknown';
 
@@ -218,6 +221,49 @@ export function effortWireValue(effort: EffortLevel, style: EffortStyle): string
   // "medium" to high, while max remains a distinct effort level.
   if (style === 'deepseek') return effort === 'medium' ? 'high' : effort;
   return effort === 'max' ? 'high' : effort;
+}
+
+export const PLATFORM_SAFETY_MAX_CHARS = 1_600_000;
+export const PLATFORM_SAFETY_MAX_TOKENS = 400_000;
+export const PROVIDER_SAFETY_LIMIT_CHARS = 2_000_000;
+
+export interface PromptEstimateOptions {
+  system?: string;
+  tools?: LlmToolDefinition[];
+  maxContextTokens?: number;
+}
+
+export function estimatePromptChars(
+  messages: LlmMessage[],
+  opts?: PromptEstimateOptions,
+): number {
+  let total = 0;
+  if (typeof opts?.system === 'string') total += opts.system.length;
+  if (Array.isArray(opts?.tools) && opts.tools.length > 0) total += JSON.stringify(opts.tools).length;
+  for (const m of messages) {
+    if (m.toolCalls?.length) total += JSON.stringify(m.toolCalls).length;
+    if (typeof m.content === 'string') total += m.content.length;
+    else if (Array.isArray(m.content)) {
+      for (const part of m.content) {
+        if (part.type === 'text') total += part.text.length;
+        else if (part.type === 'image_url') total += Math.floor(part.image_url.url.length / 4);
+      }
+    }
+    if (m.reasoningContent) total += m.reasoningContent.length;
+    // Per-message framing overhead in serialized payload
+    total += 30;
+  }
+  return total;
+}
+
+export function estimatePromptTokens(
+  messages: LlmMessage[],
+  opts?: PromptEstimateOptions,
+): number {
+  const chars = estimatePromptChars(messages, opts);
+  const messageOverhead = messages.length * 4 + 3;
+  const toolOverhead = opts?.tools?.length ? opts.tools.length * 15 : 0;
+  return Math.ceil(chars / 3.5) + messageOverhead + toolOverhead;
 }
 
 const LLM_REQUEST_TIMEOUT_MS = 300_000;
@@ -367,6 +413,14 @@ export function classifyLlmHttpError(status: number, text: string, headers?: Hea
       ...details,
       kind: 'protocol_error',
     });
+  }
+  if (status === 400 || status === 413) {
+    if (/2[,\s]?000[,\s]?000|safety limit|context.*(?:limit|length|exceeded)|prompt.*too (?:large|long)|maximum context/i.test(lower)) {
+      return new LlmError(`LLM prompt exceeds provider safety limit (HTTP ${status}): ${message}`, {
+        ...details,
+        kind: 'prompt_too_large',
+      });
+    }
   }
   if (status === 400 && /(?:tool|function|schema|response_format|json schema|tool_choice)/.test(lower)) {
     return new LlmError(`LLM tool protocol is incompatible (HTTP 400): ${message}`, {
@@ -571,6 +625,13 @@ export class OpenAiCompatClient implements LlmClient {
   }
 
   async completeTurn(messages: LlmMessage[], opts: LlmOptions = {}): Promise<LlmTurnResult> {
+    const promptChars = estimatePromptChars(messages);
+    if (promptChars > PLATFORM_SAFETY_MAX_CHARS) {
+      throw new LlmError(
+        `Preflight check failed: model request (${promptChars.toLocaleString()} characters) exceeds safety limit (${PLATFORM_SAFETY_MAX_CHARS.toLocaleString()} characters). Request blocked before submission to protect provider safety.`,
+        { kind: 'prompt_too_large', logicalRequestId: opts.logicalRequestId },
+      );
+    }
     opts.onActivity?.({ type: 'reasoning' });
     const body = this.buildBody(messages, opts, false);
     let res: Response;
@@ -716,6 +777,13 @@ export class OpenAiCompatClient implements LlmClient {
     opts: LlmOptions = {},
     onDelta: LlmDeltaHandler,
   ): Promise<string> {
+    const promptChars = estimatePromptChars(messages);
+    if (promptChars > PLATFORM_SAFETY_MAX_CHARS) {
+      throw new LlmError(
+        `Preflight check failed: model request (${promptChars.toLocaleString()} characters) exceeds safety limit (${PLATFORM_SAFETY_MAX_CHARS.toLocaleString()} characters). Request blocked before submission to protect provider safety.`,
+        { kind: 'prompt_too_large', logicalRequestId: opts.logicalRequestId },
+      );
+    }
     const body = this.buildBody(messages, opts, true);
     let res: Response;
     try {

@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 /**
@@ -28,6 +29,8 @@ export interface TaskLockRecord {
   startedAtMs: number;
   /** The window this holder declared; recorded so the file explains itself. */
   staleAfterMs: number;
+  /** Hostname of the process holding the lock to safeguard across PID namespaces. */
+  hostname?: string;
 }
 
 export interface TaskLockClaim {
@@ -55,6 +58,17 @@ export interface AcquireTaskLockInput {
   staleMs?: number;
 }
 
+/** Check whether a process with the given PID is currently running. */
+export function isProcessAlive(pid: number): boolean {
+  if (pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
 /** Where a task's advisory lock lives: beside its ledger, never inside a checkout. */
 export function taskLockPath(repoRoot: string, taskId: string): string {
   return path.join(repoRoot, '.hermes', 'tasks', `${taskId}.lock`);
@@ -75,6 +89,7 @@ export function readTaskLock(repoRoot: string, taskId: string): TaskLockRecord |
       startedAt: typeof raw.startedAt === 'string' ? raw.startedAt : new Date(startedAtMs || 0).toISOString(),
       startedAtMs: Number.isFinite(startedAtMs) ? startedAtMs : 0,
       staleAfterMs: typeof raw.staleAfterMs === 'number' ? raw.staleAfterMs : TASK_LOCK_STALE_MS,
+      hostname: typeof raw.hostname === 'string' ? raw.hostname : undefined,
     };
   } catch {
     return undefined;
@@ -104,8 +119,9 @@ function refusalFor(held: TaskLockRecord, now: number, staleAfterMs: number): Ta
  *
  * Succeeds when the lock is free, when the same run already holds it (a
  * continuation of the same owner is not a conflict), or when the existing lock
- * is older than the staleness window. Anything else is a refusal carrying an
- * actionable message — never a silent second writer on the same ledger.
+ * is older than the staleness window (or held by a dead process).
+ * Anything else is a refusal carrying an actionable message — never a silent
+ * second writer on the same ledger.
  */
 export function acquireTaskLock(input: AcquireTaskLockInput): { ok: true; lock: TaskLockClaim } | { ok: false; refusal: TaskLockRefusal } {
   const file = taskLockPath(input.repoRoot, input.taskId);
@@ -118,6 +134,7 @@ export function acquireTaskLock(input: AcquireTaskLockInput): { ok: true; lock: 
     startedAt: new Date(now).toISOString(),
     startedAtMs: now,
     staleAfterMs,
+    hostname: os.hostname(),
   };
   const write = (flag: 'wx' | 'w'): void => {
     mkdirSync(path.dirname(file), { recursive: true });
@@ -165,7 +182,9 @@ export function acquireTaskLock(input: AcquireTaskLockInput): { ok: true; lock: 
     return claim(false);
   }
   const ageMs = Math.max(0, now - held.startedAtMs);
-  if (ageMs > (held.staleAfterMs || staleAfterMs)) {
+  const sameHost = !held.hostname || held.hostname === os.hostname();
+  const isDead = sameHost && held.pid > 0 && !isProcessAlive(held.pid);
+  if (ageMs > (held.staleAfterMs || staleAfterMs) || isDead) {
     write('w');
     return claim(true);
   }

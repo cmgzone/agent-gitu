@@ -24,7 +24,7 @@ import type { CodingEvent } from './events.js';
 import type { WorkspaceRef } from './workspace.js';
 
 /** Mirrors the run lifecycle the UI already renders. */
-export type CodingSessionStatus = 'running' | 'waiting_for_model' | 'completed' | 'blocked' | 'failed';
+export type CodingSessionStatus = 'running' | 'waiting_for_model' | 'completed' | 'blocked' | 'failed' | 'cancelled';
 
 /**
  * One approval object per session. Gitu Workspace, Cowork, Telegram and the
@@ -96,6 +96,7 @@ export interface CodingSessionView {
   finishedAt?: string;
   /** Ledger task id, when a task run is bound to this session. */
   taskId?: string;
+  executionId?: string;
   workspace: WorkspaceRef;
   /** Git branch / worktree, when the workspace is a repository. */
   branch?: string;
@@ -119,6 +120,7 @@ export interface CodingRunOptions {
 
 export interface CodingRunResult {
   sessionId: string;
+  executionId?: string;
   status: CodingSessionStatus;
   report?: CompletionReport;
   error?: string;

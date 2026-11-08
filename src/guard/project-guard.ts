@@ -336,8 +336,12 @@ export class ProjectGuard {
     return (
       normalized.includes('/.hermes/session-files/') ||
       normalized.includes('/.gitu/session-files/') ||
+      normalized.includes('/.hermes/tool-output/') ||
+      normalized.includes('/.gitu/tool-output/') ||
       normalized.endsWith('/.hermes/session-files') ||
-      normalized.endsWith('/.gitu/session-files')
+      normalized.endsWith('/.gitu/session-files') ||
+      normalized.endsWith('/.hermes/tool-output') ||
+      normalized.endsWith('/.gitu/tool-output')
     );
   }
 

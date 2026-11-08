@@ -26,6 +26,7 @@
 import type { LlmContentPart, LlmMessage } from '../llm/llm.js';
 import { messageTextChars, sectionOfMessage, type ContextSections } from '../agent/telemetry.js';
 import { buildHistoryDigest, compressDigest, DIGEST_TARGET_CHARS } from './digest.js';
+import { compactRecentMessage, COMPACT_RECENT_MESSAGE_MAX_CHARS } from '../agent/compaction.js';
 
 export interface ModelContextImage {
   name: string;
@@ -141,7 +142,7 @@ export function buildModelContext(input: ModelContextInput): ModelContextResult 
   }
 
   const charsOf = (): number => {
-    let total = input.system.length + (input.strategy?.length ?? 0) + (input.memory?.length ?? 0) + (input.protectedMemory?.length ?? 0) + (input.fileKnowledge?.length ?? 0) + (contextPack?.length ?? 0) + (input.followUp?.length ?? 0) + (attachmentContent?.length ?? 0) + (digestContent?.length ?? 0);
+    let total = (input.system?.length ?? 0) + (input.strategy?.length ?? 0) + (input.memory?.length ?? 0) + (input.protectedMemory?.length ?? 0) + (input.fileKnowledge?.length ?? 0) + (contextPack?.length ?? 0) + (input.followUp?.length ?? 0) + (attachmentContent?.length ?? 0) + (digestContent?.length ?? 0);
     for (const m of history) total += messageTextChars(m);
     if (input.supportsImages) total += imagePayloadChars(deliverableImages);
     return total;
@@ -152,6 +153,17 @@ export function buildModelContext(input: ModelContextInput): ModelContextResult 
   // overhead is counted. Scale the floor down only in that constrained case;
   // two recent messages plus the digest still preserve the immediate exchange.
   const recentHistoryFloor = MIN_RECENT_HISTORY_MESSAGES;
+
+  // Deduplicate consecutive identical messages in history
+  const dedupedHistory: LlmMessage[] = [];
+  for (const m of history) {
+    const prev = dedupedHistory[dedupedHistory.length - 1];
+    if (prev && prev.role === m.role && JSON.stringify(prev.content) === JSON.stringify(m.content)) {
+      continue;
+    }
+    dedupedHistory.push(m);
+  }
+  history = dedupedHistory;
 
   // Budget enforcement, lowest-value context first. Keep immediate
   // conversational continuity ahead of retrieval samples/supplementary memory.
@@ -196,6 +208,59 @@ export function buildModelContext(input: ModelContextInput): ModelContextResult 
       continue;
     }
     break; // continuity floor reached — the budget is advisory at this point
+  }
+
+  // PLATFORM SAFETY CEILING: A hard safeguard preventing oversized requests from reaching the provider.
+  // If the total characters still exceed PLATFORM_SAFETY_MAX_CHARS, we MUST reduce history and messages
+  // rather than failing on provider safety limits.
+  if (charsOf() > PLATFORM_SAFETY_MAX_CHARS) {
+    // 1. Compact any oversized messages in the remaining history
+    for (const m of history) {
+      if (messageTextChars(m) > COMPACT_RECENT_MESSAGE_MAX_CHARS) {
+        const before = messageTextChars(m);
+        if (compactRecentMessage(m, COMPACT_RECENT_MESSAGE_MAX_CHARS)) {
+          const removed = before - messageTextChars(m);
+          if (removed > 0) {
+            trims.push({ section: 'conversation', charsRemoved: removed });
+            input.onTrim?.({ section: 'conversation', charsRemoved: removed });
+          }
+        }
+      }
+    }
+
+    // 2. Further condense history down towards the absolute minimum floor (2 messages)
+    while (charsOf() > PLATFORM_SAFETY_MAX_CHARS && history.length > 2) {
+      const dropped = history.splice(0, 1);
+      let droppedChars = 0;
+      for (const d of dropped) droppedChars += messageTextChars(d);
+      const built = buildHistoryDigest(dropped, digestContent);
+      digestContent = compressDigest(built.content, DIGEST_TARGET_CHARS);
+      trims.push({ section: 'conversation', charsRemoved: droppedChars });
+      input.onTrim?.({ section: 'conversation', charsRemoved: droppedChars });
+    }
+
+    // 3. If still over safety ceiling, aggressively bound contextPack and memory
+    if (charsOf() > PLATFORM_SAFETY_MAX_CHARS && contextPack) {
+      const before = contextPack.length;
+      contextPack = undefined;
+      trims.push({ section: 'contextPack', charsRemoved: before });
+    }
+    if (charsOf() > PLATFORM_SAFETY_MAX_CHARS && input.memory) {
+      const before = input.memory.length;
+      input.memory = undefined;
+      trims.push({ section: 'memory', charsRemoved: before });
+    }
+
+    // 4. If any history message is still huge (> 8000 chars), truncate it safely
+    if (charsOf() > PLATFORM_SAFETY_MAX_CHARS) {
+      for (const m of history) {
+        if (typeof m.content === 'string' && m.content.length > 8_000) {
+          const before = m.content.length;
+          m.content = `${m.content.slice(0, 4_000)}\n[... ${before - 6_000} characters omitted to stay within provider safety ceiling ...]\n${m.content.slice(-2_000)}`;
+          trims.push({ section: 'conversation', charsRemoved: before - m.content.length });
+        }
+      }
+    }
   }
 
   const messages: LlmMessage[] = [{ role: 'system', content: input.system }];

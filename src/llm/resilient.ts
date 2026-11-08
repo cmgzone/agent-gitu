@@ -1,4 +1,4 @@
-import { isRetryableNetworkError, LlmError, requestLlmTurn } from './llm.js';
+import { isRetryableNetworkError, LlmError, requestLlmTurn, estimatePromptChars, estimatePromptTokens, PLATFORM_SAFETY_MAX_CHARS, PLATFORM_SAFETY_MAX_TOKENS } from './llm.js';
 import type { LlmClient, LlmDeltaHandler, LlmMessage, LlmOptions, LlmTurnResult, LlmUsage } from './llm.js';
 
 /**
@@ -54,13 +54,32 @@ export function clearCooldownsForTest(): void {
 /** Errors that will NEVER succeed by waiting. */
 function isFatalLlmError(err: Error): boolean {
   if (err instanceof LlmError) {
-    return ['auth', 'access', 'billing', 'quota_exhausted', 'tool_protocol_incompatible', 'protocol_error', 'aborted'].includes(err.details.kind);
+    return ['auth', 'access', 'billing', 'quota_exhausted', 'tool_protocol_incompatible', 'protocol_error', 'prompt_too_large', 'aborted'].includes(err.details.kind);
   }
   return (
     /abort/i.test(err.message) ||
+    /prompt.*too (?:large|long)|safety limit|2,000,000|2000000/i.test(err.message) ||
     /\b(401|403)\b/.test(err.message) ||
     /invalid[ _-]api[ _-]?key|unauthorized|forbidden|bad request|\b400\b/i.test(err.message)
   );
+}
+
+function assertSafePromptSize(messages: LlmMessage[], opts?: LlmOptions): void {
+  const chars = estimatePromptChars(messages, opts);
+  const tokens = estimatePromptTokens(messages, opts);
+  if (chars > PLATFORM_SAFETY_MAX_CHARS) {
+    throw new LlmError(
+      `Prompt size (${chars.toLocaleString()} chars) exceeds platform safety limit (${PLATFORM_SAFETY_MAX_CHARS.toLocaleString()} chars). Prompt must be compacted before submission.`,
+      { kind: 'prompt_too_large' },
+    );
+  }
+  const maxTokens = opts?.maxContextTokens ?? PLATFORM_SAFETY_MAX_TOKENS;
+  if (tokens > maxTokens) {
+    throw new LlmError(
+      `Estimated prompt tokens (${tokens.toLocaleString()} tokens) exceeds provider context limit (${maxTokens.toLocaleString()} tokens). Prompt must be compacted before submission.`,
+      { kind: 'prompt_too_large' },
+    );
+  }
 }
 
 /** Transient-shaped failures: worth another attempt after a delay. */
@@ -200,10 +219,12 @@ export function resilientLlm(client: LlmClient, opts: ResilienceOptions = {}): L
       client.lastReasoning = v;
     },
     complete(messages: LlmMessage[], o?: LlmOptions): Promise<string> {
+      assertSafePromptSize(messages, o);
       const callMaxRetries = Math.min(maxRetries, Math.max(0, (o?.maxTransportAttempts ?? maxRetries + 1) - 1));
       return guard(o?.signal, o?.logicalRequestId, callMaxRetries, () => client.complete(messages, { ...o, retries: 0 }));
     },
     async completeStream(messages: LlmMessage[], o: LlmOptions, onDelta: LlmDeltaHandler): Promise<string> {
+      assertSafePromptSize(messages, o);
       // Streaming cannot reuse `guard`: a failed attempt may already have
       // pushed partial deltas to the caller, and a plain re-call would stream
       // the SAME prose again on top of it (duplicated narration rows in the
@@ -235,6 +256,7 @@ export function resilientLlm(client: LlmClient, opts: ResilienceOptions = {}): L
       throw lastError!;
     },
     completeTurn(messages: LlmMessage[], o?: LlmOptions): Promise<LlmTurnResult> {
+      assertSafePromptSize(messages, o);
       const callMaxRetries = Math.min(maxRetries, Math.max(0, (o?.maxTransportAttempts ?? maxRetries + 1) - 1));
       return guard(o?.signal, o?.logicalRequestId, callMaxRetries, () => {
         if (client.completeTurn) return client.completeTurn(messages, { ...o, retries: 0 });
@@ -242,6 +264,7 @@ export function resilientLlm(client: LlmClient, opts: ResilienceOptions = {}): L
       });
     },
     completeTurnStream(messages: LlmMessage[], o: LlmOptions, onDelta: LlmDeltaHandler): Promise<LlmTurnResult> {
+      assertSafePromptSize(messages, o);
       const callMaxRetries = Math.min(maxRetries, Math.max(0, (o.maxTransportAttempts ?? maxRetries + 1) - 1));
       return guard(o.signal, o.logicalRequestId, callMaxRetries, () => {
         if (client.completeTurnStream) return client.completeTurnStream(messages, { ...o, retries: 0 }, onDelta);

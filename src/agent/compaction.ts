@@ -144,7 +144,23 @@ export interface CompactionOptions {
  * letting a single log defeat the whole history budget.
  */
 export function compactRecentMessage(message: LlmMessage, maxChars = COMPACT_RECENT_MESSAGE_MAX_CHARS): boolean {
-  if (typeof message.content !== 'string' || message.content.length <= maxChars) return false;
+  if (typeof message.content !== 'string') {
+    if (Array.isArray(message.content)) {
+      let modified = false;
+      for (const part of message.content) {
+        if (part.type === 'text' && part.text.length > maxChars) {
+          const text = part.text;
+          const headBudget = Math.floor(maxChars * 0.4);
+          const tailBudget = Math.floor(maxChars * 0.35);
+          part.text = `${text.slice(0, headBudget)}\n[... ${text.length - headBudget - tailBudget} characters trimmed from recent history; re-read file or rerun command for full output ...]\n${text.slice(-tailBudget)}`;
+          modified = true;
+        }
+      }
+      return modified;
+    }
+    return false;
+  }
+  if (message.content.length <= maxChars) return false;
   const text = message.content;
   if (text.startsWith('COMPACTED HISTORY')) {
     const compressed = compressDigest(text, maxChars);
@@ -289,6 +305,11 @@ export function compactHistory(messages: LlmMessage[], onEvent?: (text: string) 
   if (estimateMessageChars(messages) > charBudget) {
     for (let i = 1; i < messages.length && estimateMessageChars(messages) > charBudget; i++) {
       if (compactRecentMessage(messages[i]!)) compacted = true;
+    }
+    if (estimateMessageChars(messages) > charBudget) {
+      for (let i = 1; i < messages.length && estimateMessageChars(messages) > charBudget; i++) {
+        if (compactRecentMessage(messages[i]!, 2_000)) compacted = true;
+      }
     }
   }
 

@@ -193,11 +193,12 @@ export interface RunSessionView {
   coworkTask?: import('./session-store.js').StoredSession['coworkTask'];
   runId: string;
   goal: string;
-  status: 'running' | 'waiting_for_model' | 'stalled' | 'completed' | 'blocked' | 'failed' | 'aborted';
+  status: 'running' | 'waiting_for_model' | 'stalled' | 'completed' | 'blocked' | 'failed' | 'aborted' | 'cancelled';
   modelRecovery?: { attempt: number; nextRetryAt: string };
   startedAt: string;
   finishedAt?: string;
   taskId?: string;
+  currentExecutionId?: string;
   project?: string;
   projectPath?: string;
   taggedFolders: string[];
@@ -280,11 +281,12 @@ interface RunSession {
   executionGeneration?: number;
   runId: string;
   goal: string;
-  status: 'running' | 'waiting_for_model' | 'stalled' | 'completed' | 'blocked' | 'failed' | 'aborted';
+  status: 'running' | 'waiting_for_model' | 'stalled' | 'completed' | 'blocked' | 'failed' | 'aborted' | 'cancelled';
   modelRecovery?: { attempt: number; nextRetryAt: string };
   startedAt: string;
   finishedAt?: string;
   taskId?: string;
+  currentExecutionId?: string;
   project?: string;
   projectPath?: string;
   taggedFolders: string[];
@@ -6528,6 +6530,7 @@ export class GituServer {
     s.nextEventIndex ??= s.events.reduce((highest, existing) => Math.max(highest, existing.i), -1) + 1;
     const ev: SessionEvent = { i: s.nextEventIndex++, t: nowIso(), text, ...(typed ? { typed } : {}) };
     s.events.push(ev);
+    if (s.events.length > 5000) s.events.splice(10, s.events.length - 4000);
     if (persistDb && !text.startsWith('tdelta') && !text.startsWith('activity')) {
       try {
         this.db().addEvent(s.runId, ev);
@@ -9067,6 +9070,21 @@ export class GituServer {
         }
         return;
       }
+      const isTerminalState = prevStatus === 'completed' || prevStatus === 'failed' || prevStatus === 'blocked' || prevStatus === 'aborted' || prevStatus === 'cancelled';
+      const followUp = classifyFollowUp(text, modelImages.length > 0);
+      const isContinuationKind = ['CONTINUE', 'EXTEND', 'CORRECT', 'REFINE', 'CONSTRAIN', 'VISUAL_REFERENCE'].includes(followUp.kind);
+      const isResumeForIncomplete = (prevStatus === 'blocked' || prevStatus === 'failed') && followUp.kind !== 'NEW_TASK';
+      const isContinuation = isContinuationKind || isResumeForIncomplete;
+      const isNewTask = isTerminalState && !isContinuation;
+
+      if (isNewTask) {
+        if (session.taskId) this.releaseTaskResumeLock(session);
+        session.taskId = undefined;
+        session.goal = text;
+        session.report = undefined;
+        session.error = undefined;
+        this.persistSession(session);
+      }
       let execRoot: string;
       let ledgerRoot: string | undefined;
       if (session.taskId) {
@@ -9273,10 +9291,12 @@ export class GituServer {
       session.report = undefined;
       session.finishedAt = undefined;
       session.error = undefined;
-      const nextGoal = !session.taskId
-        ? (session.goal ? `${session.goal}\n\nOwner follow-up:\n${text}` : text)
-        : session.goal;
-      if (!session.taskId) session.goal = nextGoal;
+      const nextGoal = isNewTask
+        ? text
+        : !session.taskId
+          ? (session.goal ? `${session.goal}\n\nOwner follow-up:\n${text}` : text)
+          : session.goal;
+      if (isNewTask || !session.taskId) session.goal = nextGoal;
       if (supersede) this.supersedeUserMessage(session, supersede, text);
       this.pushEvent(session, `user-msg ${text}`);
       for (const file of stored.files) this.pushEvent(session, `file ${JSON.stringify(this.fileView(file))}`);
@@ -9498,10 +9518,12 @@ export class GituServer {
     // its state.  This protects a fresh continuation from a late completion
     // of an earlier run that was stopped or superseded.
     let activeGitu: InstanceType<typeof Gitu> | undefined;
+    const executionId = shortId('exec');
+    session.currentExecutionId = executionId;
     const generation = session.executionGeneration = (session.executionGeneration ?? 0) + 1;
     const recoveryAttempt = session.modelRecovery?.attempt ?? 0;
     this.cancelModelRecovery(session);
-    const isCurrentExecution = (): boolean => !this.stopping && this.sessions.get(session.runId) === session && session.executionGeneration === generation && session.gitu === activeGitu;
+    const isCurrentExecution = (): boolean => !this.stopping && this.sessions.get(session.runId) === session && session.executionGeneration === generation && session.currentExecutionId === executionId && (activeGitu === undefined ? true : session.gitu === activeGitu);
     let root: string;
     let ignorePaths: string[] | undefined;
     let projectLock: ProjectLock;
@@ -9972,7 +9994,18 @@ export class GituServer {
           : `fatal: ${session.error}`,
       );
     } finally {
-      if (!isCurrentExecution()) return;
+      this.releaseTaskResumeLock(session);
+      const isCurrent = isCurrentExecution();
+      if (session.currentExecutionId === executionId) {
+        session.currentExecutionId = undefined;
+      }
+      if (!isCurrent) {
+        if (session.status === 'running') {
+          session.status = 'failed';
+          session.finishedAt = nowIso();
+        }
+        return;
+      }
       // Stop holding a runtime session whose run is over. A superseded run keeps
       // its replacement's runtime instead, exactly as it keeps its engine.
       if (session.runtime === runtimeSession) session.runtime = undefined;
@@ -9980,7 +10013,6 @@ export class GituServer {
       session.finishedAt = session.status === 'waiting_for_model' ? undefined : nowIso();
       this.pushEvent(session, `run finished: ${session.status}`);
       if(session.coworkTask&&session.status!=='running'&&session.status!=='waiting_for_model')this.notifyCodingOutcome(session.runId);
-      this.releaseTaskResumeLock(session);
       this.saveRegistry();
     }
   }

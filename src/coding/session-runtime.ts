@@ -529,6 +529,7 @@ export class GituSessionRuntime {
     let taskId: string | undefined;
     let report: CompletionReport | undefined;
     let finishedAt: string | undefined;
+    let currentExecutionId: string | undefined;
 
     /** Set once when a run is stopped by its allocation, not by the engine. */
     let budgetStop: string | undefined;
@@ -590,6 +591,8 @@ export class GituSessionRuntime {
     const accounted = (llm: LlmClient): LlmClient => new UsageTrackingClient(llm, accountCall);
 
     const execute = async (goal: string): Promise<CodingRunResult> => {
+      const executionId = shortId('exec');
+      currentExecutionId = executionId;
       // Resolved before any state moves: a session that cannot start a run must
       // not publish `run_started` or report itself as running.
       const { runOptions } = requireEngineInputs(request);
@@ -601,7 +604,8 @@ export class GituSessionRuntime {
         error = detail;
         finishedAt = nowIso();
         log.publishNative({ type: 'operation_blocked', reason: 'budget_exhausted', detail });
-        return { sessionId: id, status, error: detail };
+        if (currentExecutionId === executionId) currentExecutionId = undefined;
+        return { sessionId: id, executionId, status, error: detail };
       }
       budgetStop = undefined;
       attempt += 1;
@@ -635,14 +639,15 @@ export class GituSessionRuntime {
           error = undefined;
         }
         finishedAt = nowIso();
-        return { sessionId: id, status, report, error };
+        return { sessionId: id, executionId, status, report, error };
       } catch (err) {
         status = 'failed';
         error = (err as Error).message;
         finishedAt = nowIso();
-        return { sessionId: id, status, error };
+        return { sessionId: id, executionId, status, error };
       } finally {
         // Only clear our own engine: a continuation may already have replaced it.
+        if (currentExecutionId === executionId) currentExecutionId = undefined;
         if (currentEngine === engine) currentEngine = undefined;
       }
     };
@@ -657,6 +662,7 @@ export class GituSessionRuntime {
         startedAt,
         finishedAt,
         taskId,
+        executionId: currentExecutionId,
         workspace: request.workspace,
         pendingApproval,
         pendingPlanReview,
@@ -690,7 +696,13 @@ export class GituSessionRuntime {
         // does — a consumer never sees a session claim to be running after a
         // stop it asked for but that has not finished unwinding.
         currentEngine?.stop();
-        if (status === 'running') log.publishNative({ type: 'log', text: `stop requested — ${note}` });
+        if (status === 'running' || status === 'waiting_for_model') {
+          status = 'cancelled';
+          error = note;
+          finishedAt = nowIso();
+          currentExecutionId = undefined;
+          log.publishNative({ type: 'log', text: `stop requested — ${note}` });
+        }
       },
       releasePendingGates: (reason) => {
         // The same release `cancel` performs, minus the engine stop: the run

@@ -141,6 +141,9 @@ const VISUAL_PATTERNS = [
 
 const NEW_TASK_PATTERNS = [
   /^(?:now (?:add|build|create|implement)|start over|new task|reset and|from scratch)\b/i,
+  /\bfrom scratch\b/i,
+  /^(?:task\s+(?:\d+|[a-zA-Z]+)|new\s+task|different\s+task|another\s+task|unrelated\s+task)\b/i,
+  /^(?:build|create|implement|write|develop|scaffold|design)\s+(?:a|an|the|new)\b/i,
 ];
 
 export function extractTargetHints(message: string): TargetHints {
@@ -377,6 +380,7 @@ export function classifyFollowUp(message: string, hasImages = false): FollowUpCl
       goalDelta: trimmed,
       extractedInstructions,
       targetHints,
+      supersedePreviousHypothesis: true,
     };
   }
 

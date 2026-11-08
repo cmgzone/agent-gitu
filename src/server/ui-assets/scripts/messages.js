@@ -240,6 +240,8 @@
     var useSelectedModel = Boolean(sess && (sess.modelOverride || !sess.session || !sess.session.provider || !sess.session.model));
     // Show the outgoing message immediately. The server will replace this
     // pending display with its durable user-msg event once it is recorded.
+    var newTaskToggle = $('newTaskToggle');
+    var newTask = Boolean(newTaskToggle && newTaskToggle.getAttribute('aria-pressed') === 'true');
     var sentBubbleId = appendPendingUserMessage(runId, text);
     var follow = $('follow');
     if (follow) follow.value = '';
@@ -249,7 +251,7 @@
     // Textarea cleared: if the agent is still running the button reverts to Stop.
     updateSendState();
     api('/api/runs/' + runId + '/message', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
-      id: 'coding-follow-' + sentBubbleId, text: text, files: attached,
+      id: 'coding-follow-' + sentBubbleId, text: text, files: attached, newTask: newTask || undefined,
       delivery: running ? S.delivery : undefined,
       provider: useSelectedModel ? mc[0] : undefined, model: useSelectedModel ? mc[1] : undefined, useSelectedModel: useSelectedModel,
       effort: S.sel.effort,
@@ -259,6 +261,11 @@
       autoApprove: S.settings.autoApprove
     }) })
       .then(function (result) {
+        // The toggle applies to one message; the server has accepted this one.
+        if (newTaskToggle) {
+          newTaskToggle.setAttribute('aria-pressed', 'false');
+          newTaskToggle.classList.toggle('active', false);
+        }
         if (result && result.directToCoding && result.runId && result.runId !== runId) {
           settlePendingUserMessage(runId, result.safeText, sentBubbleId, false);
           pendingFor().length = 0; renderThumbs(); setWorking(null);

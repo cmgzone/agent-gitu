@@ -187,7 +187,7 @@
       '<button type="button" class="context-trigger unknown" id="contextToggle" title="Session context and token usage" aria-label="Session context and token usage" aria-expanded="false" aria-controls="contextCard"><svg viewBox="0 0 24 24" aria-hidden="true"><circle class="context-ring-track" cx="12" cy="12" r="9"/><circle class="context-ring-progress" cx="12" cy="12" r="9" pathLength="100"/><circle class="context-ring-core" cx="12" cy="12" r="2"/></svg></button></div>' +
       '<div class="composer"><textarea id="follow" rows="1" placeholder="Message Agent Gitu…" title="Enter sends to this session while working, or continues it when done"></textarea>' +
       '<div class="thumbs" id="thumbs" hidden></div><div class="run-folder-tags" id="runFolderTags" aria-label="Tagged reference folders" hidden></div>' +
-      '<div class="composer-bar">' + controlsHtml() + '<button class="send" id="send2" aria-label="Send message">&#8593;</button></div>' +
+      '<div class="composer-bar">' + controlsHtml() + '<button type="button" class="pill new-task-pill" id="newTaskToggle" aria-pressed="false" aria-label="Start a new task in this session" title="Start a new task in this session instead of continuing the current one">New task</button>' + '<button class="send" id="send2" aria-label="Send message">&#8593;</button></div>' +
       '<div class="context-card" id="contextCard" hidden><div class="context-card-head"><span>Session context</span><button type="button" class="ubtn" id="contextClose" aria-label="Close context card">&times;</button></div><div id="contextCardBody"></div></div></div></div>' +
       '</div></div>';
     $('follow').value=homeWorkspaceState().followDrafts[runId]||'';
@@ -218,6 +218,17 @@
     });
   // Typing flips the button to Send even while the agent is running.
   $('follow').addEventListener('input', function () { homeSaveFollowDraft(runId,this.value); this.style.height = 'auto'; this.style.height = Math.min(180, this.scrollHeight) + 'px'; updateSendState(); });
+    $('newTaskToggle').onclick = function () {
+      // A press applies to the next message only; sendFollow resets it once the
+      // server has accepted the message as a new task.
+      var pressed = this.getAttribute('aria-pressed') !== 'true';
+      this.setAttribute('aria-pressed', String(pressed));
+      this.classList.toggle('active', pressed);
+      this.title = pressed
+        ? 'This message starts a new task in this session'
+        : 'Start a new task in this session instead of continuing the current one';
+      updateSendState();
+    };
     $('send2').onclick = function () {
       // Branch on the button's CURRENT mode (Stop ■ vs Send ↑): while the
       // agent runs, typing flips it to Send so a click queues the message.

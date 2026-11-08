@@ -19,6 +19,10 @@
     b.setAttribute('aria-label', stopMode ? 'Stop the agent' : 'Send message');
     b.innerHTML = stopMode ? '&#9632;' : '&#8593;';
     b.disabled=!stopMode&&pendingFor().some(function(file){return file.loading||file.error;});
+    // A live run treats the next message as steering, so offering "new task"
+    // there would promise something the server cannot honour.
+    var newTask = $('newTaskToggle');
+    if (newTask) newTask.disabled = running || Boolean(S.starting);
     // Surface interrupts right above the composer where action happens.
     var bar = b.parentElement;
     if (bar) {

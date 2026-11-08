@@ -188,6 +188,73 @@ export function extractTargetHints(message: string): TargetHints {
   };
 }
 
+/** The durable scope of the task a session is already working on. */
+export interface TaskScope {
+  goal: string;
+  files?: string[];
+  symbols?: string[];
+  plan?: string[];
+  criteria?: string[];
+}
+
+/** Words that carry no subject matter, so they can never make two requests related. */
+const SCOPE_STOP_WORDS = new Set([
+  'the', 'and', 'for', 'with', 'that', 'this', 'from', 'into', 'your', 'you', 'our',
+  'are', 'was', 'were', 'have', 'has', 'had', 'will', 'would', 'should', 'could',
+  'can', 'but', 'not', 'all', 'any', 'some', 'then', 'than', 'them', 'they', 'there',
+  'here', 'about', 'after', 'before', 'when', 'where', 'which', 'who', 'why', 'how',
+  'what', 'please', 'also', 'just', 'only', 'more', 'most', 'much', 'very', 'need',
+  'needs', 'want', 'wants', 'make', 'makes', 'made', 'use', 'uses', 'using', 'add',
+  'adds', 'added', 'fix', 'fixes', 'fixed', 'change', 'changes', 'update', 'updates',
+  'create', 'creates', 'build', 'builds', 'implement', 'implemented', 'run', 'runs',
+  'test', 'tests', 'tested', 'file', 'files', 'code', 'page', 'pages', 'app', 'apps',
+  'feature', 'features', 'work', 'task', 'tasks', 'project', 'projects', 'new',
+]);
+
+/** A message that points back at work in hand is a follow-up by definition. */
+const BACKWARD_REFERENCE =
+  /\b(?:it|its|it's|this|that|these|those|same)\b|\b(?:the|this|that)\s+(?:issue|bug|error|failure|problem|fix|change|task|work|implementation|result|output)\b/i;
+
+function scopeTokens(text: string): string[] {
+  return text
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((token) => token.length >= 3 && !SCOPE_STOP_WORDS.has(token));
+}
+
+/**
+ * Does this message start a different task, rather than continue the one the
+ * session is already bound to?
+ *
+ * A session owns one task ledger, so folding an unrelated request into it
+ * carries the old goal, criteria, plan and evidence into work that never asked
+ * for them. The classifier's own `NEW_TASK` patterns only recognise explicit
+ * wording ("new task", "start over", "build a …"); this fallback answers the
+ * same question from what the two requests are *about*: when the message names
+ * no file, symbol, plan step, criterion or content word the task already has,
+ * it is a new task. It is deliberately conservative — one shared subject word,
+ * one shared file or symbol, or any backward reference ("it", "this", "the
+ * fix") keeps the message a continuation, because resuming the wrong task is
+ * worse than asking the writer to say "new task" explicitly.
+ */
+export function startsUnrelatedTask(message: string, scope: TaskScope | undefined): boolean {
+  const trimmed = message.trim();
+  if (!scope || !trimmed) return false;
+  if (conversationIntent(trimmed) || isProgressNudge(trimmed)) return false;
+  if (BACKWARD_REFERENCE.test(trimmed)) return false;
+  const messageTokens = scopeTokens(trimmed);
+  if (messageTokens.length < 3) return false;
+  const taskText = [scope.goal, ...(scope.files ?? []), ...(scope.symbols ?? []), ...(scope.plan ?? []), ...(scope.criteria ?? [])].join('\n');
+  const taskTokens = new Set(scopeTokens(taskText));
+  if (taskTokens.size === 0) return false;
+  if (messageTokens.some((token) => taskTokens.has(token))) return false;
+  const hints = extractTargetHints(trimmed);
+  const named = [...hints.files, ...hints.symbols].map((value) => value.toLowerCase());
+  const lowerTask = taskText.toLowerCase();
+  if (named.some((value) => lowerTask.includes(value))) return false;
+  return true;
+}
+
 /**
  * Admission-time structured constraint parsing. Runs ONCE when a follow-up
  * arrives — never per tool execution. Returns the machine-readable constraint

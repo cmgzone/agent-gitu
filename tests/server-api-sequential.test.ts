@@ -174,6 +174,20 @@ describe('Server API — Sequential tasks and reliability verification', () => {
     expect(task3.goal).toBe('Build a calculator from scratch');
     // Different task ID allocated for the new task lifecycle
     expect(task3.taskId).not.toBe(firstTaskId);
+
+    // 4. The composer's explicit toggle starts a new task even for wording the
+    // classifier would otherwise fold into the previous task as a refinement.
+    const forcedRes = await fetch(`${base}/api/runs/${runId}/message`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'Review the search ranking copy', newTask: true }),
+    });
+    expect([200, 202]).toContain(forcedRes.status);
+
+    const task4 = await waitForCompletion(base, runId, task3.finishedAt);
+    expect(task4.status).toBe('completed');
+    expect(task4.goal).toBe('Review the search ranking copy');
+    expect(task4.taskId).not.toBe(task3.taskId);
   }, 180000);
 
   it('runs multiple sequential tasks on an alternate model provider (Provider B: Anthropic style)', async () => {

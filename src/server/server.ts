@@ -79,7 +79,7 @@ import { deploymentIntent, isDeploymentAction, DEPLOYMENT_OWNERSHIP } from '../c
 import { CoworkDelegation, type DelegationScope, type DelegationSessionInput } from '../cowork/delegation.js';
 import { CoworkSubAgents, CoworkSubAgentRunner } from '../cowork/subagents.js';
 import type { CodingEvent } from '../coding/events.js';
-import { classifyFollowUp, conversationIntent, isNonMutatingStatusQuestion } from '../agent/follow-up.js';
+import { classifyFollowUp, conversationIntent, isNonMutatingStatusQuestion, startsUnrelatedTask, type TaskScope } from '../agent/follow-up.js';
 import { CoworkLiveMailbox, type CoworkDelivery } from '../cowork/live-messages.js';
 import { appAwareness, connectionQuestion, connectionReply } from '../cowork/app-awareness.js';
 import { appReviewDue, reviewConnectedApps } from '../cowork/proactive-apps.js';
@@ -825,6 +825,22 @@ export class GituServer {
     } catch {
       return undefined;
     }
+  }
+
+  /** The current task's own scope, read cheaply to decide whether a message is new work. */
+  private taskScopeFor(session: RunSession): TaskScope | undefined {
+    if (!session.taskId) return undefined;
+    const root = this.resolveTaskRoot(session.taskId, session.projectPath);
+    const ledger = root ? TaskLedger.load(root, session.taskId) : undefined;
+    if (!ledger) return { goal: session.goal };
+    const authority = ledger.data.taskAuthority;
+    return {
+      goal: authority?.currentGoal ?? ledger.data.goal ?? session.goal,
+      files: [...(authority?.targetHints.files ?? []), ...ledger.data.filesChanged],
+      symbols: authority?.targetHints.symbols ?? [],
+      plan: ledger.data.plan.map((step) => step.description),
+      criteria: ledger.data.acceptanceCriteria.map((criterion) => criterion.text),
+    };
   }
 
   private resolveTaskRoot(taskId: string, queryPath?: string | null, startupRoots?: Map<string, string | undefined>): string | undefined {
@@ -9072,10 +9088,22 @@ export class GituServer {
       }
       const isTerminalState = prevStatus === 'completed' || prevStatus === 'failed' || prevStatus === 'blocked' || prevStatus === 'aborted' || prevStatus === 'cancelled';
       const followUp = classifyFollowUp(text, modelImages.length > 0);
-      const isContinuationKind = ['CONTINUE', 'EXTEND', 'CORRECT', 'REFINE', 'CONSTRAIN', 'VISUAL_REFERENCE'].includes(followUp.kind);
-      const isResumeForIncomplete = (prevStatus === 'blocked' || prevStatus === 'failed') && followUp.kind !== 'NEW_TASK';
+      // Two ways to start fresh work in this session: the composer's explicit
+      // "New task" toggle, or a message the classifier could only call a
+      // refinement while it shares nothing with the task in hand. Without this,
+      // an unrelated request silently resumed the previous task's ledger (its
+      // goal, criteria, plan and evidence), which is why a new task appeared to
+      // need a whole new session.
+      const explicitNewTask = body['newTask'] === true;
+      const followUpKind = explicitNewTask
+        ? 'NEW_TASK'
+        : followUp.kind === 'REFINE' && startsUnrelatedTask(text, this.taskScopeFor(session))
+          ? 'NEW_TASK'
+          : followUp.kind;
+      const isContinuationKind = ['CONTINUE', 'EXTEND', 'CORRECT', 'REFINE', 'CONSTRAIN', 'VISUAL_REFERENCE'].includes(followUpKind);
+      const isResumeForIncomplete = (prevStatus === 'blocked' || prevStatus === 'failed') && followUpKind !== 'NEW_TASK';
       const isContinuation = isContinuationKind || isResumeForIncomplete;
-      const isNewTask = isTerminalState && !isContinuation;
+      const isNewTask = (isTerminalState && !isContinuation) || explicitNewTask;
 
       if (isNewTask) {
         if (session.taskId) this.releaseTaskResumeLock(session);
@@ -9084,6 +9112,12 @@ export class GituServer {
         session.report = undefined;
         session.error = undefined;
         this.persistSession(session);
+        this.pushEvent(
+          session,
+          explicitNewTask
+            ? 'new task  started in this session at your request'
+            : 'new task  started in this session — the message shares no target with the previous task',
+        );
       }
       let execRoot: string;
       let ledgerRoot: string | undefined;

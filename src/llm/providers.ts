@@ -855,6 +855,14 @@ export async function resolveImageSupport(opts: {
     const vision = liveModelVision(await cachedLiveModels({ baseUrl, apiKey, timeoutMs: opts.timeoutMs }), opts.model);
     if (vision !== undefined) return vision;
   }
+  // PikRouter text endpoints/models (such as DeepSeek) do not accept image inputs.
+  // Only explicitly vision-capable models (e.g. with explicit catalog vision: true or /vl|vision/ in name) accept images.
+  if (providerId === 'pikrouter' || (baseUrl && /pikrouter|pikprovider/i.test(baseUrl))) {
+    const meta = modelMetadataFor(opts.catalog, providerId ?? 'pikrouter', opts.model ?? '');
+    if (meta?.vision !== undefined) return meta.vision;
+    const m = (opts.model ?? '').toLowerCase();
+    return /\bvl\b/.test(m) || /vision/.test(m);
+  }
   return resolveSupportedImages(opts.catalog, providerId ?? '', opts.model ?? '');
 }
 

@@ -153,4 +153,26 @@ describe('ProjectGuard', () => {
     const sibling = path.join(outside, 'sibling.txt'); writeFileSync(sibling, 'other');
     await expect(guard.assertReadableAsync(sibling)).rejects.toThrow(ProjectGuardError);
   });
+
+  it('allows reading user session-files inside the project', async () => {
+    const dir = makeProject('guard-session-files', { name: 'guard-session-files' });
+    const sessionDir = path.join(dir, '.hermes', 'session-files', 'run-123');
+    mkdirSync(sessionDir, { recursive: true });
+    const attachment = path.join(sessionDir, 'file-456');
+    writeFileSync(attachment, 'user attachment image or text');
+    const guard = ProjectGuard.detect(dir);
+
+    // Synchronous assertReadable and assertInside
+    expect(() => guard.assertInside(attachment)).not.toThrow();
+    expect(() => guard.assertReadable(attachment)).not.toThrow();
+
+    // Asynchronous assertReadableAsync
+    await expect(guard.assertReadableAsync(attachment)).resolves.toBeUndefined();
+
+    // Private hermes state (like ledger or settings) is still sealed
+    const privateState = path.join(dir, '.hermes', 'ledger.json');
+    writeFileSync(privateState, '{}');
+    expect(() => guard.assertReadable(privateState)).toThrow(ProjectGuardError);
+    await expect(guard.assertReadableAsync(privateState)).rejects.toThrow(ProjectGuardError);
+  });
 });

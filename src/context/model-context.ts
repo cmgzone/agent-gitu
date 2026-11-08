@@ -88,6 +88,15 @@ export const DEFAULT_CONTEXT_MAX_CHARS = 48_000;
  * erase the immediate story the model is actively reasoning about. */
 export const MIN_RECENT_HISTORY_MESSAGES = 12;
 
+/** Hard ceiling for total prompt characters across any provider (e.g. PikRouter's 2,000,000 char safety limit). */
+export const PLATFORM_SAFETY_MAX_CHARS = 1_600_000;
+
+/** Maximum base64 dataUrl character length for a single inlined image (~600KB file). */
+export const MAX_INLINE_IMAGE_DATA_URL_CHARS = 800_000;
+
+/** Maximum cumulative base64 dataUrl character length for all inlined images (~900KB total). */
+export const MAX_TOTAL_INLINE_IMAGES_CHARS = 1_200_000;
+
 /** Wire-text estimate for the attached images, in the same 4-chars-per-token
  *  budget units the history text uses. Kept in ONE helper because the trim
  *  loop and the final accounting must count the identical figure. */
@@ -114,10 +123,27 @@ export function buildModelContext(input: ModelContextInput): ModelContextResult 
       ].join('\n')
     : undefined;
 
+  // Separate deliverable images from oversized images that would exceed the prompt limit.
+  const deliverableImages: ModelContextImage[] = [];
+  const oversizedImages: { name: string; sizeKb: number }[] = [];
+  let inlineImagesChars = 0;
+  if (input.images && input.images.length > 0 && input.supportsImages) {
+    for (const img of input.images) {
+      const len = img.dataUrl?.length ?? 0;
+      const sizeKb = Math.round((len * 0.75) / 1024);
+      if (len > MAX_INLINE_IMAGE_DATA_URL_CHARS || inlineImagesChars + len > MAX_TOTAL_INLINE_IMAGES_CHARS) {
+        oversizedImages.push({ name: img.name, sizeKb });
+      } else {
+        deliverableImages.push(img);
+        inlineImagesChars += len;
+      }
+    }
+  }
+
   const charsOf = (): number => {
     let total = input.system.length + (input.strategy?.length ?? 0) + (input.memory?.length ?? 0) + (input.protectedMemory?.length ?? 0) + (input.fileKnowledge?.length ?? 0) + (contextPack?.length ?? 0) + (input.followUp?.length ?? 0) + (attachmentContent?.length ?? 0) + (digestContent?.length ?? 0);
     for (const m of history) total += messageTextChars(m);
-    if (input.supportsImages) total += imagePayloadChars(input.images);
+    if (input.supportsImages) total += imagePayloadChars(deliverableImages);
     return total;
   };
 
@@ -186,13 +212,32 @@ export function buildModelContext(input: ModelContextInput): ModelContextResult 
   let imagesMessageIndex = -1;
   if (input.images && input.images.length > 0) {
     if (input.supportsImages) {
-      const parts: LlmContentPart[] = [
-        { type: 'text', text: `The user attached ${input.images.length} image(s) relevant to the task. Inspect them carefully and ground your work in what they show.` },
-      ];
-      for (const img of input.images) parts.push({ type: 'image_url', image_url: { url: img.dataUrl } });
-      messages.push({ role: 'user', content: parts });
-      imagesMessageIndex = messages.length - 1;
-      imagesAttached = input.images.length;
+      const parts: LlmContentPart[] = [];
+      if (deliverableImages.length > 0) {
+        parts.push({
+          type: 'text',
+          text: `The user attached ${input.images.length} image(s) relevant to the task. Inspect them carefully and ground your work in what they show.`,
+        });
+        for (const img of deliverableImages) {
+          parts.push({ type: 'image_url', image_url: { url: img.dataUrl } });
+        }
+      }
+      if (oversizedImages.length > 0) {
+        for (const over of oversizedImages) {
+          parts.push({
+            type: 'text',
+            text: `[Image "${over.name}" (~${over.sizeKb} KB) was omitted from direct inline base64 to stay safely below the 2,000,000 character platform prompt limit. The file is saved at its workspace path in session files and can be inspected, copied, or processed directly with local tools.]`,
+          });
+        }
+      }
+      if (parts.length > 0) {
+        messages.push({ role: 'user', content: parts });
+        imagesMessageIndex = messages.length - 1;
+        imagesAttached = deliverableImages.length;
+        if (deliverableImages.length === 0 && oversizedImages.length > 0) {
+          imagesSkipped = true;
+        }
+      }
     } else {
       messages.push({
         role: 'user',
@@ -211,7 +256,7 @@ export function buildModelContext(input: ModelContextInput): ModelContextResult 
     // messageTextChars sees only its text part, so the image estimate the
     // budget loop counted must be added here or every utilization number
     // understates the real context by the whole image size.
-    const chars = messageTextChars(m) + (index === imagesMessageIndex ? imagePayloadChars(input.images) : 0);
+    const chars = messageTextChars(m) + (index === imagesMessageIndex ? imagePayloadChars(deliverableImages) : 0);
     sections[sectionOfMessage(m)] += chars;
     totalChars += chars;
   });

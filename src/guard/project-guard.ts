@@ -331,7 +331,18 @@ export class ProjectGuard {
     return !rel.startsWith('..') && !path.isAbsolute(rel);
   }
 
+  isSessionFilesPath(absPath: string): boolean {
+    const normalized = path.resolve(absPath).replace(/\\/g, '/').toLowerCase();
+    return (
+      normalized.includes('/.hermes/session-files/') ||
+      normalized.includes('/.gitu/session-files/') ||
+      normalized.endsWith('/.hermes/session-files') ||
+      normalized.endsWith('/.gitu/session-files')
+    );
+  }
+
   private isPrivateStatePath(absPath: string): boolean {
+    if (this.isSessionFilesPath(absPath)) return false;
     const parts = path.resolve(absPath).split(path.sep).map((part) => part.toLowerCase());
     return parts.includes('.hermes') || parts.includes('.git');
   }
@@ -438,6 +449,7 @@ export class ProjectGuard {
   }
 
   private assertPublicReadPath(absPath: string): void {
+    if (this.isSessionFilesPath(absPath)) return;
     const parts = path.resolve(absPath).split(path.sep).map(part => part.toLowerCase());
     if (parts.includes('.hermes') || parts.includes('.git')) {
       throw new ProjectGuardError('Private agent and Git state cannot be read through diagnostic access.');
@@ -453,10 +465,17 @@ export class ProjectGuard {
       this.assertFullAccessTarget(abs);
       return;
     }
+    // Session files uploaded for this task are part of the active workspace session.
+    if (this.isSessionFilesPath(abs) && this.isInsideProject(abs)) {
+      this.assertNoSymlinkEscape(abs);
+      return;
+    }
     // Preserve the existing task scratch exception and normal workspace checks.
     try {
       this.assertInside(abs);
-      if (!abs.split(path.sep).some(part => part.toLowerCase() === '.hermes')) this.assertPublicReadPath(canonicalPath(abs));
+      if (this.isSessionFilesPath(abs) || !abs.split(path.sep).some(part => part.toLowerCase() === '.hermes')) {
+        this.assertPublicReadPath(canonicalPath(abs));
+      }
       return;
     } catch { /* check read-only authority */ }
     this.assertPublicReadPath(abs);
@@ -513,6 +532,7 @@ export class ProjectGuard {
       const scratch = this.taskTmpRoot;
       if (scratch && abs !== path.resolve(scratch) && within(path.resolve(scratch), abs) &&
         within(await realpath(scratch), real) && this.taskTmpRoot === scratch) return;
+      if (this.isSessionFilesPath(abs)) return;
       this.assertPublicReadPath(abs);
       this.assertPublicReadPath(real);
       return;
@@ -706,6 +726,13 @@ export class ProjectGuard {
         this.assertNoSymlinkEscape(absPath);
         return;
       }
+    }
+    // Session user attachments exception: files uploaded for the session are
+    // stored under .hermes/session-files/ (or .gitu/session-files/) and can
+    // be read or copied into project directories.
+    if (this.isSessionFilesPath(absPath)) {
+      this.assertNoSymlinkEscape(absPath);
+      return;
     }
     if (foldedRel === '.hermes' || foldedRel.startsWith(`.hermes${path.sep}`)) {
       throw new ProjectGuardError(

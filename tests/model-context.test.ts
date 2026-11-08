@@ -233,4 +233,20 @@ describe('protected-digest invariant (no resume-critical info in trimmable-only 
     const digest = String(result.messages.find((m) => String(m.content).startsWith('COMPACTED HISTORY'))!.content);
     expect(digest).toContain('CRITICAL: database migration lock timeout');
   });
+  it('omits oversized base64 images to stay safely below platform prompt limits', () => {
+    const hugeImage = { name: 'header-bg.jpg', dataUrl: 'data:image/jpeg;base64,' + 'A'.repeat(1_000_000) };
+    const result = buildModelContext({
+      system: SYSTEM,
+      images: [hugeImage],
+      supportsImages: true,
+    });
+    expect(result.imagesAttached).toBe(0);
+    expect(result.imagesSkipped).toBe(true);
+    const imgMsg = result.messages.find(m => Array.isArray(m.content) && m.content.some(p => p.type === 'text' && p.text.includes('omitted from direct inline base64')));
+    expect(imgMsg).toBeTruthy();
+    const parts = imgMsg.content;
+    expect(parts.some(p => p.type === 'image_url')).toBe(false);
+    expect(parts.some(p => p.type === 'text' && p.text.includes('header-bg.jpg'))).toBe(true);
+    expect(parts.some(p => p.type === 'text' && p.text.includes('2,000,000 character platform prompt limit'))).toBe(true);
+  });
 });

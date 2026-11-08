@@ -110,10 +110,12 @@ export function restoreVisualReferencesAfterCompaction(
   supportsImages: boolean,
 ): boolean {
   if (!supportsImages || rehydrated.images.length === 0) return false;
-  if (messageCarriesImages(messages, rehydrated.images.map((i) => i.dataUrl))) return false;
+  const deliverable = rehydrated.images.filter((i) => (i.dataUrl?.length ?? 0) <= 800_000);
+  if (deliverable.length === 0) return false;
+  if (messageCarriesImages(messages, deliverable.map((i) => i.dataUrl))) return false;
   const parts: LlmContentPart[] = [
     { type: 'text', text: RESTORE_TEXT },
-    ...rehydrated.images.map((i) => ({ type: 'image_url' as const, image_url: { url: i.dataUrl } })),
+    ...deliverable.map((i) => ({ type: 'image_url' as const, image_url: { url: i.dataUrl } })),
   ];
   // Index 2 mirrors the post-compaction protected-section re-injection: the
   // digest sits at index 1, so restored visuals land right after it.

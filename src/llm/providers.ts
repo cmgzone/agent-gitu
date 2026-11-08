@@ -94,8 +94,12 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     label: 'PikRouter (pikrouter.pikpam.com, OpenAI-compatible)',
     baseUrl: 'https://pikrouter.pikpam.com/v1',
     keyEnvVars: ['HERMES_PIKROUTER_API_KEY', 'PIKROUTER_API_KEY', 'PIKROUTER_TOKEN'],
-    defaultModel: 'gpt-4o-mini',
+    defaultModel: 'DeepSeek-V4.1-Flash',
     models: [
+      'DeepSeek-V4.1-Flash',
+      'deepseek/deepseek-v4-flash',
+      'deepseek-flash',
+      'deepseek-v4-flash',
       'gpt-4o-mini',
       'gpt-4o',
       'gemini-1.5-flash',
@@ -105,6 +109,12 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
       'deepseek-chat',
       'deepseek-reasoner',
     ],
+    modelLabels: {
+      'DeepSeek-V4.1-Flash': 'DeepSeek V4.1 Flash',
+      'deepseek/deepseek-v4-flash': 'DeepSeek V4.1 Flash',
+      'deepseek-flash': 'DeepSeek V4.1 Flash',
+      'deepseek-v4-flash': 'DeepSeek V4.1 Flash',
+    },
     effortLevels: ['low', 'medium', 'high', 'max'],
     effortLabels: { medium: 'medium (= high)' },
     maxEffort: 'distinct',
@@ -422,6 +432,10 @@ export interface ModelInfo {
   /** Image-input capability reported by the provider's own /models endpoint.
    *  `undefined` when the endpoint did not publish modality for this model. */
   vision?: boolean;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  inputPricePerMillion?: number;
+  outputPricePerMillion?: number;
 }
 
 /** Provider-specific limits, USD prices per one million tokens, and live modality. */
@@ -769,12 +783,23 @@ export async function fetchLiveModels(opts: {
     if (!Array.isArray(data.data)) return undefined;
     return data.data
       .filter((m) => isRecord(m) && typeof m['id'] === 'string')
-      .map((m) => ({
-        id: m['id'] as string,
-        ownedBy: typeof m['owned_by'] === 'string' ? (m['owned_by'] as string) : undefined,
-        name: modelNameFromRaw(m),
-        vision: modelVisionFromRaw(m),
-      }))
+      .map((m) => {
+        const pricing = isRecord(m['pricing']) ? (m['pricing'] as Record<string, unknown>) : undefined;
+        const promptPrice = typeof pricing?.['promptUsdPerM'] === 'number' ? pricing['promptUsdPerM'] : undefined;
+        const completionPrice = typeof pricing?.['completionUsdPerM'] === 'number' ? pricing['completionUsdPerM'] : undefined;
+        const contextWindow = typeof m['context_window'] === 'number' ? m['context_window'] : undefined;
+        const maxOutputTokens = typeof m['max_output_tokens'] === 'number' ? m['max_output_tokens'] : undefined;
+        return {
+          id: m['id'] as string,
+          ownedBy: typeof m['owned_by'] === 'string' ? (m['owned_by'] as string) : undefined,
+          name: modelNameFromRaw(m),
+          vision: modelVisionFromRaw(m),
+          ...(contextWindow ? { contextWindow } : {}),
+          ...(maxOutputTokens ? { maxOutputTokens } : {}),
+          ...(promptPrice !== undefined ? { inputPricePerMillion: promptPrice } : {}),
+          ...(completionPrice !== undefined ? { outputPricePerMillion: completionPrice } : {}),
+        };
+      })
       .sort((a, b) => a.id.localeCompare(b.id));
   } catch {
     return undefined;

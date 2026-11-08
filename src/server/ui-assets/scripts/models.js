@@ -165,7 +165,7 @@
     el.setAttribute('aria-label', m ? 'Model details: ' + modelMetaText(m) : 'Model details unavailable');
   }
 
-  function modelDisplayName(m) { return m && m.label ? String(m.label) : titleCase(String(m && m.id || '')); }
+  function modelDisplayName(m) { return m && m.label ? String(m.label) : prettyModelName(String(m && m.id || '')); }
   function modelOptionsHtml() {
     var out = '';
     catalogModelGroups(undefined, '', true).forEach(function (g) {
@@ -205,7 +205,26 @@
   // input never references or depends on cost.
   function modelSearchText(p, m) {
     var meta = m.metadata || {};
-    var parts = [p.id, m.id, modelDisplayName(m), titleCase(m.id)];
+    var id = String(m && m.id || '');
+    var baseId = id.split('/').pop() || id;
+    var parts = [
+      p.id,
+      p.label || '',
+      id,
+      baseId,
+      m.label || '',
+      modelDisplayName(m),
+      prettyModelName(id),
+      prettyModelName(baseId),
+      titleCase(id),
+      titleCase(baseId)
+    ];
+    if (/deepseek/i.test(id) || /deepseek/i.test(p.id)) {
+      parts.push('deepseek', 'v4', 'v4.1', 'flash');
+    }
+    if (p.id === 'pikrouter' || /pikrouter|pikpam/i.test(p.id)) {
+      parts.push('pikrouter', 'piki', 'pikpam', 'router');
+    }
     if (meta.contextTokens) parts.push(formatTokens(meta.contextTokens) + ' context');
     if (m.free) parts.push('free');
     if (m.vision) parts.push('vision images');
@@ -280,6 +299,9 @@
       renderModelMenu('');
       setTimeout(function () { filter.focus(); }, 0);
     } else renderModelMenu('');
+    loadModelCatalog(false).then(function () {
+      if (!menu.hidden) renderModelMenu(filter ? filter.value : '');
+    }).catch(function () {});
   }
   function closeModelMenu() {
     var menu = $('modelMenu'), pick = $('modelPick');

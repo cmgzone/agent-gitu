@@ -27,8 +27,16 @@ function normalizeModels(models: readonly ModelInfo[]): ModelInfo[] {
     const id = model.id.trim();
     if (!id) continue;
     const existing = unique.get(id);
-    if (!existing) unique.set(id, { id, vision: model.vision, ...(model.ownedBy ? { ownedBy: model.ownedBy } : {}), ...(model.name ? { name: model.name } : {}) });
-    else { if (existing.vision === undefined) existing.vision = model.vision; if (!existing.ownedBy && model.ownedBy) existing.ownedBy = model.ownedBy; if (!existing.name && model.name) existing.name = model.name; }
+    if (!existing) unique.set(id, { id, vision: model.vision, ...(model.ownedBy ? { ownedBy: model.ownedBy } : {}), ...(model.name ? { name: model.name } : {}), ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}), ...(model.maxOutputTokens ? { maxOutputTokens: model.maxOutputTokens } : {}), ...(model.inputPricePerMillion !== undefined ? { inputPricePerMillion: model.inputPricePerMillion } : {}), ...(model.outputPricePerMillion !== undefined ? { outputPricePerMillion: model.outputPricePerMillion } : {}) });
+    else {
+      if (existing.vision === undefined) existing.vision = model.vision;
+      if (!existing.ownedBy && model.ownedBy) existing.ownedBy = model.ownedBy;
+      if (!existing.name && model.name) existing.name = model.name;
+      if (!existing.contextWindow && model.contextWindow) existing.contextWindow = model.contextWindow;
+      if (!existing.maxOutputTokens && model.maxOutputTokens) existing.maxOutputTokens = model.maxOutputTokens;
+      if (existing.inputPricePerMillion === undefined && model.inputPricePerMillion !== undefined) existing.inputPricePerMillion = model.inputPricePerMillion;
+      if (existing.outputPricePerMillion === undefined && model.outputPricePerMillion !== undefined) existing.outputPricePerMillion = model.outputPricePerMillion;
+    }
   }
   return [...unique.values()];
 }
@@ -83,7 +91,13 @@ export async function resolveModelCatalog(deps: Partial<ModelCatalogDependencies
     publicModels: Boolean(spec.publicModels),
     live,
     models: models.map((mi) => {
-      const metadata = modelMetadataFor(catalog, spec.id, mi.id);
+      const metadata = modelMetadataFor(catalog, spec.id, mi.id) ?? (mi.contextWindow || mi.inputPricePerMillion !== undefined ? {
+        contextTokens: mi.contextWindow,
+        outputTokens: mi.maxOutputTokens,
+        inputPricePerMillion: mi.inputPricePerMillion,
+        outputPricePerMillion: mi.outputPricePerMillion,
+        source: 'models.dev' as const,
+      } : undefined);
       // The provider's own published name wins, then Gitu's alias knowledge for
       // ids the provider names nothing for, then the live models.dev name. The
       // UI humanizes the raw id when none of these exist.

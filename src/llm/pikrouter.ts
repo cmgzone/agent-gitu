@@ -11,7 +11,7 @@ export const DEFAULT_PIKROUTER_TOPUP_URL = 'https://pikrouter.pikpam.com/oauth/t
 export const DEFAULT_PIKROUTER_CREDITS_URL = 'https://pikrouter.pikpam.com/api/user/credits';
 export const DEFAULT_PIKROUTER_OAUTH_CLIENT_ID = 'client_nexus_65f8f5f9a0c92bf1';
 export const DEFAULT_PIKROUTER_BASE_URL = 'https://pikrouter.pikpam.com/v1';
-export const DEFAULT_PIKROUTER_MODEL = 'gpt-4o-mini';
+export const DEFAULT_PIKROUTER_MODEL = 'DeepSeek-V4.1-Flash';
 export const PIKROUTER_CREDITS_PER_USD = 100;
 
 export interface PikRouterCreditsInfo {

@@ -59,7 +59,7 @@ export const UI_MODEL_CATALOG_JS = String.raw`
       return (providerId === undefined || p.id === providerId) && (!usableOnly || providerIsUsable(p));
     }).map(function (p) {
       return { p: p, models: (p.models || []).filter(function (m) {
-        return !q || modelSearchText(p, m).indexOf(q) >= 0;
+        return !q || (typeof modelSearchText === 'function' ? modelSearchText(p, m).indexOf(q) >= 0 : (p.id + ' ' + m.id + ' ' + (m.label || '')).toLowerCase().indexOf(q) >= 0);
       }) };
     }).filter(function (g) { return g.models.length > 0; });
   }

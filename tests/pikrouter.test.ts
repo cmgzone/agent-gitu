@@ -41,7 +41,7 @@ describe('PikRouter integration', () => {
     expect(spec).toBeDefined();
     expect(spec!.id).toBe('pikrouter');
     expect(spec!.baseUrl).toBe('https://pikrouter.pikpam.com/v1');
-    expect(spec!.defaultModel).toBe('gpt-4o-mini');
+    expect(spec!.defaultModel).toBe('DeepSeek-V4.1-Flash');
     expect(spec!.keyEnvVars).toContain('PIKROUTER_API_KEY');
     expect(spec!.publicModels).toBe(true);
     expect(spec!.capabilities?.streamingTools).toBe(true);
@@ -108,7 +108,7 @@ describe('PikRouter integration', () => {
     });
     expect(resolved.providerId).toBe('pikrouter');
     expect(resolved.baseUrl).toBe('https://pikrouter.pikpam.com/v1');
-    expect(resolved.model).toBe('gpt-4o-mini');
+    expect(resolved.model).toBe('DeepSeek-V4.1-Flash');
   });
 
   it('streams completion deltas via streamPikRouterCompletion', async () => {
@@ -235,6 +235,15 @@ describe('PikRouter integration', () => {
       } as NodeJS.ProcessEnv,
     });
     expect(resolved.providerId).toBe('pikrouter');
+  });
+
+  it('supports DeepSeek-V4.1-Flash and deepseek/deepseek-v4-flash in pikrouter model catalog and labels', () => {
+    const spec = PROVIDERS['pikrouter'];
+    expect(spec?.defaultModel).toBe('DeepSeek-V4.1-Flash');
+    expect(spec?.models).toContain('DeepSeek-V4.1-Flash');
+    expect(spec?.models).toContain('deepseek/deepseek-v4-flash');
+    expect(spec?.modelLabels?.['DeepSeek-V4.1-Flash']).toBe('DeepSeek V4.1 Flash');
+    expect(spec?.modelLabels?.['deepseek/deepseek-v4-flash']).toBe('DeepSeek V4.1 Flash');
   });
 
   it('registers a new PikRouter account via registerPikRouter', async () => {

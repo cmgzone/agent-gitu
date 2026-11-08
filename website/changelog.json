@@ -1,6 +1,13 @@
 {
-  "updated": "2026-11-07",
+  "updated": "2026-11-08",
   "entries": [
+    {
+      "date": "2026-11-08",
+      "kind": "news",
+      "title": "AI news digest — 8 November 2026",
+      "summary": "4 stories added: NYT Cooking AI assistant, no-employee AI startups, delivery-robot blocker, SE Asia datacentre pause",
+      "link": "news.html"
+    },
     {
       "date": "2026-11-07",
       "kind": "news",

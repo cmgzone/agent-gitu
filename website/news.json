@@ -1,6 +1,46 @@
 {
-  "updated": "2026-11-07",
+  "updated": "2026-11-08",
   "items": [
+    {
+      "title": "NYT Cooking's AI assistant saved my weeknight chicken, but almost ruined my cake",
+      "summary": "The New York Times recipe app added an AI assistant that rewrites recipes around what you have; the reviewer found it useful but caught it giving wrong amounts.",
+      "why": "It confidently gave butter for a different version of the same recipe, which is the failure mode to watch in any AI tool you point at customers.",
+      "source": "The Verge",
+      "url": "https://www.theverge.com/tech/1029489/nyt-cooking-ai-assistant-review",
+      "image": "https://platform.theverge.com/wp-content/uploads/sites/2/2026/11/268844_NY_Times_Cooking_App_JTuohy_0006.jpg?quality=90&strip=all&crop=0%2C10.732984293194%2C100%2C78.534031413613&w=1200",
+      "imageAlt": "A hand holding a phone showing an NYT Cooking recipe beside a plate of frosted cinnamon roll muffins",
+      "published": "2026-11-07T15:50:00Z"
+    },
+    {
+      "title": "America's newest small business owners with no employees start hot in AI era",
+      "summary": "US business applications without early hiring rose 26.8% since early 2024 in AI-exposed industries, and one owner runs 12 e-commerce brands with no staff.",
+      "why": "If one person can now cover finance, design and marketing, the cost of competing with a much bigger Kenyan shop keeps falling.",
+      "source": "CNBC",
+      "url": "https://www.cnbc.com/2026/11/07/americas-new-no-employee-small-business-owners-start-hot-in-ai-era.html",
+      "image": "https://image.cnbcfm.com/api/v1/image/108527810-1793910439774-kristin_ginn_desk_photo.png?v=1793910727&w=1920&h=1080",
+      "imageAlt": "Kristin Ginn, in a maroon shirt, working at two laptops at a sunlit desk with plants behind her",
+      "published": "2026-11-07T14:45:01Z"
+    },
+    {
+      "title": "Standing in the way of slop bowls: the woman blocking food delivery robots",
+      "summary": "A 78-year-old Philadelphia professor blocks Uber Eats delivery robots on public pavements; police ticketed her for disorderly conduct and she will contest it.",
+      "why": "Robot couriers reached public streets years before the rules did, so delivery costs and the local jobs around them can shift without anyone voting on it.",
+      "source": "The Guardian",
+      "url": "https://www.theguardian.com/technology/ng-interactive/2026/nov/07/philadelphia-blocking-food-delivery-robots",
+      "image": "https://i.guim.co.uk/img/media/6c9b99624b2d4f830d94948c591fde5d07839cf9/148_0_6358_5086/master/6358.jpg?width=1200&height=630&quality=85&auto=format&fit=crop&precrop=40:21,offset-x50,offset-y0&overlay-align=bottom%2Cleft&overlay-width=100p&overlay-base64=L2ltZy9zdGF0aWMvb3ZlcmxheXMvdGctZGVmYXVsdC5wbmc&enable=upscale&s=19c1a80021e2814f0bbcd0178aea2c0c",
+      "imageAlt": "Carolyn Marvin in a blue visor standing in front of an Avride delivery robot, holding a small red flag",
+      "published": "2026-11-07T14:00:12Z"
+    },
+    {
+      "title": "The datacentre arms race hits pause in south-east Asia",
+      "summary": "Thailand paused construction on 49 datacentre projects and approval decisions on 117 more in September, as power and water constraints bite across the region.",
+      "why": "When AI capacity is limited by power and water permits, the cloud and AI services a Kenyan shop rents can change on decisions made far away.",
+      "source": "The Guardian",
+      "url": "https://www.theguardian.com/technology/2026/nov/07/datacentres-southeast-asia",
+      "image": "https://i.guim.co.uk/img/media/97317ac683d16a9b43f8f91ba651c0c5be5113a7/836_0_4164_3333/master/4164.jpg?width=1200&height=630&quality=85&auto=format&fit=crop&precrop=40:21,offset-x50,offset-y0&overlay-align=bottom%2Cleft&overlay-width=100p&overlay-base64=L2ltZy9zdGF0aWMvb3ZlcmxheXMvdGctZGVmYXVsdC5wbmc&enable=upscale&s=79165e86d1954daf6e66e67eb9becec8",
+      "imageAlt": "Aerial view of the Rama 9 datacentre in Bangkok, its roof of cooling units in front of the city skyline",
+      "published": "2026-11-07T10:00:07Z"
+    },
     {
       "title": "Three men charged in US with using AI to impersonate CEOs and steal millions",
       "summary": "US prosecutors charged three foreign nationals with using AI to fake executives' and lawyers' voices and images so staff would wire money. Losses exceed $129m.",

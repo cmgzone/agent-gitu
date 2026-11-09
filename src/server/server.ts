@@ -54,7 +54,7 @@ import { InboxArrivalJournal, MailInboxMonitor, type InboxArrival } from '../con
 import { ConnectionsHub, MAIL_SERVICE_SLUG, isNativeMailRead } from '../connections/provider.js';
 import { COMPANION_DIR, companionAsset } from './mobile-companion.js';
 import os from 'node:os';
-import { appendFileSync, copyFileSync, cpSync, createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, cpSync, createReadStream, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import nodePath from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AddressInfo } from 'node:net';
@@ -96,7 +96,7 @@ import { gitCommit, gitDiff, gitDiscard, gitInfo, gitInit, gitPush } from '../gi
 import { TaskLedger } from '../ledger/task-ledger.js';
 import { samePath } from '../ledger/project-identity.js';
 import { acquireTaskLock } from '../ledger/task-lock.js';
-import { gitExec } from '../git/git.js';
+import { gitExec, isGitRepo } from '../git/git.js';
 import type { LlmClient, LlmMessage, LlmUsage } from '../llm/llm.js';
 import { LlmError, UsageTrackingClient, extractLastJsonObject } from '../llm/llm.js';
 import { CoworkStore, MAX_ARTIFACT_BYTES, type CoworkBudgetData, type CoworkConversation, type CoworkMessage, type CoworkAgent, type CoworkWidgetKind, type CoworkMission, type CoworkRequest } from '../cowork/store.js';
@@ -1002,12 +1002,47 @@ export class GituServer {
    * rather than dependent on an ignored parent directory.
    */
   private async ensureSessionWorktree(repoRoot: string, taskId: string, branch: string): Promise<string | undefined> {
-    if (!taskId || !branch) return undefined;
-    const branchExists = await gitExec(repoRoot, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]).then(
+    return this.recoverSessionWorktree(repoRoot, taskId, branch);
+  }
+
+  /**
+   * Automatically heals, restores, or provisions a session worktree.
+   *
+   * Self-healing handles:
+   * 1. Stale worktree registrations in Git after directory deletion on disk (prunes dead entries).
+   * 2. Branch checkout collisions / locks held by stale, dead, or background worktrees (cleans or detaches HEAD).
+   * 3. Corrupted worktree directories, detached HEAD states, or dirty divergence from expected branch.
+   * 4. Windows broken junctions / symlinks throwing EEXIST.
+   * 5. Non-git repositories or non-existent branches (safely returns undefined).
+   */
+  private async recoverSessionWorktree(
+    repoRoot: string,
+    taskId: string,
+    branch: string,
+    recordedPath?: string,
+  ): Promise<string | undefined> {
+    if (!taskId || !branch || !isGitRepo(repoRoot)) return undefined;
+
+    // Verify branch exists locally or on remote
+    let branchExists = await gitExec(repoRoot, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]).then(
       () => true,
       () => false,
     );
+    if (!branchExists) {
+      const remoteExists = await gitExec(repoRoot, ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`]).then(
+        () => true,
+        () => false,
+      );
+      if (remoteExists) {
+        await gitExec(repoRoot, ['branch', '--track', branch, `origin/${branch}`]).catch(() => '');
+        branchExists = await gitExec(repoRoot, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]).then(
+          () => true,
+          () => false,
+        );
+      }
+    }
     if (!branchExists) return undefined;
+
     // Keep agent state out of git status in the main checkout AND in every
     // worktree (worktrees share the common git dir), without touching the
     // user's tracked .gitignore.
@@ -1024,46 +1059,116 @@ export class GituServer {
     } catch {
       /* best effort */
     }
-    const wtDir = this.sessionWorktreePath(repoRoot, taskId);
-    try {
-      const list = await gitExec(repoRoot, ['worktree', 'list', '--porcelain']);
+
+    const canonicalPath = this.sessionWorktreePath(repoRoot, taskId);
+
+    // If recordedPath exists, is healthy, and is not inside private agent state (.hermes), we can use it.
+    if (recordedPath && !this.isPrivateAgentStatePath(repoRoot, recordedPath)) {
+      if (existsSync(recordedPath) && (await this.branchAt(recordedPath)) === branch) {
+        this.linkWorkspaceIntoWorktree(repoRoot, recordedPath);
+        return recordedPath;
+      }
+    }
+
+    const parseWorktrees = async () => {
+      const list = await gitExec(repoRoot, ['worktree', 'list', '--porcelain']).catch(() => '');
       const lines = list.split(/\r?\n/);
-      const worktrees: { root: string; branch?: string }[] = [];
-      let current: { root: string; branch?: string } | undefined;
+      const wts: { root: string; branch?: string }[] = [];
+      let cur: { root: string; branch?: string } | undefined;
       for (const line of lines) {
         if (line.startsWith('worktree ')) {
-          if (current) worktrees.push(current);
-          current = { root: nodePath.resolve(line.slice('worktree '.length)) };
-        } else if (line.startsWith('branch ') && current) {
-          current.branch = line.slice('branch '.length);
+          if (cur) wts.push(cur);
+          cur = { root: nodePath.resolve(line.slice('worktree '.length)) };
+        } else if (line.startsWith('branch ') && cur) {
+          cur.branch = line.slice('branch '.length);
         }
       }
-      if (current) worktrees.push(current);
-      const registered = lines.some(
-        (line) =>
-          line.startsWith('worktree ') &&
-          nodePath.resolve(line.slice('worktree '.length)).toLowerCase() === nodePath.resolve(wtDir).toLowerCase(),
-      );
-      if (!registered) {
-        mkdirSync(nodePath.dirname(wtDir), { recursive: true });
-        // Upgrade legacy sessions in place. The branch can only be checked
-        // out once, so Git must move its registered worktree rather than add
-        // a second checkout of the same branch.
-        const legacyRoot = worktrees.find(
-          (entry) => entry.branch === `refs/heads/${branch}` && this.isPrivateAgentStatePath(repoRoot, entry.root),
-        );
-        if (legacyRoot) {
-          await gitExec(repoRoot, ['worktree', 'move', legacyRoot.root, wtDir]);
-        } else {
-          await gitExec(repoRoot, ['worktree', 'add', wtDir, branch]);
+      if (cur) wts.push(cur);
+      return wts;
+    };
+
+    // 1. Prune dead worktrees from git's metadata
+    await gitExec(repoRoot, ['worktree', 'prune']).catch(() => '');
+
+    let worktrees = await parseWorktrees();
+
+    // 2. Remove any dead or broken worktree registrations whose directory is gone
+    for (const wt of worktrees) {
+      if (!existsSync(wt.root)) {
+        await gitExec(repoRoot, ['worktree', 'remove', '--force', wt.root]).catch(() => '');
+      }
+    }
+    await gitExec(repoRoot, ['worktree', 'prune']).catch(() => '');
+    worktrees = await parseWorktrees();
+
+    // 3. Check if target canonical path exists on disk
+    let targetDir = canonicalPath;
+    if (existsSync(targetDir)) {
+      const currentBranch = await this.branchAt(targetDir);
+      if (currentBranch === branch) {
+        this.linkWorkspaceIntoWorktree(repoRoot, targetDir);
+        return targetDir;
+      }
+      // If parked on another branch or detached, attempt to switch to target branch
+      if (currentBranch) {
+        await gitExec(targetDir, ['checkout', '-f', branch]).catch(() => '');
+        if ((await this.branchAt(targetDir)) === branch) {
+          this.linkWorkspaceIntoWorktree(repoRoot, targetDir);
+          return targetDir;
         }
       }
+      // Corrupted or immovable directory: remove worktree registration and delete folder
+      await gitExec(repoRoot, ['worktree', 'remove', '--force', targetDir]).catch(() => '');
+      await gitExec(repoRoot, ['worktree', 'prune']).catch(() => '');
+      try {
+        rmSync(targetDir, { recursive: true, force: true });
+      } catch {
+        /* best effort */
+      }
+      if (existsSync(targetDir)) {
+        // Target path is locked on disk; allocate a fresh recovery path
+        targetDir = `${canonicalPath}-rec-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      }
+    }
+
+    // 4. Resolve any branch collision across other worktrees
+    worktrees = await parseWorktrees();
+    const collision = worktrees.find(
+      (entry) => entry.branch === `refs/heads/${branch}` && entry.root.toLowerCase() !== targetDir.toLowerCase(),
+    );
+    if (collision) {
+      const normRepo = nodePath.resolve(repoRoot).toLowerCase();
+      if (collision.root.toLowerCase() === normRepo) {
+        // Main checkout is already on this branch; cannot create a separate worktree of the exact same branch
+        return undefined;
+      }
+      if (!existsSync(collision.root) || this.isPrivateAgentStatePath(repoRoot, collision.root)) {
+        await gitExec(repoRoot, ['worktree', 'remove', '--force', collision.root]).catch(() => '');
+        await gitExec(repoRoot, ['worktree', 'prune']).catch(() => '');
+      } else {
+        // Detach collision worktree so Git frees refs/heads/<branch>
+        await gitExec(collision.root, ['checkout', '--detach']).catch(() => '');
+      }
+    }
+
+    // 5. Add new worktree
+    mkdirSync(nodePath.dirname(targetDir), { recursive: true });
+    try {
+      await gitExec(repoRoot, ['worktree', 'add', targetDir, branch]);
     } catch {
+      await gitExec(repoRoot, ['worktree', 'add', '--force', targetDir, branch]).catch(() => '');
+    }
+
+    if (!existsSync(targetDir) || (await this.branchAt(targetDir)) !== branch) {
+      logger.warn(
+        { subsystem: 'worktree', repoRoot, taskId, branch, targetDir },
+        'recoverSessionWorktree: failed to provision worktree',
+      );
       return undefined;
     }
-    if (!existsSync(wtDir)) return undefined;
-    this.linkWorkspaceIntoWorktree(repoRoot, wtDir);
-    return wtDir;
+
+    this.linkWorkspaceIntoWorktree(repoRoot, targetDir);
+    return targetDir;
   }
 
   /** The branch a working tree is currently on, or undefined when Git cannot say. */
@@ -1101,17 +1206,14 @@ export class GituServer {
         ? { path: recorded, recreated: false, recorded }
         : { path: undefined, recreated: false, recorded, reason: 'the recorded worktree is missing and the ledger records no branch to rebuild it on' };
     }
-    if (recordedExists && (await this.branchAt(recorded)) === branch) return { path: recorded, recreated: false, recorded };
+    if (recordedExists && (await this.branchAt(recorded)) === branch) {
+      this.linkWorkspaceIntoWorktree(repoRoot, recorded);
+      return { path: recorded, recreated: false, recorded };
+    }
     const reason = recordedExists
       ? `the recorded worktree was on ${(await this.branchAt(recorded)) ?? 'an unknown branch'}, not ${branch}`
       : 'the recorded worktree no longer exists';
-    let rebuilt = await this.ensureSessionWorktree(repoRoot, taskId, branch);
-    if (rebuilt && (await this.branchAt(rebuilt)) !== branch) {
-      // A registered worktree parked on the wrong branch can sometimes simply be
-      // moved back; if that fails it is genuinely unusable.
-      await gitExec(rebuilt, ['checkout', branch]).catch(() => '');
-    }
-    if (rebuilt && (await this.branchAt(rebuilt)) !== branch) rebuilt = undefined;
+    const rebuilt = await this.recoverSessionWorktree(repoRoot, taskId, branch, recorded);
     return rebuilt ? { path: rebuilt, recreated: true, recorded, reason } : { path: undefined, recreated: false, recorded, reason };
   }
 
@@ -1121,7 +1223,17 @@ export class GituServer {
    *  none of these still works for chat-style continuations. */
   private linkWorkspaceIntoWorktree(repoRoot: string, wtDir: string): void {
     const ensureLink = (target: string, at: string, fallbackCopy: boolean): void => {
-      if (!existsSync(target) || existsSync(at)) return;
+      if (!existsSync(target)) return;
+      try {
+        const stat = lstatSync(at);
+        if (stat.isSymbolicLink() || stat.isDirectory()) {
+          if (existsSync(at)) return;
+          // Broken symlink/junction: remove it so symlinkSync doesn't fail with EEXIST
+          rmSync(at, { recursive: true, force: true });
+        }
+      } catch {
+        /* 'at' does not exist */
+      }
       try {
         symlinkSync(target, at, process.platform === 'win32' ? 'junction' : 'dir');
       } catch {
@@ -1357,7 +1469,7 @@ export class GituServer {
       let branch = entry.branch;
       let worktreePath = entry.worktreePath;
       let pausedForDiscussion = false;
-      if (entry.taskId && (!mode || !report || !finishedAt || !branch)) {
+      if (entry.taskId && (!mode || !report || !finishedAt || !branch || !worktreePath)) {
         const root = this.resolveTaskRoot(entry.taskId, entry.projectPath, startupRoots);
         const ledger = root ? TaskLedger.load(root, entry.taskId) : undefined;
         pausedForDiscussion = Boolean(ledger?.data.blockers.includes('Paused for discussion with the user.'));
@@ -6505,10 +6617,25 @@ export class GituServer {
   private async resumeAfterCredential(session: RunSession, message: string, attachments: ModelContextAttachment[], images: { name: string; dataUrl: string }[]): Promise<void> {
     if (this.sessions.get(session.runId) !== session) return;
     try {
-      const root = session.worktreePath ?? session.projectPath ?? this.projectRoot() ?? this.config.cwd;
+      let root = session.worktreePath ?? session.projectPath ?? this.projectRoot() ?? this.config.cwd;
       if (session.taskId) {
-        const ledger = TaskLedger.load(root, session.taskId);
+        const repoRoot = session.projectPath ?? this.projectRoot() ?? this.config.cwd;
+        const ledger = (repoRoot ? TaskLedger.load(repoRoot, session.taskId) : undefined) ?? TaskLedger.load(root, session.taskId);
         if (!ledger) throw new Error('The saved task could not be found. Send a message to resume it.');
+        if (ledger.data.gitBranch && repoRoot && isGitRepo(repoRoot)) {
+          if (ledger.data.worktreePath || session.worktreePath) {
+            const recorded = ledger.data.worktreePath ?? session.worktreePath ?? '';
+            const revalidated = await this.revalidateSessionWorktree(repoRoot, session.taskId, ledger.data.gitBranch, recorded);
+            if (revalidated.path) {
+              root = revalidated.path;
+              if (revalidated.path !== ledger.data.worktreePath) {
+                ledger.data.worktreePath = revalidated.path;
+                ledger.save();
+                session.worktreePath = revalidated.path;
+              }
+            }
+          }
+        }
         const check = await ledger.validateEnvironment(root);
         if (!check.ok) throw new Error(check.reason ?? 'The task workspace changed.');
       }
@@ -9188,7 +9315,7 @@ export class GituServer {
           );
           if (revalidated.path) {
             execRoot = revalidated.path;
-            if (revalidated.path !== revalidated.recorded) {
+            if (revalidated.recreated || revalidated.path !== revalidated.recorded) {
               ledger.data.worktreePath = revalidated.path;
               ledger.save();
               session.worktreePath = revalidated.path;

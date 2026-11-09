@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -244,6 +244,116 @@ describe('HermesServer — session ↔ task ↔ git attachment (P0.1)', () => {
     expect(body.error).toContain('Branch mismatch');
     expect(TaskLedger.list(path.resolve(dir))).toHaveLength(1);
   }, 30000);
+
+  it('automatically heals and recovers when a session worktree is deleted on disk', async () => {
+    const dir = makeProject('wt-heal');
+    await initGitRepo(dir);
+    await gitExec(dir, ['branch', 'gitu/wt-heal-task']);
+
+    const wtDir = path.join(dir, '..', `wt-heal-session-worktree-${Date.now().toString(36)}`);
+    await gitExec(dir, ['worktree', 'add', wtDir, 'gitu/wt-heal-task']);
+    expect(existsSync(wtDir)).toBe(true);
+
+    const guard = ProjectGuard.detect(dir);
+    const ledger = TaskLedger.create({
+      repoRoot: path.resolve(dir),
+      goal: 'task with deleted worktree',
+      project: guard.lock,
+      mode: 'standard',
+      gitBranch: 'gitu/wt-heal-task',
+      worktreePath: wtDir,
+    });
+    new SessionStore().upsertSession({
+      runId: 'run-wt-heal',
+      taskId: ledger.data.taskId,
+      goal: 'task with deleted worktree',
+      project: 'wt-heal',
+      projectPath: path.resolve(dir),
+      startedAt: new Date().toISOString(),
+      status: 'blocked',
+      mode: 'standard',
+      branch: 'gitu/wt-heal-task',
+      worktreePath: wtDir,
+    });
+
+    // Delete worktree directory on disk while Git worktree list still retains registration
+    rmSync(wtDir, { recursive: true, force: true });
+    expect(existsSync(wtDir)).toBe(false);
+
+    const { base } = await startServer(
+      dir,
+      new ScriptedMockLlm([
+        () => JSON.stringify({ action: { type: 'complete', summary: 'healed', risks: [], followUps: [] } }),
+      ]),
+    );
+
+    const res = await fetch(`${base}/api/runs/run-wt-heal/message`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'continue in healed worktree' }),
+    });
+    expect(res.status).toBe(200);
+
+    const reloaded = TaskLedger.load(dir, ledger.data.taskId);
+    expect(reloaded?.data.worktreePath).toBeDefined();
+    expect(existsSync(reloaded!.data.worktreePath!)).toBe(true);
+    const recoveredBranch = (await gitExec(reloaded!.data.worktreePath!, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
+    expect(recoveredBranch).toBe('gitu/wt-heal-task');
+  }, 35000);
+
+  it('automatically provisions an isolated worktree when main checkout branch diverges', async () => {
+    const dir = makeProject('wt-diverge');
+    await initGitRepo(dir);
+    await gitExec(dir, ['branch', 'gitu/diverged-branch']);
+
+    const guard = ProjectGuard.detect(dir);
+    // Task is bound to gitu/diverged-branch with no initial worktreePath, while main checkout remains on master/main
+    const ledger = TaskLedger.create({
+      repoRoot: path.resolve(dir),
+      goal: 'diverged branch task',
+      project: guard.lock,
+      mode: 'standard',
+      gitBranch: 'gitu/diverged-branch',
+    });
+    new SessionStore().upsertSession({
+      runId: 'run-wt-diverge',
+      taskId: ledger.data.taskId,
+      goal: 'diverged branch task',
+      project: 'wt-diverge',
+      projectPath: path.resolve(dir),
+      startedAt: new Date().toISOString(),
+      status: 'blocked',
+      mode: 'standard',
+      branch: 'gitu/diverged-branch',
+    });
+
+    const mainBranchBefore = (await gitExec(dir, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
+    expect(mainBranchBefore).not.toBe('gitu/diverged-branch');
+
+    const { base } = await startServer(
+      dir,
+      new ScriptedMockLlm([
+        () => JSON.stringify({ action: { type: 'complete', summary: 'divergence resolved', risks: [], followUps: [] } }),
+      ]),
+    );
+
+    const res = await fetch(`${base}/api/runs/run-wt-diverge/message`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'resume despite branch divergence' }),
+    });
+    expect(res.status).toBe(200);
+
+    const reloaded = TaskLedger.load(dir, ledger.data.taskId);
+    expect(reloaded?.data.worktreePath).toBeDefined();
+    expect(existsSync(reloaded!.data.worktreePath!)).toBe(true);
+    const wtBranch = (await gitExec(reloaded!.data.worktreePath!, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
+    expect(wtBranch).toBe('gitu/diverged-branch');
+
+    // Ensure the main checkout was not modified or switched
+    const mainBranchAfter = (await gitExec(dir, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
+    expect(mainBranchAfter).toBe(mainBranchBefore);
+  }, 35000);
 
   it('allows continuation when session has no task binding yet (resumes execution)', async () => {
     const dir = makeProject('no-task');

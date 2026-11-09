@@ -70,7 +70,7 @@ export interface GituFactoryOptions {
   autoLearn?: boolean;
   /** Defaults to `true`: a plan is reviewed before implementation starts. */
   requirePlanReview?: boolean;
-  resume?: { taskId: string; message: string };
+  resume?: { taskId: string; message: string; newTask?: boolean };
   /** Task id the host already reserved for this run (write-once adoption). */
   taskId?: string;
   conversationHistory?: LlmMessage[];

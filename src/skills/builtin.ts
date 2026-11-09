@@ -146,11 +146,54 @@ export const BROWSER_WORKFLOW_SKILL: ResolvedBuiltinSkill = def({
 7. Save durable workflow steps with agent_memory and record document URLs and remaining steps in todo notes. For local finished files call share_file. Do not claim an export succeeded unless a real output file or download was verified.`,
 });
 
+/** Pikpam operations for the primary assistant and VPS agents. */
+export const PIKPAM_ECOSYSTEM_SKILL: ResolvedBuiltinSkill = def({
+  name: 'pikpam-ecosystem',
+  description: 'Use Pikpam Cloud APIs and Gitu VPS tools to create projects, connect GitHub repositories, deploy and manage apps, configure domains, environment variables, storage, PostgreSQL, Redis, and VPS services.',
+  keywords: ['pikpam', 'gitu cloud', 'vps', 'github deployment', 'domain', 'storage', 'postgres', 'redis', 'deploy'],
+  instructions: `# Pikpam ecosystem operations
+
+Use this skill whenever work touches a Pikpam project, GitHub deployment, app, domain, storage volume, database, or dedicated VPS. Keep every app and service associated with the correct customer project and VPS.
+
+## Start with the customer project
+
+1. Run \`/data/bin/gitu-cloud context\` and \`/data/bin/gitu-cloud projects\` to inspect the user's account, VPS, domains, existing projects, and deployed apps.
+2. Reuse the selected project when one exists. If none exists, create one through the Pikpam portal or configured Pikpam projects API with the current VPS ID, a project name, and a supported category.
+3. Never attach a project or app to a VPS that does not belong to the authenticated customer. A VPS agent may only manage its own VPS.
+
+## GitHub repository deployment
+
+- Public repositories need no token. For a private repository, use Pikpam's connected-repository flow and a repository-scoped, read-only token. Never ask the customer to paste a token into chat, shell commands, Git remotes, logs, or app configuration.
+- Run \`/data/bin/gitu-cloud project-clone <project-id>\` to securely clone or update a linked repository. Do not print or persist fetched credentials.
+- Inspect the README and manifests before installing. Use the repository's declared runtime; prefer its Compose/Docker setup when provided. Ask only if the runtime, entrypoint, port, or required configuration is ambiguous.
+- Keep project files under \`/data/projects/<project-slug>\`. Use \`/data/bin/gitu-cloud host "<command>"\` for host-level work on this customer's dedicated VPS. Never expose the host bridge to app containers.
+- Preserve existing Compose files and unrelated services. Publish only the app port needed by Caddy and attach the Pikpam data-services network only when the app needs VPS PostgreSQL or Redis.
+
+## Configure and deploy
+
+1. Ask only for configuration that is genuinely missing. Have the customer add secrets in the app's Pikpam Env controls; never request production secrets in chat.
+2. Register the running app with \`/data/bin/gitu-cloud deploy "<App Name>" <port> [domain] "<Framework>" <project-id>\`.
+3. Run \`/data/bin/gitu-cloud app-env <app-id>\` to install the dashboard-managed environment file, then restart only that app using its own process manager or Compose project.
+4. Verify the app on its local port and Pikpam HTTPS domain. Report the repository, branch, runtime, project, domain, and any remaining customer action.
+
+## Databases and storage
+
+- Prefer \`PIKPAM_POSTGRES_URL\` and \`PIKPAM_REDIS_URL\` for databases provisioned on the customer's VPS. Never publish database ports to the public internet.
+- Use Pikpam storage APIs and the customer's assigned storage volume. Keep object paths and app credentials scoped to that customer/project. Never expose provider credentials in logs or repositories.
+- Do not claim an app, database, storage volume, DNS record, or SSL certificate is ready until the service and endpoint have been verified.
+
+## Update and troubleshoot
+
+- To update from GitHub, run \`project-clone\` again, inspect the changes, rebuild/restart only the affected app, and verify its health.
+- Use the host bridge for targeted VPS diagnostics and preserve existing customer workloads.
+- If a required Pikpam command or API is unavailable, report that limitation clearly instead of simulating success.`,
+});
+
 export function builtinSkills(): ResolvedBuiltinSkill[] {
   // BROWSER_SKILL is capability-gated (requires the `browser` tool), so hosts
   // without a provisioned browser simply fail its requirements instead of
   // receiving instructions they cannot follow.
-  return [...Object.values(STRATEGY_SKILLS), FRONTEND_QUALITY_SKILL, BROWSER_SKILL, BROWSER_WORKFLOW_SKILL, PRODUCTIVITY_SKILL];
+  return [...Object.values(STRATEGY_SKILLS), FRONTEND_QUALITY_SKILL, BROWSER_SKILL, BROWSER_WORKFLOW_SKILL, PIKPAM_ECOSYSTEM_SKILL, PRODUCTIVITY_SKILL];
 }
 
 export const PRODUCTIVITY_SKILL: ResolvedBuiltinSkill = def({

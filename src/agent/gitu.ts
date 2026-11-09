@@ -283,7 +283,7 @@ export interface GituConfig {
    *  project+global visibility (no agentId → private agent memories of
    *  specialists are invisible to it too). */
   memoryRetrieval?: MemoryRetrievalContext;
-  resume?: { taskId: string; message: string };
+  resume?: { taskId: string; message: string; newTask?: boolean };
   /** Task id a host already reserved for this run (write-once adoption). */
   taskId?: string;
   /** Prior user/assistant turns for a resumed server session. */
@@ -615,7 +615,7 @@ export class Gitu {
     // The server retains the original goal as the session title. Intake must
     // admit the actual resume message and restore the latest active phase.
     const intakeMessage = resumeNote ?? (this.config.resume ? 'continue' : goal);
-    const intakeKind = classifyFollowUp(intakeMessage).kind;
+    const intakeKind = this.config.resume?.newTask ? 'NEW_TASK' : classifyFollowUp(intakeMessage).kind;
     let activeWorkPhase = ledger.activeWorkPhase() ?? ledger.ensureInitialWorkPhase(ledger.data.goal, phaseBaseRef);
     if (resumedCompletedScope || (this.config.resume && intakeKind === 'NEW_TASK')) {
       if (resumedCompletedScope) ledger.completeActiveWorkPhase();

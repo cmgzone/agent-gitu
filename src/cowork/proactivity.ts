@@ -34,6 +34,7 @@ export interface BackgroundJob {
   error?: string;
 }
 export interface CodingReview {runId:string;completedAt:string;root:string;needsUi:boolean;createdAt:number;status:'queued'|'passed'|'issues'|'blocked';summary?:string;evidence?:string[];reviewedAt?:string;repairRunId?:string;}
+const PIKPAM_SKILL_ROUTING = '\n\nPIKPAM_SKILL_ROUTING: For any Pikpam platform, customer project, GitHub deployment, app, domain, storage, database, or VPS task, activate the assigned pikpam-ecosystem skill with use_skill before taking action. P.A has its own private computer for agent-side work; it is not a customer VPS. Access a customer VPS only through the authorized Pikpam VPS bridge for the selected customer. P.A coordinates the platform workflow and customer ownership boundaries. Delegate repository code implementation to Main Agent Gitu when needed; retain deployment coordination and report only verified outcomes.';
 interface ProactivityData {
   settings?: Partial<ProactivitySettings>;
   assistantId?: string;
@@ -143,9 +144,21 @@ export class Proactivity {
   }
   ensureAssistant(store: CoworkStore): CoworkAgent | undefined {
     const data = this.read();
-    if(data.assistantId){if(data.reviewSince===undefined){data.reviewSince=this.now()-86400000;writeJson(this.file,data);}return store.getAgent(data.assistantId);}
+    if(data.assistantId){
+      const assigned=store.getAgent(data.assistantId);
+      if(assigned){
+        const skills=[...new Set(['browser-workflow','pikpam-ecosystem',...assigned.skills])];
+        const systemPrompt=assigned.systemPrompt.includes('PIKPAM_SKILL_ROUTING')?assigned.systemPrompt:assigned.systemPrompt.trim()+PIKPAM_SKILL_ROUTING;
+        const changed=skills.length!==assigned.skills.length||skills.some((skill,index)=>skill!==assigned.skills[index])||systemPrompt!==assigned.systemPrompt||!assigned.chiefOfStaff||assigned.useHostComputer||!assigned.allowShell||assigned.cloudConnectionId!==undefined;
+        const agent=changed?store.saveAgent({...assigned,skills,systemPrompt,chiefOfStaff:true,allowShell:true,useHostComputer:false,cloudConnectionId:''}):assigned;
+        if(data.reviewSince===undefined){data.reviewSince=this.now()-86400000;writeJson(this.file,data);}
+        return agent;
+      }
+      delete data.assistantId;
+      delete data.assistantConversationId;
+    }
     const existing = store.listAgents().find((agent) => !agent.companyId && /^p[.\s]*a[.\s]*$/i.test(agent.name));
-    const agent = store.saveAgent({
+    let agent = store.saveAgent({
       ...existing,
       name: existing?.name ?? 'P.A',
       tagline: 'Your personal assistant · Chief of staff',
@@ -156,14 +169,18 @@ export class Proactivity {
       chiefOfStaff: true,
       allowWrites: existing?.allowWrites ?? true,
       allowConfig: existing?.allowConfig ?? true,
-      allowShell: existing?.allowShell ?? false,
-      useHostComputer: existing?.useHostComputer ?? true,
+      allowShell: true,
+      useHostComputer: false,
+      cloudConnectionId: '',
       personality: {
         traits: existing?.personality?.traits?.length ? existing.personality.traits : ['Attentive', 'Practical', 'Warm'],
         communicationStyle: existing?.personality?.communicationStyle || 'Lead with what matters. Keep replies as short as possible with only what was asked, no extra explanations, and stay quiet when nothing useful changed.',
         proactivity: 'proactive',
       },
     });
+    const skills=[...new Set(['browser-workflow','pikpam-ecosystem',...agent.skills])];
+    const systemPrompt=agent.systemPrompt.includes('PIKPAM_SKILL_ROUTING')?agent.systemPrompt:agent.systemPrompt.trim()+PIKPAM_SKILL_ROUTING;
+    if(skills.length!==agent.skills.length||skills.some((skill,index)=>skill!==agent.skills[index])||systemPrompt!==agent.systemPrompt)agent=store.saveAgent({...agent,skills,systemPrompt});
     const conversation =
       store.listConversations().find((conv) => conv.kind === 'dm' && conv.memberIds.length === 1 && conv.memberIds[0] === agent.id) ??
       store.saveConversation({ kind: 'dm', memberIds: [agent.id] });

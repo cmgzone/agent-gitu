@@ -338,7 +338,7 @@ interface RunSession {
   usage?: SessionUsage;
   files: StoredSessionFile[];
   /** Messages sent with delivery:'queue' while a run was active; delivered as a continuation when the run completes. */
-  queuedUserMessages?: { text: string; attachmentContext?: string }[];
+  queuedUserMessages?: { text: string; attachmentContext?: string; newTask?: boolean }[];
   /** Steered messages that arrived before the run's Gitu instance existed (the
    *  executeRun prelude can take seconds); drained into the run on attach. */
   pendingSteer?: { text: string; attachmentContext?: string }[];
@@ -9189,10 +9189,13 @@ export class GituServer {
         // the agent takes it into account at the next step. delivery:'queue'
         // holds it until the run finishes, then it starts a fresh continuation.
         const intent = conversationIntent(text);
-        const delivery = body['delivery'] === 'queue' && !intent ? 'queue' : 'steer';
+        const followUp = classifyFollowUp(text);
+        const newTask = body['newTask'] === true || followUp.kind === 'NEW_TASK' ||
+          (followUp.kind === 'REFINE' && startsUnrelatedTask(text, this.taskScopeFor(session)));
+        const delivery = newTask || (body['delivery'] === 'queue' && !intent) ? 'queue' : 'steer';
         for (const file of stored.files) this.pushEvent(session, `file ${JSON.stringify(this.fileView(file))}`);
         if (delivery === 'queue') {
-          (session.queuedUserMessages ??= []).push({ text, attachmentContext: this.attachmentContext(stored.attachments) });
+          (session.queuedUserMessages ??= []).push({ text, attachmentContext: this.attachmentContext(stored.attachments), ...(newTask ? { newTask: true } : {}) });
           this.pushEvent(session, `queued  "${text}" — will be delivered when the current run completes`);
           this.sendJson(res, 200, { ok: true, queued: true, delivery, safeText: text });
         } else {
@@ -9663,7 +9666,7 @@ export class GituServer {
       constraints?: string[];
       effort?: 'low' | 'medium' | 'high' | 'max';
       projectPath?: string;
-      resume?: { taskId: string; message: string };
+      resume?: { taskId: string; message: string; newTask?: boolean };
       autoApprove?: boolean;
       autoLearn?: boolean;
       images?: { name: string; dataUrl: string }[];
@@ -10040,12 +10043,13 @@ export class GituServer {
           ? blocker ?? report.summary
           : report.failureReason ?? report.summary;
       }
-      // Queued user messages (delivery:'queue') are held until a run finishes.
-      // On a completed run they immediately start a fresh continuation so the
-      // agent processes them with the task's durable authority state; on a
-      // blocked/failed run they stay queued for the user's next resume.
+      // Queued messages normally wait for a completed task. An explicitly or
+      // automatically detected new task can also start after a blocked/failed
+      // run, so the user does not need to revive unrelated work first.
       const queued = session.queuedUserMessages ?? [];
-      if (queued.length > 0 && session.status === 'completed' && session.approvals.size === 0 && !session.planReview && !session.questions) {
+      const terminalStatus = ['completed', 'blocked', 'failed', 'aborted', 'cancelled'].includes(session.status);
+      const queuedNewTask = queued.some((message) => message.newTask);
+      if (queued.length > 0 && terminalStatus && (session.status === 'completed' || queuedNewTask) && session.approvals.size === 0 && !session.planReview && !session.questions) {
         session.queuedUserMessages = [];
         const combined = queued.map((m) => m.text).join('\n\n');
         const attachmentContext = queued.map((m) => m.attachmentContext).filter(Boolean).join('\n\n');
@@ -10068,7 +10072,7 @@ export class GituServer {
           mode: session.mode ?? 'standard',
           review: false,
           projectPath: root,
-          resume: { taskId: session.taskId!, message },
+          resume: { taskId: session.taskId!, message, ...(queued.some((m) => m.newTask) ? { newTask: true } : {}) },
           conversationHistory: this.conversationHistory(session),
           attachments: [],
           model: session.activeModel ?? session.model,

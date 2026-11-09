@@ -127,6 +127,7 @@ export function buildModelContext(input: ModelContextInput): ModelContextResult 
   // Separate deliverable images from oversized images that would exceed the prompt limit.
   const deliverableImages: ModelContextImage[] = [];
   const oversizedImages: { name: string; sizeKb: number }[] = [];
+  let imagesSkipped = false;
   let inlineImagesChars = 0;
   if (input.images && input.images.length > 0 && input.supportsImages) {
     for (const img of input.images) {
@@ -178,6 +179,13 @@ export function buildModelContext(input: ModelContextInput): ModelContextResult 
       input.onTrim?.({ section: 'contextPack', charsRemoved: before - contextPack.length });
       continue;
     }
+    if (contextPack) {
+      const before = contextPack.length;
+      contextPack = undefined;
+      trims.push({ section: 'contextPack', charsRemoved: before });
+      input.onTrim?.({ section: 'contextPack', charsRemoved: before });
+      continue;
+    }
     if (input.memory && input.memory.length > 800) {
       // Supplementary retrieved memory must yield before recent conversation.
       // Protected constraints/decisions live in protectedMemory and are never
@@ -188,8 +196,18 @@ export function buildModelContext(input: ModelContextInput): ModelContextResult 
       input.onTrim?.({ section: 'memory', charsRemoved: before - input.memory.length });
       continue;
     }
-    if (history.length > recentHistoryFloor) {
-      const oldCount = history.length - recentHistoryFloor;
+    if (input.memory) {
+      const before = input.memory.length;
+      input.memory = undefined;
+      trims.push({ section: 'memory', charsRemoved: before });
+      input.onTrim?.({ section: 'memory', charsRemoved: before });
+      continue;
+    }
+    // Keep the normal 12-message tail when it fits. Under pressure, keep
+    // digesting down to two messages instead of stopping above the budget.
+    if (history.length > recentHistoryFloor || (charsOf() > maxChars && history.length > 1)) {
+      const targetFloor = charsOf() > maxChars ? 1 : recentHistoryFloor;
+      const oldCount = Math.max(0, history.length - targetFloor);
       const dropCount = Math.max(1, Math.ceil(oldCount / 2));
       const dropped = history.splice(0, dropCount);
       let droppedChars = 0;
@@ -206,6 +224,24 @@ export function buildModelContext(input: ModelContextInput): ModelContextResult 
       trims.push({ section: 'conversation', charsRemoved: droppedChars });
       input.onTrim?.({ section: 'conversation', charsRemoved: droppedChars });
       continue;
+    }
+    if (deliverableImages.length > 0) {
+      const omitted = deliverableImages.pop()!;
+      oversizedImages.push({ name: omitted.name, sizeKb: Math.round((omitted.dataUrl.length * 0.75) / 1024) });
+      inlineImagesChars -= omitted.dataUrl.length;
+      imagesSkipped = true;
+      continue;
+    }
+    if (history.length > 0 && charsOf() > maxChars) {
+      const latest = history[history.length - 1]!;
+      const before = messageTextChars(latest);
+      const target = Math.max(500, before - (charsOf() - maxChars));
+      if (compactRecentMessage(latest, target)) {
+        const removed = before - messageTextChars(latest);
+        trims.push({ section: 'conversation', charsRemoved: removed });
+        input.onTrim?.({ section: 'conversation', charsRemoved: removed });
+        continue;
+      }
     }
     break; // continuity floor reached — the budget is advisory at this point
   }
@@ -273,7 +309,6 @@ export function buildModelContext(input: ModelContextInput): ModelContextResult 
   messages.push(...history);
 
   let imagesAttached = 0;
-  let imagesSkipped = false;
   let imagesMessageIndex = -1;
   if (input.images && input.images.length > 0) {
     if (input.supportsImages) {

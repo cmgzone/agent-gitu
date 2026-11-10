@@ -263,13 +263,34 @@ export async function connectedAppsRoutes(req: IncomingMessage, res: ServerRespo
         deps.sendJson(res, 400, { error: 'This app recommendation belongs to another teammate or service.' });
         return;
       }
+      const rawFields = body['fields'];
+      if (rawFields !== undefined && (!rawFields || typeof rawFields !== 'object' || Array.isArray(rawFields) || JSON.stringify(rawFields).length > 20000)) {
+        deps.sendJson(res, 400, { error: 'Invalid app credentials.' });
+        return;
+      }
+      const fields = (rawFields || {}) as Record<string, string>;
+      if (Object.values(fields).some((value) => typeof value !== 'string' || value.length > 10000)) {
+        deps.sendJson(res, 400, { error: 'App credentials must be text under 10,000 characters.' });
+        return;
+      }
+      const authScheme = String(body['authScheme'] ?? '').toUpperCase();
+      const needsSecureCredentialForm = Object.keys(fields).length > 0 || ['API_KEY', 'BEARER_TOKEN', 'BASIC'].includes(authScheme);
+      if (needsSecureCredentialForm && !AppAuth.local(req) && (!deps.appAuth.secure(req) || !deps.appAuth.authenticated(req))) {
+        deps.sendJson(res, 403, { error: 'Enter app credentials only in an authenticated HTTPS Gitu session.' });
+        return;
+      }
       if (!deps.connectedApps.configured) {
         deps.sendJson(res, 400, { code: 'COMPOSIO_SETUP_REQUIRED', error: 'Set up Composio in Connections, then click Connect for this app.' });
         return;
       }
-      let link: { url: string; accountId: string };
+      let link: { url?: string; accountId: string; status?: string };
       try {
-        link = await deps.connectedApps.connect(service);
+        link = await deps.connectedApps.connect(service, {
+          ...(typeof body['authConfigId'] === 'string' ? { authConfigId: body['authConfigId'] } : {}),
+          ...(typeof body['authScheme'] === 'string' ? { authScheme: body['authScheme'] } : {}),
+          fields,
+          ...(typeof body['alias'] === 'string' ? { alias: body['alias'].slice(0, 120) } : {}),
+        });
       } catch (error) {
         // Never expose SDK errors: they may contain credentials or request data.
         const status = error && typeof error === 'object' ? Number((error as { status?: unknown }).status) : 0;
@@ -281,7 +302,7 @@ export async function connectedAppsRoutes(req: IncomingMessage, res: ServerRespo
         return;
       }
       store.assignAppAccount(agentId, service, link.accountId);
-      deps.sendJson(res, 200, link);
+      deps.sendJson(res, 200, link.url ? link : { accountId: link.accountId, status: link.status || 'INITIALIZING' });
       return;
     }
     if (path === '/api/connected-apps/assign' && method === 'POST') {

@@ -811,7 +811,16 @@ export class GituServer {
     this.appAuth = new AppAuth(nodePath.join(ensureGituHome().settings, 'app-password.json'), config.passwordRequired !== false, process.env['AGENT_GITU_TRUST_LOCAL_PROXY'] === '1', process.env['AGENT_GITU_REGISTRATION_TOKEN'], this.mobileAccess.enabled && process.env['AGENT_GITU_ALLOW_LAN_LOGIN'] === '1');
     const pushProject = process.env['AGENT_GITU_FCM_PROJECT_ID'];
     this.mobilePush = new MobilePush(ensureGituHome().settings, () => this.appAuth.userId, config.pushSender ?? (pushProject ? new FcmPushSender(pushProject) : undefined));
-    this.connectedApps = config.connectedApps ?? new ComposioConnections(() => this.appAuth.userId);
+    this.connectedApps = config.connectedApps ?? new ComposioConnections(
+      () => this.appAuth.userId,
+      undefined,
+      undefined,
+      () => {
+        const pikrouter = PROVIDERS['pikrouter'];
+        const token = pikrouter ? providerKey(pikrouter)?.key : undefined;
+        return token && pikrouter ? { token, baseUrl: pikrouter.baseUrl || 'https://pikrouter.pikpam.com/v1' } : undefined;
+      },
+    );
     this.mailConnections = config.mailConnections ?? new MailConnections();
     this.appHub = new ConnectionsHub(this.connectedApps, this.mailConnections);
     if (config.host && !['127.0.0.1', 'localhost', '::1'].includes(config.host) && !this.mobileAccess.enabled) {

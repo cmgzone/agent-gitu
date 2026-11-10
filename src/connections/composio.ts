@@ -23,7 +23,15 @@ export interface ServiceCard {
   logo?: string;
   status?: string;
   accountId?: string;
+  authConfigs?: PikpamAuthConfig[];
 }
+export interface PikpamAuthConfig {
+  id: string;
+  scheme: string;
+  managed: boolean;
+  fields: Array<{ name: string; label: string; type: string; description?: string; required: boolean; secret: boolean }>;
+}
+export interface PikpamConnectOptions { authConfigId?: string; authScheme?: string; fields?: Record<string, string>; alias?: string; }
 
 /** Windows DPAPI locally; hosted keys use AES-GCM with an external runtime key. */
 export class ComposioKeyStore {
@@ -103,6 +111,7 @@ export class ComposioKeyStore {
 }
 
 type Client = Pick<Composio, 'sessions' | 'connectedAccounts' | 'tools' | 'toolkits' | 'getClient'>;
+export interface PikpamComposioCredentials { token: string; baseUrl: string; }
 export class ComposioExecutionUncertainError extends Error {
   constructor() { super('The connected service did not confirm completion. This action may already have run. Check the destination app before any retry. No automatic retry was attempted.'); }
 }
@@ -113,15 +122,39 @@ export class ComposioConnections {
   private generation = 0;
   private executionSessions = new Map<string, ReturnType<Client['sessions']['create']>>();
   private toolCatalogs = new Map<string, { at: number; pending: Promise<ConnectedAppTool[]> }>();
+  private remoteAuthConfigs = new Map<string, PikpamAuthConfig[]>();
   constructor(
     private readonly owner: () => string,
     private readonly keys = new ComposioKeyStore(),
     private readonly factory: (key: string) => Client = (key) => new Composio({ apiKey: key, allowTracking: false, fileUploadDirs: false }),
+    private readonly pikpamCredentials?: () => PikpamComposioCredentials | undefined,
   ) {}
+  private pikpam(): PikpamComposioCredentials | undefined {
+    const credentials = this.pikpamCredentials?.();
+    return credentials?.token ? credentials : undefined;
+  }
+  private async pikpamRequest<T = Record<string, unknown>>(path: string, init: RequestInit = {}, timeoutMs = 15000): Promise<T> {
+    const credentials = this.pikpam();
+    if (!credentials) throw new Error('Sign in to Pikpam in Gitu to use your Pikpam connected apps.');
+    const url = new URL(`/api/integrations/composio/${path.replace(/^\/+/, '')}`, credentials.baseUrl).toString();
+    const response = await fetch(url, {
+      ...init,
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: { Authorization: `Bearer ${credentials.token}`, 'content-type': 'application/json', ...(init.headers || {}) },
+    });
+    const data = await response.json().catch(() => ({})) as Record<string, unknown>;
+    if (!response.ok) {
+      const error = new Error(`Pikpam connected apps request failed (${response.status}).`) as Error & { status?: number };
+      error.status = response.status;
+      throw error;
+    }
+    return data as T;
+  }
   get configured(): boolean {
-    return this.keys.configured;
+    return Boolean(this.pikpam()) || this.keys.configured;
   }
   get setup(): { canConfigure: boolean; keyStorage: string } {
+    if (this.pikpam()) return { canConfigure: false, keyStorage: 'Pikpam account' };
     return { canConfigure: this.keys.canSave, keyStorage: this.keys.storage };
   }
   private client(): Client {
@@ -184,6 +217,17 @@ export class ComposioConnections {
     writeCredentialFile(file, JSON.stringify({ owner: '', sessionId: '' }));
   }
   async catalog(search = '', cursor?: string): Promise<{ services: ServiceCard[]; cursor?: string }> {
+    if (this.pikpam()) {
+      const query = new URLSearchParams({ search: search.slice(0, 100) });
+      if (cursor) query.set('cursor', cursor);
+      const result = await this.pikpamRequest<{ apps?: Array<{ slug: string; name: string; logo?: string; authConfigs?: PikpamAuthConfig[] }>; nextCursor?: string }>(`catalog?${query}`);
+      const services = (result.apps || []).map((app) => {
+        const authConfigs = app.authConfigs || [];
+        this.remoteAuthConfigs.set(app.slug, authConfigs);
+        return { slug: app.slug, name: app.name, ...(app.logo ? { logo: app.logo } : {}), authConfigs };
+      });
+      return { services, ...(result.nextCursor ? { cursor: result.nextCursor } : {}) };
+    }
     const pending = this.userSession();
     const session = await pending;
     let result: Awaited<ReturnType<typeof session.toolkits>>;
@@ -204,6 +248,21 @@ export class ComposioConnections {
     };
   }
   async accounts(): Promise<ConnectedApp[]> {
+    if (this.pikpam()) {
+      const accounts: ConnectedApp[] = [], cursors = new Set<string>();
+      let cursor: string | undefined;
+      for (let page = 0; page < 10; page++) {
+        const query = new URLSearchParams(); if (cursor) query.set('cursor', cursor);
+        const result = await this.pikpamRequest<{ accounts?: Array<{ id: string; toolkitSlug: string; status: string; disabled?: boolean }>; nextCursor?: string }>(`accounts${query.size ? `?${query}` : ''}`);
+        accounts.push(...(result.accounts || []).map((account) => ({ id: account.id, toolkit: account.toolkitSlug, status: account.status, disabled: Boolean(account.disabled) })));
+        cursor = result.nextCursor;
+        if (!cursor) return accounts;
+        if (cursors.has(cursor)) throw new Error('The Pikpam account list is incomplete. Refresh Connections before selecting an app.');
+        cursors.add(cursor);
+      }
+      if (cursor) throw new Error('The Pikpam account list is incomplete. Refresh Connections before selecting an app.');
+      return accounts;
+    }
     const owner = this.owner();
     const items = new Map<string, ConnectedApp>();
     const cursors = new Set<string>();
@@ -223,8 +282,29 @@ export class ComposioConnections {
     if (owner !== this.owner()) throw new Error('The connection owner changed. Refresh Connections.');
     return [...items.values()];
   }
-  async connect(slug: string): Promise<{ url: string; accountId: string }> {
+  async connect(slug: string, options?: PikpamConnectOptions): Promise<{ url?: string; accountId: string; status?: string }> {
     if (!/^[a-z0-9_-]{1,100}$/.test(slug)) throw new Error('Invalid service.');
+    if (this.pikpam()) {
+      let authConfigs = this.remoteAuthConfigs.get(slug);
+      if (!authConfigs) {
+        await this.catalog(slug);
+        authConfigs = this.remoteAuthConfigs.get(slug);
+      }
+      const requested = options?.authConfigId ? authConfigs?.find((item) => item.id === options.authConfigId && item.scheme === options.authScheme) : undefined;
+      const auth = requested || authConfigs?.find((item) => ['OAUTH1', 'OAUTH2', 'DCR_OAUTH', 'CIMD_OAUTH', 'S2S_OAUTH2'].includes(item.scheme.toUpperCase()) && !item.fields.some((field) => field.required));
+      if (!auth) throw new Error('This app has no usable Pikpam connection setup. Refresh Connections and try again.');
+      const oauth = ['OAUTH1', 'OAUTH2', 'DCR_OAUTH', 'CIMD_OAUTH', 'S2S_OAUTH2'].includes(auth.scheme.toUpperCase());
+      if (oauth && auth.fields.some((field) => field.required && !options?.fields?.[field.name])) throw new Error('This app needs additional sign-in details. Refresh its connection form and try again.');
+      if (!oauth && !['API_KEY', 'BEARER_TOKEN', 'BASIC'].includes(auth.scheme.toUpperCase())) throw new Error('This authentication type is not supported inside Gitu yet.');
+      const result = await this.pikpamRequest<{ connectedAccountId?: string; redirectUrl?: string }>('connect', {
+        method: 'POST', body: JSON.stringify({ toolkitSlug: slug, authConfigId: auth.id, authScheme: auth.scheme, fields: options?.fields || {}, ...(options?.alias ? { alias: options.alias } : {}) }),
+      });
+      if (!result.connectedAccountId) throw new Error('Pikpam did not return a connected account. Refresh Connections and try again.');
+      if (!result.redirectUrl) return { accountId: result.connectedAccountId, status: 'INITIALIZING' };
+      const url = new URL(result.redirectUrl);
+      if (url.protocol !== 'https:' || url.username || url.password || url.port || !['connect.composio.dev', 'backend.composio.dev'].includes(url.hostname)) throw new Error('Pikpam returned an invalid sign-in link.');
+      return { url: url.href, accountId: result.connectedAccountId, status: 'INITIALIZING' };
+    }
     const owner = this.owner(), generation = this.generation;
     const session = await this.userSession();
     const request = await session.authorize(slug);
@@ -267,6 +347,15 @@ export class ComposioConnections {
     return pending;
   }
   async tools(slug: string, query?: string, tool?: string): Promise<ConnectedAppTool[]> {
+    if (this.pikpam()) {
+      if (!(await this.accounts()).some((account) => account.toolkit === slug && account.status === 'ACTIVE' && !account.disabled))
+        throw new Error('Connect this service in Connections first.');
+      const params = new URLSearchParams({ toolkitSlug: slug });
+      if (query?.trim()) params.set('search', query.trim().slice(0, 100));
+      if (tool) params.set('toolSlug', tool);
+      const result = await this.pikpamRequest<{ tools?: ConnectedAppTool[] }>(`tools?${params}`);
+      return result.tools || [];
+    }
     const owner = this.owner(), generation = this.generation;
     if (!(await this.accounts()).some((account) => account.toolkit === slug && account.status === 'ACTIVE' && !account.disabled))
       throw new Error('Connect this service in Cowork → Connections first.');
@@ -290,6 +379,21 @@ export class ComposioConnections {
       }));
   }
   async execute(slug: string, tool: string, args: Record<string, unknown>, accountId: string): Promise<unknown> {
+    if (this.pikpam()) {
+      const account = (await this.accounts()).find((item) => item.id === accountId && item.toolkit === slug && item.status === 'ACTIVE' && !item.disabled);
+      if (!account) throw new Error('This service is disconnected or needs to be reconnected.');
+      try {
+        const result = await this.pikpamRequest<Record<string, unknown>>('execute', {
+          method: 'POST', body: JSON.stringify({ toolkitSlug: slug, toolSlug: tool, connectedAccountId: accountId, arguments: args }),
+        }, 65000);
+        if (result.successful === false || result.error) throw new Error('The connected service rejected this action.');
+        return redactConnectionData(result);
+      } catch (error) {
+        const status = Number(error && typeof error === 'object' ? (error as { status?: unknown }).status : 0);
+        if (status >= 400 && status < 500 && status !== 408) throw error;
+        throw new ComposioExecutionUncertainError();
+      }
+    }
     const owner = this.owner(), sdk = this.client(), generation = this.generation;
     const account = (await this.accounts()).find((item) => item.id === accountId && item.toolkit === slug && item.status === 'ACTIVE' && !item.disabled);
     if (!account) throw new Error('This service is disconnected or needs to be reconnected.');
@@ -353,6 +457,20 @@ export class ComposioConnections {
     if (!account) throw new Error('Connect an active Google Calendar account first.');
     authorize?.();
     const endpoint = 'https://www.googleapis.com/calendar/v3/calendars/' + encodeURIComponent(calendarId) + '/events' + (eventId ? '/' + eventId : '');
+    if (this.pikpam()) {
+      const result = await this.pikpamRequest<{ status?: number; data?: unknown }>('google-calendar', {
+        method: 'POST', body: JSON.stringify({
+          connectedAccountId: account.id,
+          endpoint,
+          method,
+          ...(body ? { body } : {}),
+          ...(method === 'GET' && !eventId
+            ? { parameters: [{ name: 'maxResults', value: '1', type: 'query' }, { name: 'fields', value: 'kind', type: 'query' }] }
+            : etag ? { parameters: [{ name: 'If-Match', value: etag, type: 'header' }] } : {}),
+        }),
+      }, 35000);
+      return { status: Number(result.status), data: redactConnectionData(result.data) };
+    }
     const result = await this.client()
       .getClient()
       .withOptions({ maxRetries: 0 })

@@ -2,7 +2,17 @@ FROM node:22-bookworm-slim AS build
 WORKDIR /app
 ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1
 COPY package.json package-lock.json ./
-RUN npm ci --no-audit --no-fund
+# Coolify builds can lose a registry connection partway through a large install.
+# Retry individual downloads, then retry the clean install with a short backoff.
+RUN for attempt in 1 2 3; do \
+      npm ci --no-audit --no-fund \
+        --fetch-retries=5 \
+        --fetch-retry-mintimeout=10000 \
+        --fetch-retry-maxtimeout=60000 \
+        --fetch-timeout=300000 && break; \
+      if [ "$attempt" -eq 3 ]; then exit 1; fi; \
+      sleep $((attempt * 10)); \
+    done
 COPY tsconfig.json ./
 COPY src ./src
 COPY scripts/build-ui-assets.mjs ./scripts/build-ui-assets.mjs

@@ -79,7 +79,7 @@ import { deploymentIntent, isDeploymentAction, DEPLOYMENT_OWNERSHIP } from '../c
 import { CoworkDelegation, type DelegationScope, type DelegationSessionInput } from '../cowork/delegation.js';
 import { CoworkSubAgents, CoworkSubAgentRunner } from '../cowork/subagents.js';
 import type { CodingEvent } from '../coding/events.js';
-import { classifyFollowUp, conversationIntent, isNonMutatingStatusQuestion, startsUnrelatedTask, type TaskScope } from '../agent/follow-up.js';
+import { classifyFollowUp, conversationIntent, isNonMutatingStatusQuestion, isProgressNudge, BACKWARD_REFERENCE, startsUnrelatedTask, type TaskScope } from '../agent/follow-up.js';
 import { CoworkLiveMailbox, type CoworkDelivery } from '../cowork/live-messages.js';
 import { appAwareness, connectionQuestion, connectionReply } from '../cowork/app-awareness.js';
 import { appReviewDue, reviewConnectedApps } from '../cowork/proactive-apps.js';
@@ -9234,22 +9234,34 @@ export class GituServer {
       }
       const isTerminalState = prevStatus === 'completed' || prevStatus === 'failed' || prevStatus === 'blocked' || prevStatus === 'aborted' || prevStatus === 'cancelled';
       const followUp = classifyFollowUp(text, modelImages.length > 0);
-      // Two ways to start fresh work in this session: the composer's explicit
-      // "New task" toggle, or a message the classifier could only call a
-      // refinement while it shares nothing with the task in hand. Without this,
-      // an unrelated request silently resumed the previous task's ledger (its
-      // goal, criteria, plan and evidence), which is why a new task appeared to
-      // need a whole new session.
       const explicitNewTask = body['newTask'] === true;
+      const unrelated = startsUnrelatedTask(text, this.taskScopeFor(session));
       const followUpKind = explicitNewTask
         ? 'NEW_TASK'
-        : followUp.kind === 'REFINE' && startsUnrelatedTask(text, this.taskScopeFor(session))
+        : (followUp.kind === 'REFINE' || followUp.kind === 'EXTEND') && unrelated
           ? 'NEW_TASK'
           : followUp.kind;
-      const isContinuationKind = ['CONTINUE', 'EXTEND', 'CORRECT', 'REFINE', 'CONSTRAIN', 'VISUAL_REFERENCE'].includes(followUpKind);
-      const isResumeForIncomplete = (prevStatus === 'blocked' || prevStatus === 'failed') && followUpKind !== 'NEW_TASK';
-      const isContinuation = isContinuationKind || isResumeForIncomplete;
-      const isNewTask = (isTerminalState && !isContinuation) || explicitNewTask;
+
+      let isNewTask = explicitNewTask;
+      if (!isNewTask && isTerminalState) {
+        if (prevStatus === 'completed') {
+          // A completed task reached its definition of done. Any subsequent request is a new task in this session,
+          // UNLESS the user explicitly nudges continuation ("continue", "proceed"), asks a non-mutating question,
+          // or refers directly back to the completed work ("also add tests", "actually fix that typo in X").
+          const isNudge = isProgressNudge(text);
+          const isQuestionOrChat = conversationIntent(text) || isNonMutatingStatusQuestion(text);
+          const isExplicitExtension = followUp.kind === 'EXTEND' && /^(?:also\b|in addition|additionally|plus\b|and also\b)/i.test(text.trim());
+          const isDirectCorrection = (followUp.kind === 'CORRECT' || followUp.kind === 'EXTEND') && BACKWARD_REFERENCE.test(text);
+          const isFollowUpContinuation = (isNudge || isQuestionOrChat || isExplicitExtension || isDirectCorrection) && !unrelated;
+          isNewTask = !isFollowUpContinuation;
+        } else if (prevStatus === 'aborted' || prevStatus === 'cancelled') {
+          // An aborted or cancelled run was terminated; fresh work begins unless it's a bare continuation nudge.
+          isNewTask = !isProgressNudge(text);
+        } else {
+          // Incomplete runs (blocked or failed) resume by default to repair/unblock, unless classified as NEW_TASK or unrelated.
+          isNewTask = followUpKind === 'NEW_TASK' || unrelated;
+        }
+      }
 
       if (isNewTask) {
         if (session.taskId) this.releaseTaskResumeLock(session);
@@ -9257,12 +9269,13 @@ export class GituServer {
         session.goal = text;
         session.report = undefined;
         session.error = undefined;
+        session.worktreePath = undefined;
         this.persistSession(session);
         this.pushEvent(
           session,
           explicitNewTask
             ? 'new task  started in this session at your request'
-            : 'new task  started in this session — the message shares no target with the previous task',
+            : 'new task  started in this session',
         );
       }
       let execRoot: string;
@@ -9288,20 +9301,44 @@ export class GituServer {
           }
         }
         if (!taskRoot) {
-          session.status = prevStatus;
-          this.sendJson(res, 409, { error: `Cannot resolve project root for task ${session.taskId}` });
-          return;
+          if (isTerminalState) {
+            this.releaseTaskResumeLock(session);
+            session.taskId = undefined;
+            session.goal = text;
+            session.report = undefined;
+            session.error = undefined;
+            session.worktreePath = undefined;
+            isNewTask = true;
+            execRoot = session.projectPath ?? this.projectRoot() ?? this.config.cwd;
+            this.pushEvent(session, 'task     could not resolve project root for previous task — starting fresh task in this session');
+          } else {
+            session.status = prevStatus;
+            this.sendJson(res, 409, { error: `Cannot resolve project root for task ${session.taskId}` });
+            return;
+          }
         }
-        if (!ledger) {
+        if (!ledger && taskRoot) {
           // The session exists and the project is here: refusing would strand a
           // run that can still continue. Rebuild a minimal ledger from what the
           // session knows, mark it recovered, and carry on.
           ledger = await this.recoverSessionLedger(session, taskRoot, modeSwitch ?? session.mode ?? 'standard');
         }
-        if (!ledger) {
-          session.status = prevStatus;
-          this.sendJson(res, 404, { error: `Task ledger ${session.taskId} not found at ${taskRoot}` });
-          return;
+        if (!ledger && session.taskId) {
+          if (isTerminalState) {
+            this.releaseTaskResumeLock(session);
+            session.taskId = undefined;
+            session.goal = text;
+            session.report = undefined;
+            session.error = undefined;
+            session.worktreePath = undefined;
+            isNewTask = true;
+            execRoot = session.projectPath ?? this.projectRoot() ?? this.config.cwd;
+            this.pushEvent(session, 'task     previous ledger not found — starting fresh task in this session');
+          } else {
+            session.status = prevStatus;
+            this.sendJson(res, 404, { error: `Task ledger ${session.taskId} not found at ${taskRoot}` });
+            return;
+          }
         }
         // A task is bound to its own gitu/* branch (or an existing legacy
         // hermes/* branch), but the shared checkout can
@@ -9310,80 +9347,101 @@ export class GituServer {
         // the checkout back — which detaches whichever session owned it — resume
         // in a dedicated linked worktree on this session's own branch. The
         // shared checkout stays exactly where it is.
-        execRoot = taskRoot;
-        if (ledger.data.worktreePath && this.isPrivateAgentStatePath(taskRoot, ledger.data.worktreePath)) {
-          const wt = await this.ensureSessionWorktree(taskRoot, session.taskId, ledger.data.gitBranch ?? '');
-          if (!wt) {
-            session.status = prevStatus;
-            this.sendJson(res, 409, { error: 'Execution rejected: legacy worktree is inside .hermes and could not be migrated to the canonical session workspace.' });
-            return;
-          }
-          execRoot = wt;
-          ledger.data.worktreePath = wt;
-          ledger.save();
-          session.worktreePath = wt;
-          this.pushEvent(session, `git     migrated legacy .hermes worktree to canonical session workspace ${wt}`);
-        } else if (ledger.data.worktreePath) {
-          // A recorded worktree is a claim, not a fact. Verify it exists and is
-          // still on this task's branch before executing there.
-          const revalidated = await this.revalidateSessionWorktree(
-            taskRoot,
-            session.taskId,
-            ledger.data.gitBranch ?? '',
-            ledger.data.worktreePath,
-          );
-          if (revalidated.path) {
-            execRoot = revalidated.path;
-            if (revalidated.recreated || revalidated.path !== revalidated.recorded) {
-              ledger.data.worktreePath = revalidated.path;
-              ledger.save();
-              session.worktreePath = revalidated.path;
-              this.pushEvent(
-                session,
-                `git     re-created the session worktree at ${revalidated.path} on ${ledger.data.gitBranch} — ${revalidated.reason}`,
-              );
+        if (session.taskId && ledger && taskRoot) {
+          execRoot = taskRoot;
+          if (ledger.data.worktreePath && this.isPrivateAgentStatePath(taskRoot, ledger.data.worktreePath)) {
+            const wt = await this.ensureSessionWorktree(taskRoot, session.taskId, ledger.data.gitBranch ?? '');
+            if (!wt) {
+              session.status = prevStatus;
+              this.sendJson(res, 409, { error: 'Execution rejected: legacy worktree is inside .hermes and could not be migrated to the canonical session workspace.' });
+              return;
             }
-          } else if (await this.sharedCheckoutOnBranch(taskRoot, ledger.data.gitBranch)) {
-            // Isolation is unavailable. Say so out loud instead of quietly
-            // downgrading a task that believes it owns its own checkout.
-            const reason = revalidated.reason ?? 'the session worktree is unavailable';
-            ledger.data.worktreePath = undefined;
+            execRoot = wt;
+            ledger.data.worktreePath = wt;
             ledger.save();
-            session.worktreePath = undefined;
-            this.pushEvent(
-              session,
-              `warn    isolation unavailable — ${reason}; continuing in the shared checkout ${taskRoot}` +
-                (ledger.data.gitBranch ? ` on ${ledger.data.gitBranch}` : ''),
+            session.worktreePath = wt;
+            this.pushEvent(session, `git     migrated legacy .hermes worktree to canonical session workspace ${wt}`);
+          } else if (ledger.data.worktreePath) {
+            // A recorded worktree is a claim, not a fact. Verify it exists and is
+            // still on this task's branch before executing there.
+            const revalidated = await this.revalidateSessionWorktree(
+              taskRoot,
+              session.taskId,
+              ledger.data.gitBranch ?? '',
+              ledger.data.worktreePath,
             );
-            logger.warn(
-              { subsystem: 'worktree', runId: session.runId, taskId: session.taskId, recorded: revalidated.recorded, branch: ledger.data.gitBranch, reason },
-              'Session worktree unavailable: continuing in the shared checkout',
-            );
-          }
-          // Otherwise the record stands and the environment check below refuses.
-        } else {
-          const precheck = await ledger.validateEnvironment(execRoot);
-          if (!precheck.ok && /branch mismatch/i.test(precheck.reason ?? '')) {
-            const wt = await this.ensureSessionWorktree(execRoot, session.taskId, ledger.data.gitBranch ?? '');
-            if (wt) {
-              execRoot = wt;
-              ledger.data.worktreePath = wt;
+            if (revalidated.path) {
+              execRoot = revalidated.path;
+              if (revalidated.recreated || revalidated.path !== revalidated.recorded) {
+                ledger.data.worktreePath = revalidated.path;
+                ledger.save();
+                session.worktreePath = revalidated.path;
+                this.pushEvent(
+                  session,
+                  `git     re-created the session worktree at ${revalidated.path} on ${ledger.data.gitBranch} — ${revalidated.reason}`,
+                );
+              }
+            } else if (await this.sharedCheckoutOnBranch(taskRoot, ledger.data.gitBranch)) {
+              // Isolation is unavailable. Say so out loud instead of quietly
+              // downgrading a task that believes it owns its own checkout.
+              const reason = revalidated.reason ?? 'the session worktree is unavailable';
+              ledger.data.worktreePath = undefined;
               ledger.save();
-              session.worktreePath = wt;
+              session.worktreePath = undefined;
               this.pushEvent(
                 session,
-                `git     resuming in isolated worktree ${wt} on ${ledger.data.gitBranch} — the main checkout keeps its current branch`,
+                `warn    isolation unavailable — ${reason}; continuing in the shared checkout ${taskRoot}` +
+                  (ledger.data.gitBranch ? ` on ${ledger.data.gitBranch}` : ''),
+              );
+              logger.warn(
+                { subsystem: 'worktree', runId: session.runId, taskId: session.taskId, recorded: revalidated.recorded, branch: ledger.data.gitBranch, reason },
+                'Session worktree unavailable: continuing in the shared checkout',
               );
             }
+            // Otherwise the record stands and the environment check below refuses.
+          } else {
+            const precheck = await ledger.validateEnvironment(execRoot);
+            if (!precheck.ok && /branch mismatch/i.test(precheck.reason ?? '')) {
+              const wt = await this.ensureSessionWorktree(execRoot, session.taskId, ledger.data.gitBranch ?? '');
+              if (wt) {
+                execRoot = wt;
+                ledger.data.worktreePath = wt;
+                ledger.save();
+                session.worktreePath = wt;
+                this.pushEvent(
+                  session,
+                  `git     resuming in isolated worktree ${wt} on ${ledger.data.gitBranch} — the main checkout keeps its current branch`,
+                );
+              }
+            }
           }
+          const envCheck = await ledger.validateEnvironment(execRoot);
+          if (!envCheck.ok) {
+            if (isTerminalState) {
+              this.releaseTaskResumeLock(session);
+              session.taskId = undefined;
+              session.goal = text;
+              session.report = undefined;
+              session.error = undefined;
+              session.worktreePath = undefined;
+              isNewTask = true;
+              execRoot = session.projectPath ?? this.projectRoot() ?? this.config.cwd;
+              ledgerRoot = undefined;
+              this.pushEvent(
+                session,
+                `git     previous task environment was not resumable (${envCheck.reason}) — starting fresh task in this session`,
+              );
+            } else {
+              session.status = prevStatus;
+              this.sendJson(res, 409, { error: `Execution rejected: ${envCheck.reason}` });
+              return;
+            }
+          } else {
+            ledgerRoot = taskRoot;
+          }
+        } else {
+          execRoot = session.worktreePath ?? session.projectPath ?? this.projectRoot() ?? this.config.cwd;
         }
-        const envCheck = await ledger.validateEnvironment(execRoot);
-        if (!envCheck.ok) {
-          session.status = prevStatus;
-          this.sendJson(res, 409, { error: `Execution rejected: ${envCheck.reason}` });
-          return;
-        }
-        ledgerRoot = taskRoot;
       } else {
         execRoot = session.worktreePath ?? session.projectPath ?? this.projectRoot() ?? this.config.cwd;
       }

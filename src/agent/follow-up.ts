@@ -212,7 +212,7 @@ const SCOPE_STOP_WORDS = new Set([
 ]);
 
 /** A message that points back at work in hand is a follow-up by definition. */
-const BACKWARD_REFERENCE =
+export const BACKWARD_REFERENCE =
   /\b(?:it|its|it's|this|that|these|those|same)\b|\b(?:the|this|that)\s+(?:issue|bug|error|failure|problem|fix|change|task|work|implementation|result|output)\b/i;
 
 function scopeTokens(text: string): string[] {

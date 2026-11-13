@@ -105,6 +105,17 @@
       // a visible bullet row with no text.
       if (!sess.nodes.thought && !chunk.trim()) return;
       if (!sess.nodes.thought) {
+        if (sess && sess.nodes && sess.nodes.reasoningText && !sess.nodes.attachedReasoning) {
+          var rt = sess.nodes.reasoningText.trim();
+          if (rt) {
+            sess.nodes.attachedReasoning = true;
+            var td = document.createElement('div');
+            td.className = 'tl-row tl-meta';
+            td.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body"><details class="exec-details tl-thought-details"><summary><span class="thought-bulb">&#128161;</span> <b>Thought process</b> <span class="thought-len">(' + rt.length + ' chars)</span><span class="chev">\u25B8</span></summary><pre class="thought-body"></pre></details></div>';
+            td.querySelector('.thought-body').textContent = rt;
+            insert(td);
+          }
+        }
         var t = document.createElement('div');
         // The model sometimes leaks its raw JSON action object into the
         // prose stream (truncated output retried mid-JSON). Normal mode
@@ -116,9 +127,10 @@
           t.className = 'tl-row tl-meta';
           t.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body"><details class="exec-details"><summary><b>Raw model output</b><span class="chev">\u25B8</span></summary><pre class="exec-pre"></pre></details></div>';
         } else {
-          t.className = 'tl-row tl-note-row tl-stream-row';
+          var isThought = text.indexOf('thought ') === 0;
+          t.className = 'tl-row tl-note-row tl-stream-row' + (isThought ? ' tl-thought-stream' : '');
           t.dataset.streamState = 'live';
-          t.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body"><div class="stream-live" aria-hidden="true">Agent Gitu · writing</div><div class="stream-text"><span class="txt"></span><span class="caret"></span></div></div>';
+          t.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body"><div class="stream-live" aria-hidden="true">' + (isThought ? 'Agent Gitu · thinking' : 'Agent Gitu · writing') + '</div><div class="stream-text"><span class="txt"></span><span class="caret"></span></div></div>';
         }
         insert(t);
         sess.nodes.thought = t;
@@ -207,6 +219,7 @@
       var userText = text.slice(9);
       retireAbubble(sess); closeThought(runId);
       sess.lastPublicReply = null; sess.lastThoughtText = ''; sess.lastBubbleText = '';
+      if (sess.nodes) { sess.nodes.attachedReasoning = false; sess.nodes.reasoningText = ''; }
       if (settlePendingUserMessage(runId, userText, null, true)) return;
       appendLive(stream, userBubble(userText, runId)); stickScroll(stream, true); return;
     }

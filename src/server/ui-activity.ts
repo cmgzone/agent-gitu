@@ -11,7 +11,9 @@ export const ACTIVITY_CSS = String.raw`
   @keyframes thinkingWave { 0%, 100% { opacity: .25; transform: translateY(1px); } 50% { opacity: 1; transform: translateY(-2px); } }
   .activity-indicator .wtext { color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .working.activity-indicator { flex-wrap: wrap; }
-  .reasoning-stream { flex-basis: 100%; min-width: 0; max-width: 100%; max-height: 9em; overflow-y: auto; overflow-wrap: anywhere; white-space: pre-wrap; color: var(--muted); font-size: 12px; line-height: 1.6; margin-top: 4px; }
+  .reasoning-stream { flex-basis: 100%; min-width: 0; max-width: 100%; max-height: 12em; overflow-y: auto; overflow-wrap: anywhere; white-space: pre-wrap; color: var(--muted); font-family: var(--mono); font-size: 11.5px; line-height: 1.6; margin-top: 6px; padding: 8px 12px; background: var(--card2); border: 1px solid var(--border); border-left: 3px solid var(--run); border-radius: 8px; scrollbar-width: thin; scrollbar-color: var(--border2) transparent; }
+  .reasoning-stream::-webkit-scrollbar { width: 5px; }
+  .reasoning-stream::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
   .reasoning-stream[hidden] { display: none; }
   @media (prefers-reduced-motion: reduce) { .activity-indicator *, .activity-indicator *::after { animation: none !important; } }
 `;

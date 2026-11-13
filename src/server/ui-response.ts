@@ -129,7 +129,19 @@ export const UI_RESPONSE_JS = String.raw`
     return !line.trim() || responseFence(line) || /^ {0,3}#{1,6}[ \t]+/.test(line) || responseListItem(line);
   }
   function renderResponseText(value) {
-    var lines = String(value == null ? '' : value).replace(/\r\n?/g, '\n').split('\n');
+    var rawText = String(value == null ? '' : value);
+    var thinkMatch = /<think>([\s\S]*?)(?:<\/think>|$)/i.exec(rawText);
+    if (thinkMatch) {
+      var thoughtContent = thinkMatch[1].trim();
+      var remainder = rawText.replace(/<think>[\s\S]*?(?:<\/think>|$)/i, '').trim();
+      var thoughtPrefix = '';
+      if (thoughtContent) {
+        thoughtPrefix = '<details class="exec-details tl-thought-details"><summary><span class="thought-bulb">&#128161;</span> <b>Thought process</b><span class="chev">\u25B8</span></summary><div class="thought-body">' + responseEscape(thoughtContent) + '</div></details>';
+      }
+      if (!remainder) return thoughtPrefix;
+      return thoughtPrefix + renderResponseText(remainder);
+    }
+    var lines = rawText.replace(/\r\n?/g, '\n').split('\n');
     var html = '', i = 0;
     while (i < lines.length) {
       var line = lines[i], fence = responseFence(line), heading, item;

@@ -38,7 +38,7 @@ export const UI_MOTION_JS = String.raw`
     liveTextSinks.forEach(function (sink) {
       var state = sink._liveText;
       if (!sink.isConnected) { flushStreamText(sink); return; }
-      if (now - state.last < 30) return;
+      if (now - state.last < 16) return;
       settleTextTail(sink);
       // Catch up within 180ms, regardless of provider burst size. Small
       // deltas appear on the next frame without a synthetic typing delay.

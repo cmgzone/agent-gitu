@@ -60,7 +60,10 @@ async function waitForCompletion(base: string, runId: string, prevFinishedAt?: s
  */
 function createAutonomousMockResponse() {
   return (_call: number, messages: LlmMessage[]) => {
-    const text = messages.map((m) => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content))).join('\n');
+    const lastUserMessage = [...messages].reverse().find((m) => m.role === 'user');
+    const text = typeof lastUserMessage?.content === 'string'
+      ? lastUserMessage.content
+      : JSON.stringify(lastUserMessage?.content);
 
     // 1. If criteria needed for the current task
     const needsCriteria = text.includes('(none set yet — use set_criteria)') || !text.includes('ACCEPTANCE CRITERIA');
@@ -227,6 +230,48 @@ describe('Server API — Sequential tasks and reliability verification', () => {
     const task2 = await waitForCompletion(base, runId, task1.finishedAt);
     expect(task2.status).toBe('completed');
     expect(task2.goal).toBe('Task two on Claude');
+  }, 180000);
+
+  it('accepts a completely different task in the same session without newTask toggle and without HTTP 409', async () => {
+    const dir = makeProject('seq-different-task');
+    await initGitRepo(dir);
+
+    const handler = createAutonomousMockResponse();
+    const responses = Array.from({ length: 30 }, () => handler);
+    const llm = new ScriptedMockLlm(responses);
+
+    const { base } = await startServer(dir, llm);
+
+    // 1. Initial task
+    const res1 = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        goal: 'Initial setup task',
+        mode: 'fast',
+        review: false,
+      }),
+    });
+    expect([200, 202]).toContain(res1.status);
+    const { runId } = (await res1.json()) as { runId: string };
+
+    const task1 = await waitForCompletion(base, runId);
+    expect(task1.status).toBe('completed');
+    const firstTaskId = task1.taskId;
+
+    // 2. Subsequent different task without explicit newTask toggle (e.g. plain user message)
+    const res2 = await fetch(`${base}/api/runs/${runId}/message`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'Generate unit tests for the endpoints' }),
+    });
+    expect([200, 202]).toContain(res2.status);
+
+    const task2 = await waitForCompletion(base, runId, task1.finishedAt);
+    expect(task2.status).toBe('completed');
+    expect(task2.goal).toBe('Generate unit tests for the endpoints');
+    // Fresh task lifecycle with new taskId
+    expect(task2.taskId).not.toBe(firstTaskId);
   }, 180000);
 
   it('verifies large tool outputs survive, are isolated by task, and can be retrieved using ranged reads', () => {

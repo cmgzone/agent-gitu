@@ -96,7 +96,7 @@ export class AppAuth {
   /** Provision or update the workspace owner identity from a verified PikRouter login. */
   pikrouterLogin(profile: { email: string; name?: string; userId?: string }): void {
     const rawEmail = (profile.email || '').trim().toLowerCase();
-    const email = AppAuth.validEmail(rawEmail) ? rawEmail : 'user@pikrouter.pikpam.com';
+    const email = AppAuth.validEmail(rawEmail) ? rawEmail : 'user@pikpam.com';
     const name = (profile.name?.trim() || email.split('@')[0] || 'PikRouter User').slice(0, 100);
     const existing = this.record;
     const record: PasswordRecord = existing

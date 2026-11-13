@@ -258,22 +258,15 @@ describe('account and Connections UI', () => {
     expect(f.elements.cwProviderKey.value).toBe('');
     await vi.waitFor(() => expect(f.content.innerHTML).toContain('Browse apps'));
   });
-  it('renders registration before sign-in and supports existing password-only installations', () => {
-    const registration = authPage(true, true);
-    expect(registration).toContain('Create your account');
-    expect(registration).toContain('name="name"');
-    expect(registration).toContain('name="email"');
-    expect(registration).toContain('id="confirm"');
-    expect(registration).toContain("fetch('/api/auth/pikrouter'");
-    expect(registration).toContain("location.replace('/')");
-    expect(authPage(true, false)).not.toContain('<form');
-    const remoteRegistration = authPage(true, false, true, true);
-    expect(remoteRegistration).toContain('name="registrationToken"');
-    expect(remoteRegistration).toContain('registrationToken: document.getElementById("registrationToken").value');
-    expect(authPage(false, true, true)).toContain('name="email"');
-    expect(authPage(false, true, false)).toContain('name="email"');
-    for (const page of [registration, remoteRegistration, authPage(false, true, true), authPage(false, true, false)]) {
-      expect(() => new Script(page.split('<script>')[1]!.split('</script>')[0]!)).not.toThrow();
+  it('renders Pikpam Hosted Authorize & Register flow on authPage', () => {
+    const page = authPage(true, true);
+    expect(page).toContain('https://pikpam.com/oauth/authorize?client_id=client_gitu_agent');
+    expect(page).toContain("localStorage.setItem('auth_token'");
+    expect(page).toContain("fetch('/api/auth/pikrouter'");
+    expect(page).toContain("location.replace('/')");
+    expect(page).toContain('Continue with Pikpam');
+    for (const p of [page, authPage(false, true), authPage(false, false, true, false, false, { google: true })]) {
+      expect(() => new Script(p.split('<script>')[1]!.split('</script>')[0]!)).not.toThrow();
     }
   });
   it('renders services and account status safely and returns to chat', async () => {

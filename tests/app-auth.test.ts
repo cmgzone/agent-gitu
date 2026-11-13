@@ -55,7 +55,7 @@ describe('whole-app authentication', () => {
         expect((await response.json()).code).toBe('APP_LOCKED');
       }
       const page = await fetch(base + '/auth');
-      expect(await page.text()).toContain('Create your account');
+      expect(await page.text()).toContain('Continue with Pikpam');
       expect(page.headers.get('cache-control')).toBe('no-store');
       expect(page.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
       expect(await remotePost('/api/auth/setup')).toBe(403);
@@ -149,7 +149,7 @@ describe('whole-app authentication', () => {
           req.end(body ? JSON.stringify(body) : undefined);
         });
       const page = await call('/auth');
-      expect(page.text).toContain('name="registrationToken"');
+      expect(page.text).toContain('Continue with Pikpam');
       expect(page.text).not.toContain(code);
       const registration = { ...profile, password, registrationToken: code };
       expect((await call('/api/auth/register', { ...registration, registrationToken: '' })).status).toBe(403);

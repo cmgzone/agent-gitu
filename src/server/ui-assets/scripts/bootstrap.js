@@ -241,7 +241,7 @@
     var state = Math.random().toString(36).slice(2) + Date.now().toString(36);
     try { localStorage.setItem('pikrouter_oauth_state', state); } catch (e) {}
     var redirectUri = window.location.origin + (redirectPath || '/callback');
-    var authUrl = 'https://pikrouter.pikpam.com/oauth/authorize?client_id=client_nexus_65f8f5f9a0c92bf1&redirect_uri=' + encodeURIComponent(redirectUri) + '&state=' + encodeURIComponent(state);
+    var authUrl = 'https://pikpam.com/oauth/authorize?client_id=client_gitu_agent&redirect_uri=' + encodeURIComponent(redirectUri) + '&state=' + encodeURIComponent(state);
     window.location.href = authUrl;
   }
   function openPikRouterTopup(redirectPath) {
@@ -249,7 +249,7 @@
     try { token = localStorage.getItem('auth_token') || ''; } catch (e) {}
     var redirectUri = window.location.origin + (redirectPath || window.location.pathname || '/');
     if (token) {
-      var topupUrl = 'https://pikrouter.pikpam.com/oauth/topup?client_id=client_nexus_65f8f5f9a0c92bf1&token=' + encodeURIComponent(token) + '&redirect_uri=' + encodeURIComponent(redirectUri);
+      var topupUrl = 'https://pikpam.com/oauth/topup?client_id=client_gitu_agent&token=' + encodeURIComponent(token) + '&redirect_uri=' + encodeURIComponent(redirectUri);
       window.location.href = topupUrl;
       return;
     }
@@ -257,10 +257,10 @@
       if (res && res.url) {
         window.location.href = res.url;
       } else {
-        window.location.href = 'https://pikrouter.pikpam.com/oauth/topup?client_id=client_nexus_65f8f5f9a0c92bf1&redirect_uri=' + encodeURIComponent(redirectUri);
+        window.location.href = 'https://pikpam.com/oauth/topup?client_id=client_gitu_agent&redirect_uri=' + encodeURIComponent(redirectUri);
       }
     }).catch(function () {
-      window.location.href = 'https://pikrouter.pikpam.com/oauth/topup?client_id=client_nexus_65f8f5f9a0c92bf1&redirect_uri=' + encodeURIComponent(redirectUri);
+      window.location.href = 'https://pikpam.com/oauth/topup?client_id=client_gitu_agent&redirect_uri=' + encodeURIComponent(redirectUri);
     });
   }
   window.startPikRouterOAuth = startPikRouterOAuth;

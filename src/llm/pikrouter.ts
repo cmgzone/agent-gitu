@@ -7,10 +7,10 @@ import { ensureGituHome } from '../workspace/home.js';
 
 export const DEFAULT_PIKROUTER_AUTH_URL = 'https://pikrouter.pikpam.com/api/auth/login';
 export const DEFAULT_PIKROUTER_REGISTER_URL = 'https://pikrouter.pikpam.com/api/auth/register';
-export const DEFAULT_PIKROUTER_AUTHORIZE_URL = 'https://pikrouter.pikpam.com/oauth/authorize';
-export const DEFAULT_PIKROUTER_TOPUP_URL = 'https://pikrouter.pikpam.com/oauth/topup';
+export const DEFAULT_PIKROUTER_AUTHORIZE_URL = 'https://pikpam.com/oauth/authorize';
+export const DEFAULT_PIKROUTER_TOPUP_URL = 'https://pikpam.com/oauth/topup';
 export const DEFAULT_PIKROUTER_CREDITS_URL = 'https://pikrouter.pikpam.com/api/user/credits';
-export const DEFAULT_PIKROUTER_OAUTH_CLIENT_ID = 'client_nexus_65f8f5f9a0c92bf1';
+export const DEFAULT_PIKROUTER_OAUTH_CLIENT_ID = 'client_gitu_agent';
 export const DEFAULT_PIKROUTER_BASE_URL = 'https://pikrouter.pikpam.com/v1';
 export const DEFAULT_PIKROUTER_MODEL = 'DeepSeek-V4.1-Flash';
 export const PIKROUTER_CREDITS_PER_USD = 100;
@@ -104,7 +104,7 @@ export function buildPikRouterTopupUrl(opts: PikRouterTopupOptions = {}): string
   const topupUrl = opts.topupUrl ?? DEFAULT_PIKROUTER_TOPUP_URL;
   const clientId = opts.clientId ?? DEFAULT_PIKROUTER_OAUTH_CLIENT_ID;
   const browserOrigin = (globalThis as unknown as { location?: { origin?: string } }).location?.origin;
-  const redirectUri = opts.redirectUri ?? (browserOrigin ? `${browserOrigin}/` : 'https://pikrouter.pikpam.com/');
+  const redirectUri = opts.redirectUri ?? (browserOrigin ? `${browserOrigin}/` : 'https://pikpam.com/');
   const env = typeof process !== 'undefined' && process?.env ? mergedEnv() : {};
   const token =
     opts.token ??

@@ -357,7 +357,7 @@ export const COWORK_WORKBENCH_JS = String.raw`
       topupEl.onclick = function (e) {
         e.stopPropagation();
         if (typeof openPikRouterTopup === 'function') openPikRouterTopup();
-        else window.location.href = 'https://pikrouter.pikpam.com/oauth/topup?client_id=client_nexus_65f8f5f9a0c92bf1&redirect_uri=' + encodeURIComponent(window.location.origin + window.location.pathname);
+        else window.location.href = 'https://pikpam.com/oauth/topup?client_id=client_gitu_agent&redirect_uri=' + encodeURIComponent(window.location.origin + window.location.pathname);
       };
     }
   }

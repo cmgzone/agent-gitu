@@ -83,8 +83,8 @@ export const ONBOARDING_JS = String.raw`
     return '<label class="setup-field" for="setupProvider">Model provider</label><select id="setupProvider">' + providers.map(function (item) {
       return '<option value="' + esc(item.id) + '"' + (p.id === item.id ? ' selected' : '') + '>' + esc(item.label || item.id) + (item.id === 'pikrouter' ? ' (Default)' : '') + (providerIsUsable(item) ? ' · Connected' : '') + '</option>';
     }).join('') + '</select>' +
-      (ready ? '<p class="setup-note">' + (subscription ? 'ChatGPT is signed in.' : pikAuth ? 'PikRouter is connected and ready.' : 'A key is already available for this provider.') + '</p>' : '') +
-      (pikAuth ? '<div class="setup-provider-actions" style="margin-bottom:10px"><button class="btn dark" id="setupPikOAuth">Continue with PikRouter (Hosted Authorize &amp; Register)</button></div><label class="setup-field" for="setupPikEmail">' + (ready ? 'Or switch PikRouter account with email & password' : 'Or use PikRouter email & password') + '</label><div class="setup-key-row" style="flex-wrap:wrap;gap:8px"><input id="setupPikName" type="text" autocomplete="name" placeholder="Name (for new account)" style="flex:1 1 140px"><input id="setupPikEmail" type="email" autocomplete="username" placeholder="PikRouter email" style="flex:1 1 180px"><input id="setupPikPassword" type="password" autocomplete="current-password" placeholder="Password" style="flex:1 1 150px"></div><p class="setup-note">Sign in with your PikRouter account or create a new PikRouter account with starter credits.</p><div class="setup-provider-actions"><button class="btn dark" id="setupPikSignIn">Sign in with PikRouter</button><button class="btn ghost" id="setupPikRegister">Create PikRouter account</button><button class="btn ghost" id="setupRefresh">Refresh models</button></div>' :
+      (ready ? '<p class="setup-note">' + (subscription ? 'ChatGPT is signed in.' : pikAuth ? 'Pikpam is connected and ready to route AI requests.' : 'A key is already available for this provider.') + '</p>' : '') +
+      (pikAuth ? '<div class="setup-provider-actions" style="margin-bottom:10px"><button class="btn dark" id="setupPikOAuth">' + (ready ? 'Switch or Reconnect with Pikpam' : 'Continue with Pikpam (Hosted Authorize &amp; Register)') + '</button><button class="btn ghost" id="setupRefresh">Refresh models</button></div>' :
       subscription ? '<p class="setup-note">Use your ChatGPT account through the existing sign-in connection.</p><div class="setup-provider-actions"><button class="btn dark" id="setupSignIn">Sign in with ChatGPT</button><button class="btn ghost" id="setupRefresh">Check sign-in</button></div>' :
         (p.keyEnvVars || []).length ? '<label class="setup-field" for="setupKey">' + (ready ? 'Replace API key (optional)' : 'API key') + '</label><div class="setup-key-row"><input id="setupKey" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your API key"><button class="btn ghost" id="setupShowKey" aria-label="Show API key">Show</button></div><p class="setup-note">Saved in Agent Gitu’s local key store.</p><div class="setup-provider-actions"><button class="btn dark" id="setupSaveKey">Save key</button><button class="btn ghost" id="setupRefresh">Refresh models</button></div>' : '<p class="setup-note">This provider does not need an API key here.</p><button class="btn ghost" id="setupRefresh">Refresh connection</button>') +
       '<label class="setup-field" for="setupModel">Default model</label><select id="setupModel"' + (ready ? '' : ' disabled') + '>' + (p.models || []).map(function (m) {
@@ -129,8 +129,6 @@ export const ONBOARDING_JS = String.raw`
     };
     if ($('setupSaveKey')) $('setupSaveKey').onclick = saveSetupKey;
     if ($('setupPikOAuth')) $('setupPikOAuth').onclick = function () { startPikRouterOAuth('/callback'); };
-    if ($('setupPikSignIn')) $('setupPikSignIn').onclick = function () { authSetupPikRouter('login'); };
-    if ($('setupPikRegister')) $('setupPikRegister').onclick = function () { authSetupPikRouter('register'); };
     if ($('setupRefresh')) $('setupRefresh').onclick = refreshSetupProviders;
     if ($('setupSignIn')) $('setupSignIn').onclick = function () {
       setupOperation(async function () {
@@ -174,24 +172,6 @@ export const ONBOARDING_JS = String.raw`
       key = '';
       try { await loadModelCatalog(true); renderSetup(); setupMessage('Key saved. Choose a model to continue.'); }
       catch (e) { setupMessage('Key saved. Refresh models to finish connecting.', true); }
-    });
-  }
-  async function authSetupPikRouter(mode) {
-    var email = $('setupPikEmail') && $('setupPikEmail').value.trim();
-    var password = $('setupPikPassword') && $('setupPikPassword').value;
-    var name = $('setupPikName') && $('setupPikName').value.trim();
-    if (!email || !password) { setupMessage('Enter your PikRouter email and password first.', true); return; }
-    return setupOperation(async function () {
-      setupMessage(mode === 'register' ? 'Creating your PikRouter account…' : 'Signing in with PikRouter…');
-      await api(mode === 'register' ? '/api/pikrouter/register' : '/api/pikrouter/login', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email: email, password: password, name: name })
-      });
-      if ($('setupPikPassword')) $('setupPikPassword').value = '';
-      await loadModelCatalog(true);
-      renderSetup();
-      setupMessage('PikRouter connected. Choose a model to continue.');
     });
   }
   function openSetupWizard() {

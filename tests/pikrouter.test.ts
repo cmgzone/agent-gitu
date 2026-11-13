@@ -25,6 +25,7 @@ import { PROVIDERS, providerSpec, resolveLlm } from '../src/llm/providers.js';
 import { effortStyleFor, PLATFORM_SAFETY_MAX_TOKENS } from '../src/llm/llm.js';
 import { piProviderConfig } from '../src/llm/pi-native.js';
 import { authPage } from '../src/server/ui-auth.js';
+import { ONBOARDING_JS } from '../src/server/ui-onboarding.js';
 
 describe('PikRouter integration', () => {
   const originalFetch = globalThis.fetch;
@@ -310,9 +311,18 @@ describe('PikRouter integration', () => {
     });
 
     const page = authPage(true, false, true, false, false, { pikrouterOAuth: true });
-    expect(page).toContain('https://pikrouter.pikpam.com/oauth/authorize?client_id=client_nexus_65f8f5f9a0c92bf1');
+    expect(page).toContain('https://pikpam.com/oauth/authorize?client_id=client_gitu_agent');
     expect(page).toContain("localStorage.setItem('auth_token'");
     expect(page).toContain('/api/auth/pikrouter');
+    expect(page).toContain('Continue with Pikpam');
+    // Verify custom sign-in and create account form fields are completely removed
+    expect(page).not.toContain('<form');
+    expect(page).not.toContain('name="password"');
+    // Verify onboarding uses Pikpam OAuth flow and omits legacy password registration
+    expect(ONBOARDING_JS).toContain("startPikRouterOAuth('/callback')");
+    expect(ONBOARDING_JS).not.toContain('setupPikPassword');
+    expect(ONBOARDING_JS).not.toContain('setupPikName');
+    expect(ONBOARDING_JS).not.toContain('authSetupPikRouter');
   });
 
   it('converts USD to PikRouter credits accurately (100 credits = $1.00 USD)', () => {
@@ -375,12 +385,12 @@ describe('PikRouter integration', () => {
   });
 
   it('builds the PikRouter topup URL with token and redirect URI', () => {
-    expect(DEFAULT_PIKROUTER_TOPUP_URL).toBe('https://pikrouter.pikpam.com/oauth/topup');
+    expect(DEFAULT_PIKROUTER_TOPUP_URL).toBe('https://pikpam.com/oauth/topup');
     const url = buildPikRouterTopupUrl({
-      clientId: 'client_nexus_65f8f5f9a0c92bf1',
+      clientId: 'client_gitu_agent',
       token: 'jwt_user_token_123',
       redirectUri: 'https://your-app.com/dashboard',
     });
-    expect(url).toBe('https://pikrouter.pikpam.com/oauth/topup?client_id=client_nexus_65f8f5f9a0c92bf1&token=jwt_user_token_123&redirect_uri=https%3A%2F%2Fyour-app.com%2Fdashboard');
+    expect(url).toBe('https://pikpam.com/oauth/topup?client_id=client_gitu_agent&token=jwt_user_token_123&redirect_uri=https%3A%2F%2Fyour-app.com%2Fdashboard');
   });
 });

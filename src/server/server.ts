@@ -7019,7 +7019,7 @@ export class GituServer {
     if ((path === '/auth' || path === '/callback' || path === '/auth/pikrouter/callback') && method === 'GET') {
       const callbackToken = (url.searchParams.get('token') ?? '').trim();
       if (callbackToken) {
-        const callbackEmail = (url.searchParams.get('email') ?? '').trim() || 'user@pikrouter.pikpam.com';
+        const callbackEmail = (url.searchParams.get('email') ?? '').trim() || 'user@pikpam.com';
         const callbackUserId = (url.searchParams.get('user_id') ?? '').trim() || undefined;
         const callbackName = (url.searchParams.get('name') ?? '').trim() || callbackEmail.split('@')[0] || 'User';
         try {
@@ -7103,7 +7103,7 @@ export class GituServer {
           const body = await this.readBody(req);
           const oauthToken = typeof body['token'] === 'string' ? body['token'].trim() : '';
           if (oauthToken) {
-            const email = String(body['email'] || '').trim() || 'user@pikrouter.pikpam.com';
+            const email = String(body['email'] || '').trim() || 'user@pikpam.com';
             const userId = body['userId'] !== undefined ? String(body['userId']).trim() : body['user_id'] !== undefined ? String(body['user_id']).trim() : undefined;
             const name = String(body['name'] || '').trim() || email.split('@')[0] || 'User';
             setStoredKey('PIKROUTER_API_KEY', oauthToken);
@@ -7259,6 +7259,13 @@ export class GituServer {
     if (path.startsWith('/api/connected-apps')) {
       await connectedAppsRoutes(req, res, url, method, {
         isSameOrigin: request => this.isSameOrigin(request), appAuth: this.appAuth,
+        oauthCallbackUrl: request => {
+          const configuredUrl = process.env['AGENT_GITU_PUBLIC_URL'];
+          const origin = configuredUrl
+            ? new URL(configuredUrl).origin
+            : `${this.appAuth.secure(request) ? 'https:' : 'http:'}//${request.headers.host}`;
+          return new URL('/?composio=connected', origin).toString();
+        },
         cowork: () => this.cowork(), appHub: this.appHub, connectedApps: this.connectedApps,
         mailConnections: this.mailConnections, mailInboxMonitor: this.mailInboxMonitor,
         readBody: request => this.readBody(request), sendJson: (response, status, data) => this.sendJson(response, status, data),

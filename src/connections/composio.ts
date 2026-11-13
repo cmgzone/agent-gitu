@@ -31,7 +31,7 @@ export interface PikpamAuthConfig {
   managed: boolean;
   fields: Array<{ name: string; label: string; type: string; description?: string; required: boolean; secret: boolean }>;
 }
-export interface PikpamConnectOptions { authConfigId?: string; authScheme?: string; fields?: Record<string, string>; alias?: string; }
+export interface PikpamConnectOptions { authConfigId?: string; authScheme?: string; fields?: Record<string, string>; alias?: string; callbackUrl?: string; }
 
 /** Windows DPAPI locally; hosted keys use AES-GCM with an external runtime key. */
 export class ComposioKeyStore {
@@ -297,7 +297,7 @@ export class ComposioConnections {
       if (oauth && auth.fields.some((field) => field.required && !options?.fields?.[field.name])) throw new Error('This app needs additional sign-in details. Refresh its connection form and try again.');
       if (!oauth && !['API_KEY', 'BEARER_TOKEN', 'BASIC'].includes(auth.scheme.toUpperCase())) throw new Error('This authentication type is not supported inside Gitu yet.');
       const result = await this.pikpamRequest<{ connectedAccountId?: string; redirectUrl?: string }>('connect', {
-        method: 'POST', body: JSON.stringify({ toolkitSlug: slug, authConfigId: auth.id, authScheme: auth.scheme, fields: options?.fields || {}, ...(options?.alias ? { alias: options.alias } : {}) }),
+        method: 'POST', body: JSON.stringify({ toolkitSlug: slug, authConfigId: auth.id, authScheme: auth.scheme, fields: options?.fields || {}, ...(options?.alias ? { alias: options.alias } : {}), ...(options?.callbackUrl ? { callbackUrl: options.callbackUrl } : {}) }),
       });
       if (!result.connectedAccountId) throw new Error('Pikpam did not return a connected account. Refresh Connections and try again.');
       if (!result.redirectUrl) return { accountId: result.connectedAccountId, status: 'INITIALIZING' };

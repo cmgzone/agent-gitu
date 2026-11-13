@@ -8,6 +8,7 @@ import type { MailInboxMonitor } from '../../connections/mail-inbox-monitor.js';
 
 export interface ConnectedAppsRouteDeps {
   isSameOrigin(req: IncomingMessage): boolean;
+  oauthCallbackUrl?(req: IncomingMessage): string;
   appAuth: Pick<AppAuth, 'secure' | 'authenticated'>;
   cowork(): CoworkStore;
   appHub: Pick<ConnectionsHub, 'accounts' | 'accountStatusIncomplete'>;
@@ -290,6 +291,7 @@ export async function connectedAppsRoutes(req: IncomingMessage, res: ServerRespo
           ...(typeof body['authScheme'] === 'string' ? { authScheme: body['authScheme'] } : {}),
           fields,
           ...(typeof body['alias'] === 'string' ? { alias: body['alias'].slice(0, 120) } : {}),
+          ...(deps.oauthCallbackUrl ? { callbackUrl: deps.oauthCallbackUrl(req) } : {}),
         });
       } catch (error) {
         // Never expose SDK errors: they may contain credentials or request data.

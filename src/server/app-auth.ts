@@ -93,12 +93,26 @@ export class AppAuth {
     return this.record ? { id: this.record.userId, name: this.record.name, email: this.record.email } : undefined;
   }
   get googleLinked(): boolean { return Boolean(this.record?.googleSubject); }
-  /** Provision or update the workspace owner identity from a verified PikRouter login. */
+  /** The registered owner email, or undefined if workspace is unconfigured. */
+  get ownerEmail(): string | undefined { return this.record?.email; }
+  /** Provision or update the workspace owner identity from a verified PikRouter login.
+   *  - First login: registers the authenticated Pikpam user as the workspace owner.
+   *  - Subsequent logins: enforces that the incoming email matches the registered owner
+   *    to prevent other Pikpam accounts from hijacking access via shared/copied OAuth links.
+   */
   pikrouterLogin(profile: { email: string; name?: string; userId?: string }): void {
     const rawEmail = (profile.email || '').trim().toLowerCase();
-    const email = AppAuth.validEmail(rawEmail) ? rawEmail : 'user@pikpam.com';
+    const email = AppAuth.validEmail(rawEmail) ? rawEmail : '';
+    if (!email) throw new Error('A valid email address is required to sign in with Pikpam.');
     const name = (profile.name?.trim() || email.split('@')[0] || 'PikRouter User').slice(0, 100);
     const existing = this.record;
+    // If workspace is already configured, reject any login from a different email address.
+    if (existing?.email && existing.email.toLowerCase() !== email) {
+      throw new Error(
+        `Access denied: this workspace belongs to ${existing.email}. ` +
+        `Sign in with that account on Pikpam.`
+      );
+    }
     const record: PasswordRecord = existing
       ? { ...existing, version: 2, name, email }
       : {

@@ -311,9 +311,14 @@ describe('PikRouter integration', () => {
     });
 
     const page = authPage(true, false, true, false, false, { pikrouterOAuth: true });
-    expect(page).toContain('https://pikpam.com/oauth/authorize?client_id=client_gitu_agent');
-    expect(page).toContain("localStorage.setItem('auth_token'");
+    // Auth page now initiates OAuth via /api/auth/pikrouter/start (server-bound state cookie)
+    // rather than directly constructing the OAuth URL client-side.
+    expect(page).toContain('/api/auth/pikrouter/start');
+    // Token from callback URL is POSTed with echoed state to /api/auth/pikrouter for validation.
     expect(page).toContain('/api/auth/pikrouter');
+    // Token is stripped from the URL immediately after callback to prevent link sharing.
+    expect(page).toContain('history.replaceState');
+    expect(page).toContain("localStorage.setItem('auth_token'");
     expect(page).toContain('Continue with Pikpam');
     // Verify custom sign-in and create account form fields are completely removed
     expect(page).not.toContain('<form');

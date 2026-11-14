@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AppAuth } from '../src/server/app-auth.js';
 import { GituServer } from '../src/server/server.js';
 import { ScriptedMockLlm } from '../src/llm/llm.js';
+import { loadStoredKeys } from '../src/llm/keys.js';
 import { GituApi } from '../apps/mobile/src/gitu/client.js';
 import type { ComposioConnections } from '../src/connections/composio.js';
 
@@ -241,4 +242,132 @@ describe('whole-app authentication', () => {
     external.headers['x-forwarded-proto'] = 'https';
     expect(auth.secure(external)).toBe(false);
   });
+
+  it('pikrouterLogin: enforces workspace owner — rejects a different Pikpam account after first login', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'gitu-auth-pikowner-'));
+    const file = path.join(dir, 'password.json');
+    const auth = new AppAuth(file, false);
+
+    // First login: registers owner@example.com as the workspace owner.
+    expect(auth.configured).toBe(false);
+    auth.pikrouterLogin({ email: 'owner@example.com', name: 'Owner', userId: 'uid-1' });
+    expect(auth.configured).toBe(true);
+    expect(auth.ownerEmail).toBe('owner@example.com');
+
+    // Same owner logging in again: succeeds (name update allowed).
+    expect(() => auth.pikrouterLogin({ email: 'owner@example.com', name: 'Owner Updated' })).not.toThrow();
+
+    // A different Pikpam account tries to log in: must be rejected.
+    expect(() => auth.pikrouterLogin({ email: 'attacker@evil.com', name: 'Attacker', userId: 'uid-2' }))
+      .toThrow(/Access denied.*owner@example\.com/);
+
+    // Owner email must still be the original after the rejected attempt.
+    expect(auth.ownerEmail).toBe('owner@example.com');
+  });
+
+  it('pikrouterLogin: rejects empty or invalid email', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'gitu-auth-pikemail-'));
+    const auth = new AppAuth(path.join(dir, 'password.json'), false);
+    expect(() => auth.pikrouterLogin({ email: '', name: 'User' })).toThrow(/valid email/);
+    expect(() => auth.pikrouterLogin({ email: 'notanemail', name: 'User' })).toThrow(/valid email/);
+    expect(auth.configured).toBe(false);
+  });
+
+  it('enforces Pikpam OAuth state cookie, JWT claims, and workspace owner before storing API keys', async () => {
+    const previous = process.env['AGENT_GITU_HOME'];
+    const home = mkdtempSync(path.join(tmpdir(), 'gitu-auth-pik-http-'));
+    process.env['AGENT_GITU_HOME'] = home;
+    const origFetch = globalThis.fetch;
+    const makeJwt = (payload: Record<string, unknown>) =>
+      `${Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url')}.${Buffer.from(JSON.stringify(payload)).toString('base64url')}.sig`;
+    try {
+      const server = new GituServer({ cwd: home, port: 0, llm: new ScriptedMockLlm([]) });
+      servers.push(server);
+      const base = `http://127.0.0.1:${await server.start()}`;
+      const ownerToken = makeJwt({ sub: 'u-owner', email: 'owner@example.com', exp: Math.floor(Date.now() / 1000) + 3600 });
+      const attackerToken = makeJwt({ sub: 'u-attacker', email: 'attacker@evil.com', exp: Math.floor(Date.now() / 1000) + 3600 });
+      const expiredToken = makeJwt({ sub: 'u-owner', email: 'owner@example.com', exp: Math.floor(Date.now() / 1000) - 60 });
+
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const target = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        if (target.startsWith('https://pikrouter.pikpam.com/api/user/credits')) {
+          return new Response(JSON.stringify({ ok: true, credits: { balance: 100, available: 100 } }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return origFetch(input, init);
+      }) as typeof fetch;
+
+      const startFlow = async () => {
+        const res = await fetch(`${base}/api/auth/pikrouter/start`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', origin: base },
+          body: JSON.stringify({ redirectPath: '/callback' }),
+        });
+        expect(res.status).toBe(200);
+        const setCookie = res.headers.get('set-cookie') ?? '';
+        expect(setCookie).toContain('pik_oauth_state=');
+        expect(setCookie).toContain('Path=/');
+        expect(setCookie).toContain('HttpOnly');
+        const stateCookie = setCookie.split(';')[0]!;
+        const data = (await res.json()) as { authUrl: string; state: string };
+        return { stateCookie, state: data.state };
+      };
+
+      // 1. Shared callback link opened without browser state cookie is rejected (403).
+      const flow1 = await startFlow();
+      const sharedLinkRes = await fetch(`${base}/api/auth/pikrouter`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: base },
+        body: JSON.stringify({ token: ownerToken, email: 'owner@example.com', state: flow1.state }),
+      });
+      expect(sharedLinkRes.status).toBe(403);
+
+      // 2. Owner signs in cleanly with matching state cookie and JWT.
+      const flow2 = await startFlow();
+      const ownerRes = await fetch(`${base}/api/auth/pikrouter`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: base, cookie: flow2.stateCookie },
+        body: JSON.stringify({ token: ownerToken, email: 'owner@example.com', userId: 'u-owner', state: flow2.state }),
+      });
+      expect(ownerRes.status).toBe(200);
+      expect(ownerRes.headers.get('set-cookie')).toContain('gitu_session=');
+      expect(loadStoredKeys()['PIKROUTER_API_KEY']).toBe(ownerToken);
+
+      // 3. Expired JWT is rejected (401).
+      const flow3 = await startFlow();
+      const expiredRes = await fetch(`${base}/api/auth/pikrouter`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: base, cookie: flow3.stateCookie },
+        body: JSON.stringify({ token: expiredToken, email: 'owner@example.com', state: flow3.state }),
+      });
+      expect(expiredRes.status).toBe(401);
+
+      // 4. Spoofed query email differing from JWT email is rejected (403).
+      const flow4 = await startFlow();
+      const spoofedRes = await fetch(`${base}/api/auth/pikrouter`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: base, cookie: flow4.stateCookie },
+        body: JSON.stringify({ token: attackerToken, email: 'owner@example.com', state: flow4.state }),
+      });
+      expect(spoofedRes.status).toBe(403);
+      expect(loadStoredKeys()['PIKROUTER_API_KEY']).toBe(ownerToken);
+
+      // 5. Different Pikpam account cannot log in OR overwrite PIKROUTER_API_KEY.
+      const flow5 = await startFlow();
+      const attackerRes = await fetch(`${base}/api/auth/pikrouter`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: base, cookie: flow5.stateCookie },
+        body: JSON.stringify({ token: attackerToken, email: 'attacker@evil.com', state: flow5.state }),
+      });
+      expect(attackerRes.status).toBe(403);
+      expect(attackerRes.headers.get('set-cookie') ?? '').not.toContain('gitu_session=');
+      expect(loadStoredKeys()['PIKROUTER_API_KEY']).toBe(ownerToken);
+    } finally {
+      globalThis.fetch = origFetch;
+      if (previous === undefined) delete process.env['AGENT_GITU_HOME'];
+      else process.env['AGENT_GITU_HOME'] = previous;
+    }
+  }, 30000);
 });

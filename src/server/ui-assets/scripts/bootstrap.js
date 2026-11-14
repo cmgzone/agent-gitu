@@ -238,11 +238,21 @@
     persist();
   }
   function startPikRouterOAuth(redirectPath) {
-    var state = Math.random().toString(36).slice(2) + Date.now().toString(36);
-    try { localStorage.setItem('pikrouter_oauth_state', state); } catch (e) {}
-    var redirectUri = window.location.origin + (redirectPath || '/callback');
-    var authUrl = 'https://pikpam.com/oauth/authorize?client_id=client_gitu_agent&redirect_uri=' + encodeURIComponent(redirectUri) + '&state=' + encodeURIComponent(state);
-    window.location.href = authUrl;
+    // Request a server-generated state token that is simultaneously bound to an HttpOnly
+    // browser cookie. This prevents CSRF and link-sharing attacks: even if a callback URL
+    // leaks, any third party browser will not have the matching state cookie and the server
+    // will reject the sign-in attempt.
+    api('/api/auth/pikrouter/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ redirectPath: redirectPath || '/callback' })
+    }).then(function (data) {
+      if (data && data.authUrl) {
+        window.location.href = data.authUrl;
+      }
+    }).catch(function (err) {
+      console.error('Could not start Pikpam sign-in:', err);
+    });
   }
   function openPikRouterTopup(redirectPath) {
     var token = '';
@@ -272,15 +282,19 @@
       var token = params.get('token');
       var userEmail = params.get('email');
       var userId = params.get('user_id');
+      var state = params.get('state');
       if (!token) return;
       try { localStorage.setItem('auth_token', token); } catch (e) {}
+      // Immediately strip the token from the URL so it cannot be shared, bookmarked, or
+      // appear in browser history / server access logs.
       if (window.history && window.history.replaceState) {
         window.history.replaceState({}, '', window.location.pathname + (window.location.hash || ''));
       }
+      // POST token + echoed state; server validates state against the HttpOnly cookie.
       api('/api/pikrouter/oauth', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ token: token, email: userEmail, userId: userId })
+        body: JSON.stringify({ token: token, email: userEmail, userId: userId, state: state })
       }).then(function () {
         if (typeof loadModelCatalog === 'function') loadModelCatalog(true);
       }).catch(function () {});

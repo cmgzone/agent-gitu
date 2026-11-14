@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { WorkspaceGitBridge } from '../cowork/workspace-git.js';
 import { sanitizeBrowserAuth } from '../cowork/browser-auth.js';
 import { isStructuredAuth, encodeStructuredCredentials } from '../connections/structured-auth.js';
@@ -79,7 +79,7 @@ import { deploymentIntent, isDeploymentAction, DEPLOYMENT_OWNERSHIP } from '../c
 import { CoworkDelegation, type DelegationScope, type DelegationSessionInput } from '../cowork/delegation.js';
 import { CoworkSubAgents, CoworkSubAgentRunner } from '../cowork/subagents.js';
 import type { CodingEvent } from '../coding/events.js';
-import { classifyFollowUp, conversationIntent, isNonMutatingStatusQuestion, isProgressNudge, BACKWARD_REFERENCE, startsUnrelatedTask, type TaskScope } from '../agent/follow-up.js';
+import { classifyFollowUp, conversationIntent, isNonMutatingStatusQuestion, startsUnrelatedTask, type TaskScope } from '../agent/follow-up.js';
 import { CoworkLiveMailbox, type CoworkDelivery } from '../cowork/live-messages.js';
 import { appAwareness, connectionQuestion, connectionReply } from '../cowork/app-awareness.js';
 import { appReviewDue, reviewConnectedApps } from '../cowork/proactive-apps.js';
@@ -143,6 +143,73 @@ import { UI_HTML } from './ui.js';
 import { credentialChatInput } from './credential-chat.js';
 import { coworkActivityView } from './cowork-activity.js';
 import { BRAND_DIR, BRAND_FILES, CHARACTERS_DIR, CHARACTER_FILES, FONT_FILES, FONTS_DIR, VENDOR_THREE, VENDOR_THREE_CORE, isPreviewableMime, isTextLikeFile, mimeForFile, safeFileName } from './static-assets.js';
+
+const PIK_OAUTH_STATE_COOKIE = 'pik_oauth_state';
+
+function readCookie(req: http.IncomingMessage, name: string): string {
+  const prefix = `${name}=`;
+  return (req.headers.cookie ?? '')
+    .split(';')
+    .map((c) => c.trim())
+    .find((c) => c.startsWith(prefix))
+    ?.slice(prefix.length) ?? '';
+}
+
+function appendSetCookie(res: http.ServerResponse, cookie: string): void {
+  const existing = res.getHeader('Set-Cookie');
+  res.setHeader(
+    'Set-Cookie',
+    existing
+      ? [...(Array.isArray(existing) ? existing.map(String) : [String(existing)]), cookie]
+      : cookie,
+  );
+}
+
+function statesMatch(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  const x = Buffer.from(a, 'utf8');
+  const y = Buffer.from(b, 'utf8');
+  return x.length === y.length && timingSafeEqual(x, y);
+}
+
+function parseJwtPayload(token: string): Record<string, unknown> | undefined {
+  const parts = token.split('.');
+  if (parts.length !== 3 || !parts[1]) return undefined;
+  try {
+    const parsed = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+interface VerifiedJwtClaims {
+  expired: boolean;
+  email: string;
+  userId?: string;
+}
+
+function extractJwtClaims(token: string): VerifiedJwtClaims {
+  const payload = parseJwtPayload(token);
+  if (!payload) return { expired: false, email: '' };
+  const expired = typeof payload['exp'] === 'number' && payload['exp'] * 1000 < Date.now();
+  const rawEmail = typeof payload['email'] === 'string'
+    ? payload['email']
+    : typeof payload['user_email'] === 'string'
+      ? payload['user_email']
+      : '';
+  const email = rawEmail.trim().toLowerCase();
+  const userId = payload['sub'] !== undefined
+    ? String(payload['sub']).trim()
+    : payload['user_id'] !== undefined
+      ? String(payload['user_id']).trim()
+      : payload['id'] !== undefined
+        ? String(payload['id']).trim()
+        : undefined;
+  return { expired, email, userId };
+}
 
 export interface PendingApproval {
   id: string;
@@ -6682,7 +6749,6 @@ export class GituServer {
     s.nextEventIndex ??= s.events.reduce((highest, existing) => Math.max(highest, existing.i), -1) + 1;
     const ev: SessionEvent = { i: s.nextEventIndex++, t: nowIso(), text, ...(typed ? { typed } : {}) };
     s.events.push(ev);
-    if (s.events.length > 5000) s.events.splice(10, s.events.length - 4000);
     if (persistDb && !text.startsWith('tdelta') && !text.startsWith('activity')) {
       try {
         this.db().addEvent(s.runId, ev);
@@ -7017,18 +7083,16 @@ export class GituServer {
     }
 
     if ((path === '/auth' || path === '/callback' || path === '/auth/pikrouter/callback') && method === 'GET') {
-      const callbackToken = (url.searchParams.get('token') ?? '').trim();
-      if (callbackToken) {
-        const callbackEmail = (url.searchParams.get('email') ?? '').trim() || 'user@pikpam.com';
-        const callbackUserId = (url.searchParams.get('user_id') ?? '').trim() || undefined;
-        const callbackName = (url.searchParams.get('name') ?? '').trim() || callbackEmail.split('@')[0] || 'User';
-        try {
-          setStoredKey('PIKROUTER_API_KEY', callbackToken);
-          this.appAuth.pikrouterLogin({ email: callbackEmail, name: callbackName, userId: callbackUserId });
-          this.appAuth.issue(req, res);
-        } catch {
-          /* client script will also complete or display any error */
-        }
+      // Security: If Pikpam redirected back with a token in the URL query string,
+      // we do NOT issue a session here. URL query params are logged in browser history,
+      // HTTP referer headers, and can be shared as links — logging in anyone who clicks.
+      // Instead we serve the auth page; the client JS sends a same-origin POST with the
+      // token and state, and state is validated against the HttpOnly cookie set at login start.
+      // If the workspace is already authenticated, skip the auth page entirely.
+      if (this.appAuth.authenticated(req) && !url.searchParams.get('token')) {
+        res.writeHead(302, { location: '/', 'cache-control': 'no-store' });
+        res.end();
+        return;
       }
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'DENY', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'" });
       res.end(authPage(!this.appAuth.configured, AppAuth.local(req), this.appAuth.requiresEmail, this.appAuth.remoteRegistrationEnabled && this.appAuth.secure(req), this.appAuth.lanLogin(req), { pikrouterOAuth: true, google: this.googleSignIn.enabled && this.appAuth.requiresEmail && (AppAuth.local(req)||this.appAuth.secure(req)), link: url.searchParams.get('link') === 'google' && this.appAuth.authenticated(req) }));
@@ -7063,6 +7127,26 @@ export class GituServer {
       if (path === '/api/auth/google/start' && method === 'POST') {
         try { const body = await this.readBody(req); this.sendJson(res, 200, this.googleSignIn.start(req,res,this.appAuth,body['link']===true)); }
         catch(error) { this.sendJson(res, 400, {error:(error as Error).message}); } return;
+      }
+      // Pikpam OAuth start: generate a cryptographic state token, bind it in an HttpOnly cookie,
+      // and return the OAuth authorize URL. This prevents link-sharing / CSRF:
+      // the state in the cookie must match the state echoed back through the redirect.
+      if (path === '/api/auth/pikrouter/start' && method === 'POST') {
+        try {
+          const state = randomBytes(24).toString('base64url');
+          const body = await this.readBody(req);
+          const rawRedirectPath = typeof body['redirectPath'] === 'string' ? body['redirectPath'].trim() : '/callback';
+          const redirectPath = rawRedirectPath.startsWith('/') && !rawRedirectPath.startsWith('//') ? rawRedirectPath : '/callback';
+          const redirectUri = `${req.headers['x-forwarded-proto'] === 'https' || this.appAuth.secure(req) ? 'https' : 'http'}://${req.headers['host']}${redirectPath}`;
+          const authUrl = `https://pikpam.com/oauth/authorize?client_id=client_gitu_agent&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}`;
+          const isSecure = this.appAuth.secure(req);
+          const stateCookie = `${PIK_OAUTH_STATE_COOKIE}=${state}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600${isSecure ? '; Secure' : ''}`;
+          appendSetCookie(res, stateCookie);
+          this.sendJson(res, 200, { authUrl, state });
+        } catch (err) {
+          this.sendJson(res, 400, { error: (err as Error).message });
+        }
+        return;
       }
       if (path === '/api/auth/google/settings' && (method === 'GET' || method === 'POST')) {
         if (!this.appAuth.authenticated(req)) { this.sendJson(res,401,{error:'Sign in to configure Google.'}); return; }
@@ -7103,13 +7187,80 @@ export class GituServer {
           const body = await this.readBody(req);
           const oauthToken = typeof body['token'] === 'string' ? body['token'].trim() : '';
           if (oauthToken) {
-            const email = String(body['email'] || '').trim() || 'user@pikpam.com';
-            const userId = body['userId'] !== undefined ? String(body['userId']).trim() : body['user_id'] !== undefined ? String(body['user_id']).trim() : undefined;
-            const name = String(body['name'] || '').trim() || email.split('@')[0] || 'User';
+            // --- OAuth callback path (from Pikpam redirect) ---
+            // Security: Clear and validate the one-use HttpOnly state cookie to prevent
+            // link-sharing and CSRF attacks across browsers.
+            const bodyState = typeof body['state'] === 'string' ? body['state'].trim() : '';
+            const cookieState = readCookie(req, PIK_OAUTH_STATE_COOKIE);
+            appendSetCookie(res, `${PIK_OAUTH_STATE_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
+            if (!statesMatch(bodyState, cookieState)) {
+              this.sendJson(res, 403, { error: 'OAuth state mismatch or shared sign-in link detected. Please start sign-in from this browser.' });
+              return;
+            }
+            if (!this.appAuth.configured && !this.appAuth.canRegister(req, body['registrationToken'])) {
+              this.sendJson(res, 403, { error: 'Register locally, or use the private setup code over HTTPS.' });
+              return;
+            }
+
+            // Inspect JWT claims if the token is a JWT so client-supplied email/expiry cannot be spoofed.
+            const jwtClaims = extractJwtClaims(oauthToken);
+            if (jwtClaims.expired) {
+              this.sendJson(res, 401, { error: 'Pikpam token has expired. Sign in again.' });
+              return;
+            }
+            const suppliedEmail = typeof body['email'] === 'string' ? body['email'].trim().toLowerCase() : '';
+            if (jwtClaims.email && suppliedEmail && jwtClaims.email !== suppliedEmail) {
+              this.sendJson(res, 403, { error: 'OAuth email mismatch.' });
+              return;
+            }
+
+            let verifiedEmail = jwtClaims.email || suppliedEmail;
+            let verifiedUserId = jwtClaims.userId ?? (
+              body['userId'] !== undefined ? String(body['userId']).trim()
+              : body['user_id'] !== undefined ? String(body['user_id']).trim() : undefined
+            );
+            let verifiedName = typeof body['name'] === 'string' ? body['name'].trim() : '';
+            // Security: Verify the token is genuine by calling Pikpam's credits endpoint.
+            try {
+              const verifyRes = await fetch('https://pikrouter.pikpam.com/api/user/credits', {
+                method: 'GET',
+                headers: { 'Authorization': `Bearer ${oauthToken}`, 'Content-Type': 'application/json' },
+                signal: AbortSignal.timeout(8000),
+              });
+              if (!verifyRes.ok) {
+                this.sendJson(res, 401, { error: 'Pikpam token verification failed. Sign in again.' });
+                return;
+              }
+              // Prefer authoritative user profile fields from Pikpam when present.
+              const verifyData = await verifyRes.json().catch(() => ({})) as Record<string, unknown>;
+              const userObj = verifyData['user'] as Record<string, unknown> | undefined;
+              if (userObj?.email && typeof userObj.email === 'string') {
+                const apiEmail = userObj.email.trim().toLowerCase();
+                if (jwtClaims.email && apiEmail && jwtClaims.email !== apiEmail) {
+                  this.sendJson(res, 403, { error: 'OAuth email mismatch.' });
+                  return;
+                }
+                verifiedEmail = apiEmail;
+              }
+              if (userObj?.name && typeof userObj.name === 'string') verifiedName = userObj.name.trim();
+              if (userObj?.id !== undefined) verifiedUserId = String(userObj.id).trim();
+            } catch {
+              this.sendJson(res, 503, { error: 'Could not reach Pikpam to verify your token. Check your connection and try again.' });
+              return;
+            }
+            const email = verifiedEmail;
+            const name = verifiedName || email.split('@')[0] || 'User';
+            // Verify workspace owner BEFORE persisting PIKROUTER_API_KEY so an unauthorized
+            // Pikpam account can never overwrite the workspace owner's API key.
+            this.appAuth.pikrouterLogin({ email, name, userId: verifiedUserId });
             setStoredKey('PIKROUTER_API_KEY', oauthToken);
-            this.appAuth.pikrouterLogin({ email, name, userId });
             this.appAuth.issue(req, res);
-            this.sendJson(res, 200, { ok: true, token: oauthToken, user: { id: userId, email, name }, provider: 'pikrouter' });
+            this.sendJson(res, 200, { ok: true, token: oauthToken, user: { id: verifiedUserId, email, name }, provider: 'pikrouter' });
+            return;
+          }
+          // --- Email + password path (legacy / API key login) ---
+          if (!this.appAuth.configured && !this.appAuth.canRegister(req, body['registrationToken'])) {
+            this.sendJson(res, 403, { error: 'Register locally, or use the private setup code over HTTPS.' });
             return;
           }
           const mode = body['mode'] === 'register' ? 'register' : 'login';
@@ -7120,18 +7271,24 @@ export class GituServer {
             this.sendJson(res, 400, { error: 'Email and password are required.' });
             return;
           }
+          if (this.appAuth.configured && this.appAuth.ownerEmail && this.appAuth.ownerEmail.toLowerCase() !== email.toLowerCase()) {
+            this.sendJson(res, 403, { error: `Access denied: this workspace belongs to ${this.appAuth.ownerEmail}. Sign in with that account on Pikpam.` });
+            return;
+          }
           const result = mode === 'register'
-            ? await registerPikRouter({ name, email, password, saveKey: true })
-            : await loginPikRouter({ email, password, saveKey: true });
+            ? await registerPikRouter({ name, email, password, saveKey: false })
+            : await loginPikRouter({ email, password, saveKey: false });
           this.appAuth.pikrouterLogin({
             email: result.user?.email || email,
             name: result.user?.name || name,
             userId: result.user?.id !== undefined ? String(result.user.id) : undefined,
           });
+          setStoredKey('PIKROUTER_API_KEY', result.token);
           this.appAuth.issue(req, res);
           this.sendJson(res, 200, { ok: true, token: result.token, user: result.user, provider: 'pikrouter' });
         } catch (err) {
-          this.sendJson(res, 400, { error: (err as Error).message });
+          const msg = (err as Error).message;
+          this.sendJson(res, msg.startsWith('Access denied:') ? 403 : 400, { error: msg });
         }
         return;
       }
@@ -8337,9 +8494,32 @@ export class GituServer {
           this.sendJson(res, 400, { error: 'OAuth token is required.' });
           return;
         }
+        const bodyState = typeof body['state'] === 'string' ? body['state'].trim() : '';
+        const cookieState = readCookie(req, PIK_OAUTH_STATE_COOKIE);
+        if (cookieState) {
+          appendSetCookie(res, `${PIK_OAUTH_STATE_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
+        }
+        if ((bodyState || cookieState) && !statesMatch(bodyState, cookieState)) {
+          this.sendJson(res, 403, { error: 'OAuth state mismatch. Restart the sign-in flow.' });
+          return;
+        }
+        const jwtClaims = extractJwtClaims(token);
+        if (jwtClaims.expired) {
+          this.sendJson(res, 401, { error: 'Pikpam token has expired. Sign in again.' });
+          return;
+        }
+        const suppliedEmail = String(body['email'] || '').trim().toLowerCase();
+        if (jwtClaims.email && suppliedEmail && jwtClaims.email !== suppliedEmail) {
+          this.sendJson(res, 403, { error: 'OAuth email mismatch.' });
+          return;
+        }
+        const email = jwtClaims.email || suppliedEmail;
+        if (this.appAuth.configured && this.appAuth.ownerEmail && email && this.appAuth.ownerEmail.toLowerCase() !== email.toLowerCase()) {
+          this.sendJson(res, 403, { error: `Access denied: this workspace belongs to ${this.appAuth.ownerEmail}. Sign in with that account on Pikpam.` });
+          return;
+        }
         setStoredKey('PIKROUTER_API_KEY', token);
-        const email = String(body['email'] || '').trim();
-        const userId = body['userId'] !== undefined ? String(body['userId']).trim() : body['user_id'] !== undefined ? String(body['user_id']).trim() : undefined;
+        const userId = jwtClaims.userId ?? (body['userId'] !== undefined ? String(body['userId']).trim() : body['user_id'] !== undefined ? String(body['user_id']).trim() : undefined);
         this.sendJson(res, 200, { ok: true, token, user: { ...(userId ? { id: userId } : {}), ...(email ? { email } : {}) } });
       } catch (err) {
         this.sendJson(res, 400, { error: (err as Error).message });
@@ -9066,11 +9246,10 @@ export class GituServer {
       connection?.resolve(false);
       void runtime?.cancel('Stopped by user.');
 
-      // A stop that lands before the engine attached has no agent loop to notice
-      // the abort, so the durable note is written here instead. A stopped run
-      // must always say so in its ledger, not only when a model turn got the
-      // chance to observe the abort.
-      if (!gitu && session.taskId) {
+      // A stop must immediately release any held resume lock and record the stop
+      // in the task ledger so subsequent reads or continuations see consistent state.
+      this.releaseTaskResumeLock(session);
+      if (session.taskId) {
         try {
           const stopRoot = session.worktreePath ?? session.projectPath ?? this.config.cwd;
           const stoppedLedger = TaskLedger.load(stopRoot, session.taskId);
@@ -9241,27 +9420,10 @@ export class GituServer {
         : (followUp.kind === 'REFINE' || followUp.kind === 'EXTEND') && unrelated
           ? 'NEW_TASK'
           : followUp.kind;
-
-      let isNewTask = explicitNewTask;
-      if (!isNewTask && isTerminalState) {
-        if (prevStatus === 'completed') {
-          // A completed task reached its definition of done. Any subsequent request is a new task in this session,
-          // UNLESS the user explicitly nudges continuation ("continue", "proceed"), asks a non-mutating question,
-          // or refers directly back to the completed work ("also add tests", "actually fix that typo in X").
-          const isNudge = isProgressNudge(text);
-          const isQuestionOrChat = conversationIntent(text) || isNonMutatingStatusQuestion(text);
-          const isExplicitExtension = followUp.kind === 'EXTEND' && /^(?:also\b|in addition|additionally|plus\b|and also\b)/i.test(text.trim());
-          const isDirectCorrection = (followUp.kind === 'CORRECT' || followUp.kind === 'EXTEND') && BACKWARD_REFERENCE.test(text);
-          const isFollowUpContinuation = (isNudge || isQuestionOrChat || isExplicitExtension || isDirectCorrection) && !unrelated;
-          isNewTask = !isFollowUpContinuation;
-        } else if (prevStatus === 'aborted' || prevStatus === 'cancelled') {
-          // An aborted or cancelled run was terminated; fresh work begins unless it's a bare continuation nudge.
-          isNewTask = !isProgressNudge(text);
-        } else {
-          // Incomplete runs (blocked or failed) resume by default to repair/unblock, unless classified as NEW_TASK or unrelated.
-          isNewTask = followUpKind === 'NEW_TASK' || unrelated;
-        }
-      }
+      const isContinuationKind = ['CONTINUE', 'EXTEND', 'CORRECT', 'REFINE', 'CONSTRAIN', 'VISUAL_REFERENCE'].includes(followUpKind);
+      const isResumeForIncomplete = (prevStatus === 'blocked' || prevStatus === 'failed') && followUpKind !== 'NEW_TASK';
+      const isContinuation = isContinuationKind || isResumeForIncomplete;
+      const isNewTask = (isTerminalState && !isContinuation) || explicitNewTask;
 
       if (isNewTask) {
         if (session.taskId) this.releaseTaskResumeLock(session);
@@ -9275,7 +9437,7 @@ export class GituServer {
           session,
           explicitNewTask
             ? 'new task  started in this session at your request'
-            : 'new task  started in this session',
+            : 'new task  started in this session — the message shares no target with the previous task',
         );
       }
       let execRoot: string;
@@ -9301,44 +9463,20 @@ export class GituServer {
           }
         }
         if (!taskRoot) {
-          if (isTerminalState) {
-            this.releaseTaskResumeLock(session);
-            session.taskId = undefined;
-            session.goal = text;
-            session.report = undefined;
-            session.error = undefined;
-            session.worktreePath = undefined;
-            isNewTask = true;
-            execRoot = session.projectPath ?? this.projectRoot() ?? this.config.cwd;
-            this.pushEvent(session, 'task     could not resolve project root for previous task — starting fresh task in this session');
-          } else {
-            session.status = prevStatus;
-            this.sendJson(res, 409, { error: `Cannot resolve project root for task ${session.taskId}` });
-            return;
-          }
+          session.status = prevStatus;
+          this.sendJson(res, 409, { error: `Cannot resolve project root for task ${session.taskId}` });
+          return;
         }
-        if (!ledger && taskRoot) {
+        if (!ledger) {
           // The session exists and the project is here: refusing would strand a
           // run that can still continue. Rebuild a minimal ledger from what the
           // session knows, mark it recovered, and carry on.
           ledger = await this.recoverSessionLedger(session, taskRoot, modeSwitch ?? session.mode ?? 'standard');
         }
-        if (!ledger && session.taskId) {
-          if (isTerminalState) {
-            this.releaseTaskResumeLock(session);
-            session.taskId = undefined;
-            session.goal = text;
-            session.report = undefined;
-            session.error = undefined;
-            session.worktreePath = undefined;
-            isNewTask = true;
-            execRoot = session.projectPath ?? this.projectRoot() ?? this.config.cwd;
-            this.pushEvent(session, 'task     previous ledger not found — starting fresh task in this session');
-          } else {
-            session.status = prevStatus;
-            this.sendJson(res, 404, { error: `Task ledger ${session.taskId} not found at ${taskRoot}` });
-            return;
-          }
+        if (!ledger) {
+          session.status = prevStatus;
+          this.sendJson(res, 404, { error: `Task ledger ${session.taskId} not found at ${taskRoot}` });
+          return;
         }
         // A task is bound to its own gitu/* branch (or an existing legacy
         // hermes/* branch), but the shared checkout can
@@ -9347,101 +9485,80 @@ export class GituServer {
         // the checkout back — which detaches whichever session owned it — resume
         // in a dedicated linked worktree on this session's own branch. The
         // shared checkout stays exactly where it is.
-        if (session.taskId && ledger && taskRoot) {
-          execRoot = taskRoot;
-          if (ledger.data.worktreePath && this.isPrivateAgentStatePath(taskRoot, ledger.data.worktreePath)) {
-            const wt = await this.ensureSessionWorktree(taskRoot, session.taskId, ledger.data.gitBranch ?? '');
-            if (!wt) {
-              session.status = prevStatus;
-              this.sendJson(res, 409, { error: 'Execution rejected: legacy worktree is inside .hermes and could not be migrated to the canonical session workspace.' });
-              return;
-            }
-            execRoot = wt;
-            ledger.data.worktreePath = wt;
-            ledger.save();
-            session.worktreePath = wt;
-            this.pushEvent(session, `git     migrated legacy .hermes worktree to canonical session workspace ${wt}`);
-          } else if (ledger.data.worktreePath) {
-            // A recorded worktree is a claim, not a fact. Verify it exists and is
-            // still on this task's branch before executing there.
-            const revalidated = await this.revalidateSessionWorktree(
-              taskRoot,
-              session.taskId,
-              ledger.data.gitBranch ?? '',
-              ledger.data.worktreePath,
-            );
-            if (revalidated.path) {
-              execRoot = revalidated.path;
-              if (revalidated.recreated || revalidated.path !== revalidated.recorded) {
-                ledger.data.worktreePath = revalidated.path;
-                ledger.save();
-                session.worktreePath = revalidated.path;
-                this.pushEvent(
-                  session,
-                  `git     re-created the session worktree at ${revalidated.path} on ${ledger.data.gitBranch} — ${revalidated.reason}`,
-                );
-              }
-            } else if (await this.sharedCheckoutOnBranch(taskRoot, ledger.data.gitBranch)) {
-              // Isolation is unavailable. Say so out loud instead of quietly
-              // downgrading a task that believes it owns its own checkout.
-              const reason = revalidated.reason ?? 'the session worktree is unavailable';
-              ledger.data.worktreePath = undefined;
+        execRoot = taskRoot;
+        if (ledger.data.worktreePath && this.isPrivateAgentStatePath(taskRoot, ledger.data.worktreePath)) {
+          const wt = await this.ensureSessionWorktree(taskRoot, session.taskId, ledger.data.gitBranch ?? '');
+          if (!wt) {
+            session.status = prevStatus;
+            this.sendJson(res, 409, { error: 'Execution rejected: legacy worktree is inside .hermes and could not be migrated to the canonical session workspace.' });
+            return;
+          }
+          execRoot = wt;
+          ledger.data.worktreePath = wt;
+          ledger.save();
+          session.worktreePath = wt;
+          this.pushEvent(session, `git     migrated legacy .hermes worktree to canonical session workspace ${wt}`);
+        } else if (ledger.data.worktreePath) {
+          // A recorded worktree is a claim, not a fact. Verify it exists and is
+          // still on this task's branch before executing there.
+          const revalidated = await this.revalidateSessionWorktree(
+            taskRoot,
+            session.taskId,
+            ledger.data.gitBranch ?? '',
+            ledger.data.worktreePath,
+          );
+          if (revalidated.path) {
+            execRoot = revalidated.path;
+            if (revalidated.recreated || revalidated.path !== revalidated.recorded) {
+              ledger.data.worktreePath = revalidated.path;
               ledger.save();
-              session.worktreePath = undefined;
+              session.worktreePath = revalidated.path;
               this.pushEvent(
                 session,
-                `warn    isolation unavailable — ${reason}; continuing in the shared checkout ${taskRoot}` +
-                  (ledger.data.gitBranch ? ` on ${ledger.data.gitBranch}` : ''),
-              );
-              logger.warn(
-                { subsystem: 'worktree', runId: session.runId, taskId: session.taskId, recorded: revalidated.recorded, branch: ledger.data.gitBranch, reason },
-                'Session worktree unavailable: continuing in the shared checkout',
+                `git     re-created the session worktree at ${revalidated.path} on ${ledger.data.gitBranch} — ${revalidated.reason}`,
               );
             }
-            // Otherwise the record stands and the environment check below refuses.
-          } else {
-            const precheck = await ledger.validateEnvironment(execRoot);
-            if (!precheck.ok && /branch mismatch/i.test(precheck.reason ?? '')) {
-              const wt = await this.ensureSessionWorktree(execRoot, session.taskId, ledger.data.gitBranch ?? '');
-              if (wt) {
-                execRoot = wt;
-                ledger.data.worktreePath = wt;
-                ledger.save();
-                session.worktreePath = wt;
-                this.pushEvent(
-                  session,
-                  `git     resuming in isolated worktree ${wt} on ${ledger.data.gitBranch} — the main checkout keeps its current branch`,
-                );
-              }
-            }
+          } else if (await this.sharedCheckoutOnBranch(taskRoot, ledger.data.gitBranch)) {
+            // Isolation is unavailable. Say so out loud instead of quietly
+            // downgrading a task that believes it owns its own checkout.
+            const reason = revalidated.reason ?? 'the session worktree is unavailable';
+            ledger.data.worktreePath = undefined;
+            ledger.save();
+            session.worktreePath = undefined;
+            this.pushEvent(
+              session,
+              `warn    isolation unavailable — ${reason}; continuing in the shared checkout ${taskRoot}` +
+                (ledger.data.gitBranch ? ` on ${ledger.data.gitBranch}` : ''),
+            );
+            logger.warn(
+              { subsystem: 'worktree', runId: session.runId, taskId: session.taskId, recorded: revalidated.recorded, branch: ledger.data.gitBranch, reason },
+              'Session worktree unavailable: continuing in the shared checkout',
+            );
           }
-          const envCheck = await ledger.validateEnvironment(execRoot);
-          if (!envCheck.ok) {
-            if (isTerminalState) {
-              this.releaseTaskResumeLock(session);
-              session.taskId = undefined;
-              session.goal = text;
-              session.report = undefined;
-              session.error = undefined;
-              session.worktreePath = undefined;
-              isNewTask = true;
-              execRoot = session.projectPath ?? this.projectRoot() ?? this.config.cwd;
-              ledgerRoot = undefined;
-              this.pushEvent(
-                session,
-                `git     previous task environment was not resumable (${envCheck.reason}) — starting fresh task in this session`,
-              );
-            } else {
-              session.status = prevStatus;
-              this.sendJson(res, 409, { error: `Execution rejected: ${envCheck.reason}` });
-              return;
-            }
-          } else {
-            ledgerRoot = taskRoot;
-          }
+          // Otherwise the record stands and the environment check below refuses.
         } else {
-          execRoot = session.worktreePath ?? session.projectPath ?? this.projectRoot() ?? this.config.cwd;
+          const precheck = await ledger.validateEnvironment(execRoot);
+          if (!precheck.ok && /branch mismatch/i.test(precheck.reason ?? '')) {
+            const wt = await this.ensureSessionWorktree(execRoot, session.taskId, ledger.data.gitBranch ?? '');
+            if (wt) {
+              execRoot = wt;
+              ledger.data.worktreePath = wt;
+              ledger.save();
+              session.worktreePath = wt;
+              this.pushEvent(
+                session,
+                `git     resuming in isolated worktree ${wt} on ${ledger.data.gitBranch} — the main checkout keeps its current branch`,
+              );
+            }
+          }
         }
+        const envCheck = await ledger.validateEnvironment(execRoot);
+        if (!envCheck.ok) {
+          session.status = prevStatus;
+          this.sendJson(res, 409, { error: `Execution rejected: ${envCheck.reason}` });
+          return;
+        }
+        ledgerRoot = taskRoot;
       } else {
         execRoot = session.worktreePath ?? session.projectPath ?? this.projectRoot() ?? this.config.cwd;
       }
@@ -10233,18 +10350,14 @@ export class GituServer {
           : `fatal: ${session.error}`,
       );
     } finally {
-      this.releaseTaskResumeLock(session);
       const isCurrent = isCurrentExecution();
       if (session.currentExecutionId === executionId) {
         session.currentExecutionId = undefined;
       }
       if (!isCurrent) {
-        if (session.status === 'running') {
-          session.status = 'failed';
-          session.finishedAt = nowIso();
-        }
         return;
       }
+      this.releaseTaskResumeLock(session);
       // Stop holding a runtime session whose run is over. A superseded run keeps
       // its replacement's runtime instead, exactly as it keeps its engine.
       if (session.runtime === runtimeSession) session.runtime = undefined;

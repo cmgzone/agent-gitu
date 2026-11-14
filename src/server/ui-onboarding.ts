@@ -11,8 +11,8 @@ export const ONBOARDING_CSS = String.raw`
   .gitu-opening.is-error .opening-dots { display:none; }
   @keyframes setupPulse { 0%,80%,100% { opacity:.28; } 40% { opacity:1; } }
   .setup-wizard { position:fixed; inset:0; z-index:250; overflow-y:auto; background:var(--cw-chat-surface,var(--bg)); padding:40px 24px; box-sizing:border-box; display:grid; place-items:safe center; }
-  .setup-frame { width:min(100%,900px); display:grid; grid-template-columns:210px minmax(0,1fr); border:1px solid color-mix(in srgb,var(--border) 50%,transparent); background:color-mix(in srgb,var(--card) 72%,transparent); border-radius:28px; box-shadow:0 20px 60px -36px rgba(18,44,70,.2); overflow:hidden; }
-  .setup-aside { padding:32px 24px; background:transparent; border-right:1px solid color-mix(in srgb,var(--border) 60%,transparent); }
+  .setup-frame { width:min(100%,900px); display:grid; grid-template-columns:210px minmax(0,1fr); border:1px solid var(--border); background:var(--card); border-radius:var(--radius-chat,28px); box-shadow:var(--shadow-float); overflow:hidden; }
+  .setup-aside { padding:32px 24px; background:var(--card2); border-right:1px solid var(--border); }
   .setup-brand { display:flex; align-items:center; gap:10px; font-size:14px; font-weight:600; }
   .setup-brand img { width:32px; height:32px; }
   .setup-aside p { color:var(--muted); font-size:12px; line-height:1.65; margin:20px 0 32px; }
@@ -42,7 +42,7 @@ export const ONBOARDING_CSS = String.raw`
   .setup-wizard .btn.ghost { color:var(--muted); border-color:transparent; }
   .setup-footer > div { display: flex; gap: 8px; }
   .setup-modes { display: grid; gap: 12px; }
-  .setup-mode { display:flex; gap:14px; padding:20px; border-radius:20px; border:1px solid color-mix(in srgb,var(--border2) 70%,transparent); background:color-mix(in srgb,var(--card) 50%,transparent); cursor:pointer; }
+  .setup-mode { display:flex; gap:14px; padding:20px; border-radius:var(--radius-card,16px); border:1px solid var(--border); background:var(--card); box-shadow:var(--shadow); cursor:pointer; }
   .setup-mode:has(input:checked) { border-color:var(--run); box-shadow:inset 0 0 0 1px var(--run); background:color-mix(in srgb,var(--run) 6%,var(--card)); }
   .setup-mode input { width:16px; flex:none; margin:5px 0 0; align-self:start; accent-color:var(--run); }
   .setup-mode b { display: block; font-size: 15px; margin-bottom: 5px; }

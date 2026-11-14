@@ -296,7 +296,7 @@
     var isCredits = Boolean(
       (U && U.isCredits) ||
       (session && session.provider && /pikrouter|pikprovider|^pik$/i.test(session.provider)) ||
-      (window.__pikRouterActive)
+      (typeof window !== 'undefined' && window.__pikRouterActive)
     );
     if (isCredits) {
       var creditsUsed = (U && typeof U.creditsUsed === 'number')
@@ -304,7 +304,7 @@
         : (U && typeof U.costUsd === 'number' ? Number((U.costUsd * 100).toFixed(2)) : 0);
       var creditsBalance = (U && typeof U.creditsBalance === 'number')
         ? U.creditsBalance
-        : (window.__pikRouterCredits && typeof window.__pikRouterCredits.balance === 'number'
+        : (typeof window !== 'undefined' && window.__pikRouterCredits && typeof window.__pikRouterCredits.balance === 'number'
           ? (window.__pikRouterCredits.available !== undefined ? window.__pikRouterCredits.available : window.__pikRouterCredits.balance)
           : null);
       function fmtCreds(c) {

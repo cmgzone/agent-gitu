@@ -104,7 +104,7 @@ export const COWORK_CSS = String.raw`
   .cw-sec:first-child { margin-top: 4px; }
   .cw-item { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; background: transparent; border: 1px solid transparent; border-radius: 10px; padding: 7px 8px; color: var(--text); margin-bottom: 2px; }
   .cw-item:hover { background: var(--hover); }
-  .cw-item.cur { background: var(--run-dim); border-color: transparent; border-radius: 16px; }
+  .cw-item.cur { background: var(--selected); border-color: transparent; border-radius: var(--radius-el, 12px); }
   .cw-item-main { min-width: 0; flex: 1; }
   .cw-item-name { display: block; font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .cw-item-sub { display: block; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -330,9 +330,9 @@ export const COWORK_CSS = String.raw`
   .cw-mentions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
   .cw-mentions button { font-size: 11.5px; border: 1px solid var(--border2); background: var(--card); color: var(--text); border-radius: 999px; padding: 2px 10px; }
   .cw-mentions button:hover { border-color: var(--accent); }
-  .cw-composer { display: flex; align-items: flex-end; gap: 8px; background: var(--card); border: 1px solid var(--border); border-radius: 26px; padding: 12px; box-shadow: 0 8px 28px rgba(0,0,0,.1); }
+  .cw-composer { display: flex; align-items: flex-end; gap: 8px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-chat, 28px); padding: 10px 12px; box-shadow: var(--shadow); }
   .cw-composer textarea { flex: 1; min-width: 0; background: transparent; border: 0; color: var(--text); resize: none; outline: none; max-height: min(160px, 20dvh); font: 15px/1.5 var(--sans); }
-  .cw-composer .cw-send { width: 32px; height: 32px; flex: none; border-radius: 10px; border: 0; background: var(--accent); color: var(--on-accent); font-size: 15px; display: inline-flex; align-items: center; justify-content: center; }
+  .cw-composer .cw-send { width: 32px; height: 32px; flex: none; border-radius: var(--radius-full, 9999px); border: 0; background: var(--dark); color: var(--bg); font-size: 15px; display: inline-flex; align-items: center; justify-content: center; }
   .cw-composer .cw-send:disabled { opacity: .4; cursor: default; }
   .cw-composer .cw-send.stop { background: var(--err); }
   .cw-composer .cw-send.queue { background: var(--run); color: #fff; }
@@ -2338,13 +2338,15 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
   function cwVisibleReply(text) {
     return String(text || '').split(/(\x60\x60\x60[\s\S]*?(?:\x60\x60\x60|$)|\x60[^\x60\n]+\x60)/g).map(function (part, i) {
       if (i % 2) return part;
-      var visible = part.replace(/<cowork_state>[\s\S]*?(?:<\/cowork_state>|$)/gi, '')
+      var visible = part.replace(/\s*<cowork_state>[\s\S]*?(?:<\/cowork_state>\s*$|$)/gi, '')
+        .replace(/<cowork_state>[\s\S]*?(?:<\/cowork_state>|$)/gi, '')
+        .replace(/\s*<tool>[\s\S]*?<\/tool>\s*$/gi, '')
         .replace(/<tool>[\s\S]*?<\/tool>/gi, '')
-        .replace(/<(?:[|｜]\s*(?:DSML\s*[|｜]\s*)?(?:tool_calls?|tool_name|parameters|calls|invoke)\b|[|｜]+\s*DSML\b|tool(?:\s|>|$)|tool_calls?\b|invoke\s+name\s*=)[\s\S]*$/gi, '')
-        .replace(/<[|｜][^>]*$|<t(?:o(?:o(?:l)?)?)?$/gi, '');
+        .replace(/\s*<(?:[|｜]\s*(?:DSML\s*[|｜]\s*)?(?:tool_calls?|tool_name|parameters|calls|invoke)\b|[|｜]+\s*DSML\b|tool(?:\s|>|$)|tool_calls?\b|invoke\s+name\s*=)[\s\S]*$/gi, '')
+        .replace(/\s*<[|｜][^>]*$|\s*<t(?:o(?:o(?:l)?)?)?$/gi, '');
       var marker = '<cowork_state>', lower = visible.toLowerCase();
       for (var length = Math.min(visible.length, marker.length - 1); length > 0; length--) {
-        if (lower.slice(-length) === marker.slice(0, length)) return visible.slice(0, -length);
+        if (lower.slice(-length) === marker.slice(0, length)) return visible.slice(0, -length).replace(/\s+$/, '');
       }
       return visible;
     }).join('').replace(/^\s+/, '');

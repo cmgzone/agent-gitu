@@ -440,7 +440,8 @@ export function classifyFollowUp(message: string, hasImages = false): FollowUpCl
   }
 
   // 3. New Task
-  if (NEW_TASK_PATTERNS.some((p) => p.test(trimmed))) {
+  const isExplicitReset = /^(?:start over|new\s+task|reset and|different\s+task|another\s+task|unrelated\s+task)\b|\bfrom scratch\b/i.test(trimmed);
+  if (isExplicitReset || (!BACKWARD_REFERENCE.test(trimmed) && NEW_TASK_PATTERNS.some((p) => p.test(trimmed)))) {
     return {
       kind: 'NEW_TASK',
       confidence: 'high',

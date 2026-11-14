@@ -10,19 +10,20 @@ export const ONBOARDING_CSS = String.raw`
   .gitu-opening #startupReload { margin-top:24px; border-radius:999px; padding:10px 20px; background:var(--run)!important; color:var(--card); }
   .gitu-opening.is-error .opening-dots { display:none; }
   @keyframes setupPulse { 0%,80%,100% { opacity:.28; } 40% { opacity:1; } }
-  .setup-wizard { position:fixed; inset:0; z-index:250; overflow-y:auto; background:radial-gradient(circle at 18% 12%, color-mix(in srgb,var(--run) 11%,transparent), transparent 44%), var(--cw-chat-surface,var(--bg)); padding:32px 24px; box-sizing:border-box; display:grid; place-items:safe center; }
-  .setup-frame { width:min(100%,1100px); display:grid; grid-template-columns:240px minmax(0,1fr); border:1px solid color-mix(in srgb,var(--border) 90%,transparent); background:var(--card); border-radius:var(--radius-chat,28px); box-shadow:0 28px 90px -28px rgba(0,0,0,.65); overflow:hidden; }
-  .setup-aside { padding:34px 26px; background:linear-gradient(180deg,var(--card2),color-mix(in srgb,var(--card) 92%,var(--run) 4%)); border-right:1px solid var(--border); display:flex; flex-direction:column; }
-  .setup-brand { display:flex; align-items:center; gap:10px; font-size:15px; font-weight:600; letter-spacing:-.2px; }
+  .setup-wizard { position:fixed; inset:0; z-index:250; overflow-y:auto; background:radial-gradient(circle at 50% 0%, color-mix(in srgb,var(--run) 9%,transparent), transparent 52%), var(--cw-chat-surface,var(--bg)); padding:0; box-sizing:border-box; display:flex; flex-direction:column; min-height:100dvh; }
+  .setup-frame { width:100%; min-height:100dvh; display:flex; flex-direction:column; border:0; background:transparent; border-radius:0; box-shadow:none; overflow:visible; }
+  .setup-aside { position:sticky; top:0; z-index:20; padding:16px 40px; background:color-mix(in srgb,var(--cw-chat-surface,var(--bg)) 86%,transparent); backdrop-filter:blur(14px); border-right:0; border-bottom:1px solid color-mix(in srgb,var(--border) 75%,transparent); display:flex; flex-direction:row; align-items:center; justify-content:space-between; gap:20px; }
+  .setup-brand { display:flex; align-items:center; gap:10px; font-size:15px; font-weight:650; letter-spacing:-.2px; }
   .setup-brand img { width:34px; height:34px; border-radius:10px; }
-  .setup-aside p { color:var(--muted); font-size:12.5px; line-height:1.65; margin:16px 0 32px; }
-  .setup-steps { list-style:none; padding:0; margin:0; display:grid; gap:16px; }
-  .setup-steps li { display:flex; align-items:center; gap:11px; color:var(--muted); font-size:12.5px; padding:6px 8px; border-radius:12px; transition:background .15s,color .15s; }
-  .setup-steps li[aria-current=step] { color: var(--text); font-weight: 600; background:color-mix(in srgb,var(--run) 9%,transparent); }
-  .setup-step-number { border:1px solid color-mix(in srgb,var(--border2) 70%,transparent); border-radius:50%; width:26px; height:26px; display:grid; place-items:center; font-size:11px; flex:none; }
+  .setup-aside p { color:var(--muted); font-size:12px; line-height:1.4; margin:0; order:3; }
+  .setup-steps { list-style:none; padding:4px; margin:0; display:flex; align-items:center; gap:6px; border-radius:999px; background:var(--card2); border:1px solid color-mix(in srgb,var(--border) 85%,transparent); order:2; }
+  .setup-steps li { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:12.5px; padding:6px 14px; border-radius:999px; transition:background .15s,color .15s; }
+  .setup-steps li[aria-current=step] { color:var(--text); font-weight:600; background:color-mix(in srgb,var(--run) 12%,var(--card)); box-shadow:0 2px 8px -2px rgba(0,0,0,.22); }
+  .setup-step-number { border:1px solid color-mix(in srgb,var(--border2) 70%,transparent); border-radius:50%; width:22px; height:22px; display:grid; place-items:center; font-size:11px; flex:none; }
   [aria-current=step] .setup-step-number { background:var(--run); border-color:var(--run); color:var(--card); }
-  .setup-main { min-width: 0; padding: 34px 36px 28px; display:flex; flex-direction:column; }
-  .setup-main h1 { font-size:26px; line-height:1.22; font-weight:650; letter-spacing:-.7px; margin:0 0 8px; text-wrap:balance; }
+  .setup-main { width:min(100%, 1340px); margin:0 auto; flex:1; min-width:0; padding:36px 40px 28px; box-sizing:border-box; display:flex; flex-direction:column; }
+  .setup-main.setup-main-narrow { width:min(100%, 720px); }
+  .setup-main h1 { font-size:30px; line-height:1.18; font-weight:700; letter-spacing:-.8px; margin:0 0 8px; text-wrap:balance; }
   .setup-main .setup-description { color:var(--muted); margin:0 0 22px; font-size:13.5px; line-height:1.6; }
   .setup-main h2 { font-size: 15px; margin-top: 24px; }
   .setup-main label.setup-field { display: block; font-size: 12px; font-weight: 600; margin: 14px 0 6px; color: var(--text); }
@@ -35,7 +36,7 @@ export const ONBOARDING_CSS = String.raw`
   .setup-message { font-size:13px; color:var(--text); line-height:1.65; padding:12px 15px; border-radius:14px; background:color-mix(in srgb,var(--run) 8%,var(--card2)); border:1px solid color-mix(in srgb,var(--run) 25%,var(--border)); margin-top:16px; white-space:pre-wrap; overflow-wrap:anywhere; }
   .setup-message:empty { display:none; }
   .setup-message.error { background:var(--err-dim); border-color:color-mix(in srgb,var(--err) 35%,transparent); color:var(--err); }
-  .setup-footer { display:flex; justify-content:space-between; gap:10px; align-items:center; margin-top:24px; padding-top:18px; border-top:1px solid color-mix(in srgb,var(--border) 65%,transparent); }
+  .setup-footer { position:sticky; bottom:0; z-index:15; display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:auto; padding:18px 0 8px; background:linear-gradient(180deg, transparent, var(--cw-chat-surface,var(--bg)) 30%); border-top:1px solid color-mix(in srgb,var(--border) 70%,transparent); }
   .setup-wizard .btn { border-radius:999px; min-height:40px; padding:9px 18px; font-size:12.5px; font-weight:500; }
   #setupWizard .btn.dark { background:var(--run)!important; color:var(--card)!important; border-color:transparent!important; padding:9px 22px; font-weight:600; box-shadow:0 6px 20px -6px color-mix(in srgb,var(--run) 65%,transparent)!important; }
   #setupWizard .btn.dark:hover { background:color-mix(in srgb,var(--run) 86%,var(--text))!important; }
@@ -60,7 +61,7 @@ export const ONBOARDING_CSS = String.raw`
   .setup-agents-toolbar { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-bottom:12px; font-size:12.5px; color:var(--muted); }
   .setup-agents-count { display:inline-flex; align-items:center; gap:7px; font-weight:500; color:var(--text); }
   .setup-agents-toolbar > div { display:flex; gap:8px; flex-wrap:wrap; }
-  .setup-agent-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; max-height:420px; overflow-y:auto; padding:4px 2px; }
+  .setup-agent-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:14px; max-height:none; overflow:visible; padding:4px 0 16px; }
   .setup-agent-card { position:relative; display:flex; align-items:flex-start; gap:14px; padding:14px 16px; border-radius:18px; border:1px solid var(--border)!important; background:var(--card2)!important; color:var(--text)!important; text-align:left; cursor:pointer; transition:border-color .16s,background .16s,box-shadow .16s,transform .14s; box-shadow:none!important; }
   .setup-agent-card:hover { border-color:color-mix(in srgb,var(--agent-tint,var(--run)) 55%,var(--border2))!important; background:color-mix(in srgb,var(--agent-tint,var(--run)) 5%,var(--card2))!important; transform:translateY(-1px); }
   .setup-agent-card.is-selected { border-color:var(--run)!important; background:color-mix(in srgb,var(--run) 10%,var(--card))!important; box-shadow:0 0 0 1px var(--run), 0 8px 24px -8px rgba(0,0,0,.35)!important; }
@@ -93,8 +94,8 @@ export const ONBOARDING_CSS = String.raw`
   .setup-custom-queue { display:flex; flex-wrap:wrap; gap:6px; }
   .setup-custom-chip { display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:999px; border:1px solid var(--border); background:var(--card); font-size:12px; }
   .setup-summary-pill { margin-top:16px; padding:12px 14px; border-radius:14px; border:1px solid var(--border); background:var(--card2); font-size:12.5px; color:var(--text); }
-  @media(max-width:780px) { .setup-wizard { padding:20px 14px; }.setup-frame { grid-template-columns:1fr; border-radius:22px; }.setup-aside { padding:20px 22px; border-right:0; border-bottom:1px solid color-mix(in srgb,var(--border) 60%,transparent); }.setup-aside p { display:none; }.setup-steps { display:flex; gap:12px; margin-top:16px; flex-wrap:wrap; }.setup-main { padding:24px 20px; }.setup-agent-modes,.setup-agent-grid,.setup-custom-row { grid-template-columns:1fr; }.setup-char-grid { grid-template-columns:repeat(3,minmax(0,1fr)); } }
-  @media(max-width:420px) { .setup-wizard { padding:12px 10px; }.setup-main { padding:20px 16px; }.setup-aside { padding:16px; }.setup-steps { gap:8px; }.setup-steps li { gap:6px; font-size:11px; }.setup-step-number { width:22px; height:22px; }.setup-main h1 { font-size:22px; }.setup-footer,.setup-footer > div { flex-wrap:wrap; }.setup-footer > div { margin-left:auto; } }
+  @media(max-width:780px) { .setup-aside { padding:14px 20px; flex-wrap:wrap; gap:12px; }.setup-aside p { display:none; }.setup-steps { order:3; width:100%; justify-content:space-between; }.setup-steps li { flex:1; justify-content:center; padding:6px 10px; }.setup-main { padding:24px 20px; }.setup-main h1 { font-size:24px; }.setup-agent-modes,.setup-agent-grid,.setup-custom-row { grid-template-columns:1fr; }.setup-char-grid { grid-template-columns:repeat(3,minmax(0,1fr)); } }
+  @media(max-width:420px) { .setup-main { padding:20px 16px; }.setup-aside { padding:12px 16px; }.setup-steps { gap:4px; }.setup-steps li { gap:6px; font-size:11px; padding:5px 8px; }.setup-step-number { width:20px; height:20px; font-size:10px; }.setup-main h1 { font-size:21px; }.setup-footer,.setup-footer > div { flex-wrap:wrap; }.setup-footer > div { margin-left:auto; } }
   @media(prefers-reduced-motion:reduce) { .opening-dots i { animation:none; } .setup-agent-mode,.setup-agent-card,.setup-char-pick { transition:none; } }
 `;
 
@@ -468,9 +469,9 @@ export const ONBOARDING_JS = String.raw`
       '<div class="setup-modes" role="radiogroup" aria-label="Starting workspace" hidden>' + [{ id: 'cowork', title: 'Cowork (Recommended)', description: 'Collaborate with your Pikpam agents while coding runs behind the scenes.' }, { id: 'coding', title: 'Coding', description: 'Open directly into local coding mode.' }].map(function (mode) {
         return '<label class="setup-mode"><input type="radio" name="setupMode" value="' + mode.id + '"' + (setupState.mode === mode.id ? ' checked' : '') + '><span><b>' + mode.title + '</b><small>' + mode.description + '</small></span></label>';
       }).join('') + '</div>';
-    root.innerHTML = '<div class="setup-frame"><aside class="setup-aside"><div class="setup-brand"><img src="/brand/agent-gitu-mark.svg" alt=""><span>Agent Gitu</span></div><p>Your Pikpam team.<br>Powered by PikRouter.</p><ol class="setup-steps">' + ['Agents', 'PikRouter', 'Finish'].map(function (name, i) {
+    root.innerHTML = '<div class="setup-frame"><aside class="setup-aside"><div class="setup-brand"><img src="/brand/agent-gitu-mark.svg" alt=""><span>Agent Gitu</span></div><p>Your Pikpam team. Powered by PikRouter.</p><ol class="setup-steps">' + ['Agents', 'PikRouter', 'Finish'].map(function (name, i) {
       return '<li' + (i === step ? ' aria-current="step"' : '') + '><span class="setup-step-number">' + (i + 1) + '</span>' + name + '</li>';
-    }).join('') + '</ol></aside><section class="setup-main"><h1 id="setupTitle" tabindex="-1">' + titles[step] + '</h1><p class="setup-description">' + descriptions[step] + '</p>' + content +
+    }).join('') + '</ol></aside><section class="setup-main' + (step !== 0 ? ' setup-main-narrow' : '') + '"><h1 id="setupTitle" tabindex="-1">' + titles[step] + '</h1><p class="setup-description">' + descriptions[step] + '</p>' + content +
       '<div id="setupMessage" class="setup-message" role="status" aria-live="polite"></div><footer class="setup-footer"><button class="btn ghost" id="setupBack"' + (step === 0 ? ' hidden' : '') + '>Back</button><div>' + (step === 1 ? '<button class="btn ghost" id="setupSkip">Set up later</button>' : '') + '<button class="btn dark" id="setupNext">' + (step === 2 ? 'Open ' + (setupState.mode === 'cowork' ? 'Cowork' : 'Coding') : 'Continue') + '</button></div></footer></section></div>';
     $('setupBack').onclick = function () { if (step === 0) return; setupState.step--; renderSetup(); };
     $('setupNext').onclick = function () {

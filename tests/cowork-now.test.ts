@@ -2,6 +2,7 @@ import { createContext, Script } from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
 import { COWORK_JS } from '../src/server/ui-cowork.js';
 import { COWORK_NOW_JS } from '../src/server/ui-cowork-now.js';
+import { COWORK_WORKBENCH_JS } from '../src/server/ui-cowork-workbench.js';
 
 function overview() {
   const conv = { id: 'chat', title: 'Gitu', schedule: { enabled: true, every: '1d' } };
@@ -110,5 +111,84 @@ describe('Cowork Now overview', () => {
 
   it('keeps the full composed browser script syntactically valid', () => {
     expect(() => new Script(COWORK_JS)).not.toThrow();
+  });
+});
+
+function coworkProjectWorkbench() {
+  const cwState: Record<string, any> = { active: 'chat', convs: [], msgs: [], workbench: undefined };
+  const S: Record<string, any> = { active: 'cowork', settings: { projectPath: '' }, cw: cwState };
+  const elements: Record<string, any> = {
+    cwProjectBtn: { title: '', innerHTML: '' },
+    cwProjectMenu: { innerHTML: '', querySelectorAll: () => [], hidePopover: vi.fn() },
+    cwWorkbench: { hidden: true, innerHTML: '' },
+    cwWbEditor: { value: '', selectionStart: 0, selectionEnd: 0 },
+    cwWbInstruction: { value: '', placeholder: '' },
+    cwWbAsk: { textContent: 'Ask', onclick: null as null | (() => void) },
+  };
+  const api = vi.fn(async (url: string, opts?: any) => {
+    if (url === '/api/runs/run-42') {
+      return {
+        runId: 'run-42',
+        status: 'running',
+        project: 'demo-app',
+        projectPath: '/workspace/demo-app',
+        goal: 'Implement auth flow',
+        branch: 'feat/auth',
+        mode: 'build',
+        report: 'Working on login form',
+        files: [{ path: 'src/auth.ts' }],
+      };
+    }
+    if (url === '/api/runs/run-42/message') return { ok: true, opts };
+    return { ok: true };
+  });
+  const context = createContext({
+    S,
+    cwEnsure: () => cwState,
+    cwActiveConv: () => ({ id: 'chat', kind: 'dm', memberIds: ['gitu'], title: 'Gitu' }),
+    $: (id: string) => elements[id] || null,
+    esc: (v: unknown) => String(v ?? ''),
+    cwIcon: (name: string) => `[${name}]`,
+    toast: vi.fn(),
+    updateProjChip: vi.fn(),
+    api,
+  });
+  new Script(COWORK_WORKBENCH_JS).runInContext(context);
+  return { context, cwState, S, elements, api };
+}
+
+describe('In-Cowork project & behind-the-scenes inspector', () => {
+  it('syncs the active project in Cowork without leaving Cowork and renders the composer pill', () => {
+    const u = coworkProjectWorkbench();
+    u.context.cwSyncActiveProject('/workspace/demo-app', 'demo-app');
+    expect(u.cwState.activeProjectPath).toBe('/workspace/demo-app');
+    expect(u.S.settings.projectPath).toBe('/workspace/demo-app');
+    expect(u.S.active).toBe('cowork');
+    expect(u.elements.cwProjectBtn.innerHTML).toContain('demo-app');
+    expect(u.elements.cwProjectMenu.innerHTML).toContain('demo-app');
+    expect(u.api).toHaveBeenCalledWith('/api/model-selection', {
+      method: 'POST',
+      body: JSON.stringify({ projectPath: '/workspace/demo-app' }),
+    });
+  });
+
+  it('opens background coding task inspection in #cwWorkbench and steers via POST /api/runs/<id>/message', async () => {
+    const u = coworkProjectWorkbench();
+    await u.context.cwInspectCodingTask('run-42');
+    expect(u.S.active).toBe('cowork');
+    expect(u.cwState.workbench.open).toBe(true);
+    expect(u.elements.cwWorkbench.hidden).toBe(false);
+    expect(u.elements.cwWorkbench.innerHTML).toContain('Implement auth flow');
+    expect(u.elements.cwWorkbench.innerHTML).toContain('src/auth.ts');
+    const activeItem = u.cwState.workbench.items[u.cwState.workbench.activeIndex];
+    expect(activeItem.runId).toBe('run-42');
+
+    u.elements.cwWbInstruction.value = 'Focus on unit tests next';
+    u.elements.cwWbAsk.onclick?.();
+    await Promise.resolve();
+    expect(u.api).toHaveBeenCalledWith('/api/runs/run-42/message', {
+      method: 'POST',
+      body: JSON.stringify({ text: 'Focus on unit tests next', delivery: 'steer' }),
+    });
   });
 });

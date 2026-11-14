@@ -174,10 +174,12 @@
         .then(function (d) {
           modal.remove();
           homeSelectProject({path:d.path,name:basename(d.path)});
+          api('/api/model-selection', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ projectPath: d.path }) }).catch(function () {});
+          if (typeof cwSyncActiveProject === 'function') cwSyncActiveProject(d.path, basename(d.path));
           updateProjChip();
           renderSidebar();
           toast('Project created at ' + d.path);
-          openHome();
+          if (S.active !== 'cowork') openHome();
         })
         .catch(function (e) { toast(e.message, true); });
     };

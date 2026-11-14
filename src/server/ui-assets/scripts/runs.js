@@ -113,6 +113,10 @@
     var id = button.getAttribute('data-main-coding-task');
     if (!/^[a-zA-Z0-9_-]+$/.test(id)) return;
     event.preventDefault();
+    if (typeof S !== 'undefined' && S.active === 'cowork' && typeof cwInspectCodingTask === 'function') {
+      cwInspectCodingTask(id);
+      return;
+    }
     api('/api/runs/' + id).then(function (task) { if(typeof closeCompanies==='function')closeCompanies(); openRun(id, { projectPath: task.projectPath, mode: task.mode }); }).catch(function (error) { toast(error.message, true); });
   });
 

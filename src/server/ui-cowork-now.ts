@@ -93,6 +93,7 @@ export const COWORK_NOW_CSS = String.raw`
   @media(hover:none) { .cw .cw-message-more { opacity:1; } }
   @media(max-width:480px) { .cw .cw-top-nav button > span { display:inline!important; } .cw .cw-top-nav button { padding:0 10px; min-height:34px; } }
   @media(max-width:380px) { .cw .cw-chat-head #cwBack { top:calc(8px + env(safe-area-inset-top, 0px)); left:6px; } .cw .cw-chat-head .cw-tools-toggle { top:calc(8px + env(safe-area-inset-top, 0px)); right:6px; } }
+  .cw .cw-top-nav #cwHomeBtn, .cw .cw-hero-back { display:none!important; }
   @media(prefers-reduced-motion:reduce) { :is(#cw, .home-sky, .run-chat) .cw-top-nav button { transition:none; } }
 `;
 

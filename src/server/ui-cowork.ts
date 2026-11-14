@@ -1059,6 +1059,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     if (cwActiveConv()) cwOpenConv(cw.active, cw.threadId);
     else cwRenderChat();
     cwLoad(true);
+    if (typeof cwLoadProjectsList === 'function') cwLoadProjectsList();
   }
 
   function cwExit() {
@@ -1329,6 +1330,8 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
           '<span class="cw-item-main"><span class="cw-item-name">' + esc(room.title) + '</span></span></button>';
       });
     }
+    html += '<div class="cw-rail-sec-row"><div class="cw-sec" style="padding:0;">PROJECTS</div><button type="button" class="cw-rail-add" id="cwRailNewProject" title="Create new project" aria-label="Create new project">+</button></div>';
+    html += '<div id="cwRailProjects"></div>';
     html += '<div class="cw-sec">WIDGETS</div>';
     if (!cw.widgets.length) html += '<div class="cw-empty-note">No widgets yet. Teammates pin live progress cards here; you can add one too.</div>';
     cw.widgets.forEach(function (w) {
@@ -1371,6 +1374,13 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
         var conv = cwActiveConv();
         if (!conv) { toast('Open a chat first', true); return; }
         cwNewWidgetModal(conv);
+      };
+    }
+    if (typeof cwRenderRailProjects === 'function') cwRenderRailProjects();
+    var railNewProject = $('cwRailNewProject');
+    if (railNewProject) {
+      railNewProject.onclick = function () {
+        if (typeof newProject === 'function') newProject();
       };
     }
   }
@@ -1599,6 +1609,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
         '<div class="cw-mentions" id="cwMentions"' + (conv.memberIds.length > 1 ? '' : ' hidden') + '></div>' +
         '<div class="cw-composer"><input type="file" id="cwFile" multiple hidden>' +
         '<button class="cw-attach" id="cwPlus" title="Files, mission, folder or schedule" aria-label="Add files, mission, folder or schedule" popovertarget="cwPlusMenu">' + cwIcon('plus') + '</button>' +
+        '<button type="button" class="cw-project-pill" id="cwProjectBtn" title="Switch or create coding project" aria-label="Switch or create coding project" popovertarget="cwProjectMenu">' + cwIcon('folder') + '<span class="cw-project-pill-name">' + esc(typeof cwActiveProjectName === 'function' ? cwActiveProjectName() : 'Project') + '</span><span class="cw-project-pill-caret" aria-hidden="true">&#9662;</span></button>' +
         '<textarea id="cwInput" rows="1" placeholder="' + (conv.memberIds.length > 1 ? 'Message the whole team — @Name to target someone' : 'Message ' + esc(conv.title)) + (activeThread ? ' — ' + esc(activeThread.title) : '') + '"></textarea>' +
         '<button type="button" class="voice-phone" id="cwVoiceCall" aria-label="Call this teammate" title="Talk live" aria-pressed="false">' + cwIcon('phone') + '</button>' +
         '<button class="cw-stop-secondary" id="cwStop" title="Stop the team" aria-label="Stop the team" hidden>' + cwIcon('stop') + '</button>' +
@@ -1607,13 +1618,15 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
           '<button type="button" data-cwplus="attach">' + cwIcon('paperclip') + ' Choose files</button>' +
           '<button type="button" data-cwplus="mission">' + cwIcon('target') + ' New mission</button>' +
           '<button type="button" data-cwplus="folder">' + cwIcon('folder') + ' Tag folder</button>' +
+          '<button type="button" data-cwplus="new-project">' + cwIcon('plus') + ' New project</button>' +
           '<button type="button" data-cwplus="schedule">' + cwIcon('clock') + ' Schedule</button>' +
           '<button type="button" data-cwplus="workbench">' + cwIcon('panel') + ' Live Workbench</button>' +
           '<button type="button" data-cwplus="pulse">' + cwIcon('bolt') + ' Pulse Digest</button>' +
           '<button type="button" data-cwplus="compact">' + cwIcon('sliders') + ' Compact Context</button>' +
           '<button type="button" data-cwplus="palette">' + cwIcon('search') + ' Command Palette</button>' +
           '<div class="cw-plus-context" id="cwPlusContext"></div>' +
-        '</div></div>' +
+        '</div>' +
+        '<div class="cw-message-menu cw-project-menu" id="cwProjectMenu" popover="auto" aria-label="Switch or create coding project"></div></div>' +
       '</div>';
     var mediaBtn = $('cwMediaBtn');
     if (mediaBtn) mediaBtn.onclick = function () { cwOpenGallery(); };
@@ -1673,6 +1686,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
           if (action === 'mission') cwMissionModal(conv);
           else if(action==='attach')$('cwFile').click();
           else if (action === 'folder') cwFolderModal(conv);
+          else if (action === 'new-project' && typeof newProject === 'function') newProject();
           else if (action === 'schedule') cwScheduleModal(conv);
           else if (action === 'workbench' && typeof cwToggleWorkbench === 'function') cwToggleWorkbench();
           else if (action === 'pulse' && typeof cwOpenPulseModal === 'function') cwOpenPulseModal();
@@ -1692,6 +1706,18 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     if (typeof cwRenderContextMeter === 'function') cwRenderContextMeter();
     if (typeof cwRenderWorkbench === 'function') cwRenderWorkbench();
     cwBindFloatingComposer();
+    var projBtn = $('cwProjectBtn'), projMenu = $('cwProjectMenu');
+    if (projBtn && projMenu) {
+      projBtn.onclick = function () {
+        if (typeof projBtn.getBoundingClientRect === 'function' && typeof window !== 'undefined') {
+          var rect = projBtn.getBoundingClientRect();
+          projMenu.style.left = Math.max(12, Math.min(rect.left, window.innerWidth - 260)) + 'px';
+          projMenu.style.top = 'auto';
+          projMenu.style.bottom = (window.innerHeight - rect.top + 8) + 'px';
+        }
+      };
+    }
+    if (typeof cwRenderProjectPill === 'function') cwRenderProjectPill();
     if (scroll) cwRestoreScroll($('cwMsgs'), scroll);
     else cwJumpLatest();
   }

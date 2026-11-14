@@ -79,6 +79,60 @@ export const COWORK_WORKBENCH_CSS = String.raw`
   .cw-status-badge[data-status="In Progress"] { color: var(--accent); border-color: var(--accent); }
   .cw-status-badge[data-status="Blocked"], .cw-status-badge[data-status="Requires Approval"] { color: var(--evidence, #d97706); border-color: var(--evidence, #d97706); }
   .cw-status-badge[data-status="Failed"] { color: var(--err); border-color: var(--err); }
+  .cw-project-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    height: 32px; padding: 0 11px; border-radius: 999px;
+    border: 1px solid var(--border); background: var(--bg2); color: var(--text);
+    font-size: 12px; font-weight: 600; cursor: pointer; flex: 0 0 auto;
+    max-width: 170px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    box-shadow: var(--shadow-sm);
+    transition: border-color .15s, background .15s, transform .12s;
+  }
+  .cw-project-pill:hover { border-color: var(--border-strong); background: var(--card); }
+  .cw-project-pill svg { width: 14px; height: 14px; flex-shrink: 0; color: var(--accent); }
+  .cw-project-pill-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cw-project-pill-caret { font-size: 10px; opacity: .65; margin-left: 1px; }
+  .cw-project-menu { min-width: 240px; max-width: 300px; padding: 6px; border-radius: 16px; }
+  .cw-project-menu-head {
+    padding: 6px 10px 4px; font-size: 10px; font-weight: 700;
+    letter-spacing: .08em; text-transform: uppercase; color: var(--muted);
+  }
+  .cw-project-item {
+    width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 8px 10px; border: 0; border-radius: 10px; background: transparent;
+    color: var(--text); font-size: 12.5px; text-align: left; cursor: pointer;
+  }
+  .cw-project-item:hover { background: var(--hover); }
+  .cw-project-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .cw-project-item-path {
+    font-size: 11px; color: var(--muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 110px;
+  }
+  .cw-project-menu-sep { height: 1px; background: var(--border); margin: 5px 4px; }
+  .cw-rail-sec-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px 4px; }
+  .cw-rail-add {
+    border: 1px solid var(--border); background: var(--card); color: var(--text);
+    border-radius: 8px; width: 22px; height: 22px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 14px; line-height: 1; cursor: pointer;
+  }
+  .cw-rail-add:hover { border-color: var(--border-strong); background: var(--hover); }
+  .cw-rail-project-btn {
+    width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 7px 10px; border: 0; border-radius: 10px; background: transparent;
+    color: var(--text); font-size: 12.5px; text-align: left; cursor: pointer;
+  }
+  .cw-rail-project-btn:hover { background: var(--hover); }
+  .cw-rail-project-btn.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  @media (min-width: 721px) {
+    .cw:not(.page-open) > .cw-workbench:not([hidden]) {
+      border: 1px solid var(--border); border-radius: 24px;
+      box-shadow: var(--shadow); margin-left: 10px; overflow: hidden; background: var(--card);
+    }
+  }
+  @media (max-width: 720px) {
+    .cw-project-pill { max-width: 125px; padding: 0 9px; font-size: 11.5px; }
+  }
 `;
 
 export const COWORK_WORKBENCH_JS = String.raw`
@@ -563,8 +617,26 @@ export const COWORK_WORKBENCH_JS = String.raw`
     }
     var askBtn = $('cwWbAsk');
     var askInput = $('cwWbInstruction');
-    if (askBtn && editor) {
+    if (askBtn && (editor || current.runId)) {
+      if (askInput && current.runId) askInput.placeholder = 'Steer this coding agent without leaving Cowork...';
+      if (current.runId) askBtn.textContent = 'Steer agent';
       askBtn.onclick = function () {
+        if (current.runId) {
+          var steerText = (askInput && askInput.value.trim()) || 'Report current progress and next steps.';
+          if (typeof api === 'function') {
+            api('/api/runs/' + encodeURIComponent(current.runId) + '/message', {
+              method: 'POST',
+              body: JSON.stringify({ text: steerText, delivery: 'steer' })
+            }).then(function () {
+              if (askInput) askInput.value = '';
+              if (typeof toast === 'function') toast('Sent instruction to coding agent');
+              if (typeof cwInspectCodingTask === 'function') cwInspectCodingTask(current.runId);
+            }).catch(function (err) {
+              if (typeof toast === 'function') toast((err && err.message) || 'Failed to message coding agent', true);
+            });
+          }
+          return;
+        }
         var selStart = editor.selectionStart || 0;
         var selEnd = editor.selectionEnd || 0;
         var excerpt = selEnd > selStart ? editor.value.slice(selStart, selEnd) : editor.value.slice(0, 400);
@@ -854,6 +926,234 @@ export const COWORK_WORKBENCH_JS = String.raw`
           cwOpenCommandPalette();
         }
       }
+    });
+  }
+
+  function cwBasename(p) {
+    if (!p) return '';
+    if (typeof basename === 'function') return basename(p);
+    var parts = String(p).replace(/[\\\/]+$/, '').split(/[\\\/]/);
+    return parts[parts.length - 1] || String(p);
+  }
+
+  function cwStateRef() {
+    if (typeof cwEnsure === 'function') return cwEnsure();
+    if (typeof S !== 'undefined' && S && S.cw) return S.cw;
+    return null;
+  }
+
+  function cwActiveProjectPath() {
+    var cwState = cwStateRef();
+    if (cwState && cwState.activeProjectPath) return cwState.activeProjectPath;
+    if (typeof S !== 'undefined' && S && S.settings && S.settings.projectPath) return S.settings.projectPath;
+    return '';
+  }
+
+  function cwActiveProjectName() {
+    var cwState = cwStateRef();
+    if (cwState && cwState.activeProjectName) return cwState.activeProjectName;
+    var p = cwActiveProjectPath();
+    return p ? cwBasename(p) : 'Default workspace';
+  }
+
+  function cwSyncActiveProject(path, name, skipSave) {
+    var resolvedPath = path || '';
+    var resolvedName = name || (resolvedPath ? cwBasename(resolvedPath) : '');
+    var cwState = cwStateRef();
+    if (cwState) {
+      cwState.activeProjectPath = resolvedPath;
+      cwState.activeProjectName = resolvedName;
+      if (resolvedPath) {
+        if (!Array.isArray(cwState.projects)) cwState.projects = [];
+        var exists = cwState.projects.some(function (p) { return p && p.path === resolvedPath; });
+        if (!exists) cwState.projects.unshift({ path: resolvedPath, name: resolvedName });
+      }
+    }
+    if (typeof S !== 'undefined' && S && S.settings) {
+      S.settings.projectPath = resolvedPath;
+      if (typeof updateProjChip === 'function') updateProjChip();
+    }
+    cwRenderProjectPill();
+    cwRenderRailProjects();
+    if (!skipSave && resolvedPath && typeof api === 'function') {
+      api('/api/model-selection', {
+        method: 'POST',
+        body: JSON.stringify({ projectPath: resolvedPath })
+      }).catch(function () {});
+    }
+  }
+
+  function cwLoadProjectsList() {
+    if (typeof api !== 'function') return Promise.resolve([]);
+    return Promise.all([
+      api('/api/projects').catch(function () { return { projects: [] }; }),
+      api('/api/model-selection').catch(function () { return {}; })
+    ]).then(function (res) {
+      var list = (res[0] && Array.isArray(res[0].projects)) ? res[0].projects : [];
+      var cwState = cwStateRef();
+      if (cwState) cwState.projects = list;
+      var selectedPath = (res[1] && res[1].projectPath) || (typeof S !== 'undefined' && S && S.settings && S.settings.projectPath) || '';
+      if (selectedPath) {
+        var matched = null;
+        for (var i = 0; i < list.length; i++) {
+          if (list[i] && list[i].path === selectedPath) { matched = list[i]; break; }
+        }
+        cwSyncActiveProject(selectedPath, (matched && matched.name) || cwBasename(selectedPath), true);
+      } else if (cwState && !cwState.activeProjectPath && list.length === 1 && list[0] && list[0].path) {
+        cwSyncActiveProject(list[0].path, list[0].name || cwBasename(list[0].path), true);
+      } else {
+        cwRenderProjectPill();
+        cwRenderRailProjects();
+      }
+      return list;
+    }).catch(function () {
+      cwRenderProjectPill();
+      cwRenderRailProjects();
+      return [];
+    });
+  }
+
+  function cwRenderProjectPill() {
+    var cwState = cwStateRef();
+    var btn = typeof $ === 'function' ? $('cwProjectBtn') : null;
+    var activePath = cwActiveProjectPath();
+    var activeName = activePath ? cwBasename(activePath) : ((cwState && cwState.activeProjectName) || 'Default workspace');
+    var eFn = typeof esc === 'function' ? esc : function (s) { return String(s || ''); };
+    if (btn) {
+      btn.title = activePath ? ('Active project: ' + activePath) : 'Select or create a project for coding tasks';
+      btn.innerHTML = (typeof cwIcon === 'function' ? cwIcon('folder') : '') +
+        '<span class="cw-project-pill-name">' + eFn(activeName) + '</span>' +
+        '<span class="cw-project-pill-caret" aria-hidden="true">&#9662;</span>';
+    }
+    var menu = typeof $ === 'function' ? $('cwProjectMenu') : null;
+    if (!menu) return;
+    var projects = (cwState && Array.isArray(cwState.projects)) ? cwState.projects.slice() : [];
+    if (activePath && !projects.some(function (p) { return p && p.path === activePath; })) {
+      projects.unshift({ path: activePath, name: activeName });
+    }
+    var html = '<div class="cw-project-menu-head">Coding Project</div>';
+    if (!projects.length) {
+      html += '<div class="cw-empty-note" style="padding:6px 10px;">No projects yet — create one or pick a folder.</div>';
+    } else {
+      html += projects.map(function (p, idx) {
+        var isAct = activePath && p.path === activePath;
+        var label = p.name || cwBasename(p.path);
+        return '<button type="button" class="cw-project-item' + (isAct ? ' active' : '') + '" data-cwproj-idx="' + idx + '" title="' + eFn(p.path) + '">' +
+          '<span>' + eFn(label) + '</span>' +
+          '<span class="cw-project-item-path">' + (isAct ? 'Active' : '') + '</span>' +
+        '</button>';
+      }).join('');
+    }
+    html += '<div class="cw-project-menu-sep"></div>' +
+      '<button type="button" class="cw-project-item" data-cwproj-action="new">' + (typeof cwIcon === 'function' ? cwIcon('plus') : '+') + ' <span>Create new project…</span></button>' +
+      '<button type="button" class="cw-project-item" data-cwproj-action="browse">' + (typeof cwIcon === 'function' ? cwIcon('folder') : '') + ' <span>Open existing folder…</span></button>';
+    menu.innerHTML = html;
+    if (typeof menu.querySelectorAll === 'function') {
+      menu.querySelectorAll('[data-cwproj-idx]').forEach(function (itemBtn) {
+        itemBtn.onclick = function () {
+          var proj = projects[Number(itemBtn.getAttribute('data-cwproj-idx'))];
+          if (menu.hidePopover) try { menu.hidePopover(); } catch {}
+          if (proj && proj.path) {
+            cwSyncActiveProject(proj.path, proj.name || cwBasename(proj.path));
+            if (typeof toast === 'function') toast('Project switched to ' + (proj.name || cwBasename(proj.path)));
+          }
+        };
+      });
+      menu.querySelectorAll('[data-cwproj-action]').forEach(function (actBtn) {
+        actBtn.onclick = function () {
+          var act = actBtn.getAttribute('data-cwproj-action');
+          if (menu.hidePopover) try { menu.hidePopover(); } catch {}
+          if (act === 'new' && typeof newProject === 'function') newProject();
+          else if (act === 'browse' && typeof openFolderBrowser === 'function') openFolderBrowser('project');
+        };
+      });
+    }
+  }
+
+  function cwRenderRailProjects() {
+    var el = typeof $ === 'function' ? $('cwRailProjects') : null;
+    if (!el) return;
+    var cwState = cwStateRef();
+    var activePath = cwActiveProjectPath();
+    var list = (cwState && Array.isArray(cwState.projects)) ? cwState.projects.slice() : [];
+    var eFn = typeof esc === 'function' ? esc : function (s) { return String(s || ''); };
+    if (activePath && !list.some(function (p) { return p && p.path === activePath; })) {
+      list.unshift({ path: activePath, name: cwBasename(activePath) });
+    }
+    if (!list.length) {
+      el.innerHTML = '<div class="cw-empty-note">No projects yet. Create one so coding tasks run inside it.</div>';
+      return;
+    }
+    el.innerHTML = list.map(function (p, idx) {
+      var isAct = activePath && p.path === activePath;
+      var label = p.name || cwBasename(p.path);
+      return '<button type="button" class="cw-rail-project-btn' + (isAct ? ' active' : '') + '" data-cwrailproj-idx="' + idx + '" title="' + eFn(p.path) + '">' +
+        '<span>' + eFn(label) + '</span>' +
+        (isAct ? '<span class="cw-project-item-path">Active</span>' : '') +
+      '</button>';
+    }).join('');
+    if (typeof el.querySelectorAll === 'function') {
+      el.querySelectorAll('[data-cwrailproj-idx]').forEach(function (btn) {
+        btn.onclick = function () {
+          var proj = list[Number(btn.getAttribute('data-cwrailproj-idx'))];
+          if (proj && proj.path) cwSyncActiveProject(proj.path, proj.name || cwBasename(proj.path));
+        };
+      });
+    }
+  }
+
+  function cwInspectCodingTask(runId) {
+    if (!runId || typeof api !== 'function') return Promise.resolve();
+    return api('/api/runs/' + encodeURIComponent(runId)).then(function (task) {
+      var projLabel = (task && (task.project || cwBasename(task.projectPath || ''))) || 'Workspace';
+      var status = (task && task.status) || 'running';
+      var statusTitle = status === 'running' ? 'In Progress' : (status === 'failed' || status === 'error' ? 'Failed' : 'Done');
+      var lines = [];
+      lines.push('# Coding Task: ' + projLabel + ' (' + statusTitle + ')');
+      lines.push('');
+      if (task && task.goal) {
+        lines.push('Goal: ' + task.goal);
+        lines.push('');
+      }
+      lines.push('Run ID: ' + ((task && task.runId) || runId));
+      if (task && task.projectPath) lines.push('Project path: ' + task.projectPath);
+      if (task && task.worktreePath) lines.push('Worktree: ' + task.worktreePath);
+      if (task && task.branch) lines.push('Branch: ' + task.branch);
+      if (task && task.mode) lines.push('Mode: ' + task.mode);
+      if (task && task.error) {
+        lines.push('');
+        lines.push('Error: ' + task.error);
+      }
+      if (task && task.report) {
+        lines.push('');
+        lines.push('Summary:');
+        lines.push(String(task.report));
+      }
+      if (task && Array.isArray(task.files) && task.files.length) {
+        lines.push('');
+        lines.push('Artifacts / Modified Files (' + task.files.length + '):');
+        task.files.slice(0, 20).forEach(function (f) {
+          var fname = (f && (f.path || f.name || f.id)) || String(f || '');
+          if (fname) lines.push('- ' + fname);
+        });
+      }
+      var wb = cwEnsureWorkbench();
+      var entryId = 'run-' + ((task && task.runId) || runId);
+      if (wb && Array.isArray(wb.items)) {
+        wb.items = wb.items.filter(function (it) { return it && it.id !== entryId && it.runId !== runId; });
+      }
+      cwOpenWorkbench({
+        id: entryId,
+        title: 'Code: ' + projLabel + ' (' + statusTitle + ')',
+        content: lines.join('\n')
+      });
+      if (wb && Array.isArray(wb.items) && wb.items.length) {
+        wb.items[wb.items.length - 1].runId = (task && task.runId) || runId;
+        cwRenderWorkbench();
+      }
+      return task;
+    }).catch(function (err) {
+      if (typeof toast === 'function') toast((err && err.message) || 'Could not inspect coding task', true);
     });
   }
 `;

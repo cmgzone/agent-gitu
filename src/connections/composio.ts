@@ -16,14 +16,17 @@ export interface ConnectedApp {
   status: string;
   disabled: boolean;
   connectionIssue?: 'sign-in-expired';
+  label?: string;
 }
 export interface ServiceCard {
   slug: string;
   name: string;
+  description?: string;
   logo?: string;
   status?: string;
   accountId?: string;
   authConfigs?: PikpamAuthConfig[];
+  authSchemes?: string[];
 }
 export interface PikpamAuthConfig {
   id: string;
@@ -115,6 +118,68 @@ export interface PikpamComposioCredentials { token: string; baseUrl: string; }
 export class ComposioExecutionUncertainError extends Error {
   constructor() { super('The connected service did not confirm completion. This action may already have run. Check the destination app before any retry. No automatic retry was attempted.'); }
 }
+const OAUTH_SCHEMES = new Set(['OAUTH1', 'OAUTH2', 'DCR_OAUTH', 'CIMD_OAUTH', 'S2S_OAUTH2']);
+const CREDENTIAL_SCHEMES = new Set(['API_KEY', 'BEARER_TOKEN', 'BASIC']);
+const ALLOWED_SIGN_IN_HOSTS = new Set(['connect.composio.dev', 'backend.composio.dev', 'app.composio.dev', 'pikpam.com', 'www.pikpam.com']);
+
+function pikpamIntegrationsOrigin(baseUrl?: string): string {
+  if (!baseUrl) return 'https://pikpam.com';
+  const parsed = new URL(baseUrl);
+  return parsed.hostname === 'pikrouter.pikpam.com' ? 'https://pikpam.com' : parsed.origin;
+}
+
+function validateSignInUrl(rawUrl: string, errorMessage: string, extraHosts: string[] = []): URL {
+  const url = new URL(rawUrl);
+  const allowed = extraHosts.length ? new Set([...ALLOWED_SIGN_IN_HOSTS, ...extraHosts]) : ALLOWED_SIGN_IN_HOSTS;
+  if (url.protocol !== 'https:' || url.username || url.password || url.port || !allowed.has(url.hostname)) {
+    throw new Error(errorMessage);
+  }
+  return url;
+}
+
+interface RawPikpamField {
+  name?: string;
+  label?: string;
+  type?: string;
+  description?: string;
+  required?: boolean;
+  secret?: boolean;
+}
+interface RawPikpamAuthConfig {
+  id?: string;
+  scheme?: string;
+  authScheme?: string;
+  managed?: boolean;
+  fields?: RawPikpamField[];
+}
+interface RawPikpamApp {
+  slug?: string;
+  app?: string;
+  key?: string;
+  id?: string;
+  name?: string;
+  displayName?: string;
+  description?: string;
+  logo?: string;
+  logoUrl?: string;
+  icon?: string;
+  authConfigs?: RawPikpamAuthConfig[];
+  authSchemes?: string[];
+}
+interface RawPikpamAccount {
+  id?: string;
+  connectedAccountId?: string;
+  toolkitSlug?: string;
+  toolkit?: { slug?: string };
+  app?: string;
+  slug?: string;
+  status?: string;
+  disabled?: boolean;
+  isDisabled?: boolean;
+  label?: string;
+  alias?: string;
+}
+
 export class ComposioConnections {
   private sdk?: Client;
   private session?: ReturnType<Client['sessions']['create']>;
@@ -136,7 +201,8 @@ export class ComposioConnections {
   private async pikpamRequest<T = Record<string, unknown>>(path: string, init: RequestInit = {}, timeoutMs = 15000): Promise<T> {
     const credentials = this.pikpam();
     if (!credentials) throw new Error('Sign in to Pikpam in Gitu to use your Pikpam connected apps.');
-    const url = new URL(`/api/integrations/composio/${path.replace(/^\/+/, '')}`, credentials.baseUrl).toString();
+    const origin = pikpamIntegrationsOrigin(credentials.baseUrl);
+    const url = new URL(`/api/integrations/${path.replace(/^\/+/, '')}`, origin).toString();
     const response = await fetch(url, {
       ...init,
       signal: AbortSignal.timeout(timeoutMs),
@@ -218,15 +284,67 @@ export class ComposioConnections {
   }
   async catalog(search = '', cursor?: string): Promise<{ services: ServiceCard[]; cursor?: string }> {
     if (this.pikpam()) {
-      const query = new URLSearchParams({ search: search.slice(0, 100) });
+      const query = new URLSearchParams();
+      const trimmed = search.trim().slice(0, 100);
+      if (trimmed) {
+        // Pikpam /docs uses ?q= while the Integrations SPA uses ?search=.
+        query.set('q', trimmed);
+        query.set('search', trimmed);
+      }
       if (cursor) query.set('cursor', cursor);
-      const result = await this.pikpamRequest<{ apps?: Array<{ slug: string; name: string; logo?: string; authConfigs?: PikpamAuthConfig[] }>; nextCursor?: string }>(`catalog?${query}`);
-      const services = (result.apps || []).map((app) => {
-        const authConfigs = app.authConfigs || [];
-        this.remoteAuthConfigs.set(app.slug, authConfigs);
-        return { slug: app.slug, name: app.name, ...(app.logo ? { logo: app.logo } : {}), authConfigs };
-      });
-      return { services, ...(result.nextCursor ? { cursor: result.nextCursor } : {}) };
+      const result = await this.pikpamRequest<{
+        apps?: RawPikpamApp[];
+        items?: RawPikpamApp[];
+        toolkits?: RawPikpamApp[];
+        integrations?: RawPikpamApp[];
+        catalog?: RawPikpamApp[];
+        data?: RawPikpamApp[];
+        nextCursor?: string;
+        cursor?: string;
+        next_cursor?: string;
+      }>(`catalog${query.size ? `?${query}` : ''}`);
+      const rawApps = result.apps ?? result.items ?? result.toolkits ?? result.integrations ?? result.catalog ?? (Array.isArray(result.data) ? result.data : undefined) ?? [];
+      const services: ServiceCard[] = [];
+      for (const app of rawApps) {
+        const slug = String(app.slug ?? app.app ?? app.key ?? app.id ?? '').trim();
+        if (!slug) continue;
+        const name = String(app.name ?? app.displayName ?? slug).trim() || slug;
+        const logo = typeof app.logo === 'string' ? app.logo : typeof app.logoUrl === 'string' ? app.logoUrl : typeof app.icon === 'string' && app.icon.startsWith('https://') ? app.icon : undefined;
+        const description = typeof app.description === 'string' && app.description.trim() ? app.description.trim() : undefined;
+        const rawConfigs: RawPikpamAuthConfig[] = Array.isArray(app.authConfigs)
+          ? app.authConfigs
+          : Array.isArray(app.authSchemes)
+            ? app.authSchemes.map((scheme) => ({ id: '', scheme, managed: false, fields: [] }))
+            : [];
+        const authConfigs: PikpamAuthConfig[] = rawConfigs.map((cfg) => ({
+          id: String(cfg.id ?? ''),
+          scheme: String(cfg.scheme ?? cfg.authScheme ?? app.authSchemes?.[0] ?? 'OAUTH2').toUpperCase(),
+          managed: Boolean(cfg.managed),
+          fields: Array.isArray(cfg.fields)
+            ? cfg.fields
+                .filter((f): f is RawPikpamField & { name: string } => typeof f.name === 'string' && f.name.length > 0)
+                .map((f) => ({
+                  name: f.name,
+                  label: f.label ?? f.name,
+                  type: f.type ?? 'text',
+                  ...(f.description ? { description: f.description } : {}),
+                  required: Boolean(f.required),
+                  secret: Boolean(f.secret),
+                }))
+            : [],
+        }));
+        this.remoteAuthConfigs.set(slug, authConfigs);
+        services.push({
+          slug,
+          name,
+          ...(description ? { description } : {}),
+          ...(logo ? { logo } : {}),
+          ...(authConfigs.length ? { authConfigs } : {}),
+          ...(Array.isArray(app.authSchemes) && app.authSchemes.length ? { authSchemes: app.authSchemes } : {}),
+        });
+      }
+      const nextCursor = result.nextCursor ?? result.cursor ?? result.next_cursor ?? undefined;
+      return { services, ...(nextCursor ? { cursor: nextCursor } : {}) };
     }
     const pending = this.userSession();
     const session = await pending;
@@ -253,9 +371,29 @@ export class ComposioConnections {
       let cursor: string | undefined;
       for (let page = 0; page < 10; page++) {
         const query = new URLSearchParams(); if (cursor) query.set('cursor', cursor);
-        const result = await this.pikpamRequest<{ accounts?: Array<{ id: string; toolkitSlug: string; status: string; disabled?: boolean }>; nextCursor?: string }>(`accounts${query.size ? `?${query}` : ''}`);
-        accounts.push(...(result.accounts || []).map((account) => ({ id: account.id, toolkit: account.toolkitSlug, status: account.status, disabled: Boolean(account.disabled) })));
-        cursor = result.nextCursor;
+        const result = await this.pikpamRequest<{
+          accounts?: RawPikpamAccount[];
+          items?: RawPikpamAccount[];
+          connections?: RawPikpamAccount[];
+          data?: RawPikpamAccount[];
+          nextCursor?: string;
+          cursor?: string;
+          next_cursor?: string;
+        }>(`accounts${query.size ? `?${query}` : ''}`);
+        for (const account of result.accounts ?? result.items ?? result.connections ?? (Array.isArray(result.data) ? result.data : undefined) ?? []) {
+          const id = String(account.id ?? account.connectedAccountId ?? '').trim();
+          const toolkit = String(account.toolkitSlug ?? account.toolkit?.slug ?? account.app ?? account.slug ?? '').trim();
+          if (!id || !toolkit) continue;
+          const label = (account.label ?? account.alias)?.trim();
+          accounts.push({
+            id,
+            toolkit,
+            status: String(account.status ?? 'ACTIVE').toUpperCase(),
+            disabled: Boolean(account.disabled ?? account.isDisabled),
+            ...(label ? { label } : {}),
+          });
+        }
+        cursor = result.nextCursor ?? result.cursor ?? result.next_cursor ?? undefined;
         if (!cursor) return accounts;
         if (cursors.has(cursor)) throw new Error('The Pikpam account list is incomplete. Refresh Connections before selecting an app.');
         cursors.add(cursor);
@@ -283,39 +421,77 @@ export class ComposioConnections {
     return [...items.values()];
   }
   async connect(slug: string, options?: PikpamConnectOptions): Promise<{ url?: string; accountId: string; status?: string }> {
-    if (!/^[a-z0-9_-]{1,100}$/.test(slug)) throw new Error('Invalid service.');
+    if (!/^[a-z0-9_-]{1,100}$/i.test(slug)) throw new Error('Invalid service.');
     if (this.pikpam()) {
       let authConfigs = this.remoteAuthConfigs.get(slug);
       if (!authConfigs) {
-        await this.catalog(slug);
+        await this.catalog(slug).catch(() => undefined);
         authConfigs = this.remoteAuthConfigs.get(slug);
       }
-      const requested = options?.authConfigId ? authConfigs?.find((item) => item.id === options.authConfigId && item.scheme === options.authScheme) : undefined;
-      const auth = requested || authConfigs?.find((item) => ['OAUTH1', 'OAUTH2', 'DCR_OAUTH', 'CIMD_OAUTH', 'S2S_OAUTH2'].includes(item.scheme.toUpperCase()) && !item.fields.some((field) => field.required));
-      if (!auth) throw new Error('This app has no usable Pikpam connection setup. Refresh Connections and try again.');
-      const oauth = ['OAUTH1', 'OAUTH2', 'DCR_OAUTH', 'CIMD_OAUTH', 'S2S_OAUTH2'].includes(auth.scheme.toUpperCase());
-      if (oauth && auth.fields.some((field) => field.required && !options?.fields?.[field.name])) throw new Error('This app needs additional sign-in details. Refresh its connection form and try again.');
-      if (!oauth && !['API_KEY', 'BEARER_TOKEN', 'BASIC'].includes(auth.scheme.toUpperCase())) throw new Error('This authentication type is not supported inside Gitu yet.');
-      const result = await this.pikpamRequest<{ connectedAccountId?: string; redirectUrl?: string }>('connect', {
-        method: 'POST', body: JSON.stringify({ toolkitSlug: slug, authConfigId: auth.id, authScheme: auth.scheme, fields: options?.fields || {}, ...(options?.alias ? { alias: options.alias } : {}), ...(options?.callbackUrl ? { callbackUrl: options.callbackUrl } : {}) }),
+      const requested = options?.authConfigId ? authConfigs?.find((item) => item.id === options.authConfigId) : undefined;
+      if (options?.authConfigId && authConfigs?.length && !requested) {
+        throw new Error('This app configuration is no longer available. Refresh Connections and try again.');
+      }
+      const fallbackOAuth = authConfigs?.find((item) => OAUTH_SCHEMES.has(item.scheme.toUpperCase()) && !item.fields.some((field) => field.required));
+      const auth = requested ?? fallbackOAuth;
+      if (!auth && authConfigs && authConfigs.length > 0) {
+        throw new Error('This app has no usable Pikpam connection setup. Refresh Connections and try again.');
+      }
+      if (auth) {
+        const scheme = auth.scheme.toUpperCase();
+        const isOAuth = OAUTH_SCHEMES.has(scheme);
+        if (isOAuth && auth.fields.some((field) => field.required && !options?.fields?.[field.name])) {
+          throw new Error('This app needs additional sign-in details. Refresh its connection form and try again.');
+        }
+        if (!isOAuth && !CREDENTIAL_SCHEMES.has(scheme)) {
+          throw new Error('This authentication type is not supported inside Gitu yet.');
+        }
+      }
+      const authScheme = auth?.scheme ? auth.scheme.toUpperCase() : options?.authScheme?.toUpperCase();
+      const body: Record<string, unknown> = {
+        app: slug,
+        toolkitSlug: slug,
+        ...(auth?.id ? { authConfigId: auth.id } : options?.authConfigId ? { authConfigId: options.authConfigId } : {}),
+        ...(authScheme ? { authScheme } : {}),
+        fields: options?.fields || {},
+        ...(options?.alias ? { alias: options.alias } : {}),
+        ...(options?.callbackUrl ? { redirectUrl: options.callbackUrl, callbackUrl: options.callbackUrl } : {}),
+      };
+      const result = await this.pikpamRequest<{
+        connectedAccountId?: string;
+        accountId?: string;
+        id?: string;
+        redirectUrl?: string;
+        url?: string;
+        status?: string;
+      }>('connect', {
+        method: 'POST',
+        body: JSON.stringify(body),
       });
-      if (!result.connectedAccountId) throw new Error('Pikpam did not return a connected account. Refresh Connections and try again.');
-      if (!result.redirectUrl) return { accountId: result.connectedAccountId, status: 'INITIALIZING' };
-      const url = new URL(result.redirectUrl);
-      if (url.protocol !== 'https:' || url.username || url.password || url.port || !['connect.composio.dev', 'backend.composio.dev'].includes(url.hostname)) throw new Error('Pikpam returned an invalid sign-in link.');
-      return { url: url.href, accountId: result.connectedAccountId, status: 'INITIALIZING' };
+      const rawUrl = result.redirectUrl || result.url;
+      const accountId = String(result.connectedAccountId ?? result.accountId ?? result.id ?? '').trim();
+      if (!rawUrl && !accountId) throw new Error('Pikpam did not return a connection link or account. Refresh Connections and try again.');
+      if (!rawUrl) return { accountId, status: result.status || 'INITIALIZING' };
+      const credentials = this.pikpam();
+      const extraHost = credentials ? [new URL(pikpamIntegrationsOrigin(credentials.baseUrl)).hostname] : [];
+      const url = validateSignInUrl(rawUrl, 'Pikpam returned an invalid sign-in link.', extraHost);
+      return { url: url.href, accountId, status: result.status || 'INITIALIZING' };
     }
     const owner = this.owner(), generation = this.generation;
     const session = await this.userSession();
     const request = await session.authorize(slug);
     if (owner !== this.owner() || generation !== this.generation) throw new Error('Connection setup changed. Refresh and try again.');
-    const url = new URL(request.redirectUrl ?? '');
-    if (url.protocol !== 'https:' || url.username || url.password || url.port || !['connect.composio.dev', 'backend.composio.dev'].includes(url.hostname)) throw new Error('Composio returned an invalid connection link.');
+    const url = validateSignInUrl(request.redirectUrl ?? '', 'Composio returned an invalid connection link.');
     if (!request.id) throw new Error('Composio returned no connection identifier.');
     return { url: url.href, accountId: request.id };
   }
   async disconnect(id: string): Promise<void> {
     if (!(await this.accounts()).some((account) => account.id === id)) throw new Error('Connection not found.');
+    if (this.pikpam()) {
+      await this.pikpamRequest(`accounts/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      this.executionSessions.clear();
+      return;
+    }
     await this.client().connectedAccounts.revoke(id);
     this.executionSessions.clear();
   }
@@ -350,11 +526,15 @@ export class ComposioConnections {
     if (this.pikpam()) {
       if (!(await this.accounts()).some((account) => account.toolkit === slug && account.status === 'ACTIVE' && !account.disabled))
         throw new Error('Connect this service in Connections first.');
-      const params = new URLSearchParams({ toolkitSlug: slug });
-      if (query?.trim()) params.set('search', query.trim().slice(0, 100));
+      const params = new URLSearchParams({ app: slug, toolkitSlug: slug });
+      if (query?.trim()) {
+        const trimmed = query.trim().slice(0, 100);
+        params.set('q', trimmed);
+        params.set('search', trimmed);
+      }
       if (tool) params.set('toolSlug', tool);
-      const result = await this.pikpamRequest<{ tools?: ConnectedAppTool[] }>(`tools?${params}`);
-      return result.tools || [];
+      const result = await this.pikpamRequest<{ tools?: ConnectedAppTool[]; items?: ConnectedAppTool[] }>(`tools?${params}`);
+      return result.tools ?? result.items ?? [];
     }
     const owner = this.owner(), generation = this.generation;
     if (!(await this.accounts()).some((account) => account.toolkit === slug && account.status === 'ACTIVE' && !account.disabled))

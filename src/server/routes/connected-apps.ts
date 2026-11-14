@@ -61,19 +61,37 @@ export async function connectedAppsRoutes(req: IncomingMessage, res: ServerRespo
         watching: deps.mailInboxMonitor?.statuses() ?? {},
       };
       if (!agentId) {
-        const availableAccounts =
-          url.searchParams.get('available') === 'true' ? (await deps.appHub.accounts()).filter((account) => account.status === 'ACTIVE' && !account.disabled) : [];
+        const shouldLoad = deps.connectedApps.configured || url.searchParams.get('available') === 'true';
+        const allAccounts = shouldLoad ? await deps.appHub.accounts() : [];
+        const availableAccounts = allAccounts.filter((account) => account.status === 'ACTIVE' && !account.disabled);
+        let catalog: Awaited<ReturnType<ComposioConnections['catalog']>> = { services: [] },
+          catalogUnavailable = false;
+        if (deps.connectedApps.configured && url.searchParams.get('statusOnly') !== 'true') {
+          try {
+            catalog = await deps.connectedApps.catalog(url.searchParams.get('search') ?? '', url.searchParams.get('cursor') ?? undefined);
+          } catch {
+            catalogUnavailable = true;
+          }
+        }
+        const services = catalog.services.map((service) => {
+          const account =
+            allAccounts.find((item) => item.toolkit === service.slug && item.status === 'ACTIVE' && !item.disabled) ??
+            allAccounts.find((item) => item.toolkit === service.slug);
+          return { ...service, ...(account ? { status: account.status, accountId: account.id } : {}) };
+        });
         deps.sendJson(res, 200, {
           configured: deps.connectedApps.configured,
           ...deps.connectedApps.setup,
+          ...catalog,
+          services,
           agents,
           agentId,
           accounts: [],
           availableAccounts,
-          services: [],
           appPermissions,
           mail,
           accountStatusIncomplete: mailUnavailable || deps.appHub.accountStatusIncomplete,
+          catalogUnavailable,
         });
         return;
       }
@@ -303,7 +321,7 @@ export async function connectedAppsRoutes(req: IncomingMessage, res: ServerRespo
         deps.sendJson(res, 502, { code: 'APP_SIGN_IN_FAILED', error: detail });
         return;
       }
-      store.assignAppAccount(agentId, service, link.accountId);
+      if (link.accountId) store.assignAppAccount(agentId, service, link.accountId);
       deps.sendJson(res, 200, link.url ? link : { accountId: link.accountId, status: link.status || 'INITIALIZING' });
       return;
     }

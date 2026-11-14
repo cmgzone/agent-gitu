@@ -250,8 +250,9 @@ export const WORKSPACE_SEARCH_CSS = String.raw`
   .cw-service-row { display:flex; align-items:center; gap:14px; padding:14px 18px; border:0; border-bottom:1px solid var(--border); border-radius:0; background:transparent; box-shadow:none; margin:0; transition:background .12s ease; }
   .cw-service-row:last-child { border-bottom:0; }
   .cw-service-row:hover { background:var(--hover); }
-  .cw-service-symbol,.cw-service-logo { width:40px; height:40px; flex:none; border-radius:10px; border:1px solid var(--border); background:var(--card2); display:inline-flex; align-items:center; justify-content:center; overflow:hidden; font-size:14px; font-weight:600; color:var(--text); }
-  .cw-service-logo img { width:22px; height:22px; object-fit:contain; }
+  .cw-service-symbol { width:40px; height:40px; flex:none; border-radius:10px; border:1px solid var(--border); background:var(--card2); display:inline-grid; place-items:center; overflow:hidden; font-size:14px; font-weight:600; color:var(--text); }
+  .cw-service-symbol>* { grid-area:1/1; }
+  .cw-service-logo { width:24px; height:24px; object-fit:contain; }
   .cw-service-copy { min-width:0; flex:1; display:grid; gap:2px; }
   .cw-service-copy h3 { margin:0; font-size:14px; font-weight:600; color:var(--text); }
   .cw-service-copy p { margin:0; font-size:13px; color:var(--muted); line-height:1.4; }
@@ -264,6 +265,7 @@ export const WORKSPACE_SEARCH_CSS = String.raw`
   .cw-service-action:not(.ghost):hover { filter:brightness(1.06); }
   .cw-service-action.ghost { background:var(--card2); color:var(--text); border:1px solid var(--border); font-weight:500; }
   .cw-service-action.ghost:hover { background:var(--hover); }
+  .cw-service-action.connected { color:var(--astryx-ok); border-color:color-mix(in srgb,var(--astryx-ok) 45%,var(--border)); }
   .cw-app-suggestion { background:var(--card); border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:var(--radius-card,16px); padding:14px 18px; display:grid; gap:6px; }
   .cw-service-empty { background:var(--card); border:1px solid var(--border); border-radius:var(--radius-card,16px); padding:26px 20px; text-align:center; font-size:13px; color:var(--muted); }
   .cw-mail-section { display:grid; gap:10px; }

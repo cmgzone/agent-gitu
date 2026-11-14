@@ -1,8 +1,10 @@
+import { readFileSync } from 'node:fs';
 import { createContext, Script } from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
 import { CONNECTED_APPS_JS } from '../src/server/ui-connected-apps.js';
 import { authPage } from '../src/server/ui-auth.js';
 import { COWORK_JS } from '../src/server/ui-cowork.js';
+import { WORKSPACE_SEARCH_CSS } from '../src/server/ui-workspace-search.js';
 
 function fixture() {
   const control = () => ({
@@ -545,5 +547,165 @@ describe('account and Connections UI', () => {
     new Script(COWORK_JS).runInContext(context);
     context.cwRenderChat();
     expect(chat.innerHTML).toBe('Connections');
+  });
+
+  it('auto-selects a teammate when opening Connections with Pikpam apps and shows Pikpam accounts even without teammates', async () => {
+    const f = fixture();
+    f.cw.connectionsOpen = true;
+    f.cw.connectionsAgentId = '';
+    f.api
+      .mockResolvedValueOnce({
+        configured: true,
+        keyStorage: 'Pikpam account',
+        agents: [{ id: 'pa-1', name: 'P.A' }],
+        services: [],
+        accounts: [],
+        availableAccounts: [],
+      })
+      .mockResolvedValueOnce({
+        configured: true,
+        keyStorage: 'Pikpam account',
+        agents: [{ id: 'pa-1', name: 'P.A' }],
+        services: [{ slug: 'gmail', name: 'Gmail', description: 'Read email' }],
+        accounts: [],
+        availableAccounts: [{ id: 'pik-acc-1', toolkit: 'gmail', status: 'ACTIVE', disabled: false, label: 'Work' }],
+      });
+    await f.context.cwLoadServices('', false);
+    expect(f.api).toHaveBeenNthCalledWith(1, '/api/connected-apps?agentId=&search=');
+    expect(f.api).toHaveBeenNthCalledWith(2, '/api/connected-apps?agentId=pa-1&search=');
+    expect(f.cw.connectionsAgentId).toBe('pa-1');
+    expect(f.content.innerHTML).toContain('Using your Pikpam connected apps');
+    expect(f.content.innerHTML).toContain('data-cwassignapp="pik-acc-1"');
+
+    const emptyTeam = fixture();
+    emptyTeam.cw.connectionsOpen = true;
+    emptyTeam.cw.connectionsAgentId = '';
+    emptyTeam.api.mockResolvedValue({
+      configured: true,
+      keyStorage: 'Pikpam account',
+      agents: [],
+      services: [{ slug: 'gmail', name: 'Gmail' }],
+      accounts: [],
+      availableAccounts: [{ id: 'pik-acc-2', toolkit: 'slack', status: 'ACTIVE', disabled: false, label: 'HQ' }],
+    });
+    await emptyTeam.context.cwLoadServices('', false);
+    expect(emptyTeam.content.innerHTML).toContain('Connected in Pikpam');
+    expect(emptyTeam.content.innerHTML).toContain('Gmail');
+    expect(emptyTeam.content.innerHTML).toContain('data-cwneedagent="slack"');
+    expect(emptyTeam.content.innerHTML).toContain('HQ · Connected in Pikpam');
+    expect(emptyTeam.content.innerHTML).not.toContain('Choose a teammate</p>');
+  });
+
+  it('opens pikpam.com sign-in links, detects new Pikpam accounts via beforeIds, and handles ?composio=connected callback', async () => {
+    const f = fixture();
+    f.cw.connectionsOpen = true;
+    f.cw.servicesData = { availableAccounts: [{ id: 'old-acc', toolkit: 'gmail', status: 'ACTIVE', disabled: false }] };
+    const openAppSignIn = vi.fn(async () => true);
+    f.context.window = { gituDesktop: { openAppSignIn } };
+    const button = { disabled: false, getAttribute: () => 'gmail', onclick: undefined as undefined | (() => Promise<void>) };
+    f.context.cwRenderServices = vi.fn();
+    f.api.mockResolvedValueOnce({ url: 'https://pikpam.com/integrations/oauth/gmail', accountId: '' });
+    f.context.cwBindServiceActions({ querySelectorAll: (selector: string) => (selector === '[data-cwconnect]' ? [button] : []) }, 'writer');
+    await button.onclick!();
+    expect(openAppSignIn).toHaveBeenCalledWith('https://pikpam.com/integrations/oauth/gmail');
+    const flow = f.context.cwEnsure().serviceSignIn;
+    expect(flow).toMatchObject({ agentId: 'writer', service: 'gmail', accountId: '', beforeIds: ['old-acc'] });
+
+    f.api
+      .mockResolvedValueOnce({
+        configured: true,
+        accounts: [],
+        availableAccounts: [
+          { id: 'old-acc', toolkit: 'gmail', status: 'ACTIVE', disabled: false },
+          { id: 'new-pik-acc', toolkit: 'gmail', status: 'ACTIVE', disabled: false },
+        ],
+      })
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({
+        configured: true,
+        accounts: [{ id: 'new-pik-acc', toolkit: 'gmail', status: 'ACTIVE', disabled: false }],
+        availableAccounts: [{ id: 'old-acc', toolkit: 'gmail', status: 'ACTIVE', disabled: false }],
+      });
+    await f.context.cwRefreshServiceSignIn(flow);
+    expect(f.api).toHaveBeenCalledWith('/api/connected-apps/assign', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ agentId: 'writer', accountId: 'new-pik-acc' }),
+    }));
+    expect(f.context.cwEnsure().serviceSignIn).toBe(null);
+
+    const bootstrapSrc = readFileSync(new URL('../src/server/ui-assets/scripts/bootstrap.js', import.meta.url), 'utf8');
+    const callbackStart = bootstrapSrc.indexOf('  (function handlePikRouterOAuthCallbackOnLoad()');
+    const callbackEnd = bootstrapSrc.indexOf('  var TITLE_BASE =');
+    const timers: (() => void)[] = [];
+    const replaceState = vi.fn();
+    const toast = vi.fn();
+    const openSettings = vi.fn();
+    const callbackContext = createContext({
+      window: {
+        location: { pathname: '/', search: '?composio=connected&keep=1', hash: '#cw' },
+        history: { replaceState },
+      },
+      URLSearchParams,
+      localStorage: { setItem: vi.fn() },
+      setTimeout: (fn: () => void) => { timers.push(fn); return 1; },
+      toast,
+      openSettings,
+      checkPikRouterAuthStatus: vi.fn(),
+    });
+    new Script(bootstrapSrc.slice(callbackStart, callbackEnd)).runInContext(callbackContext);
+    expect(replaceState).toHaveBeenCalledWith({}, '', '/?keep=1#cw');
+    timers.forEach(fn => fn());
+    expect(toast).toHaveBeenCalledWith('Returned from app authorization. Connection status refreshed.');
+    expect(openSettings).toHaveBeenCalledWith('connections');
+  });
+
+  it('opens credential form for API_KEY Pikpam apps even when authConfig id and fields are empty and keeps Astryx logo CSS clean', async () => {
+    const f = fixture();
+    f.cw.connectionsOpen = true;
+    f.cw.connectionsAgentId = 'writer';
+    f.api.mockResolvedValue({
+      configured: true,
+      keyStorage: 'Pikpam account',
+      agents: [{ id: 'writer', name: 'Writer' }],
+      services: [{
+        slug: 'openai',
+        name: 'OpenAI',
+        authConfigs: [{ id: '', scheme: 'API_KEY', managed: false, fields: [] }],
+      }],
+      accounts: [],
+      availableAccounts: [],
+    });
+    await f.context.cwLoadServices('', false);
+    expect(f.content.innerHTML).toContain('data-cwconnect-api="openai"');
+    expect(f.content.innerHTML).not.toContain('data-cwconnect="openai"');
+
+    const dialog: Record<string, unknown> = {
+      style: { cssText: '', display: '' },
+      hidden: true,
+      innerHTML: '',
+      setAttribute: vi.fn(),
+      querySelector: vi.fn(() => ({
+        querySelector: vi.fn(() => ({ onclick: undefined, focus: vi.fn() })),
+        querySelectorAll: vi.fn(() => []),
+        onsubmit: undefined,
+      })),
+    };
+    f.context.document = {
+      title: '',
+      getElementById: vi.fn(() => null),
+      createElement: vi.fn(() => dialog),
+      body: { appendChild: vi.fn() },
+    };
+    const apiBtn = {
+      getAttribute: (attr: string) => (attr === 'data-cwconnect-api' ? 'openai' : ''),
+      onclick: undefined as undefined | (() => void),
+    };
+    f.context.cwBindPikpamCredentialButtons({
+      querySelectorAll: (sel: string) => (sel === '[data-cwconnect-api]' ? [apiBtn] : []),
+    }, 'writer');
+    apiBtn.onclick!();
+    expect(dialog.innerHTML).toContain('name="api_key"');
+    expect(WORKSPACE_SEARCH_CSS).toContain('.cw-service-logo { width:24px; height:24px; object-fit:contain; }');
+    expect(WORKSPACE_SEARCH_CSS).toContain('.cw-service-action.connected {');
   });
 });

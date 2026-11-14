@@ -885,7 +885,16 @@ export class GituServer {
       () => {
         const pikrouter = PROVIDERS['pikrouter'];
         const token = pikrouter ? providerKey(pikrouter)?.key : undefined;
-        return token && pikrouter ? { token, baseUrl: pikrouter.baseUrl || 'https://pikrouter.pikpam.com/v1' } : undefined;
+        if (!token) return undefined;
+        const configured = process.env['PIKPAM_INTEGRATIONS_URL'] || process.env['PIKPAM_BASE_URL'];
+        let baseUrl = configured || 'https://pikpam.com';
+        if (!configured && pikrouter?.baseUrl) {
+          try {
+            const parsed = new URL(pikrouter.baseUrl);
+            if (parsed.hostname !== 'pikrouter.pikpam.com') baseUrl = parsed.origin;
+          } catch { /* default to pikpam.com */ }
+        }
+        return { token, baseUrl };
       },
     );
     this.mailConnections = config.mailConnections ?? new MailConnections();

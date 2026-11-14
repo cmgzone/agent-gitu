@@ -486,4 +486,94 @@ describe('Composio connections', () => {
       expect(new CoworkStore().appPermissions()).toEqual([]);
     } finally { await server.stop(); }
   });
+
+  it('uses https://pikpam.com/api/integrations endpoints for Pikpam mode and handles /docs formats', async () => {
+    const requests: { url: string; method: string; auth: string | null; body?: string }[] = [];
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      const method = (init?.method ?? 'GET').toUpperCase();
+      const headers = new Headers(init?.headers);
+      requests.push({ url, method, auth: headers.get('authorization'), body: typeof init?.body === 'string' ? init.body : undefined });
+      const parsed = new URL(url);
+      if (parsed.pathname === '/api/integrations/catalog') {
+        return new Response(JSON.stringify({
+          items: [{ app: 'gmail', displayName: 'Gmail', description: 'Read mail', authSchemes: ['OAUTH2'] }],
+          next_cursor: 'cur-2',
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (parsed.pathname === '/api/integrations/accounts' && method === 'GET') {
+        return new Response(JSON.stringify({
+          items: [{ connectedAccountId: 'acc-pik-1', app: 'gmail', alias: 'Work Gmail', status: 'ACTIVE', isDisabled: false }],
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (parsed.pathname === '/api/integrations/connect' && method === 'POST') {
+        return new Response(JSON.stringify({ url: 'https://pikpam.com/integrations/oauth/start' }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (parsed.pathname === '/api/integrations/tools' && method === 'GET') {
+        return new Response(JSON.stringify({
+          tools: [{ slug: 'GMAIL_LIST_MESSAGES', name: 'List messages', description: 'List emails', inputParameters: { type: 'object' } }],
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (parsed.pathname === '/api/integrations/execute' && method === 'POST') {
+        return new Response(JSON.stringify({ successful: true, data: { messages: [{ id: 'm1' }], accessToken: 'strip-me' } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (parsed.pathname === '/api/integrations/accounts/acc-pik-1' && method === 'DELETE') {
+        return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response('Not found', { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const apps = new ComposioConnections(() => 'owner-uuid', new MemoryKeys(), undefined, () => ({
+        token: 'pik-token',
+        baseUrl: 'https://pikrouter.pikpam.com/v1',
+      }));
+      expect(apps.configured).toBe(true);
+      expect(apps.setup).toEqual({ canConfigure: false, keyStorage: 'Pikpam account' });
+
+      const catalog = await apps.catalog('gmail');
+      expect(catalog).toEqual({
+        services: [{
+          slug: 'gmail',
+          name: 'Gmail',
+          description: 'Read mail',
+          authConfigs: [{ id: '', scheme: 'OAUTH2', managed: false, fields: [] }],
+          authSchemes: ['OAUTH2'],
+        }],
+        cursor: 'cur-2',
+      });
+
+      const accounts = await apps.accounts();
+      expect(accounts).toEqual([{ id: 'acc-pik-1', toolkit: 'gmail', status: 'ACTIVE', disabled: false, label: 'Work Gmail' }]);
+
+      const link = await apps.connect('gmail', { callbackUrl: 'http://127.0.0.1:8344/?composio=connected' });
+      expect(link).toEqual({ url: 'https://pikpam.com/integrations/oauth/start', accountId: '', status: 'INITIALIZING' });
+
+      const tools = await apps.tools('gmail', 'list');
+      expect(tools.map(t => t.slug)).toEqual(['GMAIL_LIST_MESSAGES']);
+
+      const result = await apps.execute('gmail', 'GMAIL_LIST_MESSAGES', { maxResults: 5 }, 'acc-pik-1') as { data: Record<string, unknown> };
+      expect(result.data['messages']).toEqual([{ id: 'm1' }]);
+      expect(result.data['accessToken']).not.toBe('strip-me');
+
+      await apps.disconnect('acc-pik-1');
+
+      expect(requests.every(r => r.url.startsWith('https://pikpam.com/api/integrations/') && r.auth === 'Bearer pik-token')).toBe(true);
+      const catalogReq = requests.find(r => r.url.includes('/catalog'))!;
+      expect(new URL(catalogReq.url).searchParams.get('q')).toBe('gmail');
+      expect(new URL(catalogReq.url).searchParams.get('search')).toBe('gmail');
+      const connectBody = JSON.parse(requests.find(r => r.url.endsWith('/connect'))!.body!);
+      expect(connectBody).toMatchObject({
+        app: 'gmail',
+        toolkitSlug: 'gmail',
+        redirectUrl: 'http://127.0.0.1:8344/?composio=connected',
+        callbackUrl: 'http://127.0.0.1:8344/?composio=connected',
+      });
+      const toolsReq = requests.find(r => r.url.includes('/tools'))!;
+      expect(new URL(toolsReq.url).searchParams.get('app')).toBe('gmail');
+      expect(requests.some(r => r.method === 'DELETE' && r.url === 'https://pikpam.com/api/integrations/accounts/acc-pik-1')).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });

@@ -31,4 +31,28 @@ describe('desktop app sign-in', () => {
     expect(await exposed.openAppSignIn('https://connect.composio.dev/link')).toBe(true);
     expect(invoke).toHaveBeenCalledWith('gitu:open-app-sign-in', 'https://connect.composio.dev/link');
   });
+
+  it('permits Pikpam and Composio app sign-in hosts and rejects lookalikes', async () => {
+    let handler!: (event: unknown, url: string) => Promise<boolean>;
+    const mainFrame = { url: 'http://127.0.0.1:8344/' }, openExternal = vi.fn(async () => {});
+    const contents = { isDestroyed: () => false, mainFrame, ipc: { handle: (_channel: string, callback: typeof handler) => { handler = callback; } } };
+    registerAppSignIn(contents, 'http://127.0.0.1:8344', openExternal);
+    for (const url of [
+      'https://pikpam.com/integrations/connect/gmail',
+      'https://www.pikpam.com/integrations/connect/gmail',
+      'https://app.composio.dev/oauth/authorize',
+    ]) {
+      expect(await handler({ senderFrame: mainFrame }, url)).toBe(true);
+    }
+    expect(openExternal).toHaveBeenCalledTimes(3);
+    for (const url of [
+      'http://pikpam.com/integrations/connect/gmail',
+      'https://pikpam.com.evil.example/link',
+      'https://pikpam.com:8443/link',
+      'https://secret@pikpam.com/link',
+    ]) {
+      expect(await handler({ senderFrame: mainFrame }, url)).toBe(false);
+    }
+    expect(openExternal).toHaveBeenCalledTimes(3);
+  });
 });

@@ -69,4 +69,43 @@ describe('connected-app route boundary', () => {
       f.close();
     }
   });
+
+  it('loads Pikpam catalog and available accounts even when no teammate is selected', async () => {
+    const f = fixture();
+    try {
+      const catalog = vi.fn(async () => ({ services: [{ slug: 'gmail', name: 'Gmail' }] }));
+      Object.assign(f.deps.connectedApps, { configured: true, setup: { canConfigure: false, keyStorage: 'Pikpam account' }, catalog });
+      vi.mocked(f.deps.appHub.accounts).mockResolvedValue([
+        { id: 'acc-1', toolkit: 'gmail', status: 'ACTIVE', disabled: false, label: 'Work' },
+      ]);
+      await connectedAppsRoutes({} as IncomingMessage, f.response, new URL('http://localhost/api/connected-apps?agentId='), 'GET', f.deps);
+      expect(catalog).toHaveBeenCalledWith('', undefined);
+      expect(f.send).toHaveBeenCalledWith(f.response, 200, expect.objectContaining({
+        configured: true,
+        keyStorage: 'Pikpam account',
+        agentId: '',
+        accounts: [],
+        availableAccounts: [{ id: 'acc-1', toolkit: 'gmail', status: 'ACTIVE', disabled: false, label: 'Work' }],
+        services: [{ slug: 'gmail', name: 'Gmail', status: 'ACTIVE', accountId: 'acc-1' }],
+      }));
+    } finally {
+      f.close();
+    }
+  });
+
+  it('connects without storing a blank accountId when Pikpam returns only an auth URL', async () => {
+    const f = fixture();
+    try {
+      const store = f.deps.cowork();
+      const agent = store.saveAgent({ name: 'P.A', systemPrompt: 'Help.', allowWrites: true, allowConfig: true });
+      const connect = vi.fn(async () => ({ url: 'https://pikpam.com/integrations/connect/gmail', accountId: '', status: 'INITIALIZING' }));
+      Object.assign(f.deps.connectedApps, { configured: true, setup: { canConfigure: false, keyStorage: 'Pikpam account' }, connect });
+      vi.mocked(f.deps.readBody).mockResolvedValue({ agentId: agent.id, service: 'gmail' });
+      await connectedAppsRoutes({} as IncomingMessage, f.response, new URL('http://localhost/api/connected-apps/connect'), 'POST', f.deps);
+      expect(f.send).toHaveBeenCalledWith(f.response, 200, { url: 'https://pikpam.com/integrations/connect/gmail', accountId: '', status: 'INITIALIZING' });
+      expect(store.appConnections(agent.id)).toEqual([]);
+    } finally {
+      f.close();
+    }
+  });
 });

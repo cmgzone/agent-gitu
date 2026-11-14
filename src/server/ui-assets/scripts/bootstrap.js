@@ -283,6 +283,18 @@
     try {
       if (typeof window === 'undefined' || !window.location || !window.location.search) return;
       var params = new URLSearchParams(window.location.search);
+      if (params.has('composio') || params.has('integration')) {
+        params.delete('composio');
+        params.delete('integration');
+        var cleaned = window.location.pathname + (params.toString() ? '?' + params.toString() : '') + (window.location.hash || '');
+        if (window.history && window.history.replaceState) window.history.replaceState({}, '', cleaned);
+        if (typeof setTimeout === 'function') {
+          setTimeout(function () {
+            if (typeof toast === 'function') toast('Returned from app authorization. Connection status refreshed.');
+            if (typeof openSettings === 'function') openSettings('connections');
+          }, 0);
+        }
+      }
       var token = params.get('token');
       var userEmail = params.get('email');
       var userId = params.get('user_id');

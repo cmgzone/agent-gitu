@@ -136,6 +136,11 @@ export const COWORK_CSS = String.raw`
   .cw-quick-agent { position:relative; display:grid; place-items:center; flex:none; width:44px; height:44px; padding:3px; border:1px solid color-mix(in srgb,var(--border2) 65%,transparent); border-radius:14px; background:color-mix(in srgb,var(--card2) 88%,transparent); cursor:pointer; opacity:.94; filter:none; transition:transform .16s ease,border-color .16s ease,background .16s ease,opacity .16s ease,box-shadow .16s ease; }
   .cw-quick-agent .cw-ava { width:38px; height:38px; background:transparent!important; overflow:visible; filter:drop-shadow(0 2px 5px rgba(0,0,0,.28)); }
   .cw-quick-agent:hover,.cw-quick-agent:focus-visible { opacity:1; filter:none; transform:translateY(-1px) scale(1.06); border-color:var(--run,var(--accent)); background:color-mix(in srgb,var(--run,var(--accent)) 14%,var(--card)); box-shadow:0 6px 16px -4px rgba(0,0,0,.35); }
+  .cw-quick-agent.is-working { opacity:1; border-color:var(--cw-agent-color,var(--accent)); background:color-mix(in srgb,var(--cw-agent-color,var(--accent)) 18%,var(--card)); box-shadow:0 0 0 2px color-mix(in srgb,var(--cw-agent-color,var(--accent)) 30%,transparent),0 6px 18px -4px color-mix(in srgb,var(--cw-agent-color,var(--accent)) 45%,transparent); animation:cw-dock-pulse 2s ease-in-out infinite; }
+  .cw-quick-agent.is-working::after { content:''; position:absolute; top:-3px; right:-3px; width:9px; height:9px; border-radius:50%; background:var(--cw-agent-color,#38bdf8); border:2px solid var(--bg,#0b0f17); box-shadow:0 0 8px var(--cw-agent-color,#38bdf8); animation:cw-dock-beacon 1.4s ease-in-out infinite; }
+  @keyframes cw-dock-pulse { 0%,100% { transform:translateY(0) scale(1); } 50% { transform:translateY(-2px) scale(1.05); } }
+  @keyframes cw-dock-beacon { 0%,100% { transform:scale(.85); opacity:.85; } 50% { transform:scale(1.18); opacity:1; } }
+  @media(prefers-reduced-motion:reduce) { .cw-quick-agent.is-working,.cw-quick-agent.is-working::after { animation:none; } }
   .cw-quick-agent:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
   .cw-quick-agent:disabled { cursor:wait; opacity:.25; }
   .cw .cw-chat.has-teammate-switcher .cw-msgs { padding-right:max(76px,calc((100% - var(--chat-column-width,620px))/2)); }
@@ -1635,6 +1640,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
           '<button type="button" id="cwCurrentChat" aria-label="Cowork mode" title="Cowork mode" aria-pressed="true"><span class="cw-chat-face" id="cwChatAvatar" aria-hidden="true">' + headAva + '</span><span>Cowork</span></button>' +
           (cw.enableCompanies === true ? '<button type="button" data-company-nav aria-label="Companies" title="Cowork company workspaces">' + cwIcon('users') + '<span>Companies</span></button>' : '') +
         '</nav>' +
+        '<div class="cw-team-strip" id="cwTeamStrip" hidden aria-live="polite" aria-label="Team collaboration"></div>' +
         '<div class="cw-visually-hidden"><span id="cwChatTitle">' + esc(activeThread ? activeThread.title : conv.title) + '</span>' +
         '<span class="cw-persona-status" id="cwCharacterStatus" role="status" aria-live="polite" aria-atomic="true"><span>AI teammate · Ready</span><i class="cw-persona-tool" aria-hidden="true" hidden></i></span>' +
         '<span id="cwMemberNames">' + esc((activeThread ? conv.title + ' · ' : '') + members.map(function (m) { return '@' + m.name; }).join(' · ')) + '</span>' +
@@ -2899,7 +2905,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       if (draft) draft.values[key] = input.value;
       if (input === document.activeElement) reviewFocus = { id: id, key: key, start: input.selectionStart, end: input.selectionEnd, scroll: input.scrollTop };
     });
-    cwReplaceTranscript(wrap, cwTranscriptHtml() + '<section id="cwCodingActivity" class="cw-coding-activity" aria-label="Coding tasks" hidden></section><div class="cw-row cw-working-row" id="cwWorkingBubble" hidden><div class="cw-working-bubble" role="status" aria-live="polite" aria-atomic="true"><span class="cw-working-dot" aria-hidden="true"></span><span id="cwWorkingLabel"></span></div></div><div id="cwLive" hidden></div>');
+    cwReplaceTranscript(wrap, cwTranscriptHtml() + '<section id="cwCodingActivity" class="cw-coding-activity" aria-label="Coding tasks" hidden></section><div class="cw-row cw-working-row" id="cwWorkingBubble" hidden><div class="cw-work-card"><div class="cw-working-head"><div class="cw-work-lead" id="cwWorkingLead"></div><div class="cw-working-bubble" role="status" aria-live="polite" aria-atomic="true"><span class="cw-working-dot" aria-hidden="true"></span><span id="cwWorkingLabel"></span><span class="cw-work-elapsed" id="cwWorkingElapsed" hidden></span></div></div><div class="cw-work-stage" id="cwWorkingStage" hidden></div></div></div><div id="cwLive" hidden></div><div class="cw-row cw-receipt-row" id="cwWorkReceipt" hidden></div>');
     wrap.querySelectorAll('details[data-card-details]').forEach(function(details){details.open=!!expandedCards[details.getAttribute('data-card-details')];});
     wrap.querySelectorAll('details[data-cwworkhistory]').forEach(function (details) {
       var saved = workHistoryState[details.getAttribute('data-cwworkhistory')];
@@ -2970,7 +2976,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       var messageId=node.getAttribute('data-cwentrance'),previous=messageId&&messages.get(messageId),signature=node.outerHTML;
       if(previous){if(previous._cwTranscriptSignature!==signature){previous.innerHTML=node.innerHTML;previous.className=node.className;previous._cwTranscriptSignature=signature;}keep.add(previous);return previous;}
       if(messageId)node._cwTranscriptSignature=signature;
-      if(node.id==='cwLive'||node.id==='cwWorkingBubble'||node.id==='cwCodingActivity'){var live=Array.from(wrap.children).find(function(item){return item.id===node.id;});if(live){keep.add(live);return live;}}
+      if(node.id==='cwLive'||node.id==='cwWorkingBubble'||node.id==='cwCodingActivity'||node.id==='cwWorkReceipt'){var live=Array.from(wrap.children).find(function(item){return item.id===node.id;});if(live){keep.add(live);return live;}}
       return node;
     });
     var computer=Array.from(wrap.children).find(function(node){return node.id==='cwInlineComputer';});
@@ -3987,6 +3993,21 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       var id = node.getAttribute('data-cw-avatar');
       var member = cwAgentById(id);
       node.classList.toggle('working', Boolean(cw.busy && member && (cw.working === member.name || (cw.progresses || []).some(function (p) { return p.agentId === id; }))));
+    });
+    document.querySelectorAll('[data-quick-agent]').forEach(function (btn) {
+      var qid = btn.getAttribute('data-quick-agent');
+      var member = cwAgentById(qid);
+      var subWorking = Boolean((cw.subAgents || []).some(function (sa) { return sa && sa.status === 'running' && (sa.agentId === qid || sa.agentName === (member && member.name)); }));
+      var isWork = Boolean(member && (subWorking || (cw.busy && (
+        cw.working === member.name ||
+        (cw.progress && (cw.progress.agentId === qid || cw.progress.agentName === member.name)) ||
+        (cw.progresses || []).some(function (p) { return p.agentId === qid || p.agentName === member.name; })
+      ))));
+      btn.classList.toggle('is-working', isWork);
+      if (member) {
+        var col = typeof cwCharacterColor === 'function' ? cwCharacterColor(typeof cwEffectiveAvatar === 'function' ? cwEffectiveAvatar(member) : member.avatar) : '';
+        if (col && /^#[0-9a-f]{6}$/i.test(col)) btn.style.setProperty('--cw-agent-color', col);
+      }
     });
     cwRenderComposerAction();
   }

@@ -1,6 +1,6 @@
 import { createContext, Script } from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
-import { COWORK_CLEAN_ACTIVITY_JS } from '../src/server/ui-cowork-activity.js';
+import { COWORK_CLEAN_ACTIVITY_CSS, COWORK_CLEAN_ACTIVITY_JS } from '../src/server/ui-cowork-activity.js';
 
 function activity(withWorkingBubble = false) {
   const state = { busy: true, progresses: [] as Record<string, unknown>[], requests: [] as Record<string, unknown>[], workHistory: [] as unknown[] };
@@ -123,5 +123,118 @@ describe('Cowork clean activity', () => {
     expect(working.hidden).toBe(true);
     expect(u.elements.cwCleanStatus.hidden).toBe(false);
     expect(u.elements.cwCleanLabel.textContent).toBe('Checking the relevant files…');
+  });
+
+  it('renders safe connection bridges without leaking details, paths, or raw HTML', () => {
+    const state = { active: 'c1', activeThreadId: 't1', busy: true, agents: [{ id: 'a1', name: 'P.A<script>', avatar: { shape: 'dot-orb', color: '#ff6b57' } }], progresses: [] as Record<string, unknown>[], requests: [], workHistory: [] };
+    const elements: Record<string, any> = {
+      cwCleanActivity: { hidden: true }, cwCleanStatus: { hidden: true }, cwCleanLabel: { textContent: '' }, cwCleanDetails: { hidden: true, textContent: '', onclick: null },
+      cwWorkingBubble: { hidden: true, style: { setProperty: vi.fn() } }, cwWorkingLabel: { textContent: '' },
+      cwWorkingLead: { innerHTML: '', _cwSig: '' }, cwWorkingStage: { hidden: true, innerHTML: '', _cwSig: '' }, cwWorkingElapsed: { hidden: true, textContent: '' },
+      cwTeamStrip: { hidden: true, innerHTML: '', _cwSig: '', onclick: null }, cwWorkReceipt: { hidden: true, innerHTML: '', _cwSig: '', onclick: null },
+      cwMsgs: { scrollHeight: 100, scrollTop: 100, clientHeight: 100 },
+    };
+    const context = createContext({
+      document: {},
+      cwEnsure: () => state,
+      $: (id: string) => elements[id],
+      cwAgentById: (id: string) => state.agents.find((a) => a.id === id),
+      cwAva: (a: any) => `<span class="cw-ava">${a?.id || ''}</span>`,
+      cwFaviconHtml: (host: string) => `<img class="cw-favicon" alt="${host}">`,
+      cwCharacterColor: () => '#ff6b57',
+      cwToolProgressText: (p: any) => (p.appService ? 'Using connected app…' : 'Checking web…'),
+      cwVisibleReply: (text: string) => text || '',
+    });
+    new Script(COWORK_CLEAN_ACTIVITY_JS).runInContext(context);
+
+    state.progresses = [{ agentId: 'a1', agentName: 'P.A<script>', tool: 'github_list_prs', appService: 'github', detail: 'src/secret-token.ts && cat .env' }];
+    context.cwRenderCleanActivity();
+    expect(elements.cwWorkingBubble.hidden).toBe(false);
+    expect(elements.cwWorkingStage.hidden).toBe(false);
+    expect(elements.cwWorkingStage.innerHTML).toContain('GitHub');
+    expect(elements.cwWorkingStage.innerHTML).toContain('cw-conn-packet');
+    expect(elements.cwWorkingStage.innerHTML).toContain('P.A&lt;script&gt;');
+    expect(elements.cwWorkingStage.innerHTML).not.toContain('<script>');
+    expect(elements.cwWorkingStage.innerHTML).not.toContain('secret-token');
+    expect(elements.cwWorkingStage.innerHTML).not.toContain('.env');
+
+    state.progresses = [{ agentId: 'a1', tool: 'web_fetch', webUrl: 'https://docs.github.com/en/private/repo?token=supersecret' }];
+    context.cwRenderCleanActivity();
+    expect(elements.cwWorkingStage.innerHTML).toContain('docs.github.com');
+    expect(elements.cwWorkingStage.innerHTML).not.toContain('supersecret');
+    expect(elements.cwWorkingStage.innerHTML).not.toContain('/en/private');
+
+    state.progresses = [{ agentId: 'a1', tool: 'mcp_notion_search', mcpServer: 'Notion<img onerror=1>' }];
+    context.cwRenderCleanActivity();
+    expect(elements.cwWorkingStage.innerHTML).toContain('Notion&lt;img onerror=1&gt;');
+    expect(elements.cwWorkingStage.innerHTML).not.toContain('<img onerror=1>');
+  });
+
+  it('renders the floating team strip, multi-agent handoff lanes, and collapsible completion receipt', () => {
+    const state = {
+      active: 'g1',
+      activeThreadId: 'main',
+      busy: true,
+      agents: [
+        { id: 'pa', name: 'P.A', avatar: { shape: 'dot-orb', color: '#ff6b57' } },
+        { id: 'forge', name: 'Forge', avatar: { shape: 'dot-nova', color: '#8f80ff' } },
+      ],
+      progresses: [] as Record<string, unknown>[],
+      requests: [],
+      workHistory: [],
+    };
+    const elements: Record<string, any> = {
+      cwCleanActivity: { hidden: true }, cwCleanStatus: { hidden: true }, cwCleanLabel: { textContent: '' }, cwCleanDetails: { hidden: true, textContent: '', onclick: null },
+      cwWorkingBubble: { hidden: true, style: { setProperty: vi.fn() } }, cwWorkingLabel: { textContent: '' },
+      cwWorkingLead: { innerHTML: '', _cwSig: '' }, cwWorkingStage: { hidden: true, innerHTML: '', _cwSig: '' }, cwWorkingElapsed: { hidden: true, textContent: '' },
+      cwTeamStrip: { hidden: true, innerHTML: '', _cwSig: '', onclick: null }, cwWorkReceipt: { hidden: true, innerHTML: '', _cwSig: '', onclick: null },
+      cwMsgs: { scrollHeight: 100, scrollTop: 100, clientHeight: 100 },
+    };
+    const context = createContext({
+      document: {},
+      cwEnsure: () => state,
+      $: (id: string) => elements[id],
+      cwActiveConv: () => ({ id: 'g1', kind: 'group', memberIds: ['pa', 'forge'] }),
+      cwAgentById: (id: string) => state.agents.find((a) => a.id === id),
+      cwAva: (a: any) => `<span class="cw-ava">${a?.id || ''}</span>`,
+      cwCharacterColor: (av: any) => av?.color || '#60a5fa',
+      cwToolProgressText: (p: any) => (p.tool === 'message_teammate' ? 'Coordinating with teammate…' : 'Updating the requested files…'),
+      cwVisibleReply: (text: string) => text || '',
+    });
+    new Script(COWORK_CLEAN_ACTIVITY_JS).runInContext(context);
+
+    state.progresses = [
+      { agentId: 'pa', agentName: 'P.A', tool: 'message_teammate' },
+      { agentId: 'forge', agentName: 'Forge', tool: 'write_file' },
+    ];
+    context.cwRenderCleanActivity();
+    expect(elements.cwTeamStrip.hidden).toBe(false);
+    expect(elements.cwTeamStrip.innerHTML).toContain('cw-collab-arrow');
+    expect(elements.cwTeamStrip.innerHTML).toContain('P.A');
+    expect(elements.cwTeamStrip.innerHTML).toContain('Forge');
+    expect(elements.cwWorkingStage.innerHTML).toContain('cw-collab-lanes');
+    expect(elements.cwWorkingStage.innerHTML).toContain('Teammate Handoff');
+    expect(elements.cwWorkReceipt.hidden).toBe(true);
+
+    state.busy = false;
+    state.progresses = [];
+    context.cwRenderCleanActivity();
+    expect(elements.cwTeamStrip.hidden).toBe(true);
+    expect(elements.cwWorkingBubble.hidden).toBe(true);
+    expect(elements.cwWorkReceipt.hidden).toBe(false);
+    expect(elements.cwWorkReceipt.innerHTML).toContain('2 teammates finished');
+
+    elements.cwWorkReceipt.onclick({ target: { closest: (sel: string) => sel === '[data-cw-receipt-toggle]' } });
+    expect(elements.cwWorkReceipt.innerHTML).toContain('Hide steps');
+    elements.cwWorkReceipt.onclick({ target: { closest: (sel: string) => sel === '[data-cw-receipt-dismiss]' } });
+    expect(elements.cwWorkReceipt.hidden).toBe(true);
+  });
+
+  it('exports streaming meta, caret, connection bridge, team strip, and reduced-motion styles', () => {
+    expect(COWORK_CLEAN_ACTIVITY_CSS).toContain('.cw .cw-live-row .cw-meta { display:flex;');
+    expect(COWORK_CLEAN_ACTIVITY_CSS).toContain('.cw .cw-live-row .cw-progress-text:not(:empty)::after');
+    expect(COWORK_CLEAN_ACTIVITY_CSS).toContain('@keyframes cw-packet-flow');
+    expect(COWORK_CLEAN_ACTIVITY_CSS).toContain('.cw-team-strip');
+    expect(COWORK_CLEAN_ACTIVITY_CSS).toContain('@media(prefers-reduced-motion:reduce)');
   });
 });

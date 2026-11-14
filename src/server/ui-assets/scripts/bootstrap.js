@@ -223,15 +223,18 @@
     return (S.models || []).some(providerIsUsable);
   }
   function ensureUsableModelSelection() {
+    var pikEntry = (S.models || []).filter(function(p){return p&&p.id==='pikrouter';})[0];
     var current = String(S.sel.model || '');
+    if (pikEntry && current.indexOf('pikrouter::') !== 0) current = '';
     var found = false;
     (S.models || []).forEach(function (p) {
+      if (pikEntry && p.id !== 'pikrouter') return;
       if (!providerIsUsable(p)) return;
       (p.models || []).forEach(function (m) { if (current === p.id + '::' + m.id) found = true; });
     });
-    if (found) return;
+    if (found) { S.sel.model = current; return; }
     var pikProvider = (S.models || []).filter(function(p){return p.id==='pikrouter'&&providerIsUsable(p);})[0];
-    var firstProvider = pikProvider || (S.models || []).filter(function(p){return p.id!=='alibaba'&&providerIsUsable(p);})[0];
+    var firstProvider = pikProvider || (pikEntry ? null : (S.models || []).filter(function(p){return p.id!=='alibaba'&&providerIsUsable(p);})[0]);
     if (!firstProvider) { S.sel.model = ''; return; }
     var firstModel = (firstProvider.models || []).filter(function (m) { return m.id === firstProvider.defaultModel; })[0] || firstProvider.models[0];
     S.sel.model = firstModel ? firstProvider.id + '::' + firstModel.id : '';

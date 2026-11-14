@@ -1,3 +1,5 @@
+import { createContext, Script } from 'node:vm';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import {
   DEFAULT_PIKROUTER_AUTH_URL,
@@ -26,6 +28,7 @@ import { effortStyleFor, PLATFORM_SAFETY_MAX_TOKENS } from '../src/llm/llm.js';
 import { piProviderConfig } from '../src/llm/pi-native.js';
 import { authPage } from '../src/server/ui-auth.js';
 import { ONBOARDING_JS } from '../src/server/ui-onboarding.js';
+import { UI_MODEL_CATALOG_JS } from '../src/server/ui-model-catalog.js';
 
 describe('PikRouter integration', () => {
   const originalFetch = globalThis.fetch;
@@ -397,5 +400,45 @@ describe('PikRouter integration', () => {
       redirectUri: 'https://your-app.com/dashboard',
     });
     expect(url).toBe('https://pikpam.com/oauth/topup?client_id=client_gitu_agent&token=jwt_user_token_123&redirect_uri=https%3A%2F%2Fyour-app.com%2Fdashboard');
+  });
+
+  it('keeps only pikrouter active in UI catalog and model selection when other providers are returned', async () => {
+    const context = createContext({
+      S: {
+        sel: { model: 'openai::gpt-4.1-mini' },
+        settings: {},
+        models: [],
+        modelsLoaded: false,
+      },
+      $: () => null,
+      esc: String,
+      providerIsUsable: (p: any) => Boolean(p && (p.usable || p.hasKey || p.signedIn)),
+      persist: vi.fn(),
+      syncModelLabel: vi.fn(),
+      updateModelMeta: vi.fn(),
+      modelOptionsHtml: () => '',
+      modelSearchText: () => '',
+      Date,
+      api: async (url: string) => {
+        if (url === '/api/models') {
+          return {
+            providers: [
+              { id: 'pikrouter', label: 'PikRouter', usable: true, hasKey: true, defaultModel: 'DeepSeek-V4.1-Flash', models: [{ id: 'DeepSeek-V4.1-Flash' }] },
+              { id: 'openai', label: 'OpenAI', usable: true, hasKey: true, defaultModel: 'gpt-4.1-mini', models: [{ id: 'gpt-4.1-mini' }] },
+              { id: 'alibaba', label: 'Alibaba', usable: true, hasKey: true, defaultModel: 'qwen3.8-max', models: [{ id: 'qwen3.8-max' }] },
+            ],
+            selection: { provider: 'openai', model: 'gpt-4.1-mini', updatedAt: '2026-11-14T12:00:00Z' },
+          };
+        }
+        return {};
+      },
+    });
+    const bootstrapSrc = readFileSync('src/server/ui-assets/scripts/bootstrap.js', 'utf8');
+    const ensureStart = bootstrapSrc.indexOf('  function providerIsUsable');
+    const ensureEnd = bootstrapSrc.indexOf('  function startPikRouterOAuth');
+    new Script(bootstrapSrc.slice(ensureStart, ensureEnd) + '\n' + UI_MODEL_CATALOG_JS).runInContext(context);
+    await context.loadModelCatalog(true);
+    expect(context.S.models.map((p: any) => p.id)).toEqual(['pikrouter']);
+    expect(context.S.sel.model).toBe('pikrouter::DeepSeek-V4.1-Flash');
   });
 });

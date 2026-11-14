@@ -337,54 +337,16 @@
       }
       renderConnections();
     } else if (S.setSection === 'providers') {
-      b.innerHTML = '<h1>Providers</h1>' +
-        '<p style="color:var(--muted);font-size:12.5px">Connect a provider, then choose the default model used for new tasks.</p>' +
-        '<div class="setcard" style="margin-bottom:10px"><div class="setrow"><div class="grow"><div class="t">Bring your own compatible provider</div><div class="d">Add an OpenAI-compatible endpoint. Its key stays in Agent Gitu’s local key store; native tools safely downgrade when unsupported.</div></div><button class="btn dark" id="addCustomProvider">Add provider</button><button class="btn ghost" id="editFallbackModels">Fallback models</button></div></div>' +
-        '<div class="provider-toolbar"><input type="text" id="providerFilter" placeholder="Filter providers…" aria-label="Filter providers"><span class="meta" id="providerSummary"></span></div>' +
-        '<div class="setcard" id="provBody"><div class="meta">loading providers…</div></div>';
-      var addCustomProvider = $('addCustomProvider');
-      if (addCustomProvider) addCustomProvider.onclick = function () {
-        var label = window.prompt('Provider name (for example: Team gateway)');
-        if (!label) return;
-        var slug = label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48);
-        if (!slug) { toast('Use a name with letters or numbers', true); return; }
-        var baseUrl = window.prompt('OpenAI-compatible base URL (HTTPS, or HTTP only for localhost)');
-        if (!baseUrl) return;
-        var defaultModel = window.prompt('Default model ID');
-        if (!defaultModel) return;
-        var keyEnvVar = 'HERMES_CUSTOM_' + slug.toUpperCase().replace(/-/g, '_');
-        var toolMode = window.prompt('Tool mode: auto, native, structured_text, or text', 'auto') || 'auto';
-        var profile = { id: 'custom-' + slug, label: label, baseUrl: baseUrl, defaultModel: defaultModel, keyEnvVar: keyEnvVar, toolMode: toolMode };
-        api('/api/provider-profiles', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(profile) })
-          .then(function () {
-            var key = window.prompt('Paste an API key now (optional — you can add it from the provider row)');
-            if (!key) { toast('Custom provider saved'); refreshModels(); return null; }
-            return api('/api/keys', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ envVar: keyEnvVar, key: key }) });
-          })
-          .then(function () { refreshModels(); })
-          .catch(function (e) { toast((e && e.message) || 'Could not save provider', true); });
-      };
-      var editFallbackModels = $('editFallbackModels');
-      if (editFallbackModels) editFallbackModels.onclick = function () {
-        api('/api/model-fallbacks').then(function (data) {
-          var current = (data.fallbackModels || []).join(', ');
-          var raw = window.prompt('Fallbacks in priority order, comma-separated (provider::model). Cross-provider fallbacks run only when listed here.', current);
-          if (raw === null) return;
-          var fallbackModels = raw.split(',').map(function (v) { return v.trim(); }).filter(Boolean);
-          return api('/api/model-fallbacks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fallbackModels: fallbackModels }) })
-            .then(function () { toast('Fallback models saved'); });
-        }).catch(function (e) { toast((e && e.message) || 'Could not save fallbacks', true); });
-      };
+      b.innerHTML = '<h1>PikRouter Provider</h1>' +
+        '<p style="color:var(--muted);font-size:12.5px">PikRouter (pikpam.com) is the active AI provider for all tasks and agents. Connect your account and choose your default model.</p>' +
+        '<div class="setcard" id="provBody"><div class="meta">loading PikRouter…</div></div>';
       Promise.all([loadModelCatalog(), api('/api/keys').catch(function () { return { stored: [] }; })]).then(function (res) {
         var stored = (res[1] && res[1].stored) || [];
         var body = $('provBody');
         if (!body || S.setSection !== 'providers') return;
         var cur = S.sel.model || '';
-        var prov = S.models.slice().sort(function (a, b) {
-          if (a.id === 'pikrouter') return -1;
-          if (b.id === 'pikrouter') return 1;
-          return Number(providerIsUsable(b)) - Number(providerIsUsable(a));
-        });
+        var pikOnly = S.models.filter(function (p) { return p && p.id === 'pikrouter'; });
+        var prov = pikOnly.length ? pikOnly : S.models.slice(0, 1);
         var readyCount = prov.filter(providerIsUsable).length;
         if ($('providerSummary')) $('providerSummary').textContent = readyCount + ' ready · ' + (prov.length - readyCount) + ' need setup';
         body.innerHTML = prov.map(function (p, i) {

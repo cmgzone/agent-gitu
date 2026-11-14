@@ -154,4 +154,69 @@ describe('setup wizard flow', () => {
     expect(u.elements.startupCover.hidden).toBe(true);
     expect(u.shell.inert).toBe(false);
   });
+
+  it('shows 10 ready-made Pikpam agents, Full Team mode, and Custom Agent mode on onboarding step 0', async () => {
+    const elements: Record<string, any> = {};
+    const shell = { inert: false };
+    let renderedHtml = '';
+    const make = () => ({ hidden: false, textContent: '', value: '', type: 'password', disabled: false, isConnected: true, className: '', focus: vi.fn(), setAttribute: vi.fn(), querySelectorAll: () => [] });
+    const root = {
+      hidden: true,
+      set innerHTML(html: string) {
+        renderedHtml = html;
+        for (const [id, node] of Object.entries(elements)) if (id !== 'setupWizard' && id.startsWith('setup')) { node.isConnected = false; delete elements[id]; }
+        for (const match of html.matchAll(/id="([^"]+)"/g)) elements[match[1]!] = make();
+      },
+      get innerHTML() { return renderedHtml; },
+      querySelectorAll: () => [],
+    };
+    elements.setupWizard = root;
+    elements.startupCover = make(); elements.startupMessage = make(); elements.startupReload = make();
+    const api = vi.fn(async (url: string, opts?: any) => {
+      if (url === '/api/cowork/agents' && (!opts || opts.method !== 'POST')) return { agents: [] };
+      if (url === '/api/cowork/agents' && opts?.method === 'POST') {
+        const body = JSON.parse(opts.body);
+        return { ok: true, agent: { id: 'ag-' + body.name.toLowerCase().replace(/[^a-z0-9]/g, ''), name: body.name } };
+      }
+      return { ok: true };
+    });
+    const context = createContext({
+      S: { sel: { model: 'pikrouter::DeepSeek-V4.1-Flash' }, settings: { theme: 'light' }, modelsLoaded: true, models: [{ id: 'pikrouter', label: 'PikRouter', keyEnvVars: ['PIKROUTER_API_KEY'], models: [{ id: 'DeepSeek-V4.1-Flash' }], defaultModel: 'DeepSeek-V4.1-Flash', hasKey: true, usable: true }] },
+      $: (id: string) => elements[id], esc: (text: unknown) => String(text ?? ''),
+      document: { querySelector: () => shell },
+      themeOptionsHtml: () => '', providerIsUsable: (p: any) => Boolean(p?.usable || p?.hasKey || p?.signedIn),
+      api, persist: vi.fn(), rememberModelSelection: vi.fn(), applyTheme: vi.fn(), openCowork: vi.fn(), cwExit: vi.fn(), cwLoad: vi.fn(),
+      loadModelCatalog: vi.fn(async () => {}), localStorage: { getItem: () => null }, AbortSignal, console: { error: vi.fn() },
+    });
+    new Script(ONBOARDING_JS).runInContext(context);
+    context.openSetupWizard();
+
+    expect(context.setupState.step).toBe(0);
+    expect(context.PIKPAM_READY_AGENTS).toHaveLength(10);
+    expect(renderedHtml).toContain('Choose your Pikpam agents');
+    expect(renderedHtml).toContain('Choose Agents (10)');
+    expect(renderedHtml).toContain('Choose Full Team');
+    expect(renderedHtml).toContain('Create Custom Agent');
+    for (let i = 0; i < 10; i++) expect(elements['setupAgent' + i]).toBeDefined();
+
+    // Full Team mode creates all 10 agents plus a Pikpam Team group conversation
+    context.setupState.agentChoiceMode = 'team';
+    await context.finishSetup();
+    const createdCalls = api.mock.calls.filter(([url, opts]) => url === '/api/cowork/agents' && opts?.method === 'POST');
+    expect(createdCalls).toHaveLength(10);
+    expect(api).toHaveBeenCalledWith('/api/cowork/conversations', expect.objectContaining({
+      method: 'POST',
+      body: expect.stringContaining('"title":"Pikpam Team"'),
+    }));
+
+    // Custom mode creates the user-defined custom agent
+    api.mockClear();
+    context.openSetupWizard();
+    context.setupState.agentChoiceMode = 'custom';
+    context.setupState.customDraft = { name: 'Kira', tagline: 'Catalog Lead', systemPrompt: 'Manage Pikpam catalog', shape: 'dot-mint' };
+    await context.finishSetup();
+    const customCreate = api.mock.calls.find(([url, opts]) => url === '/api/cowork/agents' && opts?.method === 'POST');
+    expect(customCreate).toBeDefined();
+    expect(JSON.parse(customCreate![1].body)).toMatchObject({ name: 'Kira', tagline: 'Catalog Lead', provider: 'pikrouter' });
+  });
 });

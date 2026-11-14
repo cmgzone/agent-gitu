@@ -656,10 +656,16 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
   // Neutral starting points for the INSTRUCTIONS field only. They never fill
   // the name (users name their own agents) and carry no branding.
   var CW_TEMPLATES = [
-    { label: 'Coordinator', prompt: 'You lead a small agent team and own the user\'s outcome. Complete work yourself when your tools are sufficient. Choose useful bounded delegation by mentioning @Name when a specialist or parallel work helps, verify returned results, and deliver one clear answer. Make routine decisions yourself, preserve the user\'s constraints and prior approvals, and ask only for choices that materially change the result or a concrete missing dependency. Keep progress concise.' },
-    { label: 'Engineer', prompt: 'You are a senior software engineer. Read code before changing it, make small focused edits, and verify with tests or builds. Answer with concrete file paths and evidence, and say plainly when something is not yet verified.' },
-    { label: 'Researcher', prompt: 'You are a rigorous research analyst. Gather facts from files and the web, weigh sources, and answer with a short summary first, then supporting detail with links. Distinguish clearly between verified facts and your own inference.' },
-    { label: 'Writer', prompt: 'You are a sharp product writer. Turn rough ideas into clear, tight prose — READMEs, announcements, specs. Prefer plain words, short sentences, and concrete examples. Never invent features or facts.' }
+    { label: 'P.A · Coordinator', name: 'P.A', tagline: 'Chief of Staff & Pikpam Coordinator', description: 'Coordinates your Pikpam team, prioritizes daily tasks, delegates coding & deployments, and delivers verified outcomes.', shape: 'dot-blue', color: '#5ba8ff', chiefOfStaff: true, allowShell: true, allowWrites: true, allowConfig: true, useHostComputer: false, skills: ['browser-workflow', 'pikpam-ecosystem', 'productivity'], prompt: 'You are P.A, Chief of Staff on Pikpam. Coordinate specialists, keep priorities clear, delegate coding or Pikpam Cloud deployment when helpful, verify returned results, and deliver concise outcomes.' },
+    { label: 'Atlas · Cloud & VPS', name: 'Atlas', tagline: 'Pikpam Cloud & VPS Architect', description: 'Manages Pikpam Cloud projects, dedicated VPS infrastructure, Docker/Compose services, and runtime health checks.', shape: 'dot-purple', color: '#8f80ff', chiefOfStaff: false, allowShell: true, allowWrites: true, allowConfig: true, useHostComputer: true, skills: ['pikpam-ecosystem'], prompt: 'You are Atlas, a Pikpam Cloud and VPS architect. Use pikpam-ecosystem tools to inspect customer projects, configure Docker/Compose services on authorized VPS infrastructure, and verify service health before reporting.' },
+    { label: 'Nova · Deploy', name: 'Nova', tagline: 'GitHub & Deployment Engineer', description: 'Clones GitHub repositories into Pikpam Cloud, configures managed app-env secrets, and ships verified builds.', shape: 'dot-mint', color: '#3fd68f', chiefOfStaff: false, allowShell: true, allowWrites: true, allowConfig: false, useHostComputer: true, skills: ['pikpam-ecosystem'], prompt: 'You are Nova, Pikpam GitHub & Deployment specialist. Clone connected repositories, install dashboard-managed app-env variables safely, deploy apps, and verify live HTTPS endpoints.' },
+    { label: 'Forge · Code', name: 'Forge', tagline: 'Full-Stack Coding Engineer', description: 'Writes, refactors, and tests backend APIs and frontend interfaces directly inside your active project.', shape: 'dot-orange', color: '#c9a86a', chiefOfStaff: false, allowShell: true, allowWrites: true, allowConfig: false, useHostComputer: true, skills: ['frontend-design', 'pikpam-ecosystem'], prompt: 'You are Forge, a senior full-stack engineer on Pikpam. Read existing files before editing, build clean UIs and APIs in the selected project workspace, and verify changes with builds and tests.' },
+    { label: 'Vault · Data', name: 'Vault', tagline: 'Database & Storage Engineer', description: 'Designs PostgreSQL schemas, manages Redis queues, runs safe migrations, and configures Pikpam storage volumes.', shape: 'dot-blue', color: '#38bdf8', chiefOfStaff: false, allowShell: true, allowWrites: true, allowConfig: false, useHostComputer: true, skills: ['pikpam-ecosystem'], prompt: 'You are Vault, Pikpam database & storage engineer. Configure scoped PIKPAM_POSTGRES_URL, PIKPAM_REDIS_URL, and storage volumes securely without exposing database ports or credentials.' },
+    { label: 'Aegis · Domains & SSL', name: 'Aegis', tagline: 'Domains, SSL & Security Lead', description: 'Configures custom domains and DNS, verifies HTTPS TLS certificates, and audits secrets and permissions.', shape: 'dot-purple', color: '#f43f5e', chiefOfStaff: false, allowShell: true, allowWrites: false, allowConfig: false, useHostComputer: true, skills: ['pikpam-ecosystem'], prompt: 'You are Aegis, Pikpam domains, SSL & security specialist. Verify DNS records, TLS certificates, credential hygiene, and least-privilege access without exposing secrets.' },
+    { label: 'Pulse · Commerce', name: 'Pulse', tagline: 'Pikpam Commerce & Growth Strategist', description: 'Optimizes pikpam.com storefront catalogs, product listings, pricing strategy, and merchant conversion funnels.', shape: 'dot-orange', color: '#f59e0b', chiefOfStaff: false, allowShell: false, allowWrites: true, allowConfig: false, useHostComputer: true, skills: ['browser-workflow', 'productivity'], prompt: 'You are Pulse, Pikpam Commerce & Growth strategist. Help merchants and founders launch, organize, and grow storefronts, product listings, and conversion funnels on pikpam.com with clear actionable plans.' },
+    { label: 'Clara · Support', name: 'Clara', tagline: 'Customer Success & Inbox Lead', description: 'Triages inbox threads, drafts empathetic customer & order follow-ups, and keeps approvals organized.', shape: 'dot-mint', color: '#10b981', chiefOfStaff: false, allowShell: false, allowWrites: true, allowConfig: false, useHostComputer: true, skills: ['browser-workflow', 'productivity'], prompt: 'You are Clara, Customer Success Lead. Triage incoming support requests and inbox threads, surface urgent blockers, and draft clear, accurate replies for user approval.' },
+    { label: 'Scout · Research', name: 'Scout', tagline: 'Research & Market Intelligence', description: 'Runs live web research, benchmarks competitors and APIs, and returns concise cited briefings.', shape: 'dot-blue', color: '#6366f1', chiefOfStaff: false, allowShell: false, allowWrites: false, allowConfig: false, useHostComputer: true, skills: ['browser-workflow'], prompt: 'You are Scout, a rigorous research analyst. Gather verified facts from files and the web, compare options objectively, and cite sources clearly.' },
+    { label: 'Lyra · Docs & Content', name: 'Lyra', tagline: 'Product Docs, Content & Deck Writer', description: 'Creates crisp launch copy, technical READMEs, campaign docs, and formatted PDF, PPTX, Word, or XLSX exports.', shape: 'dot-purple', color: '#ec4899', chiefOfStaff: false, allowShell: false, allowWrites: true, allowConfig: false, useHostComputer: true, skills: ['productivity', 'frontend-design'], prompt: 'You are Lyra, Product Content & Docs writer on Pikpam. Turn rough ideas into tight copy, technical READMEs, release notes, and polished PDF/PPTX/Word/XLSX deliverables.' }
   ];
 
   // ---- inline SVG icon set (stroke style matches the app's ICONS) ----
@@ -4157,6 +4163,78 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     form.elements.label.focus();
   }
 
+  function cwCreatePikpamTeam(modal, triggerBtn) {
+    var cw = cwEnsure();
+    var specs = typeof PIKPAM_READY_AGENTS !== 'undefined' && Array.isArray(PIKPAM_READY_AGENTS) ? PIKPAM_READY_AGENTS : CW_TEMPLATES;
+    if (triggerBtn) { triggerBtn.disabled = true; triggerBtn.textContent = 'Creating 10 agents…'; }
+    var existingByName = Object.create(null);
+    (cw.agents || []).forEach(function (a) { if (a && a.name) existingByName[String(a.name).toLowerCase()] = a; });
+    var selParts = String(S.sel && S.sel.model || '').split('::');
+    var activeProv = selParts[0] === 'pikrouter' ? 'pikrouter' : 'pikrouter';
+    var activeModel = selParts[0] === 'pikrouter' ? selParts.slice(1).join('::') : '';
+    var memberIds = [];
+    var chiefId = '';
+    var pChain = Promise.resolve();
+    specs.forEach(function (spec) {
+      pChain = pChain.then(function () {
+        var existing = existingByName[String(spec.name || '').toLowerCase()];
+        if (existing && existing.id) {
+          memberIds.push(existing.id);
+          if (spec.chiefOfStaff && !chiefId) chiefId = existing.id;
+          return null;
+        }
+        return api('/api/cowork/agents', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            name: spec.name,
+            tagline: spec.tagline || '',
+            description: spec.description || '',
+            systemPrompt: spec.systemPrompt || spec.prompt || '',
+            avatar: spec.avatar || { shape: spec.shape || 'dot-blue', color: spec.color || '#5ba8ff' },
+            provider: activeProv,
+            model: activeModel,
+            skills: Array.isArray(spec.skills) ? spec.skills : [],
+            allowShell: Boolean(spec.allowShell),
+            allowWrites: spec.allowWrites !== false,
+            allowConfig: Boolean(spec.allowConfig),
+            useHostComputer: Boolean(spec.useHostComputer),
+            chiefOfStaff: Boolean(spec.chiefOfStaff)
+          })
+        }).then(function (res) {
+          if (res && res.agent && res.agent.id) {
+            cw.agents.push(res.agent);
+            if (res.conversation && !cw.convs.some(function (c) { return c.id === res.conversation.id; })) cw.convs.push(res.conversation);
+            memberIds.push(res.agent.id);
+            if (spec.chiefOfStaff && !chiefId) chiefId = res.agent.id;
+          }
+        }).catch(function () {});
+      });
+    });
+    return pChain.then(function () {
+      if (memberIds.length < 2) return null;
+      return api('/api/cowork/conversations', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'group', title: 'Pikpam Team', memberIds: memberIds, chiefId: chiefId || memberIds[0] })
+      }).catch(function () { return null; });
+    }).then(function (teamRes) {
+      if (modal && modal.isConnected) modal.remove();
+      if (teamRes && teamRes.conversation) {
+        cw.convs.push(teamRes.conversation);
+        cwRenderRail();
+        cwOpenConv(teamRes.conversation.id);
+      } else {
+        cwRenderRail();
+        cwLoad(true);
+      }
+      toast('Created all 10 Pikpam team agents');
+    }).catch(function (e) {
+      if (triggerBtn) { triggerBtn.disabled = false; triggerBtn.textContent = 'Create all 10 Pikpam agents'; }
+      toast((e && e.message) || 'Could not create team', true);
+    });
+  }
+
   function cwAgentModal(agent) {
     var cw = cwEnsure();
     var isEdit = Boolean(agent && agent.id);
@@ -4173,7 +4251,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
         color: agent && agent.avatar && agent.avatar.color ? agent.avatar.color : '#5ba8ff',
         shape: agent ? cwAvatarShape(agent.avatar && agent.avatar.shape, agent.avatar && agent.avatar.color) : 'dot-blue'
       },
-      provider: agent ? (agent.provider || '') : (S.sel.model || '').split('::')[0],
+      provider: agent ? (agent.provider || 'pikrouter') : ((S.models || []).some(function (p) { return p && p.id === 'pikrouter'; }) ? 'pikrouter' : (S.sel.model || '').split('::')[0]),
       model: agent ? (agent.model || '') : (S.sel.model || '').split('::').slice(1).join('::'),
       effort: agent ? (agent.effort || '') : '',
       skills: agent ? (agent.skills || []).slice() : ['browser-workflow'],
@@ -4189,7 +4267,9 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     modal.className = 'modal cw-modal cw-agent-editor';
     modal.innerHTML =
       '<div class="box"><div class="bar"><span style="font-weight:600;font-size:13px">' + (isEdit ? 'Edit teammate' : 'New teammate') + '</span><span style="flex:1"></span><button class="btn ghost" id="cwAmCancel">Cancel</button></div>' +
-      '<div class="cw-body"><section class="cw-editor-section"><h2>Identity &amp; character</h2>' +
+      '<div class="cw-body">' +
+        (!isEdit ? '<section class="cw-editor-section"><h2>Pikpam Ready-Made Agents &amp; Full Team</h2><p class="cw-note" style="margin-bottom:10px">Pick any of the 10 pikpam.com specialists to prefill this agent, launch all 10 as a team, or enter custom details below.</p><div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px"><button type="button" class="btn dark" id="cwAmCreateTeam">Create all 10 Pikpam agents (Team)</button></div><div class="cw-templates">' + CW_TEMPLATES.map(function (t, i) { return '<button type="button" data-template="' + i + '" title="' + esc(t.tagline || t.label) + '">' + esc(t.label) + '</button>'; }).join('') + '</div></section>' : '') +
+        '<section class="cw-editor-section"><h2>Identity &amp; character</h2>' +
         '<div class="cw-2col"><div><label>Name — yours to choose</label><input type="text" id="cwAmName" value="' + esc(d.name) + '" placeholder="e.g. Atlas, Vera, Rex…"></div>' +
         '<div><label>Role / tagline</label><input type="text" id="cwAmTag" value="' + esc(d.tagline) + '" placeholder="Backend engineer"></div></div>' +
         '<label for="cwAmDescription">Description</label><textarea id="cwAmDescription" placeholder="What will this teammate help you with?">'+esc(agent&&agent.description||'')+'</textarea><label>Character</label>' +
@@ -4203,10 +4283,10 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
           '</div>' +
         '</div>' +
         '</section><section class="cw-editor-section"><h2>Personality &amp; working style</h2>' +
-        (!isEdit ? '<label>Starting points — fill instructions only, then make it yours</label><div class="cw-templates">' + CW_TEMPLATES.map(function (t, i) { return '<button type="button" data-template="' + i + '">' + esc(t.label) + '</button>'; }).join('') + '</div>' : '') +
+        (!isEdit ? '<label>Quick templates — fill role, instructions &amp; permissions</label><div class="cw-templates">' + CW_TEMPLATES.map(function (t, i) { return '<button type="button" data-template="' + i + '">' + esc(t.label) + '</button>'; }).join('') + '</div>' : '') +
         '<label>Personality &amp; instructions (the system prompt)</label><textarea id="cwAmPrompt" placeholder="Who is this agent, how does it think and answer?">' + esc(d.systemPrompt) + '</textarea>' +
         '</section><section class="cw-editor-section"><h2>Model &amp; capabilities</h2>' +
-        '<div class="cw-2col"><div><label>Model provider</label><select id="cwAmProv"><option value="">Server default</option>' + (S.models || []).map(function (p) { return '<option value="' + esc(p.id) + '"' + (p.id === d.provider ? ' selected' : '') + '>' + esc(p.label || p.id) + '</option>'; }).join('') + '</select></div>' +
+        '<div class="cw-2col"><div><label>Model provider (PikRouter)</label><select id="cwAmProv"><option value="">Server default</option>' + (function () { var list = (S.models || []).filter(function (p) { return p && p.id === 'pikrouter'; }); return (list.length ? list : (S.models || [])).map(function (p) { return '<option value="' + esc(p.id) + '"' + (p.id === d.provider ? ' selected' : '') + '>' + esc(p.label || p.id) + '</option>'; }).join(''); })() + '</select></div>' +
         '<div><label for="cwAmModel">Model</label><input type="text" id="cwAmModelSearch" placeholder="Search models…" aria-label="Search models for the selected provider" aria-controls="cwAmModel" autocomplete="off" spellcheck="false" style="margin-bottom:6px"><select id="cwAmModel" aria-describedby="cwAmModelCount"><option value="">Provider default</option></select><div id="cwAmModelCount" class="meta" role="status" aria-live="polite"></div></div></div>' +
         '<div class="cw-2col"><div><label>Effort</label><select id="cwAmEffort"><option value="">default</option><option value="low"' + (d.effort === 'low' ? ' selected' : '') + '>low</option><option value="medium"' + (d.effort === 'medium' ? ' selected' : '') + '>medium</option><option value="high"' + (d.effort === 'high' ? ' selected' : '') + '>high</option><option value="max"' + (d.effort === 'max' ? ' selected' : '') + '>max</option></select></div>' +
         '<div><label>Chief of staff</label><div class="cw-check" style="margin-top:8px"><input type="checkbox" id="cwAmChief"' + (d.chiefOfStaff ? ' checked' : '') + '> <span>Preselect as chief in new groups</span></div></div></div>' +
@@ -4265,11 +4345,33 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
         refreshPreview();
       };
     });
+    var createTeamBtn = modal.querySelector('#cwAmCreateTeam');
+    if (createTeamBtn) {
+      createTeamBtn.onclick = function () { cwCreatePikpamTeam(modal, createTeamBtn); };
+    }
     modal.querySelectorAll('[data-template]').forEach(function (b) {
       b.onclick = function () {
         var t = CW_TEMPLATES[Number(b.getAttribute('data-template'))];
+        if (!t) return;
         $('cwAmPrompt').value = t.prompt;
-        if (t.label === 'Coordinator') $('cwAmChief').checked = true;
+        var nameInput = $('cwAmName');
+        if (t.name && nameInput && (!nameInput.value.trim() || nameInput.value.trim() === d._autoFilledName)) {
+          nameInput.value = t.name;
+          d._autoFilledName = t.name;
+        }
+        if (t.tagline) $('cwAmTag').value = t.tagline;
+        if (t.description && $('cwAmDescription')) $('cwAmDescription').value = t.description;
+        if (t.shape) { d.avatar.shape = t.shape; d.avatar.color = t.color || CW_DOT_COLORS[t.shape] || d.avatar.color; refreshPreview(); }
+        if (typeof t.allowShell === 'boolean') $('cwAmShell').checked = t.allowShell;
+        if (typeof t.allowWrites === 'boolean') $('cwAmWrites').checked = t.allowWrites;
+        if (typeof t.allowConfig === 'boolean') $('cwAmConfig').checked = t.allowConfig;
+        $('cwAmChief').checked = Boolean(t.chiefOfStaff || t.label === 'Coordinator');
+        if (Array.isArray(t.skills)) {
+          d.skills = t.skills.slice();
+          modal.querySelectorAll('[data-skill]').forEach(function (sb) {
+            sb.classList.toggle('on', d.skills.indexOf(sb.getAttribute('data-skill')) >= 0);
+          });
+        }
       };
     });
     modal.querySelectorAll('[data-skill]').forEach(function (b) {
@@ -4307,7 +4409,9 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       if (!modal.isConnected) return;
       var pid = provSel.value;
       d.model = modelSel.value || d.model;
-      provSel.innerHTML = '<option value="">Server default</option>' + S.models.map(function (p) {
+      var pikProvList = S.models.filter(function (p) { return p && p.id === 'pikrouter'; });
+      var provOptionsSource = pikProvList.length ? pikProvList : S.models;
+      provSel.innerHTML = '<option value="">Server default</option>' + provOptionsSource.map(function (p) {
         return '<option value="' + esc(p.id) + '"' + (p.id === pid ? ' selected' : '') + '>' + esc(p.label || p.id) + '</option>';
       }).join('');
       fillModels();

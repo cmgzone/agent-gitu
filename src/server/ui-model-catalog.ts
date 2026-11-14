@@ -8,7 +8,14 @@ export const UI_MODEL_CATALOG_JS = String.raw`
   function applyRuntimeSelection(value){
     if(!value||!value.updatedAt||S.savedSelectionAt===value.updatedAt)return;
     S.savedSelectionAt=value.updatedAt;
-    if(value.provider&&value.model){S.sel.model=value.provider+'::'+value.model;var active=S.sessions&&S.sessions[S.active];if(active)active.modelOverride=true;var select=$('model');if(select)select.value=S.sel.model;syncModelLabel();updateModelMeta();}
+    if(value.provider&&value.model){
+      var hasPik = (S.models || []).some(function (p) { return p && p.id === 'pikrouter'; });
+      if (hasPik && value.provider !== 'pikrouter') {
+        if (typeof ensureUsableModelSelection === 'function') ensureUsableModelSelection();
+      } else {
+        S.sel.model=value.provider+'::'+value.model;var active=S.sessions&&S.sessions[S.active];if(active)active.modelOverride=true;var select=$('model');if(select)select.value=S.sel.model;syncModelLabel();updateModelMeta();
+      }
+    }
     if(value.projectPath){S.settings.projectPath=value.projectPath;S.lastProjectPath=value.projectPath;}
     persist();
   }
@@ -29,7 +36,8 @@ export const UI_MODEL_CATALOG_JS = String.raw`
     var pending = api('/api/models').then(function (data) {
       if (generation !== modelCatalogGeneration) return modelCatalogPending || S.models;
       if (!data || !Array.isArray(data.providers)) throw new Error('Invalid model catalog');
-      S.models = data.providers;
+      var pikOnly = data.providers.filter(function (p) { return p && p.id === 'pikrouter'; });
+      S.models = pikOnly.length ? pikOnly : data.providers;
       if(selectionRevision===modelChoiceRevision)applyRuntimeSelection(data.selection);
       S.modelsLoaded = true;
       modelCatalogLoadedAt = Date.now();

@@ -121,7 +121,7 @@ export const COWORK_CSS = String.raw`
   .cw-ava svg { width: 100%; height: 100%; display: block; }
   .cw-row > .cw-ava { width: 46px; height: 46px; }
   .report-flat .cw-row > .cw-ava { width: 64px; height: 64px; }
-  .cw-msgs .cw-row > .cw-ava { display: none; }
+  .cw-msgs .cw-row > .cw-ava { display: inline-flex; width: 42px; height: 42px; flex: none; margin-top: 2px; border-radius: 14px; background: color-mix(in srgb, var(--card2) 90%, transparent); border: 1px solid color-mix(in srgb, var(--border2) 70%, transparent); padding: 3px; box-sizing: border-box; box-shadow: 0 4px 12px -4px rgba(0,0,0,.28); overflow: visible; }
   .cw-chat-head .cw-ava { width: 76px; height: 76px; }
   .cw-item .cw-flag { flex: none; color: var(--muted); display: inline-flex; }
   .cw-item .cw-flag svg { width: 14px; height: 14px; }
@@ -130,12 +130,12 @@ export const COWORK_CSS = String.raw`
   .cw-rail-foot .btn { flex: 1; padding: 6px 10px; font-size: 12px; }
   .cw-empty-note { font-size: 11.5px; color: var(--muted); padding: 8px 6px 4px; line-height: 1.5; }
   .cw-chat { position: relative; flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-  .cw-teammate-switcher { position:absolute; top:122px; right:12px; z-index:4; display:flex; flex-direction:column; gap:6px; width:52px; max-height:calc(100% - var(--cw-composer-height,148px) - 146px); padding:4px; box-sizing:border-box; overflow-y:auto; overscroll-behavior:contain; scrollbar-width:none; }
+  .cw-teammate-switcher { position:absolute; top:64px; right:14px; z-index:4; display:flex; flex-direction:column; align-items:center; gap:8px; width:58px; max-height:calc(100% - var(--cw-composer-height,148px) - 82px); padding:8px 6px; box-sizing:border-box; border-radius:20px; background:color-mix(in srgb,var(--card) 82%,transparent); border:1px solid color-mix(in srgb,var(--border2) 75%,transparent); backdrop-filter:blur(16px); box-shadow:0 12px 34px -10px rgba(0,0,0,.45); overflow-y:auto; overscroll-behavior:contain; scrollbar-width:none; }
   .cw-teammate-switcher[hidden] { display:none; }
   .cw-teammate-switcher::-webkit-scrollbar { display:none; }
-  .cw-quick-agent { display:grid; place-items:center; flex:none; width:44px; height:44px; padding:3px; border:0; border-radius:50%; background:transparent; cursor:pointer; opacity:.45; filter:saturate(.65); transition:opacity .18s ease,filter .18s ease; }
-  .cw-quick-agent .cw-ava { width:38px; height:38px; background:transparent!important; }
-  .cw-quick-agent:hover,.cw-quick-agent:focus-visible { opacity:1; filter:none; }
+  .cw-quick-agent { position:relative; display:grid; place-items:center; flex:none; width:44px; height:44px; padding:3px; border:1px solid color-mix(in srgb,var(--border2) 65%,transparent); border-radius:14px; background:color-mix(in srgb,var(--card2) 88%,transparent); cursor:pointer; opacity:.94; filter:none; transition:transform .16s ease,border-color .16s ease,background .16s ease,opacity .16s ease,box-shadow .16s ease; }
+  .cw-quick-agent .cw-ava { width:38px; height:38px; background:transparent!important; overflow:visible; filter:drop-shadow(0 2px 5px rgba(0,0,0,.28)); }
+  .cw-quick-agent:hover,.cw-quick-agent:focus-visible { opacity:1; filter:none; transform:translateY(-1px) scale(1.06); border-color:var(--run,var(--accent)); background:color-mix(in srgb,var(--run,var(--accent)) 14%,var(--card)); box-shadow:0 6px 16px -4px rgba(0,0,0,.35); }
   .cw-quick-agent:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
   .cw-quick-agent:disabled { cursor:wait; opacity:.25; }
   .cw .cw-chat.has-teammate-switcher .cw-msgs { padding-right:max(76px,calc((100% - var(--chat-column-width,620px))/2)); }
@@ -637,6 +637,47 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     'dot-blue', 'dot-mint', 'dot-orange', 'dot-purple'
   ];
   var CW_LEGACY_FALLBACK_SHAPES = ['dot-blue', 'dot-mint', 'dot-orange', 'dot-purple'];
+  var CW_MASCOT_SHAPES = [
+    'dot-orb', 'dot-block', 'dot-tip', 'dot-hexa', 'dot-nova',
+    'dot-dia', 'dot-penta', 'dot-luna', 'dot-plus', 'dot-pill'
+  ];
+  var CW_MASCOT_BY_NAME = {
+    'p.a': { shape: 'dot-orb', color: '#ff6b57' },
+    'pa': { shape: 'dot-orb', color: '#ff6b57' },
+    'atlas': { shape: 'dot-block', color: '#4c7df0' },
+    'nova': { shape: 'dot-nova', color: '#9c6df2' },
+    'forge': { shape: 'dot-hexa', color: '#3fd68f' },
+    'vault': { shape: 'dot-plus', color: '#7ccf35' },
+    'aegis': { shape: 'dot-penta', color: '#f39b52' },
+    'pulse': { shape: 'dot-dia', color: '#29b7ad' },
+    'clara': { shape: 'dot-pill', color: '#ec4899' },
+    'scout': { shape: 'dot-tip', color: '#eab308' },
+    'lyra': { shape: 'dot-luna', color: '#4f6396' }
+  };
+  function cwEffectiveAvatar(agent) {
+    var avatar = agent && agent.avatar;
+    if (avatar && CW_MASCOT_SHAPES.indexOf(avatar.shape) >= 0) {
+      return { shape: avatar.shape, color: CW_DOT_COLORS[avatar.shape] || avatar.color };
+    }
+    var nameKey = String((agent && agent.name) || '').trim().toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(CW_MASCOT_BY_NAME, nameKey)) {
+      return CW_MASCOT_BY_NAME[nameKey];
+    }
+    var agents = (typeof cwEnsure === 'function' && cwEnsure().agents) || [];
+    var idx = -1;
+    if (agent && agent.id) {
+      for (var i = 0; i < agents.length; i++) {
+        if (agents[i] && agents[i].id === agent.id) { idx = i; break; }
+      }
+    }
+    if (idx < 0) {
+      var key = String((agent && (agent.id || agent.name)) || 'agent'), hash = 0;
+      for (var j = 0; j < key.length; j++) hash = (hash * 31 + key.charCodeAt(j)) >>> 0;
+      idx = hash;
+    }
+    var picked = CW_MASCOT_SHAPES[idx % CW_MASCOT_SHAPES.length];
+    return { shape: picked, color: CW_DOT_COLORS[picked] };
+  }
   ${COWORK_COLORS_JS}
   ${COWORK_NOW_JS}
   ${COWORK_CLEAN_ACTIVITY_JS}
@@ -987,7 +1028,8 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     var style = size ? ' style="width:' + size + 'px;height:' + size + 'px;border-radius:' + Math.round(size * 0.32) + 'px"' : '';
     var cw = cwEnsure();
     var busy = agent && cw.busy && ((cw.progresses || []).some(function (p) { return p.agentId === agent.id; }) || cw.working === agent.name);
-    return '<span class="cw-ava' + (busy ? ' working' : '') + '" data-cw-avatar="' + esc(agent && agent.id || '') + '"' + style + '>' + cwAvaImg((agent && agent.avatar) || { color: '#8f80ff', shape: 'orb' }, agent && agent.id) + '</span>';
+    var avatar = cwEffectiveAvatar(agent);
+    return '<span class="cw-ava' + (busy ? ' working' : '') + '" data-cw-avatar="' + esc(agent && agent.id || '') + '"' + style + '>' + cwAvaImg(avatar, agent && agent.id) + '</span>';
   }
   function cwAgentById(id) { var cw = cwEnsure(); for (var i = 0; i < cw.agents.length; i++) if (cw.agents[i].id === id) return cw.agents[i]; return null; }
   function cwCharacterActivity(agentId) {
@@ -1410,7 +1452,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     var signature=JSON.stringify([current,agents.map(function(agent){return [agent.id,agent.name,agent.avatar];})]);
     if(host._teammateSignature===signature)return;
     host._teammateSignature=signature;
-    host.innerHTML=agents.map(function(agent){var label='Chat with '+agent.name;return '<button type="button" class="cw-quick-agent" data-quick-agent="'+esc(agent.id)+'" aria-label="'+esc(label)+'" title="'+esc(label)+'"><span aria-hidden="true">'+cwAva(agent)+'</span></button>';}).join('');
+    host.innerHTML=agents.map(function(agent){var label='Chat with '+agent.name;return '<button type="button" class="cw-quick-agent" data-quick-agent="'+esc(agent.id)+'" data-agent-name="'+esc(agent.name)+'" aria-label="'+esc(label)+'" title="'+esc(label)+'"><span aria-hidden="true">'+cwAva(agent)+'</span></button>';}).join('');
     host.querySelectorAll('[data-quick-agent]').forEach(function(button){button.onclick=function(){
       var buttons=host.querySelectorAll('[data-quick-agent]');buttons.forEach(function(item){item.disabled=true;});
       Promise.resolve(cwOpenDm(button.getAttribute('data-quick-agent'))).finally(function(){buttons.forEach(function(item){item.disabled=false;});});
@@ -1584,7 +1626,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     var members = cwConvMembers(conv);
     var activeThread = cw.threadId ? (cw.threads || []).filter(function (t) { return t.id === cw.threadId; })[0] : null;
     var headAgent = conv.kind === 'group' ? members.find(function(member){return member.id===(cw.selectedAgentId||conv.chiefId);})||members[0] : members[0];
-    var headAva = headAgent ? cwAva(headAgent) : '<span class="cw-ava">'+cwAvaImg({shape:'dot-blue',color:'#5ba8ff'})+'</span>';
+    var headAva = headAgent ? cwAva(headAgent) : '<span class="cw-ava">'+cwAvaImg({shape:'dot-orb',color:'#ff6b57'})+'</span>';
     chat.innerHTML =
       '<div class="cw-chat-head">' +
         '<button class="cw-info-toggle" id="cwBack" aria-label="Search agents and tools" title="Search">' + cwIcon('search') + '</button>' +

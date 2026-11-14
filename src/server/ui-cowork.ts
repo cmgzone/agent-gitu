@@ -626,8 +626,17 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
   ${CHARACTER_JS}
   ${COWORK_PANELS_JS}
   // ==================== COWORK MODE ====================
-  var CW_DOT_COLORS = { 'dot-blue': '#5ba8ff', 'dot-mint': '#3fd68f', 'dot-orange': '#c9a86a', 'dot-purple': '#8f80ff' };
-  var CW_SHAPES = ['dot-blue', 'dot-mint', 'dot-orange', 'dot-purple'];
+  var CW_DOT_COLORS = {
+    'dot-orb': '#ff6b57', 'dot-block': '#4c7df0', 'dot-tip': '#eab308', 'dot-hexa': '#3fd68f', 'dot-nova': '#9c6df2',
+    'dot-dia': '#29b7ad', 'dot-penta': '#f39b52', 'dot-luna': '#4f6396', 'dot-plus': '#7ccf35', 'dot-pill': '#ec4899',
+    'dot-blue': '#5ba8ff', 'dot-mint': '#3fd68f', 'dot-orange': '#c9a86a', 'dot-purple': '#8f80ff'
+  };
+  var CW_SHAPES = [
+    'dot-orb', 'dot-block', 'dot-tip', 'dot-hexa', 'dot-nova',
+    'dot-dia', 'dot-penta', 'dot-luna', 'dot-plus', 'dot-pill',
+    'dot-blue', 'dot-mint', 'dot-orange', 'dot-purple'
+  ];
+  var CW_LEGACY_FALLBACK_SHAPES = ['dot-blue', 'dot-mint', 'dot-orange', 'dot-purple'];
   ${COWORK_COLORS_JS}
   ${COWORK_NOW_JS}
   ${COWORK_CLEAN_ACTIVITY_JS}
@@ -647,7 +656,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     if (!/^#[0-9a-f]{6}$/i.test(color || '')) return 'dot-purple';
     var rgb = [1, 3, 5].map(function (i) { return parseInt(color.slice(i, i + 2), 16); });
     var best = 'dot-purple', distance = Infinity;
-    CW_SHAPES.forEach(function (candidate) {
+    CW_LEGACY_FALLBACK_SHAPES.forEach(function (candidate) {
       var d = [1, 3, 5].reduce(function (sum, i, channel) { return sum + Math.pow(rgb[channel] - parseInt(CW_DOT_COLORS[candidate].slice(i, i + 2), 16), 2); }, 0);
       if (d < distance) { best = candidate; distance = d; }
     });
@@ -656,16 +665,16 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
   // Neutral starting points for the INSTRUCTIONS field only. They never fill
   // the name (users name their own agents) and carry no branding.
   var CW_TEMPLATES = [
-    { label: 'P.A · Coordinator', name: 'P.A', tagline: 'Chief of Staff & Pikpam Coordinator', description: 'Coordinates your Pikpam team, prioritizes daily tasks, delegates coding & deployments, and delivers verified outcomes.', shape: 'dot-blue', color: '#5ba8ff', chiefOfStaff: true, allowShell: true, allowWrites: true, allowConfig: true, useHostComputer: false, skills: ['browser-workflow', 'pikpam-ecosystem', 'productivity'], prompt: 'You are P.A, Chief of Staff on Pikpam. Coordinate specialists, keep priorities clear, delegate coding or Pikpam Cloud deployment when helpful, verify returned results, and deliver concise outcomes.' },
-    { label: 'Atlas · Cloud & VPS', name: 'Atlas', tagline: 'Pikpam Cloud & VPS Architect', description: 'Manages Pikpam Cloud projects, dedicated VPS infrastructure, Docker/Compose services, and runtime health checks.', shape: 'dot-purple', color: '#8f80ff', chiefOfStaff: false, allowShell: true, allowWrites: true, allowConfig: true, useHostComputer: true, skills: ['pikpam-ecosystem'], prompt: 'You are Atlas, a Pikpam Cloud and VPS architect. Use pikpam-ecosystem tools to inspect customer projects, configure Docker/Compose services on authorized VPS infrastructure, and verify service health before reporting.' },
-    { label: 'Nova · Deploy', name: 'Nova', tagline: 'GitHub & Deployment Engineer', description: 'Clones GitHub repositories into Pikpam Cloud, configures managed app-env secrets, and ships verified builds.', shape: 'dot-mint', color: '#3fd68f', chiefOfStaff: false, allowShell: true, allowWrites: true, allowConfig: false, useHostComputer: true, skills: ['pikpam-ecosystem'], prompt: 'You are Nova, Pikpam GitHub & Deployment specialist. Clone connected repositories, install dashboard-managed app-env variables safely, deploy apps, and verify live HTTPS endpoints.' },
-    { label: 'Forge · Code', name: 'Forge', tagline: 'Full-Stack Coding Engineer', description: 'Writes, refactors, and tests backend APIs and frontend interfaces directly inside your active project.', shape: 'dot-orange', color: '#c9a86a', chiefOfStaff: false, allowShell: true, allowWrites: true, allowConfig: false, useHostComputer: true, skills: ['frontend-design', 'pikpam-ecosystem'], prompt: 'You are Forge, a senior full-stack engineer on Pikpam. Read existing files before editing, build clean UIs and APIs in the selected project workspace, and verify changes with builds and tests.' },
-    { label: 'Vault · Data', name: 'Vault', tagline: 'Database & Storage Engineer', description: 'Designs PostgreSQL schemas, manages Redis queues, runs safe migrations, and configures Pikpam storage volumes.', shape: 'dot-blue', color: '#38bdf8', chiefOfStaff: false, allowShell: true, allowWrites: true, allowConfig: false, useHostComputer: true, skills: ['pikpam-ecosystem'], prompt: 'You are Vault, Pikpam database & storage engineer. Configure scoped PIKPAM_POSTGRES_URL, PIKPAM_REDIS_URL, and storage volumes securely without exposing database ports or credentials.' },
-    { label: 'Aegis · Domains & SSL', name: 'Aegis', tagline: 'Domains, SSL & Security Lead', description: 'Configures custom domains and DNS, verifies HTTPS TLS certificates, and audits secrets and permissions.', shape: 'dot-purple', color: '#f43f5e', chiefOfStaff: false, allowShell: true, allowWrites: false, allowConfig: false, useHostComputer: true, skills: ['pikpam-ecosystem'], prompt: 'You are Aegis, Pikpam domains, SSL & security specialist. Verify DNS records, TLS certificates, credential hygiene, and least-privilege access without exposing secrets.' },
-    { label: 'Pulse · Commerce', name: 'Pulse', tagline: 'Pikpam Commerce & Growth Strategist', description: 'Optimizes pikpam.com storefront catalogs, product listings, pricing strategy, and merchant conversion funnels.', shape: 'dot-orange', color: '#f59e0b', chiefOfStaff: false, allowShell: false, allowWrites: true, allowConfig: false, useHostComputer: true, skills: ['browser-workflow', 'productivity'], prompt: 'You are Pulse, Pikpam Commerce & Growth strategist. Help merchants and founders launch, organize, and grow storefronts, product listings, and conversion funnels on pikpam.com with clear actionable plans.' },
-    { label: 'Clara · Support', name: 'Clara', tagline: 'Customer Success & Inbox Lead', description: 'Triages inbox threads, drafts empathetic customer & order follow-ups, and keeps approvals organized.', shape: 'dot-mint', color: '#10b981', chiefOfStaff: false, allowShell: false, allowWrites: true, allowConfig: false, useHostComputer: true, skills: ['browser-workflow', 'productivity'], prompt: 'You are Clara, Customer Success Lead. Triage incoming support requests and inbox threads, surface urgent blockers, and draft clear, accurate replies for user approval.' },
-    { label: 'Scout · Research', name: 'Scout', tagline: 'Research & Market Intelligence', description: 'Runs live web research, benchmarks competitors and APIs, and returns concise cited briefings.', shape: 'dot-blue', color: '#6366f1', chiefOfStaff: false, allowShell: false, allowWrites: false, allowConfig: false, useHostComputer: true, skills: ['browser-workflow'], prompt: 'You are Scout, a rigorous research analyst. Gather verified facts from files and the web, compare options objectively, and cite sources clearly.' },
-    { label: 'Lyra · Docs & Content', name: 'Lyra', tagline: 'Product Docs, Content & Deck Writer', description: 'Creates crisp launch copy, technical READMEs, campaign docs, and formatted PDF, PPTX, Word, or XLSX exports.', shape: 'dot-purple', color: '#ec4899', chiefOfStaff: false, allowShell: false, allowWrites: true, allowConfig: false, useHostComputer: true, skills: ['productivity', 'frontend-design'], prompt: 'You are Lyra, Product Content & Docs writer on Pikpam. Turn rough ideas into tight copy, technical READMEs, release notes, and polished PDF/PPTX/Word/XLSX deliverables.' }
+    { label: 'P.A · Coordinator', name: 'P.A', tagline: 'Chief of Staff & Pikpam Coordinator', description: 'Coordinates your Pikpam team, prioritizes daily tasks, delegates coding & deployments, and delivers verified outcomes.', shape: 'dot-orb', color: '#ff6b57', chiefOfStaff: true, allowShell: true, allowWrites: true, allowConfig: true, useHostComputer: false, skills: ['browser-workflow', 'pikpam-ecosystem', 'productivity'], prompt: 'You are P.A, Chief of Staff on Pikpam. Coordinate specialists, keep priorities clear, delegate coding or Pikpam Cloud deployment when helpful, verify returned results, and deliver concise outcomes.' },
+    { label: 'Atlas · Cloud & VPS', name: 'Atlas', tagline: 'Pikpam Cloud & VPS Architect', description: 'Manages Pikpam Cloud projects, dedicated VPS infrastructure, Docker/Compose services, and runtime health checks.', shape: 'dot-block', color: '#4c7df0', chiefOfStaff: false, allowShell: true, allowWrites: true, allowConfig: true, useHostComputer: true, skills: ['pikpam-ecosystem'], prompt: 'You are Atlas, a Pikpam Cloud and VPS architect. Use pikpam-ecosystem tools to inspect customer projects, configure Docker/Compose services on authorized VPS infrastructure, and verify service health before reporting.' },
+    { label: 'Nova · Deploy', name: 'Nova', tagline: 'GitHub & Deployment Engineer', description: 'Clones GitHub repositories into Pikpam Cloud, configures managed app-env secrets, and ships verified builds.', shape: 'dot-nova', color: '#9c6df2', chiefOfStaff: false, allowShell: true, allowWrites: true, allowConfig: false, useHostComputer: true, skills: ['pikpam-ecosystem'], prompt: 'You are Nova, Pikpam GitHub & Deployment specialist. Clone connected repositories, install dashboard-managed app-env variables safely, deploy apps, and verify live HTTPS endpoints.' },
+    { label: 'Forge · Code', name: 'Forge', tagline: 'Full-Stack Coding Engineer', description: 'Writes, refactors, and tests backend APIs and frontend interfaces directly inside your active project.', shape: 'dot-hexa', color: '#3fd68f', chiefOfStaff: false, allowShell: true, allowWrites: true, allowConfig: false, useHostComputer: true, skills: ['frontend-design', 'pikpam-ecosystem'], prompt: 'You are Forge, a senior full-stack engineer on Pikpam. Read existing files before editing, build clean UIs and APIs in the selected project workspace, and verify changes with builds and tests.' },
+    { label: 'Vault · Data', name: 'Vault', tagline: 'Database & Storage Engineer', description: 'Designs PostgreSQL schemas, manages Redis queues, runs safe migrations, and configures Pikpam storage volumes.', shape: 'dot-plus', color: '#7ccf35', chiefOfStaff: false, allowShell: true, allowWrites: true, allowConfig: false, useHostComputer: true, skills: ['pikpam-ecosystem'], prompt: 'You are Vault, Pikpam database & storage engineer. Configure scoped PIKPAM_POSTGRES_URL, PIKPAM_REDIS_URL, and storage volumes securely without exposing database ports or credentials.' },
+    { label: 'Aegis · Domains & SSL', name: 'Aegis', tagline: 'Domains, SSL & Security Lead', description: 'Configures custom domains and DNS, verifies HTTPS TLS certificates, and audits secrets and permissions.', shape: 'dot-penta', color: '#f39b52', chiefOfStaff: false, allowShell: true, allowWrites: false, allowConfig: false, useHostComputer: true, skills: ['pikpam-ecosystem'], prompt: 'You are Aegis, Pikpam domains, SSL & security specialist. Verify DNS records, TLS certificates, credential hygiene, and least-privilege access without exposing secrets.' },
+    { label: 'Pulse · Commerce', name: 'Pulse', tagline: 'Pikpam Commerce & Growth Strategist', description: 'Optimizes pikpam.com storefront catalogs, product listings, pricing strategy, and merchant conversion funnels.', shape: 'dot-dia', color: '#29b7ad', chiefOfStaff: false, allowShell: false, allowWrites: true, allowConfig: false, useHostComputer: true, skills: ['browser-workflow', 'productivity'], prompt: 'You are Pulse, Pikpam Commerce & Growth strategist. Help merchants and founders launch, organize, and grow storefronts, product listings, and conversion funnels on pikpam.com with clear actionable plans.' },
+    { label: 'Clara · Support', name: 'Clara', tagline: 'Customer Success & Inbox Lead', description: 'Triages inbox threads, drafts empathetic customer & order follow-ups, and keeps approvals organized.', shape: 'dot-pill', color: '#ec4899', chiefOfStaff: false, allowShell: false, allowWrites: true, allowConfig: false, useHostComputer: true, skills: ['browser-workflow', 'productivity'], prompt: 'You are Clara, Customer Success Lead. Triage incoming support requests and inbox threads, surface urgent blockers, and draft clear, accurate replies for user approval.' },
+    { label: 'Scout · Research', name: 'Scout', tagline: 'Research & Market Intelligence', description: 'Runs live web research, benchmarks competitors and APIs, and returns concise cited briefings.', shape: 'dot-tip', color: '#eab308', chiefOfStaff: false, allowShell: false, allowWrites: false, allowConfig: false, useHostComputer: true, skills: ['browser-workflow'], prompt: 'You are Scout, a rigorous research analyst. Gather verified facts from files and the web, compare options objectively, and cite sources clearly.' },
+    { label: 'Lyra · Docs & Content', name: 'Lyra', tagline: 'Product Docs, Content & Deck Writer', description: 'Creates crisp launch copy, technical READMEs, campaign docs, and formatted PDF, PPTX, Word, or XLSX exports.', shape: 'dot-luna', color: '#4f6396', chiefOfStaff: false, allowShell: false, allowWrites: true, allowConfig: false, useHostComputer: true, skills: ['productivity', 'frontend-design'], prompt: 'You are Lyra, Product Content & Docs writer on Pikpam. Turn rough ideas into tight copy, technical READMEs, release notes, and polished PDF/PPTX/Word/XLSX deliverables.' }
   ];
 
   // ---- inline SVG icon set (stroke style matches the app's ICONS) ----
@@ -4248,8 +4257,8 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       tagline: agent ? agent.tagline : '',
       systemPrompt: agent ? agent.systemPrompt : '',
       avatar: {
-        color: agent && agent.avatar && agent.avatar.color ? agent.avatar.color : '#5ba8ff',
-        shape: agent ? cwAvatarShape(agent.avatar && agent.avatar.shape, agent.avatar && agent.avatar.color) : 'dot-blue'
+        color: agent && agent.avatar && agent.avatar.color ? agent.avatar.color : '#ff6b57',
+        shape: agent ? cwAvatarShape(agent.avatar && agent.avatar.shape, agent.avatar && agent.avatar.color) : 'dot-orb'
       },
       provider: agent ? (agent.provider || 'pikrouter') : ((S.models || []).some(function (p) { return p && p.id === 'pikrouter'; }) ? 'pikrouter' : (S.sel.model || '').split('::')[0]),
       model: agent ? (agent.model || '') : (S.sel.model || '').split('::').slice(1).join('::'),
@@ -4324,6 +4333,11 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     function refreshPreview() {
       var wrap = modal.querySelector('#cwAmAvaWrap');
       if (wrap) wrap.innerHTML = cwAvaImg(d.avatar);
+      modal.querySelectorAll('[data-shape]').forEach(function (x) {
+        var cur = x.getAttribute('data-shape') === d.avatar.shape;
+        x.classList.toggle('cur', cur);
+        x.setAttribute('aria-pressed', String(cur));
+      });
       modal.querySelector('#cwAmColor').value=cwCharacterColor(d.avatar);
       modal.querySelectorAll('[data-character-color]').forEach(function(button){button.setAttribute('aria-pressed',String(button.getAttribute('data-character-color')===d.avatar.color));});
     }

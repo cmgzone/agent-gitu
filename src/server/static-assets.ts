@@ -22,6 +22,16 @@ export const CHARACTER_FILES: Record<string, string> = {
   'mint.png': 'image/png',
   'orange.png': 'image/png',
   'purple.png': 'image/png',
+  'orb.png': 'image/png',
+  'block.png': 'image/png',
+  'tip.png': 'image/png',
+  'hexa.png': 'image/png',
+  'nova.png': 'image/png',
+  'dia.png': 'image/png',
+  'penta.png': 'image/png',
+  'luna.png': 'image/png',
+  'plus.png': 'image/png',
+  'pill.png': 'image/png',
 };
 
 export const FONT_FILES: Record<string, string> = {

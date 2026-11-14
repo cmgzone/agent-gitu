@@ -33,11 +33,18 @@ describe('Button icon decoration', () => {
     expect(explicit.insertAdjacentHTML).not.toHaveBeenCalled();
   });
 
-  it('keeps the widget focus backdrop visually empty', () => {
+  it('keeps the widget focus backdrop and onboarding cards visually empty of auto-glyphs', () => {
     const f = controls(), backdrop = f.button('');
     backdrop.matches = (...selectors: string[]) => selectors[0]?.split(',').includes('.cw-widget-backdrop') ?? false;
     backdrop.getAttribute = () => 'Close widgets';
     f.context.decorateActionButton(backdrop);
     expect(backdrop.insertAdjacentHTML).not.toHaveBeenCalled();
+
+    for (const cls of ['.setup-agent-mode', '.setup-agent-card', '.setup-char-pick']) {
+      const card = f.button('Create Custom Agent');
+      card.matches = (...selectors: string[]) => selectors[0]?.split(',').includes(cls) ?? false;
+      f.context.decorateActionButton(card);
+      expect(card.insertAdjacentHTML).not.toHaveBeenCalled();
+    }
   });
 });

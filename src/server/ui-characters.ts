@@ -9,6 +9,16 @@ export function plushCharacterHtml(color: string, identity = '', filter = '', cl
     purple: [[153, 193, 55, 65, 229, 155], [302, 193, 55, 65, 228, 155]],
     orange: [[175, 190, 46, 58, 235, 154], [306, 171, 46, 57, 238, 140]],
     mint: [[171, 230, 45, 55, 232, 200], [294, 230, 46, 57, 231, 198]],
+    orb: [[160, 215, 67, 71, 228, 130], [285, 215, 69, 71, 228, 130]],
+    block: [[174, 194, 42, 52, 220, 130], [295, 193, 43, 54, 220, 130]],
+    tip: [[174, 213, 70, 76, 220, 130]],
+    hexa: [[160, 211, 41, 49, 160, 130], [271, 211, 40, 50, 160, 130]],
+    nova: [[130, 219, 68, 74, 204, 130], [252, 220, 69, 73, 204, 130]],
+    dia: [[180, 169, 44, 55, 232, 130]],
+    penta: [[166, 207, 42, 52, 200, 130], [287, 206, 43, 53, 200, 130]],
+    luna: [[128, 215, 32, 40, 160, 130], [202, 213, 32, 40, 160, 130]],
+    plus: [[167, 183, 42, 50, 196, 130], [281, 183, 42, 50, 196, 130]],
+    pill: [[144, 147, 36, 43, 160, 250], [227, 147, 36, 43, 160, 250]],
   };
   if (!Object.prototype.hasOwnProperty.call(eyes, color)) color = 'purple';
   let seed = 0;
@@ -38,7 +48,7 @@ export const CHARACTER_CSS = String.raw`
   @keyframes plush-breathe { 0%,100% { transform:translateY(0) rotate(-.6deg) scale(1); } 50% { transform:translateY(-1px) rotate(.6deg) scale(1.008); } }
   @keyframes plush-attentive { 0%,100% { transform:translateY(0) rotate(-1deg); } 50% { transform:translateY(-1.5px) rotate(1deg); } }
   @keyframes plush-blink { 0%,40%,45%,100% { clip-path:inset(0 0 100% 0); } 41.4%,42.8% { clip-path:inset(0); } }
-  .cw-modal .cw-shapes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+  .cw-modal .cw-shapes { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 6px; }
   .cw-modal .cw-shapes button { display: flex; align-items: center; gap: 6px; padding: 6px 8px; font-size: 11px; text-transform: none; }
   .cw-modal .cw-shapes button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .cw-shape-preview { display: inline-flex; width: 40px; height: 40px; flex: none; }
@@ -58,7 +68,11 @@ export const CHARACTER_CSS = String.raw`
 
 export const CHARACTER_JS = String.raw`
   ${plushCharacterHtml.toString()}
-  var CW_CHARACTER_NAMES = { 'dot-blue': 'Blue', 'dot-mint': 'Mint', 'dot-orange': 'Orange', 'dot-purple': 'Purple' };
+  var CW_CHARACTER_NAMES = {
+    'dot-orb': 'Orb', 'dot-block': 'Block', 'dot-tip': 'Tip', 'dot-hexa': 'Hexa', 'dot-nova': 'Nova',
+    'dot-dia': 'Dia', 'dot-penta': 'Penta', 'dot-luna': 'Luna', 'dot-plus': 'Plus', 'dot-pill': 'Pill',
+    'dot-blue': 'Blue', 'dot-mint': 'Mint', 'dot-orange': 'Orange', 'dot-purple': 'Purple'
+  };
   function cwWebActivity(p) {
     if (!p || !/^(browse|web_fetch|web_search|search_web)$/.test(p.tool || '')) return '';
     var site = null;

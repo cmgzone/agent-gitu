@@ -198,6 +198,10 @@ describe('setup wizard flow', () => {
     expect(renderedHtml).toContain('Choose Full Team');
     expect(renderedHtml).toContain('Create Custom Agent');
     for (let i = 0; i < 10; i++) expect(elements['setupAgent' + i]).toBeDefined();
+    expect(renderedHtml).toContain('/characters/orb.png');
+    expect(renderedHtml).toContain('/characters/luna.png');
+    expect(renderedHtml).toContain('setup-mode-ico');
+    expect(renderedHtml).toContain('setup-agent-role-badge');
 
     // Full Team mode creates all 10 agents plus a Pikpam Team group conversation
     context.setupState.agentChoiceMode = 'team';

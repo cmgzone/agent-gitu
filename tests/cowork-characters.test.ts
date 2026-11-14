@@ -49,7 +49,7 @@ describe('animated teammate characters and web activity', () => {
     try {
       const file = path.join(dir, 'cowork.json');
       const store = new CoworkStore(file);
-      for (const shape of ['dot-blue', 'dot-mint', 'dot-orange', 'dot-purple', 'home-blob', 'orb', 'cube', 'diamond', 'pyramid']) {
+      for (const shape of ['dot-orb', 'dot-block', 'dot-tip', 'dot-hexa', 'dot-nova', 'dot-dia', 'dot-penta', 'dot-luna', 'dot-plus', 'dot-pill', 'dot-blue', 'dot-mint', 'dot-orange', 'dot-purple', 'home-blob', 'orb', 'cube', 'diamond', 'pyramid'] as const) {
         const agent = store.saveAgent({ name: shape, systemPrompt: 'Help.', avatar: { shape, color: '#3fd68f' } });
         store.saveAgent({ id: agent.id, name: shape, systemPrompt: 'Help with research.' });
         expect(new CoworkStore(file).listAgents().find(a => a.id === agent.id)?.avatar).toEqual({ shape, color: '#3fd68f' });
@@ -59,8 +59,8 @@ describe('animated teammate characters and web activity', () => {
 
   it('offers four bundled plush characters with safe legacy fallbacks', () => {
     const { context } = ui();
-    expect(Array.from(context.CW_SHAPES)).toEqual(['dot-blue', 'dot-mint', 'dot-orange', 'dot-purple']);
-    expect(Object.values(context.CW_CHARACTER_NAMES)).toEqual(['Blue', 'Mint', 'Orange', 'Purple']);
+    expect(Array.from(context.CW_SHAPES)).toEqual(['dot-orb', 'dot-block', 'dot-tip', 'dot-hexa', 'dot-nova', 'dot-dia', 'dot-penta', 'dot-luna', 'dot-plus', 'dot-pill', 'dot-blue', 'dot-mint', 'dot-orange', 'dot-purple']);
+    expect(Object.values(context.CW_CHARACTER_NAMES)).toEqual(['Orb', 'Block', 'Tip', 'Hexa', 'Nova', 'Dia', 'Penta', 'Luna', 'Plus', 'Pill', 'Blue', 'Mint', 'Orange', 'Purple']);
     for (const shape of ['home-blob', 'orb', 'cube', 'cat', 'diamond', 'pyramid']) {
       expect(context.cwAvaImg({ shape, color: '#3fd68f' })).toContain('/characters/mint.png');
     }
@@ -70,7 +70,7 @@ describe('animated teammate characters and web activity', () => {
 
   it('ships the original transparent PNGs and their license locally', () => {
     const { context } = ui();
-    for (const color of ['blue', 'mint', 'orange', 'purple']) {
+    for (const color of ['orb', 'block', 'tip', 'hexa', 'nova', 'dia', 'penta', 'luna', 'plus', 'pill', 'blue', 'mint', 'orange', 'purple']) {
       expect(context.cwAvaImg({ shape: 'dot-' + color })).toContain('/characters/' + color + '.png');
       const png = readFileSync(new URL('../assets/cowork-dots/' + color + '.png', import.meta.url));
       expect(png.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');

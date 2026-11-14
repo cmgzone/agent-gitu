@@ -21,17 +21,17 @@ export const CHAT_SURFACE_CSS = String.raw`
   /* Messages soften as they pass behind the floating navigation/composer.
      These layers never intercept selection, scrolling or control clicks. */
   #cw .cw-chat::before,#cw .cw-chat::after { content:''; position:absolute; left:0; right:0; z-index:1; pointer-events:none; }
-  #cw .cw-chat::before { top:0; height:64px; background:linear-gradient(to bottom,var(--bg),transparent); }
-  #cw .cw-chat::after { bottom:0; height:calc(var(--cw-composer-height,148px) + 20px); background:linear-gradient(to top,var(--bg) 52%,transparent); }
+  #cw .cw-chat::before { top:0; height:64px; background:linear-gradient(to bottom,var(--card),transparent); }
+  #cw .cw-chat::after { bottom:0; height:calc(var(--cw-composer-height,148px) + 20px); background:linear-gradient(to top,var(--card) 52%,transparent); }
   @media(prefers-reduced-motion:reduce) { #cw::before,#cw::after { animation:none; } }
-  :is(#cw,.home-sky,.run-chat) .cw-top-nav { background:var(--card); border:1px solid var(--border); box-shadow:var(--shadow); }
+  :is(#cw,.home-sky,.run-chat) .cw-top-nav { background:var(--card2); border:1px solid var(--border); box-shadow:none; }
   :is(#cw,.home-sky,.run-chat) .cw-top-nav button { color:var(--muted); transition:background-color .18s ease,color .18s ease,transform .18s cubic-bezier(.16,1,.3,1); }
   :is(#cw,.home-sky,.run-chat) .cw-top-nav button:hover { background:var(--hover)!important; color:var(--text); }
   :is(#cw,.home-sky,.run-chat) .cw-top-nav button[aria-pressed=true] { background:var(--dark)!important; color:var(--bg); }
   :is(#cw,.home-sky,.run-chat) .cw-top-nav button:active { transform:scale(.96); }
-  :is(.home-sky,.run-chat) .composer { border-radius:var(--radius-chat,28px); background:var(--chat-composer-surface); border:1px solid var(--border); box-shadow:var(--chat-composer-shadow); }
+  :is(.home-sky,.run-chat) .composer { border-radius:var(--radius-chat,28px); background:var(--card2); border:1.5px solid var(--border2); box-shadow:var(--chat-composer-shadow); }
   body:has(.home-sky) .mobile-nav-btn,body:has(.run-chat) :is(.mobile-nav-btn,.topbar,.vresize,#mascotWrap) { display:none!important; }
-  .run.run-chat { background:var(--cw-chat-surface); width:100%; }
+  .run.run-chat { background:var(--cw-chat-surface); width:100%; } .run.run-chat > :not(.cw-page-nav):not(.chat-shell-button):not(.bottom-composer):not(.approach-panel):not(.jump-latest) { position:relative; z-index:1; }
   /* Keep wheel, touch and keyboard scrolling without a visible track. */
   :is(#cw,.run-chat,.setup-wizard) { scrollbar-width:none; }
   #cw :is(.cw-msgs,.cw-photo-strip,.cw-widget-tray),.run-chat .stream { scrollbar-width:none; }

@@ -7483,7 +7483,7 @@ export class GituServer {
         return;
       }
       this.mobileAccess.issue(req, res);
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
       res.end(UI_HTML);
       return;
     }
@@ -7519,7 +7519,7 @@ export class GituServer {
       const webViewShell = /AgentGituMobile/.test(String(req.headers['user-agent'] ?? ''));
       res.writeHead(200, {
         'content-type': 'text/html; charset=utf-8',
-        ...(webViewShell ? { 'cache-control': 'private, max-age=0, must-revalidate' } : {}),
+        ...(webViewShell ? { 'cache-control': 'private, max-age=0, must-revalidate' } : { 'cache-control': 'no-store' }),
       });
       res.end(UI_HTML);
       return;

@@ -29,9 +29,9 @@ export const COWORK_NOW_CSS = String.raw`
   #cwNow .cw-now-card:hover { background:var(--hover) !important; }
   .cw-shell-nav :is(#cwNavChat,#cwNavNow)[aria-pressed=true] { background:var(--dark) !important; color:var(--bg); }
   .cw .cw-rail-head { padding-top:18px; letter-spacing:0; }
-  .cw .cw-rail-search input { border:1px solid var(--border); background:var(--card); border-radius:var(--radius-el,12px); padding:10px 12px; }
+  .cw .cw-rail-search input { border:1px solid var(--border2); background:var(--card); border-radius:var(--radius-full,9999px); padding:9px 14px; box-shadow:var(--shadow); }
   .cw .cw-sec { letter-spacing:.04em; font-weight:500; margin-top:22px; }
-  .cw .cw-item { border-radius:12px; padding:10px 8px; }
+  .cw .cw-item { border-radius:var(--radius-full,9999px); padding:9px 14px; } .cw .cw-item.cur { border-radius:var(--radius-full,9999px); background:var(--selected); font-weight:600; }
   .cw .cw-item-name { font-weight:500; }
   .cw .cw-chat-head { position:absolute; inset:0 0 auto; height:0; display:block; padding:0; border:0; background:transparent; box-shadow:none; backdrop-filter:none; pointer-events:none; }
   .cw .cw-chat-head .cw-persona-status { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; background:transparent; border:0; box-shadow:none; backdrop-filter:none; -webkit-backdrop-filter:none; }
@@ -43,7 +43,7 @@ export const COWORK_NOW_CSS = String.raw`
   .cw .cw-chat-head .cw-tools-toggle:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
   .cw .cw-chat-head .cw-tools-toggle svg { width:17px; height:17px; }
   .cw .cw-chat-head .cw-tools-toggle[data-handoff=true]::after { content:''; position:absolute; top:4px; right:4px; width:7px; height:7px; border-radius:50%; background:#ff5252; box-shadow:0 0 6px #ff5252; }
-  .cw .cw-top-nav { position:absolute; top:calc(12px + env(safe-area-inset-top, 0px)); left:50%; transform:translateX(-50%); display:flex; gap:2px; padding:3px; border:1px solid var(--border); border-radius:var(--radius-full,9999px); background:var(--card); box-shadow:var(--shadow); pointer-events:auto; }
+  .cw .cw-top-nav { position:absolute; top:calc(12px + env(safe-area-inset-top, 0px)); left:50%; transform:translateX(-50%); display:flex; gap:2px; padding:4px; border:1px solid var(--border); border-radius:var(--radius-full,9999px); background:var(--card2); box-shadow:none; pointer-events:auto; }
   .cw .cw-top-nav button { display:inline-flex; align-items:center; justify-content:center; gap:7px; min-height:34px; padding:0 14px; border:0; border-radius:999px; background:transparent; color:var(--muted); font:inherit; font-size:12.5px; font-weight:500; cursor:pointer; white-space:nowrap; transition:background-color .18s ease,color .18s ease; }
   .cw .cw-top-nav button > span { display:inline!important; }
   .cw .cw-top-nav svg { width:16px; height:16px; flex:none; }
@@ -71,11 +71,12 @@ export const COWORK_NOW_CSS = String.raw`
   .cw .cw-bubble:hover .cw-message-more, .cw .cw-bubble:focus-within .cw-message-more { opacity:1; }
   .cw .cw-composer-wrap { position:absolute; inset:auto 0 0; z-index:3; padding:12px max(24px,calc((100% - var(--chat-column-width,620px))/2)) calc(16px + env(safe-area-inset-bottom, 0px)); background:transparent; border:0; box-shadow:none; pointer-events:none; }
   .cw .cw-composer-wrap > * { pointer-events:auto; }
-  .cw .cw-composer { border-radius:var(--radius-chat,28px); padding:10px 12px; border:1px solid var(--border); background:var(--chat-composer-surface); box-shadow:var(--chat-composer-shadow); }
+  .cw .cw-composer { border-radius:var(--radius-chat,28px); padding:10px 12px; border:1.5px solid var(--border2); background:var(--card2); box-shadow:var(--shadow-float); } .cw .cw-composer:focus-within { background:var(--card); border-color:var(--dark); }
   .cw .cw-composer textarea { padding:8px 4px; font-size:14px; }
   .cw .cw-send { border-radius:50%; }
   .cw .cw-work-history { padding-left:0; }
   .cw .cw-checkpoint-report { margin-left:0; width:100%; }
+  @media(min-width:721px) { .cw:not(.page-open) { background:var(--bg); padding:10px 10px 10px 0; gap:0; } .cw .cw-rail { border-right:0; background:var(--sidebar); } .cw .cw-splitter { opacity:0; width:6px; } .cw:not(.page-open) > .cw-chat { background:var(--card)!important; border:1px solid var(--border); border-radius:24px; box-shadow:var(--shadow); overflow:hidden; } }
   @media(max-width:720px) {
     .cw .cw-rail { background:var(--sidebar); }
     .cw .cw-chat-head { height:0; padding:0; }

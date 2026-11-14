@@ -194,4 +194,15 @@ describe('UI — responsive task shell and trustworthy controls', () => {
     expect(UI_HTML).toContain('if (!S.es) connect(runId);');
     expect(UI_HTML).toContain('polling only');
   });
+
+  it('exposes Connections in sidebars and menu with Astryx Connections and Profile layout surfaces', () => {
+    expect(UI_HTML).toContain('id="homeConnections"');
+    expect(UI_HTML).toContain('data-set="connections"');
+    expect(UI_HTML).toContain('id="cwConnectionsMenuBtn"');
+    expect(UI_HTML).toContain('.connection-page-head');
+    expect(UI_HTML).toContain('.astryx-api-list');
+    expect(UI_HTML).toContain('.astryx-api-row');
+    expect(UI_HTML).toContain('class="cw-identity-hero"');
+    expect(UI_HTML).toContain('.cw-profile-tabs');
+  });
 });

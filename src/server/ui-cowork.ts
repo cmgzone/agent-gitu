@@ -1650,6 +1650,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
         '<button type="button" class="cw-tools-toggle" id="cwToolsBtn" aria-label="Tools and activities" title="Tools and activities" popovertarget="cwToolsMenu">' + cwIcon('dots') + '<span class="cw-tools-badge" id="cwToolsBadge" hidden></span></button>' +
         '<div class="cw-message-menu cw-tools-menu" id="cwToolsMenu" popover="auto" aria-label="Tools and activities">' +
           '<button type="button" class="cw-tool-item" id="cwInfoBtn" aria-label="Agent profile" title="Agent profile" aria-controls="cwChat" aria-pressed="false">' + cwIcon('user') + '<span>Profile</span></button>' +
+          '<button type="button" class="cw-tool-item" id="cwConnectionsMenuBtn" aria-label="Connections" title="Connections">' + cwIcon('link') + '<span>Connections</span></button>' +
           '<button type="button" class="cw-tool-item" id="cwAssistantSettings" data-pa-settings aria-label="Personal assistant preferences" title="Personal assistant">' + cwIcon('crown') + '<span>Personal assistant</span></button>' +
           cwSessionNavHtml() +
           '<button type="button" class="cw-tool-item cw-computer-toggle" id="cwComputerBtn" aria-label="Computer activity" title="Computer activity" aria-controls="cwInlineComputer" hidden>' + cwIcon('monitor') + '<span>Computer</span><span class="cw-tool-dot" id="cwComputerDot" aria-hidden="true"></span></button>' +
@@ -1711,6 +1712,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       });
     }
     var infoBtn = $('cwInfoBtn'); if (infoBtn) infoBtn.onclick = function () { cwOpenProfile(); };
+    var connMenuBtn = $('cwConnectionsMenuBtn'); if (connMenuBtn) connMenuBtn.onclick = function () { cwOpenConnections(); };
     cwBindTopNav();
     cwRenderTeammateSwitcher();
     $('cwVoiceCall').onclick=function(){if(typeof startGituVoice==='function')startGituVoice({kind:'cowork',conversationId:cw.active,threadId:cw.threadId||undefined,agentId:cw.selectedAgentId||(conv.kind==='dm'?conv.memberIds[0]:conv.chiefId||conv.memberIds[0])});};

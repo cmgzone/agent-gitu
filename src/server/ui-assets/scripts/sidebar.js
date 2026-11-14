@@ -15,6 +15,7 @@
         '<button class="newbtn" id="sbNewProject" style="background:none;border:1px dashed var(--border2)">' + icon('folder') + ' New project</button>' +
         '<button class="navitem" data-set="cron"><span class="ico">' + icon('clock') + '</span>Scheduled</button>' +
         '<button class="navitem" data-set="skills"><span class="ico">' + icon('bolt') + '</span>Skills</button>' +
+        '<button class="navitem" data-set="connections"><span class="ico">' + icon('link') + '</span>Connections</button>' +
         '<button class="navitem" data-set="mcp"><span class="ico">' + icon('plug') + '</span>MCP servers</button>' +
         '<button class="navitem" data-set="workspace"><span class="ico">' + icon('folder') + '</span>Workspace</button>' +
         (S.active !== 'home' ? '<button class="navitem' + (S.panelKind === 'state' && !$('toolPanel').hidden ? ' active' : '') + '" data-tool="state"><span class="ico">' + icon('layers') + '</span>Task details</button>' : '') +

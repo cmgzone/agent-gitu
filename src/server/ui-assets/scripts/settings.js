@@ -305,20 +305,54 @@
         renderSettings();
       };
     } else if (S.setSection === 'connections') {
-      b.innerHTML = '<h1>Connections</h1><p class="connection-intro">Apps, accounts and APIs in one place. Choose team access for connected accounts; grant company access from its resource settings.</p><nav class="connection-manager-tabs" aria-label="Connection categories"><button class="btn ghost" data-connection-category="apps" aria-pressed="true">Apps & accounts</button><button class="btn ghost" data-connection-category="apis" aria-pressed="false">Custom APIs</button></nav><section id="workspaceAppsPanel"></section><section id="workspaceApiPanel" hidden><div class="connection-api-heading"><div><h2>Custom APIs</h2><p class="connection-intro">Connect a service with its own API key or access token.</p></div><button class="btn dark" id="workspaceAddApi">Add connection</button></div><div id="connectionsBody"><p role="status">Loading saved APIs…</p></div><div id="workspaceConnectionForm"></div></section>';
+      b.innerHTML = '<header class="connection-page-head"><h1>Connections</h1><p class="connection-intro">Apps, accounts and APIs in one place. Choose team access for connected accounts; grant company access from its resource settings.</p></header>' +
+        '<nav class="connection-manager-tabs" role="tablist" aria-label="Connection categories">' +
+          '<button class="btn ghost" role="tab" data-connection-category="apps" aria-pressed="true">Apps &amp; accounts</button>' +
+          '<button class="btn ghost" role="tab" data-connection-category="apis" aria-pressed="false">Custom APIs</button>' +
+        '</nav>' +
+        '<section id="workspaceAppsPanel"></section>' +
+        '<section id="workspaceApiPanel" hidden>' +
+          '<div class="connection-api-heading">' +
+            '<div><h2>Custom APIs</h2><p class="connection-intro">Connect a service with its own API key or access token.</p></div>' +
+            '<button class="btn dark" id="workspaceAddApi">Add connection</button>' +
+          '</div>' +
+          '<div class="setcard astryx-api-list" id="connectionsBody"><p class="astryx-loading-note" role="status">Loading saved APIs…</p></div>' +
+          '<div id="workspaceConnectionForm"></div>' +
+        '</section>';
       cwMountConnections($('workspaceAppsPanel'));
-      b.querySelectorAll('[data-connection-category]').forEach(function(button){button.onclick=function(){var apps=button.dataset.connectionCategory==='apps';$('workspaceAppsPanel').hidden=!apps;$('workspaceApiPanel').hidden=apps;b.querySelectorAll('[data-connection-category]').forEach(function(tab){tab.setAttribute('aria-pressed',String(tab===button));});};});
-      $('workspaceAddApi').onclick=function(){mountCustomConnection($('workspaceConnectionForm'),{onSaved:function(){renderConnections();},onCancel:function(){$('workspaceConnectionForm').innerHTML='';}});};
+      b.querySelectorAll('[data-connection-category]').forEach(function (button) {
+        button.onclick = function () {
+          var apps = button.dataset.connectionCategory === 'apps';
+          $('workspaceAppsPanel').hidden = !apps;
+          $('workspaceApiPanel').hidden = apps;
+          b.querySelectorAll('[data-connection-category]').forEach(function (tab) { tab.setAttribute('aria-pressed', String(tab === button)); });
+        };
+      });
+      $('workspaceAddApi').onclick = function () { mountCustomConnection($('workspaceConnectionForm'), { onSaved: function () { renderConnections(); }, onCancel: function () { $('workspaceConnectionForm').innerHTML = ''; } }); };
       function renderConnections() {
         api('/api/connections').then(function (data) {
           var body = $('connectionsBody');
           if (!body || S.setSection !== 'connections') return;
           var rows = data.connections || [];
           body.innerHTML = rows.map(function (c) {
-            var capabilities = (c.capabilities || []).join(', ') || 'no declared capabilities';
-            var status = c.lastValidationStatus === 'ok' ? '<span class="chip ok">validated</span>' : c.lastValidationStatus === 'failed' ? '<span class="chip bad">validation failed</span>' : '<span class="chip">not tested</span>';
-            return '<div class="setrow" style="align-items:flex-start"><div class="grow"><div class="t">' + esc(c.label) + ' ' + status + '</div><div class="d">' + esc(c.provider) + ' · ' + esc(capabilities) + '</div><div class="hint">' + esc(c.baseUrl) + (c.documentationUrl ? ' · docs configured' : '') + ' · credential ' + (c.hasCredential ? 'saved locally' : 'missing') + '</div></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn ghost" data-editconn="' + esc(c.id) + '">Edit</button><button class="btn ghost" data-testconn="' + esc(c.id) + '">Test</button><button class="btn ghost" data-delconn="' + esc(c.id) + '">Remove</button></div></div>';
-          }).join('') || '<div class="meta">No saved connections yet.</div>';
+            var capabilities = (c.capabilities || []).join(', ') || 'No declared capabilities';
+            var dotKind = c.lastValidationStatus === 'ok' ? 'success' : c.lastValidationStatus === 'failed' ? 'error' : 'neutral';
+            var dotText = c.lastValidationStatus === 'ok' ? 'Validated' : c.lastValidationStatus === 'failed' ? 'Validation failed' : 'Not tested';
+            var statusHtml = '<span class="astryx-status-inline ' + dotKind + '"><span class="astryx-status-dot" aria-hidden="true"></span><span>' + dotText + '</span></span>';
+            return '<div class="setrow astryx-api-row">' +
+              '<span class="astryx-item-icon" aria-hidden="true">' + icon('link') + '</span>' +
+              '<div class="grow">' +
+                '<div class="astryx-row-title"><span class="t">' + esc(c.label) + '</span>' + statusHtml + '</div>' +
+                '<div class="d">' + esc(c.provider) + ' · ' + esc(capabilities) + '</div>' +
+                '<div class="hint">' + esc(c.baseUrl) + (c.documentationUrl ? ' · Docs configured' : '') + ' · Credential ' + (c.hasCredential ? 'saved locally' : 'missing') + '</div>' +
+              '</div>' +
+              '<div class="astryx-row-actions">' +
+                '<button class="btn ghost" data-editconn="' + esc(c.id) + '">Edit</button>' +
+                '<button class="btn ghost" data-testconn="' + esc(c.id) + '">Test</button>' +
+                '<button class="btn ghost astryx-danger-btn" data-delconn="' + esc(c.id) + '">Remove</button>' +
+              '</div>' +
+            '</div>';
+          }).join('') || '<div class="astryx-empty-list"><div class="astryx-empty-icon" aria-hidden="true">' + icon('link') + '</div><strong>No custom APIs saved</strong><p>Add an API key or bearer token to connect private endpoints and internal tools.</p></div>';
           body.querySelectorAll('[data-editconn]').forEach(function(btn){btn.onclick=function(){mountCustomConnection($('workspaceConnectionForm'),{profile:rows.find(function(c){return c.id===btn.dataset.editconn;}),onSaved:function(){renderConnections();}});};});
           body.querySelectorAll('[data-testconn]').forEach(function (btn) {
             btn.onclick = function () {

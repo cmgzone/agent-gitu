@@ -12,15 +12,24 @@
       });
       var activePath = effectiveProjectPath();
       var html = '<button class="newbtn" id="sbNew" title="starts in: ' + esc(activePath || 'choose a project first') + '">' + icon('pencil') + ' New session <span style="opacity:.6;font-weight:500;font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">· ' + esc(effectiveProjectName()) + '</span></button>' +
-        '<button class="newbtn" id="sbNewProject" style="background:none;border:1px dashed var(--border2)">' + icon('folder') + ' New project</button>' +
-        '<button class="navitem" data-set="cron"><span class="ico">' + icon('clock') + '</span>Scheduled</button>' +
-        '<button class="navitem" data-set="skills"><span class="ico">' + icon('bolt') + '</span>Skills</button>' +
-        '<button class="navitem" data-set="connections"><span class="ico">' + icon('link') + '</span>Connections</button>' +
-        '<button class="navitem" data-set="mcp"><span class="ico">' + icon('plug') + '</span>MCP servers</button>' +
-        '<button class="navitem" data-set="workspace"><span class="ico">' + icon('folder') + '</span>Workspace</button>' +
-        (S.active !== 'home' ? '<button class="navitem' + (S.panelKind === 'state' && !$('toolPanel').hidden ? ' active' : '') + '" data-tool="state"><span class="ico">' + icon('layers') + '</span>Task details</button>' : '') +
-        '<button class="navitem' + (S.panelKind === 'browser' && !$('toolPanel').hidden ? ' active' : '') + '" data-tool="browser"><span class="ico">' + icon('globe') + '</span>Browser</button>' +
-        '<button class="navitem' + (S.panelKind === 'git' && !$('toolPanel').hidden ? ' active' : '') + '" data-tool="git"><span class="ico">' + icon('branch') + '</span>Git</button>' +
+        '<div class="sb-action-row">' +
+          '<button class="newbtn sb-newproj" id="sbNewProject" style="background:none;border:1px dashed var(--border2)">' + icon('folder') + ' New project</button>' +
+          '<button class="navitem sb-chip" data-set="workspace" title="Workspace settings"><span class="ico">' + icon('folder') + '</span>Workspace</button>' +
+        '</div>' +
+        '<div class="sb-tool-strip">' +
+          '<button class="navitem sb-chip' + (S.panelKind === 'browser' && !$('toolPanel').hidden ? ' active' : '') + '" data-tool="browser"><span class="ico">' + icon('globe') + '</span>Browser</button>' +
+          '<button class="navitem sb-chip' + (S.panelKind === 'git' && !$('toolPanel').hidden ? ' active' : '') + '" data-tool="git"><span class="ico">' + icon('branch') + '</span>Git</button>' +
+          (S.active !== 'home' ? '<button class="navitem sb-chip' + (S.panelKind === 'state' && !$('toolPanel').hidden ? ' active' : '') + '" data-tool="state"><span class="ico">' + icon('layers') + '</span>Details</button>' : '') +
+        '</div>' +
+        '<details class="sb-config-drawer">' +
+          '<summary><span>Tools &amp; schedules</span><span class="sb-config-meta">Apps · Skills · MCP · Cron</span></summary>' +
+          '<div class="sb-config-grid">' +
+            '<button class="navitem sb-chip" data-set="connections"><span class="ico">' + icon('link') + '</span>Connections</button>' +
+            '<button class="navitem sb-chip" data-set="skills"><span class="ico">' + icon('bolt') + '</span>Skills</button>' +
+            '<button class="navitem sb-chip" data-set="mcp"><span class="ico">' + icon('plug') + '</span>MCP servers</button>' +
+            '<button class="navitem sb-chip" data-set="cron"><span class="ico">' + icon('clock') + '</span>Scheduled</button>' +
+          '</div>' +
+        '</details>' +
         '<div class="sect" style="display:flex;align-items:center">Projects<span style="flex:1"></span><button class="ubtn" id="sbManage" title="select multiple to delete" style="display:inline-flex">' + (S.manage ? icon('check') : icon('pencil')) + '</button></div>';
       var names = Object.keys(byProj);
       if (!names.length) html += '<div class="empty" style="padding-left:10px">No chats yet</div>';

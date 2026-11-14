@@ -65,11 +65,14 @@
     var settings=$('settings');settings.classList.toggle('settings-directory',S.setSection==='overview');
     var close=$('settingsClose');if(!close){settings.insertAdjacentHTML('afterbegin','<button class="settings-close" id="settingsClose" aria-label="Close settings">'+icon('x')+'</button><button class="settings-top-back" id="settingsDirectoryBack">'+icon('back')+'<span>All settings</span></button>');close=$('settingsClose');}
     close.onclick=closeSettings;$('settingsDirectoryBack').hidden=S.setSection==='overview';$('settingsDirectoryBack').onclick=function(){openSettings('overview');};
+    if ($('settings')) $('settings').setAttribute('data-sec', S.setSection || 'overview');
     var groups = [
-      ['Router & AI', ['providers', 'connections', 'agents', 'skills', 'mcp']],
-      ['Workspace', ['overview', 'general', 'workspace', 'project', 'files', 'cron']],
-      ['Team & System', ['cowork', 'permissions', 'developer']]
+      ['Console', ['overview', 'general']],
+      ['AI & Integrations', ['providers', 'connections', 'agents', 'skills', 'mcp']],
+      ['Workspace & Safety', ['workspace', 'cron', 'cowork', 'permissions']]
     ];
+    var SIDEBAR_HIDDEN = { project: true, files: true, developer: true };
+    var navItems = [['overview', 'layers', 'Overview']].concat(items);
     var used = {};
     var navHtml =
       '<div class="setnav-brand">' +
@@ -78,14 +81,14 @@
       '</div>' +
       '<button class="back" id="setBack">' + icon('search') + ' Search console…</button>' +
       groups.map(function (grp) {
-        var groupItems = grp[1].map(function (id) { return items.find(function (it) { return it[0] === id; }); }).filter(Boolean);
+        var groupItems = grp[1].map(function (id) { return navItems.find(function (it) { return it[0] === id; }); }).filter(Boolean);
         if (!groupItems.length) return '';
         return '<div class="sect">' + grp[0] + '</div>' + groupItems.map(function (it) {
           used[it[0]] = true;
           return '<button class="item ' + (S.setSection === it[0] ? 'active' : '') + '" data-sec="' + it[0] + '" aria-current="'+(S.setSection===it[0]?'page':'false')+'"><span class="ico">' + icon(it[1]) + '</span><span>' + it[2] + '</span></button>';
         }).join('');
       }).join('') +
-      items.filter(function (it) { return !used[it[0]]; }).map(function (it) {
+      navItems.filter(function (it) { return !used[it[0]] && !SIDEBAR_HIDDEN[it[0]]; }).map(function (it) {
         return '<button class="item ' + (S.setSection === it[0] ? 'active' : '') + '" data-sec="' + it[0] + '" aria-current="'+(S.setSection===it[0]?'page':'false')+'"><span class="ico">' + icon(it[1]) + '</span><span>' + it[2] + '</span></button>';
       }).join('') +
       '<div class="setnav-foot" id="setnavFoot">' +
@@ -131,11 +134,11 @@
     if (S.setSection === 'general') {
       b.innerHTML = '<h1>General</h1>' + themeOptionsHtml() +
         '<h2>Defaults</h2><div class="setcard">' +
-        '<div class="setrow"><div class="grow"><div class="t">Agent workflow</div><div class="d">One conversation for questions and changes. Quick edits get focused checks. Use Plan in the composer to review a plan for one request, then continue building.</div></div><span class="chip">Always on</span></div>' +
-        '<div class="setrow"><div class="grow"><div class="t">Intelligence level</div><div class="d">Reasoning effort sent to the model (dynamic per provider).</div></div><select id="gEffort"></select></div>' +
-        '<div class="setrow"><div class="grow"><div class="t">Keep going until done</div><div class="d">The agent recovers from provider and protocol errors — empty completions, malformed replies, repeated calls — instead of stopping itself mid-task. Off restores the original fail-fast limits.</div></div><input type="checkbox" id="gPersist" style="width:18px;height:18px;flex:none"></div>' +
-        '<div class="setrow"><div class="grow"><div class="t">Spend ceiling</div><div class="d">Optional per-run limit in USD. Left empty, a run is never stopped for cost — only by you, or by finishing the task.</div></div><input type="text" id="gSpend" inputmode="decimal" placeholder="none" style="width:96px;background:var(--card2);border:1px solid var(--border2);color:var(--text);border-radius:8px;padding:6px 9px;font:inherit;font-size:13px"></div>' +
-        '<div class="setrow"><div class="grow"><div class="t">Primary workspace</div><div class="d">Choose the default first page when opening Agent Gitu.</div></div><select id="gStartMode"><option value="cowork">Cowork (Recommended)</option><option value="coding">Coding</option></select></div>' +
+        '<div class="setrow"><div class="grow"><div class="t">Agent workflow</div><div class="d">Unified conversation with focused checks. Toggle Plan in the composer when you want review first.</div></div><span class="chip">Always on</span></div>' +
+        '<div class="setrow"><div class="grow"><div class="t">Intelligence level</div><div class="d">Reasoning effort sent to the active model.</div></div><select id="gEffort"></select></div>' +
+        '<div class="setrow"><div class="grow"><div class="t">Keep going until done</div><div class="d">Automatically recover from transient protocol or empty-reply errors instead of stopping early.</div></div><input type="checkbox" id="gPersist" style="width:18px;height:18px;flex:none"></div>' +
+        '<div class="setrow"><div class="grow"><div class="t">Spend ceiling</div><div class="d">Optional USD cap per run (leave blank for no automatic limit).</div></div><input type="text" id="gSpend" inputmode="decimal" placeholder="none" style="width:96px;background:var(--card2);border:1px solid var(--border2);color:var(--text);border-radius:8px;padding:6px 9px;font:inherit;font-size:13px"></div>' +
+        '<div class="setrow"><div class="grow"><div class="t">Primary workspace</div><div class="d">Choose which workspace opens by default on launch.</div></div><select id="gStartMode"><option value="cowork">Cowork (Recommended)</option><option value="coding">Coding</option></select></div>' +
         '</div>';
       b.insertAdjacentHTML('beforeend','<h2>Account</h2><div class="setcard" id="pikAccountSettings"><div class="setrow"><div class="grow"><div class="t">PikRouter account <span class="chip ok">main auth</span></div><div class="d" id="pikAccountDesc">Signed in with PikRouter. Routes AI requests and unlocks your workspace.</div></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn dark" id="pikAccountTopup">Top up credits</button><button class="btn ghost" id="pikAccountSwitch">Continue with Pikpam</button><button class="btn ghost" id="pikAccountLogout">Log out</button></div></div></div><div class="setcard" id="googleAccountSettings" style="margin-top:10px"><div class="setrow"><div class="grow"><div class="t">Google sign-in</div><div class="d">Checking configuration…</div></div></div></div>');
       if ($('pikAccountTopup')) $('pikAccountTopup').onclick = function () { openPikRouterTopup(); };
@@ -767,14 +770,17 @@
       });
     } else if (S.setSection === 'permissions') {
       b.innerHTML = '<h1>Permissions</h1>' +
+        '<p class="connection-intro">Control how coding runs and teammates act on your machine.</p>' +
         '<div class="setcard">' +
-        '<div class="setrow"><div class="grow"><div class="t">Auto-learn reusable skills</div><div class="d">After a successful task the agent reflects on what it did and saves any repeatable multi-step pattern (deploy flows, design conventions, checklists) as a skill with create_skill. Turn off to stop all proactive skill creation.</div></div><button class="toggle ' + (S.settings.autoLearn ? 'on' : '') + '" id="pLearn"></button></div>' +
-        '<div class="setrow"><div class="grow"><div class="t">Cowork learning mode</div><div class="d">When your cowork teammates learn from their work. <b>On each task</b> reflects after every completed turn (the original behavior). <b>Scheduled review</b> keeps ordinary turns quiet and reflects on a timer instead, plus a daily memory consolidation sweep. <b>Off</b> stops cowork learning entirely.</div></div><select id="pCwLearn"><option value="reactive">On each task (original)</option><option value="proactive">Scheduled review</option><option value="off">Off</option></select></div>' +
-        '<div class="setrow"><div class="grow"><div class="t">Plan review</div><div class="d">In Plan mode the agent waits for your approval before building.</div></div><button class="toggle ' + (S.settings.review ? 'on' : '') + '" id="pReview"></button></div>' +
-        '<div class="setrow"><div class="grow"><div class="t">Full coding access</div><div class="d">Run coding tasks without approval cards and let the agent edit files outside the selected project, including ignored build and dependency folders. When it is off, the agent asks before writing to a path outside the selected project. Agent Gitu’s own settings, credentials and task state stay protected. Shared across desktop, mobile and hosted sessions.</div></div><button class="toggle ' + (S.settings.autoApprove ? 'on' : '') + '" id="pAuto" aria-label="Full coding access"></button></div>' +
-        '<div class="setrow"><div class="grow"><div class="t">Loop prevention</div><div class="d">Repeated failing actions are blocked automatically. Always on.</div></div><button class="toggle on" disabled></button></div>' +
-        '<div class="setrow"><div class="grow"><div class="t">Evidence gate</div><div class="d">Tasks cannot complete without passing evidence for every criterion. Always on.</div></div><button class="toggle on" disabled></button></div>' +
-        '</div>';
+        '<div class="setrow"><div class="grow"><div class="t">Auto-learn reusable skills</div><div class="d">Save repeatable multi-step patterns as skills after successful tasks.</div></div><button class="toggle ' + (S.settings.autoLearn ? 'on' : '') + '" id="pLearn"></button></div>' +
+        '<div class="setrow"><div class="grow"><div class="t">Cowork learning mode</div><div class="d">Reflect on each task, on a timer, or keep learning paused.</div></div><select id="pCwLearn"><option value="reactive">On each task</option><option value="proactive">Scheduled review</option><option value="off">Off</option></select></div>' +
+        '<div class="setrow"><div class="grow"><div class="t">Plan review</div><div class="d">Wait for your approval in Plan mode before building changes.</div></div><button class="toggle ' + (S.settings.review ? 'on' : '') + '" id="pReview"></button></div>' +
+        '<div class="setrow"><div class="grow"><div class="t">Full coding access</div><div class="d">Run edits without per-file prompts (Gitu credentials and task state stay protected).</div></div><button class="toggle ' + (S.settings.autoApprove ? 'on' : '') + '" id="pAuto" aria-label="Full coding access"></button></div>' +
+        '<div class="setrow"><div class="grow"><div class="t">Built-in safeguards</div><div class="d">Loop prevention and evidence checks stay active automatically.</div></div><span class="chip ok">Always on</span></div>' +
+        '</div>' +
+        '<div class="set-links-foot"><button type="button" class="btn ghost" id="permOpenFiles">Files &amp; upload limits</button><button type="button" class="btn ghost" id="permOpenDev">Agent diagnostics</button></div>';
+      $('permOpenFiles').onclick = function () { openSettings('files'); };
+      $('permOpenDev').onclick = function () { openSettings('developer'); };
       $('pLearn').onclick = function () { S.settings.autoLearn = !S.settings.autoLearn; persist(); renderSettings(); };
       $('pReview').onclick = function () { S.settings.review = !S.settings.review; persist(); renderSettings(); };
       $('pAuto').onclick = function () { var button = this, next = !S.settings.autoApprove; button.disabled = true; api('/api/coding-permissions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ access: next ? 'full' : 'ask' }) }).then(function (saved) { S.settings.autoApprove = saved.access === 'full'; persist(); renderSettings(); }).catch(function (error) { toast(error.message, true); button.disabled = false; }); };
@@ -808,28 +814,43 @@
         var files = res[0].files || [];
         var home = res[1];
         var sel = S.settings.scope || [];
-        b.innerHTML = '<h1>Workspace</h1>' +
-          '<div class="setcard"><div class="setrow"><div class="grow"><div class="t">Agent Gitu home</div><div class="d" style="font-family:var(--mono)">' + esc(home.root) + '</div></div></div>' +
-          '<div class="setrow"><div class="grow"><div class="t">Projects folder</div><div class="d">Where "New project" creates folders. Defaults to &lt;home&gt;/Projects.</div></div></div>' +
-          '<div class="setlist"><input type="text" id="wsProjects" value="' + esc(home.projectsPath) + '" placeholder="' + esc(home.projects) + '">' +
-          '<div class="row"><button class="btn dark" id="wsProjectsSave">Save projects folder</button><button class="btn ghost" id="wsProjectsReset">Reset to default</button></div></div></div>' +
-          '<h2>File scope</h2>' +
-          '<p style="color:var(--muted);font-size:12.5px">Choose which files Agent Gitu should work on. The agent is instructed to stay inside this selection. Leave empty to allow the whole project.</p>' +
-          '<div class="setcard"><div class="setlist" style="max-height:300px;overflow-y:auto">' +
+        b.innerHTML = '<h1>Workspace &amp; project</h1>' +
+          '<p class="connection-intro">Choose your active project folder, default directories, and file scope rules.</p>' +
+          '<div class="setcard">' +
+            '<div class="setrow"><div class="grow"><div class="t">Active project</div><div class="d">Each project keeps its own chats, skills, MCP servers, and schedules.</div></div></div>' +
+            '<div class="setlist"><input type="text" id="wsActiveProj" value="' + esc(effectiveProjectPath()) + '" placeholder="C:\\path\\to\\project">' +
+            '<div class="row"><button class="btn dark" id="wsActiveProjSave">Save project</button><button class="btn ghost" id="wsActiveProjBrowse">Browse…</button></div></div>' +
+            '<div class="setrow"><div class="grow"><div class="t">Projects folder</div><div class="d">Default parent for new folders · <span style="font-family:var(--mono)">' + esc(home.root) + '</span></div></div></div>' +
+            '<div class="setlist"><input type="text" id="wsProjects" value="' + esc(home.projectsPath) + '" placeholder="' + esc(home.projects) + '">' +
+            '<div class="row"><button class="btn dark" id="wsProjectsSave">Save folder</button><button class="btn ghost" id="wsProjectsReset">Reset default</button></div></div>' +
+          '</div>' +
+          '<h2>Scope &amp; constraints</h2>' +
+          '<div class="setcard"><div class="setlist">' +
+          '<details class="set-disclosure"' + (sel.length ? ' open' : '') + '><summary>Limit agent to specific files (' + (sel.length ? sel.length + ' selected' : 'whole project allowed') + ')</summary>' +
+          '<div class="set-file-scroll">' +
           (files.map(function (f) {
             return '<div class="row"><label style="display:flex;gap:8px;align-items:center;font-family:var(--mono);font-size:11.5px"><input type="checkbox" data-f="' + esc(f) + '"' + (sel.indexOf(f) >= 0 ? ' checked' : '') + ' style="width:auto;margin:0">' + esc(f) + '</label></div>';
-          }).join('') || '<div class="meta">no files found</div>') +
-          '</div></div>' +
-          '<h2>Constraints</h2><div class="setcard"><div class="setlist">' +
-          '<textarea id="wsCons" rows="3" placeholder="Extra rules, one per line (e.g. Do not touch the billing module)">' + esc(S.settings.constraints || '') + '</textarea>' +
-          '<div class="row"><button class="btn dark" id="wsSave">Save workspace</button><button class="btn ghost" id="wsClear">Clear selection</button></div></div></div>';
+          }).join('') || '<div class="meta">No project files listed.</div>') +
+          '</div></details>' +
+          '<label class="set-field-label" for="wsCons">Workspace rules</label>' +
+          '<textarea id="wsCons" rows="3" placeholder="Optional rules, one per line (e.g. Do not modify billing)">' + esc(S.settings.constraints || '') + '</textarea>' +
+          '<div class="row"><button class="btn dark" id="wsSave">Save rules</button><button class="btn ghost" id="wsClear">Allow all files</button><span style="flex:1"></span><button class="btn ghost" id="wsOpenFiles">Files &amp; storage…</button></div></div></div>';
+        $('wsActiveProjBrowse').onclick = openFolderBrowser;
+        $('wsActiveProjSave').onclick = function () {
+          S.settings.projectPath = $('wsActiveProj').value.trim();
+          persist();
+          updateProjChip();
+          renderSidebar();
+          toast('Active project updated');
+        };
+        $('wsOpenFiles').onclick = function () { openSettings('files'); };
         $('wsSave').onclick = function () {
           var chosen = [];
           b.querySelectorAll('input[data-f]').forEach(function (cb) { if (cb.checked) chosen.push(cb.getAttribute('data-f')); });
           S.settings.scope = chosen;
           S.settings.constraints = $('wsCons').value;
           persist();
-          toast('Workspace saved — ' + chosen.length + ' file(s) in scope');
+          toast('Workspace saved — ' + (chosen.length ? chosen.length + ' file(s) in scope' : 'all files allowed'));
         };
         $('wsClear').onclick = function () { S.settings.scope = []; persist(); renderSettings(); };
         $('wsProjectsSave').onclick = function () {

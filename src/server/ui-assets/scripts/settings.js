@@ -33,22 +33,94 @@
       .catch(function () { renderSettings(); });
   }
 
+  function consoleSectionTitle(sec) {
+    var match = (typeof WORKSPACE_SETTINGS !== 'undefined' ? WORKSPACE_SETTINGS : []).find(function (it) { return it[0] === sec; });
+    return match ? match[2] : (sec === 'overview' ? 'Overview' : sec);
+  }
+  function syncConsoleAccountFooter() {
+    var apply = function (acc, credits) {
+      var emailEl = $('setnavAccountEmail'), credEl = $('setnavAccountCredits'), topCred = $('setTopCredits');
+      var email = (acc && (acc.email || acc.name)) || 'Local workspace';
+      var bal = credits && (credits.available !== undefined ? credits.available : credits.balance);
+      if (emailEl) emailEl.textContent = email;
+      if (credEl) credEl.textContent = bal !== undefined ? ('Available: ' + bal + ' credits') : (acc ? 'Pikpam connected' : 'Offline / local mode');
+      if (topCred) {
+        if (bal !== undefined) { topCred.textContent = bal + ' cr'; topCred.hidden = false; }
+        else topCred.hidden = true;
+      }
+    };
+    apply(window.__consoleAccount || null, window.__pikRouterCredits || null);
+    if (!window.__consoleAccountLoading && typeof api === 'function') {
+      window.__consoleAccountLoading = true;
+      api('/api/auth/status').then(function (status) {
+        if (status && status.account) window.__consoleAccount = status.account;
+        if (status && status.pikrouterCredits) window.__pikRouterCredits = status.pikrouterCredits;
+        apply(window.__consoleAccount || null, window.__pikRouterCredits || null);
+      }).catch(function () {}).finally(function () { window.__consoleAccountLoading = false; });
+    }
+  }
   function renderSettings() {
     var items = WORKSPACE_SETTINGS;
     if(S.setSection!=='connections'&&typeof cwCloseConnectionManager==='function')cwCloseConnectionManager();
     var settings=$('settings');settings.classList.toggle('settings-directory',S.setSection==='overview');
     var close=$('settingsClose');if(!close){settings.insertAdjacentHTML('afterbegin','<button class="settings-close" id="settingsClose" aria-label="Close settings">'+icon('x')+'</button><button class="settings-top-back" id="settingsDirectoryBack">'+icon('back')+'<span>All settings</span></button>');close=$('settingsClose');}
     close.onclick=closeSettings;$('settingsDirectoryBack').hidden=S.setSection==='overview';$('settingsDirectoryBack').onclick=function(){openSettings('overview');};
-    $('setnav').innerHTML =
-      '<button class="back" id="setBack">' + icon('search') + ' Search</button>' +
-      '<div class="sect">Settings</div>' +
-      items.map(function (it) {
-        return '<button class="item ' + (S.setSection === it[0] ? 'active' : '') + '" data-sec="' + it[0] + '" aria-current="'+(S.setSection===it[0]?'page':'false')+'"><span class="ico">' + icon(it[1]) + '</span>' + it[2] + '</button>';
-      }).join('');
+    var groups = [
+      ['Router & AI', ['providers', 'connections', 'agents', 'skills', 'mcp']],
+      ['Workspace', ['overview', 'general', 'workspace', 'project', 'files', 'cron']],
+      ['Team & System', ['cowork', 'permissions', 'developer']]
+    ];
+    var used = {};
+    var navHtml =
+      '<div class="setnav-brand">' +
+        '<img src="/brand/agent-gitu-mark.svg" alt="">' +
+        '<div class="setnav-brand-copy"><strong>Agent Gitu</strong><span>Cloud Console</span></div>' +
+      '</div>' +
+      '<button class="back" id="setBack">' + icon('search') + ' Search console…</button>' +
+      groups.map(function (grp) {
+        var groupItems = grp[1].map(function (id) { return items.find(function (it) { return it[0] === id; }); }).filter(Boolean);
+        if (!groupItems.length) return '';
+        return '<div class="sect">' + grp[0] + '</div>' + groupItems.map(function (it) {
+          used[it[0]] = true;
+          return '<button class="item ' + (S.setSection === it[0] ? 'active' : '') + '" data-sec="' + it[0] + '" aria-current="'+(S.setSection===it[0]?'page':'false')+'"><span class="ico">' + icon(it[1]) + '</span><span>' + it[2] + '</span></button>';
+        }).join('');
+      }).join('') +
+      items.filter(function (it) { return !used[it[0]]; }).map(function (it) {
+        return '<button class="item ' + (S.setSection === it[0] ? 'active' : '') + '" data-sec="' + it[0] + '" aria-current="'+(S.setSection===it[0]?'page':'false')+'"><span class="ico">' + icon(it[1]) + '</span><span>' + it[2] + '</span></button>';
+      }).join('') +
+      '<div class="setnav-foot" id="setnavFoot">' +
+        '<div class="setnav-account">' +
+          '<strong id="setnavAccountEmail">Local workspace</strong>' +
+          '<span id="setnavAccountCredits">Checking credits…</span>' +
+        '</div>' +
+      '</div>';
+    $('setnav').innerHTML = navHtml;
     $('setBack').onclick = function(){wsOpen();};
     $('setnav').querySelectorAll('[data-sec]').forEach(function (el) {
       el.onclick = function () { S.setSection = el.getAttribute('data-sec'); renderSettings(); };
     });
+    var topbar = $('setTopbar');
+    if (!topbar) {
+      topbar = document.createElement('header');
+      topbar.id = 'setTopbar';
+      topbar.className = 'console-topbar';
+      settings.insertBefore(topbar, $('setbody'));
+    }
+    topbar.innerHTML =
+      '<div class="console-topbar-left">' +
+        '<span class="console-crumb-root">Console</span>' +
+        '<span class="console-crumb-sep" aria-hidden="true">/</span>' +
+        '<span class="console-crumb-cur">' + esc(consoleSectionTitle(S.setSection)) + '</span>' +
+      '</div>' +
+      '<div class="console-topbar-right">' +
+        '<button type="button" class="console-credit-pill" id="setTopCredits" hidden title="PikRouter credit balance"></button>' +
+        (typeof themeToggleHtml === 'function' ? themeToggleHtml() : '') +
+        '<button type="button" class="console-top-btn" id="setTopClose">Back to Cowork</button>' +
+      '</div>';
+    if ($('setTopCredits')) $('setTopCredits').onclick = function () { if (typeof openPikRouterTopup === 'function') openPikRouterTopup(); };
+    if ($('setTopClose')) $('setTopClose').onclick = closeSettings;
+    if (typeof syncThemeControls === 'function') syncThemeControls();
+    syncConsoleAccountFooter();
     var b = $('setbody');
     if(S.setSection==='overview'){wsSettingsDirectory();return;}
     if(S.setSection==='files'){renderFileSettings(b);return;}
@@ -305,7 +377,7 @@
         renderSettings();
       };
     } else if (S.setSection === 'connections') {
-      b.innerHTML = '<header class="connection-page-head"><h1>Connections</h1><p class="connection-intro">Apps, accounts and APIs in one place. Choose team access for connected accounts; grant company access from its resource settings.</p></header>' +
+      b.innerHTML = '<header class="connection-page-head"><h1>Connected app integrations</h1><p class="connection-intro">Authorize external SaaS toolkits for both the Cowork side (inbox, meetings, CRM) and the Coding side (repos, issues, deploys) via scoped OAuth.</p></header>' +
         '<nav class="connection-manager-tabs" role="tablist" aria-label="Connection categories">' +
           '<button class="btn ghost" role="tab" data-connection-category="apps" aria-pressed="true">Apps &amp; accounts</button>' +
           '<button class="btn ghost" role="tab" data-connection-category="apis" aria-pressed="false">Custom APIs</button>' +

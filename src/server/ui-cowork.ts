@@ -1003,14 +1003,15 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       if (cw.computerStream !== stream) return;
       var data; try { data = JSON.parse(event.data); } catch (e) { return; }
       if (!data || !Array.isArray(data.computers)) return;
-      var changed = JSON.stringify(cw.computers || []) !== JSON.stringify(data.computers);
-      cw.computers = data.computers;
+      var nextComputers = data.computers.filter(Boolean);
+      var changed = JSON.stringify(cw.computers || []) !== JSON.stringify(nextComputers);
+      cw.computers = nextComputers;
       cw.computersChecked = Date.now();
       if (changed) cw.computerRevision = (cw.computerRevision || 0) + 1;
       if (!changed) return;
       if (S.active === 'cowork') cwRenderInfo();
       if (cw.desktopSession && cw.desktopSession.update) {
-        var current = data.computers.filter(function (computer) { return computer.agentId === cw.desktopSession.agentId; })[0];
+        var current = nextComputers.filter(function (computer) { return computer.agentId === cw.desktopSession.agentId; })[0];
         if (current) cw.desktopSession.update(current);
       }
     };
@@ -1268,7 +1269,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       cw.agents = d.agents || [];
       cw.skills = d.availableSkills || [];
       cw.memoryCounts = d.memoryCounts || {};
-      if ((cw.computerRevision || 0) === computerRevision) cw.computers = d.computers || [];
+      if ((cw.computerRevision || 0) === computerRevision) cw.computers = (d.computers || []).filter(Boolean);
       cw.cloudServers = d.cloudServers || [];
       cw.profile = d.profile || {};
       cw.enableCompanies = d.enableCompanies === true;
@@ -3596,10 +3597,17 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     return '<p class="cw-computer-reason"><span class="cw-reason-code">' + esc(code) + '</span> ' + esc(hint) + '</p>';
   }
 
+  function cwFindComputer(agentId) {
+    return (cwEnsure().computers || []).find(function (item) { return item && item.agentId === agentId; });
+  }
+  function cwSetAgentComputer(agentId, computer) {
+    var cw = cwEnsure();
+    cw.computers = (cw.computers || []).filter(function (c) { return c && c.agentId !== agentId; }).concat(computer ? [computer] : []);
+  }
   function cwComputerHtml(agent, profile) {
     var heading = cwProfileHeading('monitor', profile ? 'Computer' : agent.name + ' · Computer');
     if(profile) {
-      var current=(cwEnsure().computers||[]).find(function(item){return item.agentId===agent.id;})||{state:'stopped'},host=agent.useHostComputer;
+      var current=cwFindComputer(agent.id)||{state:'stopped'},host=agent.useHostComputer;
       var state=host?'Available':current.state,technical=current.error||current.reason;
       return '<section class="cw-card cw-computer-section"><div class="cw-profile-computer-head">'+heading+'<span class="chip'+(state==='running'||host?' ok':'')+'">'+esc(state)+'</span></div><div class="cw-computer-summary"><span class="chip">'+(host?'My computer':agent.cloudConnectionId?'Cloud computer':'Private computer')+'</span></div><p>'+(host?'Uses the workspace, files and apps on this computer.':'Your private desktop, browser and files stay saved when stopped.')+'</p><div class="cw-computer-buttons"><button class="btn dark" data-computer="'+esc(agent.id)+'" data-action="desktop">'+cwIcon('monitor')+'Open desktop</button>'+(!host?'<div class="cw-computer-secondary"><button class="btn ghost" data-computer="'+esc(agent.id)+'" data-action="start"'+(state==='starting'||state==='running'?' disabled':'')+'>'+cwIcon('play')+(state==='sleeping'?'Wake':'Start')+'</button><button class="btn ghost" data-computer="'+esc(agent.id)+'" data-action="stop"'+(['running','starting','sleeping'].indexOf(state)<0?' disabled':'')+'>'+cwIcon('stop')+'Stop</button></div>':'')+'</div>'+(technical?'<details class="cw-computer-technical"><summary>View technical details</summary>'+(current.error?'<p>'+esc(current.error)+'</p>':'')+cwComputerReasonHtml(current)+'</details>':'')+'</section>';
     }
@@ -3608,7 +3616,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
         '<p>Works with the workspace, files and apps on this computer.</p>' +
         '<div class="cw-computer-buttons"><button class="btn dark" data-computer="' + esc(agent.id) + '" data-action="desktop">' + cwIcon('monitor') + 'Open desktop</button></div></section>';
     }
-    var computer = (cwEnsure().computers || []).filter(function (c) { return c.agentId === agent.id; })[0] || { state: 'stopped' };
+    var computer = cwFindComputer(agent.id) || { state: 'stopped' };
     return '<section class="cw-card cw-computer-section">' + heading + '<div class="cw-computer-summary"><span class="chip">' + (agent.cloudConnectionId ? 'Cloud computer' : 'Private computer') + '</span><span class="chip cw-computer-state' + (computer.state === 'running' ? ' ok' : '') + '">' + esc(computer.state) + '</span></div>' +
       '<p>Shared desktop with a browser, files and terminal. Files and browser sessions stay saved when stopped.</p>' +
       (computer.error ? '<p style="font-size:11.5px;color:var(--err)">' + esc(computer.error) + '</p>' : '') +
@@ -3657,9 +3665,8 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
         button.disabled = true;
         api('/api/cowork/agents/' + encodeURIComponent(id) + '/computer', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: action }) })
           .then(function (d) {
-            var cw = cwEnsure();
-            cw.computers = (cw.computers || []).filter(function (c) { return c.agentId !== id; }).concat([d.computer]);
-            if (d.pngBase64) {
+            cwSetAgentComputer(id, d && d.computer);
+            if (d && d.pngBase64) {
               var target = el.querySelector('[data-screen="' + id + '"]');
               if (target) {
                 var img = document.createElement('img');
@@ -3735,8 +3742,8 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       try {
         var d = await api(endpoint, { method: 'POST', signal: controller.signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: action }) });
         if (closed) return false;
-        cw.computers = (cw.computers || []).filter(function (c) { return c.agentId !== agentId; }).concat([d.computer]);
-        update(d.computer);
+        cwSetAgentComputer(agentId, d && d.computer);
+        if (d && d.computer) update(d.computer);
         if (action === 'take-control') focusDesktop();
         return true;
       } catch (e) {
@@ -3788,8 +3795,8 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
         if (closed) return;
         if (!action && (revision !== controlRevision || controlPending || (cw.computerRevision || 0) !== computerRevision)) return;
         if (d.agent) { cw.agents = cw.agents.map(function (a) { return a.id === agentId ? d.agent : a; }); cwRenderRail(); cwRenderInfo(); }
-        cw.computers = (cw.computers || []).filter(function (c) { return c.agentId !== agentId; }).concat([d.computer]);
-        update(d.computer);
+        cwSetAgentComputer(agentId, d && d.computer);
+        if (d && d.computer) update(d.computer);
       } catch (e) {
         if (!closed && (action || (revision === controlRevision && !controlPending))) { status.textContent = e.message || 'Desktop connection unavailable'; start.disabled = false; if (screen.hidden) { placeholder.hidden = false; placeholder.textContent = status.textContent; } }
       } finally {
@@ -3819,7 +3826,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     window.addEventListener('resize', sizeDesktop);
     window.visualViewport?.addEventListener('resize', sizeDesktop);
     sizeDesktop();
-    var cached = (cw.computers || []).find(function (computer) { return computer.agentId === agentId; });
+    var cached = cwFindComputer(agentId);
     if (cached?.state === 'running' && !agent.useHostComputer) update(cached);
     refresh(); modal.querySelector('[data-close]').focus();
   }
@@ -3949,10 +3956,11 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
         cw.computersChecked = Date.now();
         var computerRevision = cw.computerRevision || 0;
         Promise.all(cwConvMembers(conv).map(function (a) {
-          return api('/api/cowork/agents/' + encodeURIComponent(a.id) + '/computer').then(function (v) { return v.computer; });
+          return api('/api/cowork/agents/' + encodeURIComponent(a.id) + '/computer').then(function (v) { return v && v.computer || null; });
         })).then(function (computers) {
           if (cw.active !== convId || cw.generation !== generation || S.active !== 'cowork' || (cw.computerRevision || 0) !== computerRevision) return;
-          if (JSON.stringify(cw.computers) !== JSON.stringify(computers)) { cw.computers = computers; cwRenderInfo(); }
+          var clean = computers.filter(Boolean);
+          if (JSON.stringify(cw.computers) !== JSON.stringify(clean)) { cw.computers = clean; cwRenderInfo(); }
         }).catch(function () {});
       }
     if (cw.streamOpen) return Promise.resolve();
@@ -3999,7 +4007,8 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     document.querySelectorAll('[data-quick-agent]').forEach(function (btn) {
       var qid = btn.getAttribute('data-quick-agent');
       var member = cwAgentById(qid);
-      var subWorking = Boolean((cw.subAgents || []).some(function (sa) { return sa && sa.status === 'running' && (sa.agentId === qid || sa.agentName === (member && member.name)); }));
+      var subAgentsList = Array.isArray(cw.subAgents) ? cw.subAgents : (cw.subAgents && Array.isArray(cw.subAgents.nodes) ? cw.subAgents.nodes : []);
+      var subWorking = Boolean(subAgentsList.some(function (sa) { return sa && sa.status === 'running' && (sa.agentId === qid || sa.agentName === (member && member.name)); }));
       var isWork = Boolean(member && (subWorking || (cw.busy && (
         cw.working === member.name ||
         (cw.progress && (cw.progress.agentId === qid || cw.progress.agentName === member.name)) ||

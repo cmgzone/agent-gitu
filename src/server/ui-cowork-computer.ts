@@ -62,8 +62,8 @@ export const COWORK_COMPUTER_JS = String.raw`
     if(!seen||seen.key!==key||!cw.busy)seen=cw.computerActivitySeen={key:key,agents:Object.create(null)};
     var progress=cw.busy?(cw.progresses&&cw.progresses.length?cw.progresses:cw.progress?[cw.progress]:[]):[];
     return cwConvMembers(conv).map(function(agent){
-      var computer=(cw.computers||[]).find(function(item){return item.agentId===agent.id;});
-      var request=(cw.requests||[]).find(function(item){return item.agentId===agent.id&&item.conversationId===conv.id&&item.desktopHandoff&&item.status==='open';});
+      var computer=(cw.computers||[]).find(function(item){return item&&item.agentId===agent.id;});
+      var request=(cw.requests||[]).find(function(item){return item&&item.agentId===agent.id&&item.conversationId===conv.id&&item.desktopHandoff&&item.status==='open';});
       var handoff=!!request||!!(computer&&computer.control==='user'&&!agent.useHostComputer&&!(computer.handoff&&computer.handoff.requestId));
       var action=progress.find(function(item){return item.agentId===agent.id&&(agent.useHostComputer?item.tool==='browse':/^(browse|desktop_input|desktop_screenshot|computer_process|computer_status|run_command)$/.test(item.tool||''));});
       if(action)seen.agents[agent.id]=true;

@@ -43,13 +43,13 @@ export const UI_BUTTON_JS = String.raw`
     if (/close|cancel|dismiss|skip/.test(text)) return 'x';
     if (/always allow/.test(text)) return 'shield';
     if (/accept|approve|save|done|apply|confirm|copied/.test(text)) return 'check';
-    if (/connect|account|sign in|register/.test(text)) return 'plug';
+    if (/(?:^|\b)(?:re)?connect\b|account|sign in|register/.test(text)) return 'plug';
     if (/refresh|retry|restart|reload/.test(text)) return 'retry';
     if (/download|export/.test(text)) return 'download';
     if (/upload|attach/.test(text)) return 'upload';
     if (/lock|password/.test(text)) return 'lock';
     if (/back|return|collapse/.test(text)) return 'back';
-    if (/edit|rename/.test(text)) return 'pencil';
+    if (/\b(edit|rename)\b/.test(text)) return 'pencil';
     if (/search|find/.test(text)) return 'search';
     if (/folder|project|files/.test(text)) return 'folder';
     if (/browser|website|web/.test(text)) return 'globe';

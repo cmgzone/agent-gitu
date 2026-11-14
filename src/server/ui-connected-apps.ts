@@ -84,9 +84,16 @@ export const CONNECTED_APPS_JS = String.raw`
     var cw=cwEnsure();cw.connectionsOpen=true;cw.connectionRevision=(cw.connectionRevision||0)+1;
     cw.servicesTab='available';cw.servicesSearch='';cw.servicesData=null;
     if(!cw.userClearedAgent&&!cw.connectionsAgentId){cw.connectionsAgentId=cw.selectedAgentId||(cw.agents&&cw.agents[0]&&cw.agents[0].id)||'';}
-    root.innerHTML = '<section class="cw-services workspace-app-manager" aria-label="Apps and accounts"><div class="cw-services-head"><div><h2>Apps & accounts</h2><p>Connect apps to help your teammates work across your tools.</p></div><div class="cw-services-actions"><form class="cw-services-search" id="cwServicesSearch" role="search">'+cwIcon('search')+'<input id="cwServicesQuery" type="search" aria-label="Search apps" placeholder="Search apps"></form><button class="btn ghost" id="cwServicesRefresh" aria-label="Refresh connections" title="Refresh connections"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 7a7 7 0 0 1 11.5-2L20 8M4 16l2.4 3A7 7 0 0 0 17.9 17"/></svg></button></div></div><div class="cw-services-controls"><div class="cw-services-tabs" role="tablist" aria-label="Connection views"><button class="btn ghost" id="cwServicesAvailable" role="tab" aria-selected="true" aria-controls="cwServicesContent" tabindex="0">Available</button><button class="btn ghost" id="cwServicesConnected" role="tab" aria-selected="false" aria-controls="cwServicesContent" tabindex="-1">Connected<span id="cwServicesCount" class="cw-services-count" aria-hidden="true"></span></button></div><label class="cw-services-agent">For teammate <select id="cwServicesAgent" aria-label="Connection teammate"></select></label></div><div id="cwServicesContent" class="cw-services-content" role="tabpanel" aria-labelledby="cwServicesAvailable"><p role="status">Loading apps…</p></div></section>';
-    var serviceControls=typeof document.querySelector==='function'&&document.querySelector('.cw-services-controls');
-    if(serviceControls)serviceControls.insertAdjacentHTML('afterend','<div class="cw-app-heartbeat"><button class="btn ghost" id="cwServicesHeartbeat" aria-pressed="false">Proactive updates: Off</button><small>Checks read tools you’ve allowed while Gitu is open. Useful updates appear in a widget and chat; unchanged results stay quiet.</small></div>');
+    root.innerHTML = '<section class="cw-services workspace-app-manager" aria-label="Apps and accounts">' +
+      '<div class="cw-console-sides">' +
+        '<div class="cw-console-side-card"><span class="cw-side-eyebrow">COWORK SIDE</span><strong>Business &amp; team workflows</strong><p>Let agents draft replies, book slots, summarize channels, and keep CRM records fresh without sharing raw passwords.</p><div class="cw-side-chips"><span>Gmail</span><span>Google Calendar</span><span>Google Drive</span><span>Slack</span><span>Notion</span><span>HubSpot</span></div></div>' +
+        '<div class="cw-console-side-card"><span class="cw-side-eyebrow">CODING SIDE</span><strong>Repos, issues &amp; agent coding</strong><p>Pair Claude Code, ChatGPT, DeepSeek, Kimi, and Gemini with GitHub and Linear so agents inspect code and ship PRs cleanly.</p><div class="cw-side-chips"><span>Claude Code</span><span>ChatGPT / Codex</span><span>DeepSeek R1</span><span>Google Gemini</span><span>GitHub</span></div></div>' +
+      '</div>' +
+      '<section id="cwConnectedSummaryStrip" class="cw-connected-summary" hidden></section>' +
+      '<div class="cw-services-head"><div><h2>Apps & accounts</h2><p>Connect apps to help your teammates work across your tools.</p></div><div class="cw-services-controls-right"><div class="cw-services-tabs" role="tablist" aria-label="Connection views"><button class="btn ghost" id="cwServicesAvailable" role="tab" aria-selected="true" aria-controls="cwServicesContent" tabindex="0">Available</button><button class="btn ghost" id="cwServicesConnected" role="tab" aria-selected="false" aria-controls="cwServicesContent" tabindex="-1">Connected<span id="cwServicesCount" class="cw-services-count" aria-hidden="true"></span></button></div><label class="cw-services-agent">For teammate <select id="cwServicesAgent" aria-label="Connection teammate"></select></label></div></div>' +
+      '<div class="cw-services-controls"><form class="cw-services-search" id="cwServicesSearch" role="search"><div class="cw-search-input-wrap">'+cwIcon('search')+'<input id="cwServicesQuery" type="search" aria-label="Search apps" placeholder="Search GitHub, Google Calendar, Slack…"></div><button type="submit" class="btn ghost cw-search-submit">Search</button></form><div class="cw-services-actions"><button class="btn ghost" id="cwServicesRefresh" aria-label="Refresh connections" title="Refresh connections"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 7a7 7 0 0 1 11.5-2L20 8M4 16l2.4 3A7 7 0 0 0 17.9 17"/></svg></button><span id="cwServicesShowing" class="cw-services-showing" aria-live="polite"></span></div></div>' +
+      '<div id="cwServicesContent" class="cw-services-content" role="tabpanel" aria-labelledby="cwServicesAvailable"><p role="status">Loading apps…</p></div>' +
+      '<div class="cw-app-heartbeat"><button class="btn ghost" id="cwServicesHeartbeat" aria-pressed="false">Proactive updates: Off</button><small>Checks read tools you’ve allowed while Gitu is open. Useful updates appear in a widget and chat; unchanged results stay quiet.</small></div></section>';
     var heartbeat=$('cwServicesHeartbeat');
     if(heartbeat){cwAppHeartbeatButton();heartbeat.onclick=async function(){heartbeat.disabled=true;try{var mode=cwEnsure().learn&&cwEnsure().learn.mode==='proactive'?'reactive':'proactive';var result=await api('/api/cowork/learning',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({mode:mode})});cwEnsure().learn=Object.assign({},cwEnsure().learn||{},result);cwAppHeartbeatButton();if(typeof cwLearnRender==='function')cwLearnRender();}catch(e){toast('Could not update proactive checks. Try again.',true);}finally{heartbeat.disabled=false;}};}
     $('cwServicesRefresh').onclick=function(){cwLoadServices(cw.servicesSearch||'',false);};
@@ -185,17 +192,49 @@ export const CONNECTED_APPS_JS = String.raw`
     return descriptions[service.slug]||'Connect '+service.name+' tools for this teammate.';
   }
   function cwServiceMatches(service,search){return !search||[service.name,service.slug,service.description,service.reason].filter(Boolean).join(' ').toLowerCase().indexOf(search.toLowerCase())>=0;}
-  function cwServiceRow(service,action,detail){
+  function cwServiceCardLabel(action,apiKeyOnly){
+    if(apiKeyOnly)return 'Credentials';
+    if(action.attribute==='data-cwassignapp')return 'Assign';
+    if(action.attribute==='data-cwdisconnect')return 'Disconnect';
+    if(action.icon==='external')return 'Reconnect';
+    if(action.connected&&action.attribute==='data-cwconnect')return 'Add account';
+    return 'Connect';
+  }
+  function cwServiceRow(service,action,detail,layout,account){
     var name=service.name||cwActionWords(service.slug),label=action.label;
     var apiAuth = action.attribute === 'data-cwconnect' ? (service.authConfigs || []).find(function(auth){return ['API_KEY','BEARER_TOKEN','BASIC'].indexOf(String(auth.scheme||'').toUpperCase())>=0;}) : undefined;
-    var main=action.apiKeyOnly?'<button class="btn ghost cw-service-action" data-cwconnect-api="'+esc(service.slug)+'" data-cwauthconfig="'+esc(action.apiAuthConfigId||'')+'" aria-label="Connect '+esc(name)+' with credentials" title="Connect with credentials">'+cwIcon('plus')+'</button>':'<button class="btn ghost cw-service-action'+(action.connected?' connected':'')+'" '+action.attribute+'="'+esc(action.value)+'" aria-label="'+esc(label)+'" title="'+esc(label)+'">'+cwIcon(action.icon)+'</button>';
-    var apiButton=apiAuth&&!action.apiKeyOnly?'<button class="btn ghost cw-service-action" data-cwconnect-api="'+esc(service.slug)+'" data-cwauthconfig="'+esc(apiAuth.id)+'" aria-label="Connect '+esc(name)+' with API key" title="Connect with API key">'+cwIcon('key')+'</button>':'';
-    return '<article class="cw-service-row" data-service="'+esc(service.slug)+'">'+cwServiceIcon(service)+'<div class="cw-service-copy"><h3>'+esc(name)+'</h3><p>'+esc(cwServiceDescription(Object.assign({},service,{name:name})))+'</p>'+(detail?'<small class="cw-service-status'+(action.connected?' connected':'')+'">'+esc(detail)+'</small>':'')+'</div>'+main+apiButton+(action.removeAccountId?'<button class="btn ghost cw-service-action" data-cwdisconnect="'+esc(action.removeAccountId)+'" aria-label="Remove '+esc(name)+' access" title="Remove '+esc(name)+' access">'+cwIcon('close')+'</button>':'')+'</article>';
+    if(layout==='table'){
+      var actLabel=action.attribute==='data-cwdisconnect'?'Disconnect':action.attribute==='data-cwassignapp'?'Assign':action.icon==='external'?'Reconnect':'Select';
+      var actIcon=action.attribute==='data-cwdisconnect'?'trash':action.attribute==='data-cwconnect'?'external':'plus';
+      var dangerCls=action.attribute==='data-cwdisconnect'?' cw-danger-action':'';
+      var tableMain=action.apiKeyOnly
+        ?'<button class="btn ghost cw-service-action" data-cwconnect-api="'+esc(service.slug)+'" data-cwauthconfig="'+esc(action.apiAuthConfigId||'')+'" aria-label="Connect '+esc(name)+' with credentials" title="Connect with credentials">'+cwIcon('key')+'<span>Credentials</span></button>'
+        :'<button class="btn ghost cw-service-action'+(action.connected?' connected':'')+dangerCls+'" '+action.attribute+'="'+esc(action.value)+'" aria-label="'+esc(label)+'" title="'+esc(label)+'">'+cwIcon(actIcon)+'<span>'+actLabel+'</span></button>';
+      var tableRemove=action.removeAccountId?'<button class="btn ghost cw-service-action cw-danger-action" data-cwdisconnect="'+esc(action.removeAccountId)+'" aria-label="Remove '+esc(name)+' access" title="Disconnect">'+cwIcon('trash')+'<span>Disconnect</span></button>':'';
+      var connId=(account&&account.id)||service.slug;
+      return '<article class="cw-service-row is-table" data-service="'+esc(service.slug)+'">' +
+        '<div class="cw-table-app">'+cwServiceIcon(service)+'<div class="cw-service-copy"><h3>'+esc(name)+'</h3><p>'+esc(cwServiceDescription(Object.assign({},service,{name:name})))+'</p></div></div>' +
+        '<div class="cw-table-id"><code>'+esc(connId)+'</code></div>' +
+        '<div class="cw-table-status">'+(detail?'<small class="cw-service-status'+(action.connected?' connected':'')+'">'+esc(detail)+'</small>':'<small class="cw-service-status">Connected</small>')+'</div>' +
+        '<div class="cw-table-actions">'+tableMain+tableRemove+'</div>' +
+      '</article>';
+    }
+    var cardBtnLabel=cwServiceCardLabel(action,action.apiKeyOnly);
+    var cardIcon=action.apiKeyOnly?'key':action.attribute==='data-cwassignapp'?'plus':action.icon==='external'?'external':'plug';
+    var main=action.apiKeyOnly
+      ?'<button class="btn ghost cw-service-action" data-cwconnect-api="'+esc(service.slug)+'" data-cwauthconfig="'+esc(action.apiAuthConfigId||'')+'" aria-label="Connect '+esc(name)+' with credentials" title="Connect with credentials">'+cwIcon('key')+'<span>'+cardBtnLabel+'</span></button>'
+      :'<button class="btn ghost cw-service-action'+(action.connected?' connected':'')+'" '+action.attribute+'="'+esc(action.value)+'" aria-label="'+esc(label)+'" title="'+esc(label)+'">'+cwIcon(cardIcon)+'<span>'+cardBtnLabel+'</span></button>';
+    var apiButton=apiAuth&&!action.apiKeyOnly?'<button class="btn ghost cw-service-action cw-service-keybtn" data-cwconnect-api="'+esc(service.slug)+'" data-cwauthconfig="'+esc(apiAuth.id)+'" aria-label="Connect '+esc(name)+' with API key" title="Connect with API key">'+cwIcon('key')+'</button>':'';
+    return '<article class="cw-service-row is-card" data-service="'+esc(service.slug)+'">' +
+      '<div class="cw-service-card-top">'+cwServiceIcon(service)+'<div class="cw-service-copy"><h3>'+esc(name)+'</h3>'+(detail?'<small class="cw-service-status'+(action.connected?' connected':'')+'">'+esc(detail)+'</small>':'')+'</div></div>' +
+      '<p class="cw-service-desc">'+esc(cwServiceDescription(Object.assign({},service,{name:name})))+'</p>' +
+      '<div class="cw-service-card-foot">'+main+apiButton+(action.removeAccountId?'<button class="btn ghost cw-service-action cw-danger-action" data-cwdisconnect="'+esc(action.removeAccountId)+'" aria-label="Remove '+esc(name)+' access" title="Remove '+esc(name)+' access">'+cwIcon('close')+'</button>':'')+'</div>' +
+    '</article>';
   }
   function cwAssignedServiceRow(account,service,accounts){
     var reconnect=['EXPIRED','REVOKED','INACTIVE','FAILED'].indexOf(account.status)>=0;
     var action=reconnect?{attribute:'data-cwconnect',value:account.toolkit,label:'Sign in again to '+service.name,icon:'external',removeAccountId:account.id}:{attribute:'data-cwdisconnect',value:account.id,label:'Remove '+service.name+' access',icon:'close',connected:account.status==='ACTIVE'&&!account.disabled};
-    return cwServiceRow(service,action,cwServiceStatus(account.status,account.disabled,account.connectionIssue)+(accounts.filter(function(a){return a.toolkit===account.toolkit;}).length>1?' · account '+account.id.slice(-8):''));
+    return cwServiceRow(service,action,cwServiceStatus(account.status,account.disabled,account.connectionIssue)+(accounts.filter(function(a){return a.toolkit===account.toolkit;}).length>1?' · account '+account.id.slice(-8):''),'table',account);
   }
   function cwServiceSignInHtml(agentId){
     var flow=cwEnsure().serviceSignIn;if(!flow||flow.agentId!==agentId)return '';
@@ -232,22 +271,67 @@ export const CONNECTED_APPS_JS = String.raw`
     }catch(e){if(cw.serviceSignIn===flow&&cw.connectionsOpen&&cw.connectionsAgentId===flow.agentId&&revision===cw.connectionRevision&&!flow.statusUnavailable){flow.statusUnavailable=true;cwRenderServices();}}
     finally{if(cw.serviceSignIn===flow)cwWatchServiceSignIn();}
   }
+  function cwConnectedTableHtml(rowsHtml){
+    return '<div class="cw-connected-table"><div class="cw-table-head" aria-hidden="true"><span>App</span><span>Connection ID</span><span>Status</span><span>Action</span></div>'+rowsHtml.join('')+'</div>';
+  }
+  function cwRenderConnectedSummary(accounts,available,serviceFor,agentId){
+    var summary=$('cwConnectedSummaryStrip');
+    if(!summary)return;
+    var cw=cwEnsure();
+    var all=[];
+    var seen={};
+    accounts.forEach(function(a){if(a&&a.id&&!seen[a.id]){seen[a.id]=true;all.push({account:a,assigned:true});}});
+    available.forEach(function(a){if(a&&a.id&&!seen[a.id]){seen[a.id]=true;all.push({account:a,assigned:false});}});
+    if(cw.servicesTab==='connected'||!all.length){summary.hidden=true;summary.innerHTML='';return;}
+    summary.hidden=false;
+    summary.innerHTML=
+      '<div class="cw-connected-sum-head"><div><h2>Connected accounts</h2><p>Accessible via scoped OAuth tokens and teammate assignments.</p></div></div>' +
+      '<div class="cw-connected-table">' +
+        '<div class="cw-table-head" aria-hidden="true"><span>App</span><span>Connection ID</span><span>Status</span><span>Action</span></div>' +
+        all.map(function(entry){
+          var account=entry.account,service=serviceFor(account.toolkit),name=service.name||cwActionWords(account.toolkit);
+          var rawStatus=String(account.status||'ACTIVE').toUpperCase();
+          var isOk=(rawStatus==='ACTIVE'&&!account.disabled);
+          var isWarn=['EXPIRED','INITIATED','PENDING','INACTIVE'].indexOf(rawStatus)>=0;
+          var dotCls=isOk?'ok':isWarn?'warn':'err';
+          var statusText=account.disabled?'DISABLED':rawStatus;
+          var actionBtn=entry.assigned
+            ?'<button type="button" class="btn ghost cw-service-action cw-danger-action" data-cwsum-disconnect="'+esc(account.id)+'" aria-label="Disconnect '+esc(name)+'">'+cwIcon('trash')+'<span>Disconnect</span></button>'
+            :(agentId
+              ?'<button type="button" class="btn ghost cw-service-action" data-cwsum-assign="'+esc(account.id)+'">'+cwIcon('plus')+'<span>Assign</span></button>'
+              :'<button type="button" class="btn ghost cw-service-action" data-cwsum-needagent="'+esc(account.toolkit)+'">'+cwIcon('plus')+'<span>Select teammate</span></button>');
+          return '<div class="cw-service-row is-table">' +
+            '<div class="cw-table-app">'+cwServiceIcon(service)+'<div class="cw-service-copy"><h3>'+esc(name)+'</h3>'+(account.label?'<p>'+esc(account.label)+'</p>':'')+'</div></div>' +
+            '<div class="cw-table-id"><code>'+esc(account.id)+'</code></div>' +
+            '<div class="cw-table-status"><span class="cw-sum-status '+dotCls+'"><span class="cw-sum-dot" aria-hidden="true"></span>'+esc(statusText)+'</span></div>' +
+            '<div class="cw-table-actions">'+actionBtn+'</div>' +
+          '</div>';
+        }).join('') +
+      '</div>';
+    cwBindServiceIcons(summary);
+    summary.querySelectorAll('[data-cwsum-disconnect]').forEach(function(btn){btn.onclick=async function(){if(btn.disabled)return;btn.disabled=true;try{await api('/api/connected-apps/disconnect',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({agentId:agentId,accountId:btn.getAttribute('data-cwsum-disconnect')})});cwLoadServices(cwEnsure().servicesSearch||'',false);}catch(e){toast('Could not remove this teammate’s access. Try again.',true);btn.disabled=false;}};});
+    summary.querySelectorAll('[data-cwsum-assign]').forEach(function(btn){btn.onclick=async function(){if(btn.disabled)return;btn.disabled=true;try{await api('/api/connected-apps/assign',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({agentId:agentId,accountId:btn.getAttribute('data-cwsum-assign')})});cwLoadServices(cwEnsure().servicesSearch||'',false);}catch(e){toast('Could not assign this account. Try again.',true);btn.disabled=false;}};});
+    summary.querySelectorAll('[data-cwsum-needagent]').forEach(function(btn){btn.onclick=function(){var sel=$('cwServicesAgent');if(sel&&sel.options&&sel.options.length>1){toast('Select a teammate from the dropdown above first.');if(typeof sel.focus==='function')sel.focus();}else{toast('Create a Cowork teammate first to connect apps for them.');}};});
+  }
   function cwRenderServices(){
     var cw=cwEnsure(),data=cw.servicesData,content=$('cwServicesContent'),agentId=cw.connectionsAgentId||'';
     if(!content)return;
     var connected=cw.servicesTab==='connected',search=cw.servicesSearch||'';
     ['Available','Connected'].forEach(function(name,index){var button=$('cwServices'+name);if(button){var selected=index===Number(connected);button.setAttribute('aria-selected',String(selected));button.tabIndex=selected?0:-1;}});
     content.setAttribute('aria-labelledby',connected?'cwServicesConnected':'cwServicesAvailable');
-    if(!data||!data.configured||cw.servicesAgentId!==agentId)return;
+    if(!data||!data.configured||cw.servicesAgentId!==agentId){var sum=$('cwConnectedSummaryStrip');if(sum){sum.hidden=true;sum.innerHTML='';}var sh=$('cwServicesShowing');if(sh)sh.textContent='';return;}
     var accounts=data.accounts||[],available=data.availableAccounts||[],services=cw.services||[],requests=data.requests||[];
     var activeCount=accounts.filter(function(account){return account.status==='ACTIVE'&&!account.disabled;}).length;
     var count=$('cwServicesCount');if(count)count.textContent=activeCount?String(activeCount):'';
     var serviceFor=function(slug){var app=services.find(function(service){return service.slug===slug;}),request=requests.find(function(request){return request.appConnection&&request.appConnection.service===slug;}),names={github:'GitHub',gmail:'Gmail',googlecalendar:'Google Calendar',googledrive:'Google Drive',outlook:'Outlook Email',outlookemail:'Outlook Email',mail:'Mailbox'};return app||request&&Object.assign({slug:slug},request.appConnection)||{slug:slug,name:names[slug]||cwActionWords(slug)};};
+    cwRenderConnectedSummary(accounts,available,serviceFor,agentId);
     var rows=function(list){return '<div class="cw-service-grid">'+list.join('')+'</div>';};
+    var tableRows=function(list){return cwConnectedTableHtml(list);};
     if(connected){
       var own=accounts.filter(function(account){return cwServiceMatches(serviceFor(account.toolkit),search);}),existing=available.filter(function(account){return cwServiceMatches(serviceFor(account.toolkit),search);});
-      content.innerHTML=(agentId?'<section class="cw-service-section" aria-label="Teammate accounts"><h2>Accounts for this teammate</h2>'+ (own.length?rows(own.map(function(account){return cwAssignedServiceRow(account,serviceFor(account.toolkit),accounts);})):'<p>'+esc(search?'No connected apps match your search.':'No apps connected yet. Browse Available to connect your first app.')+'</p>')+'</section>':'')+
-        (existing.length?'<section class="cw-service-section" aria-label="Existing accounts"><h2>'+(agentId?'Existing accounts':'Connected in Pikpam')+'</h2><p>'+(agentId?'Choose an account to give this teammate access.':'Choose or create a teammate to assign your Pikpam connected accounts.')+'</p>'+rows(existing.map(function(account){var service=serviceFor(account.toolkit);var detail=(account.label?account.label+' · ':'')+(agentId?'Available to assign':'Connected in Pikpam')+(available.filter(function(a){return a.toolkit===account.toolkit;}).length>1?' · account '+account.id.slice(-8):'');return cwServiceRow(service,agentId?{attribute:'data-cwassignapp',value:account.id,label:'Assign '+service.name+' to this teammate',icon:'plus'}:{attribute:'data-cwneedagent',value:account.toolkit,label:'Select a teammate to assign '+service.name,icon:'plus',connected:true},detail);}))+'</section>':(!agentId?'<section class="cw-service-section"><h2>Connected in Pikpam</h2><p>No connected Pikpam accounts yet. Browse Available to connect an app.</p></section>':''))+cwAppPermissionsHtml(data.appPermissions);
+      var showingEl=$('cwServicesShowing');if(showingEl)showingEl.textContent='Showing '+(own.length+existing.length)+' account'+((own.length+existing.length)===1?'':'s');
+      content.innerHTML=(agentId?'<section class="cw-service-section" aria-label="Teammate accounts"><h2>Accounts for this teammate</h2>'+ (own.length?tableRows(own.map(function(account){return cwAssignedServiceRow(account,serviceFor(account.toolkit),accounts);})): '<p>'+esc(search?'No connected apps match your search.':'No apps connected yet. Browse Available to connect your first app.')+'</p>')+'</section>':'')+
+        (existing.length?'<section class="cw-service-section" aria-label="Existing accounts"><h2>'+(agentId?'Existing accounts':'Connected in Pikpam')+'</h2><p>'+(agentId?'Choose an account to give this teammate access.':'Choose or create a teammate to assign your Pikpam connected accounts.')+'</p>'+tableRows(existing.map(function(account){var service=serviceFor(account.toolkit);var detail=(account.label?account.label+' · ':'')+(agentId?'Available to assign':'Connected in Pikpam')+(available.filter(function(a){return a.toolkit===account.toolkit;}).length>1?' · account '+account.id.slice(-8):'');return cwServiceRow(service,agentId?{attribute:'data-cwassignapp',value:account.id,label:'Assign '+service.name+' to this teammate',icon:'plus'}:{attribute:'data-cwneedagent',value:account.toolkit,label:'Select a teammate to assign '+service.name,icon:'plus',connected:true},detail,'table',account);}))+'</section>':(!agentId?'<section class="cw-service-section"><h2>Connected in Pikpam</h2><p>No connected Pikpam accounts yet. Browse Available to connect an app.</p></section>':''))+cwAppPermissionsHtml(data.appPermissions);
     }else{
       var suggestions=new Map();if(agentId)requests.forEach(function(request){var app=request.appConnection;if(request.agentId===agentId&&app&&request.status!=='dismissed'){var service=Object.assign({},serviceFor(app.service),{slug:app.service,name:app.name,reason:app.reason,logo:app.logo||serviceFor(app.service).logo});if(cwServiceMatches(service,search))suggestions.set(app.service,service);}});
       var appRow=function(service){
@@ -266,10 +350,12 @@ export const CONNECTED_APPS_JS = String.raw`
       var browse=services.filter(function(service){return !suggestions.has(service.slug)&&cwServiceMatches(service,search);}),agent=(data.agents||cw.agents||[]).find(function(a){return a.id===agentId;});
       var readyUnlisted=available.filter(function(account){return !suggestions.has(account.toolkit)&&!browse.some(function(s){return s.slug===account.toolkit;})&&cwServiceMatches(serviceFor(account.toolkit),search);});
       var readySection=readyUnlisted.length?'<section class="cw-service-section" aria-label="Ready from Pikpam"><h2>Connected in Pikpam</h2>'+rows(readyUnlisted.map(function(account){var service=serviceFor(account.toolkit);return cwServiceRow(service,agentId?{attribute:'data-cwassignapp',value:account.id,label:'Assign '+service.name+' to this teammate',icon:'plus',connected:true}:{attribute:'data-cwneedagent',value:account.toolkit,label:'Select a teammate to assign '+service.name,icon:'plus',connected:true},(account.label?account.label+' · ':'')+(agentId?'Connected in Pikpam · click + to assign':'Connected in Pikpam'));}))+'</section>':'';
+      var appTotal=suggestions.size+readyUnlisted.length+browse.length;
+      var showingEl=$('cwServicesShowing');if(showingEl)showingEl.textContent='Showing '+appTotal+' app'+(appTotal===1?'':'s');
       content.innerHTML=(suggestions.size?'<section class="cw-service-section" aria-label="Suggested apps"><h2>Suggested for '+esc(agent?agent.name:'this teammate')+'</h2>'+rows(Array.from(suggestions.values()).map(appRow))+'</section>':'')+readySection+'<section class="cw-service-section" aria-label="Browse apps"><h2>Browse apps</h2>'+ (browse.length?rows(browse.map(appRow)):(suggestions.size||readyUnlisted.length)?'':'<p>No apps match your search.</p>')+(cw.servicesCursor?'<button class="btn ghost cw-service-more" id="cwServicesMore">Load more apps</button>':'')+'</section>';
     }
     if(data.accountStatusIncomplete||data.catalogUnavailable)content.innerHTML='<p class="cw-services-error" role="status">'+(data.accountStatusIncomplete?'Some account statuses could not be checked. Saved access is preserved. ':'')+(data.catalogUnavailable?'The app catalog is unavailable. Your connected accounts are still listed in Connected. ':'')+'Refresh to try again.</p>'+content.innerHTML;
-    if(data.keyStorage==='Pikpam account')content.innerHTML='<p class="cw-service-status connected">Using your Pikpam connected apps. Accounts and provider credentials stay in your Pikpam account.'+(!agentId?' Select or create a Cowork teammate to assign apps.':'')+'</p>'+content.innerHTML;
+    if(data.keyStorage==='Pikpam account')content.innerHTML+='<p class="cw-service-status connected cw-pikpam-foot-note">Using your Pikpam connected apps. Accounts and provider credentials stay in your Pikpam account.'+(!agentId?' Select or create a Cowork teammate to assign apps.':'')+'</p>';
     content.innerHTML=cwServiceSignInHtml(agentId)+content.innerHTML;
     cwBindServiceIcons(content);cwBindAppPermissions(content);cwBindServiceActions(content,agentId);cwBindPikpamCredentialButtons(content,agentId);cwInsertMail(content,agentId);
     var moreButton=$('cwServicesMore');if(moreButton)moreButton.onclick=function(){moreButton.disabled=true;cwLoadServices(cw.servicesSearch||'',true);};
@@ -374,7 +460,7 @@ export const CONNECTED_APPS_JS = String.raw`
   function cwInsertMail(content, agentId) {
     var html = cwMailSectionHtml(agentId);
     if (!html || !content) return;
-    content.insertAdjacentHTML('afterbegin', html);
+    content.insertAdjacentHTML('beforeend', html);
     cwBindMail(content, agentId);
   }
   function cwBindMail(root, agentId, scope) {

@@ -42,7 +42,7 @@ export const COWORK_PROFILE_CSS = String.raw`
 
 export const COWORK_PROFILE_JS = String.raw`
   function cwProfileTools(agent) {
-    var cw=cwEnsure(),state=cw.appAccountStates&&cw.appAccountStates[agent.id],apps=new Map(),computer=(cw.computers||[]).find(function(item){return item.agentId===agent.id;});
+    var cw=cwEnsure(),state=cw.appAccountStates&&cw.appAccountStates[agent.id],apps=new Map(),computer=(cw.computers||[]).find(function(item){return item&&item.agentId===agent.id;});
     var descriptions={github:'Repository issues, pull requests, and code reviews.',gmail:'Read email and manage the messages you authorize.',facebook:'Work with your connected pages and social posts.',instagram:'Work with your connected Instagram content and audience.',googlecalendar:'Work with events and availability in your connected calendar.',googledrive:'Find and work with files in your connected Drive.'};
     var names={github:'GitHub',gmail:'Gmail',googlecalendar:'Google Calendar',googledrive:'Google Drive',googlesheets:'Google Sheets',instagram:'Instagram',facebook:'Facebook',slack:'Slack'};
     (state&&state.requests||[]).concat(cw.requests||[]).forEach(function(request){if(request.agentId!==agent.id||!request.appConnection||request.status==='dismissed')return;var app=request.appConnection;apps.set(app.service,{id:'app:'+app.service,kind:'app',service:app.service,name:app.name,logo:app.logo,description:descriptions[app.service]||app.reason,status:state?'Not connected':'Checking connection…',connected:false});});

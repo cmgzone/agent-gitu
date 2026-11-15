@@ -1,18 +1,22 @@
 // One action treatment across chat, settings, onboarding and authentication.
 // Selection surfaces retain their state; controls have no resting card chrome.
 export const UI_BUTTON_CSS = String.raw`
-  :is(button, a.btn):not(.mobile-backdrop):not(.cw-panel-backdrop):not(.toggle):not([role="switch"]):not(.cw-colors button):not(.cw-profile-tool):not(.chat-question-choice):not(.setup-agent-mode):not(.setup-agent-card):not(.setup-char-pick) {
+  :is(button, a.btn):not(.mobile-backdrop):not(.cw-panel-backdrop):not(.toggle):not([role="switch"]):not(.cw-colors button):not(.cw-profile-tool):not(.ws-kpi-card):not(.cw-kpi-card):not(.cw-sw-card):not(.cw-sw-btn):not(.chat-question-choice):not(.setup-agent-mode):not(.setup-agent-card):not(.setup-char-pick):where(:not(#gituAstryxRoot *, dialog *)),
+  .gitu-astryx-legacy-host :is(button, a.btn):not(.mobile-backdrop):not(.cw-panel-backdrop):not(.toggle):not([role="switch"]):not(.cw-colors button):not(.cw-profile-tool):not(.ws-kpi-card):not(.cw-kpi-card):not(.cw-sw-card):not(.cw-sw-btn):not(.chat-question-choice):not(.setup-agent-mode):not(.setup-agent-card):not(.setup-char-pick) {
     border: 0 !important;
     background: transparent !important;
     box-shadow: none !important;
     transition: color .16s ease, background-color .16s ease, transform .12s ease, opacity .16s ease;
     -webkit-tap-highlight-color: transparent;
   }
-  :is(button, a.btn):not(.mobile-backdrop):not(.cw-panel-backdrop):not(.toggle):not([role="switch"]):not(.cw-colors button):not(.chat-question-choice):not(.setup-agent-mode):not(.setup-agent-card):not(.setup-char-pick):not(:disabled):hover {
+  :is(button, a.btn):not(.mobile-backdrop):not(.cw-panel-backdrop):not(.toggle):not([role="switch"]):not(.cw-colors button):not(.ws-kpi-card):not(.cw-kpi-card):not(.cw-sw-card):not(.cw-sw-btn):not(.chat-question-choice):not(.setup-agent-mode):not(.setup-agent-card):not(.setup-char-pick):where(:not(#gituAstryxRoot *, dialog *)):not(:disabled):hover,
+  .gitu-astryx-legacy-host :is(button, a.btn):not(.mobile-backdrop):not(.cw-panel-backdrop):not(.toggle):not([role="switch"]):not(.cw-colors button):not(.ws-kpi-card):not(.cw-kpi-card):not(.cw-sw-card):not(.cw-sw-btn):not(.chat-question-choice):not(.setup-agent-mode):not(.setup-agent-card):not(.setup-char-pick):not(:disabled):hover {
     background: color-mix(in srgb, var(--accent) 9%, transparent) !important;
   }
-  :is(button, a.btn):not(.mobile-backdrop):not(.cw-panel-backdrop):not(.toggle):not([role="switch"]):not(:disabled):active { transform: translateY(1px) scale(.97); }
-  :is(button, a.btn):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  :is(button, a.btn):not(.mobile-backdrop):not(.cw-panel-backdrop):not(.toggle):not([role="switch"]):where(:not(#gituAstryxRoot *, dialog *)):not(:disabled):active,
+  .gitu-astryx-legacy-host :is(button, a.btn):not(.mobile-backdrop):not(.cw-panel-backdrop):not(.toggle):not([role="switch"]):not(:disabled):active { transform: translateY(1px) scale(.97); }
+  :is(button, a.btn):where(:not(#gituAstryxRoot *, dialog *)):focus-visible,
+  .gitu-astryx-legacy-host :is(button, a.btn):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
   :is(button, a.btn):disabled { opacity: .4; cursor: default; }
   .btn, a.btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; border-radius: 999px; min-height: 32px; text-decoration: none; }
   .btn.dark, a.btn.dark, .cw-composer .cw-send, button.send, button.side-fab { color: var(--accent); }
@@ -78,7 +82,7 @@ export const UI_BUTTON_JS = String.raw`
     return paths[name] ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' + paths[name] + '</svg>' : icon(name);
   }
   function decorateActionButton(button) {
-    if (button.matches('.mobile-backdrop,.cw-panel-backdrop,.cw-widget-backdrop,.toggle,[role="switch"],.cw-colors button,.cw-learn,.home-project-open,.home-project-chat,[data-ws-filter],.ws-sc-title-btn,.ws-sc-toggle,.setup-agent-mode,.setup-agent-card,.setup-char-pick')) return;
+    if ((typeof button.closest === 'function' && button.closest('#gituAstryxRoot,dialog') && !button.closest('.gitu-astryx-legacy-host')) || button.matches('.mobile-backdrop,.cw-panel-backdrop,.cw-widget-backdrop,.toggle,[role="switch"],.cw-colors button,.cw-learn,.ws-kpi-card,.cw-kpi-card,.cw-sw-card,.cw-sw-btn,.home-project-open,.home-project-chat,[data-ws-filter],.ws-sc-title-btn,.ws-sc-toggle,.setup-agent-mode,.setup-agent-card,.setup-char-pick')) return;
     var existing = button.querySelector('svg,img,input');
     if (existing) {
       if (existing.tagName.toLowerCase() === 'svg') { existing.setAttribute('aria-hidden', 'true'); existing.setAttribute('focusable', 'false'); }

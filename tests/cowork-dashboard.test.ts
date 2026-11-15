@@ -130,4 +130,67 @@ describe('Full-page Cowork profile', () => {
     expect(f.context.cwRenderProfilePage).not.toHaveBeenCalled();
   });
 
+  it('wires sidebar/menu agent entries, hides the in-chat dock, and renders a minimal switcher grid', () => {
+    expect(UI_HTML).toContain('id="homeAgentsBtn"');
+    expect(UI_HTML).toContain('id="sbAgents"');
+    expect(UI_HTML).toContain('id="cwAgentsMenuBtn"');
+    expect(UI_HTML).toContain('.cw-teammate-switcher { display:none!important; }');
+
+    const cardButtons: any[] = [];
+    const elements: Record<string, any> = {
+      cwSwitcherGrid: {
+        innerHTML: '',
+        querySelectorAll: () => cardButtons,
+      },
+      cwSwitcherCount: { textContent: '' },
+      cwSwitcherSearch: { value: '' },
+      cwSwClose: {},
+      cwSwNewAgent: {},
+    };
+    const modal: any = { isConnected: true, setAttribute: vi.fn(), remove: vi.fn(() => { modal.isConnected = false; }) };
+    const cw: any = {
+      agents: [
+        { id: 'atlas', name: 'Atlas', tagline: 'Docs Lead', description: 'Long bio should stay hidden', roles: ['writer'], skills: ['docs-sync'] },
+        { id: 'nova', name: 'Nova', tagline: 'Code Specialist', description: 'Another long bio', roles: ['coder'], skills: ['code-review'] },
+      ],
+      convs: [{ id: 'dm', kind: 'dm', memberIds: ['atlas'] }],
+      active: 'dm',
+      selectedAgentId: 'atlas',
+    };
+    const cwOpenDm = vi.fn();
+    const api = vi.fn(() => Promise.resolve({ agents: cw.agents }));
+    const context = createContext({
+      S: { active: 'cowork' }, cwEnsure: () => cw, cwActiveConv: () => cw.convs[0],
+      $: (id: string) => elements[id], esc: (v: unknown) => String(v ?? '').replace(/</g, '&lt;'),
+      cwIcon: (n: string) => `<svg data-icon="${n}"></svg>`, cwAva: (a: any) => `<ava data-id="${a.id}"></ava>`,
+      cwOpenDm, api, document: {
+        createElement: () => modal, querySelector: () => null, body: { appendChild: vi.fn() },
+      },
+    });
+    new Script(COWORK_DASHBOARD_JS).runInContext(context);
+    context.cwOpenAgentSwitcherModal();
+
+    expect(modal.id).toBe('cwAgentSwitcher');
+    expect(elements.cwSwitcherCount.textContent).toBe('2');
+    expect(elements.cwSwitcherGrid.innerHTML).toContain('Atlas');
+    expect(elements.cwSwitcherGrid.innerHTML).toContain('Docs Lead');
+    expect(elements.cwSwitcherGrid.innerHTML).not.toContain('Long bio should stay hidden');
+    expect(elements.cwSwitcherGrid.innerHTML).not.toContain('Profile');
+    expect(elements.cwSwitcherGrid.innerHTML).not.toContain('Edit');
+    expect(elements.cwSwitcherGrid.innerHTML).not.toContain('skills');
+
+    elements.cwSwitcherSearch.value = 'nova';
+    elements.cwSwitcherSearch.oninput();
+    expect(elements.cwSwitcherGrid.innerHTML).toContain('Nova');
+    expect(elements.cwSwitcherGrid.innerHTML).not.toContain('Atlas');
+
+    const novaBtn: any = { getAttribute: () => 'nova' };
+    cardButtons.push(novaBtn);
+    elements.cwSwitcherSearch.value = '';
+    elements.cwSwitcherSearch.oninput();
+    novaBtn.onclick();
+    expect(modal.remove).toHaveBeenCalledOnce();
+    expect(cwOpenDm).toHaveBeenCalledWith('nova');
+  });
+
 });

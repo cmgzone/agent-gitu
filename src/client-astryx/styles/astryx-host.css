@@ -1,0 +1,42 @@
+.gitu-astryx-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 42;
+  background: var(--color-background-body);
+  color: var(--color-text-primary);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.gitu-astryx-plush {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.gitu-astryx-swatch {
+  width: var(--spacing-6);
+  height: var(--spacing-6);
+  border-radius: var(--radius-full);
+  border: 2px solid var(--color-border-emphasized);
+  padding: 0;
+  cursor: pointer;
+}
+
+.gitu-astryx-swatch[aria-pressed='true'] {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px var(--color-accent);
+}
+
+.gitu-astryx-legacy-host {
+  width: 100%;
+  min-width: 0;
+}
+
+/* Re-apply theme legibility inside legacy DOM hosted inside Astryx Layout */
+.gitu-astryx-legacy-host :is(h1, h2) {
+  color: var(--color-text-primary);
+}

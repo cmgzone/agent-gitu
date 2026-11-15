@@ -1,0 +1,62 @@
+{
+  "name": "pikpam",
+  "like": "neutral",
+  "mode": "both",
+  "settings": [
+    {
+      "thing": "--color-accent",
+      "value": "#0064e0",
+      "source": "token",
+      "mode": "light"
+    },
+    {
+      "thing": "--color-accent",
+      "value": "#3e9efb",
+      "source": "token",
+      "mode": "dark"
+    },
+    {
+      "thing": "--color-background-body",
+      "value": "#f1f4f7",
+      "source": "token",
+      "mode": "light"
+    },
+    {
+      "thing": "--color-background-body",
+      "value": "#111112",
+      "source": "token",
+      "mode": "dark"
+    },
+    {
+      "thing": "--color-background-surface",
+      "value": "#ffffff",
+      "source": "token",
+      "mode": "light"
+    },
+    {
+      "thing": "--color-background-surface",
+      "value": "#1f1f22",
+      "source": "token",
+      "mode": "dark"
+    },
+    {
+      "thing": "font",
+      "value": "inter",
+      "source": "dial",
+      "on": "body"
+    },
+    {
+      "thing": "font",
+      "value": "inter",
+      "source": "dial",
+      "on": "heading"
+    },
+    {
+      "thing": "font",
+      "value": "jetbrains-mono",
+      "source": "dial",
+      "on": "code"
+    }
+  ],
+  "lifted": []
+}

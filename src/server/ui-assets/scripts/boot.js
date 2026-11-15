@@ -134,6 +134,7 @@
     openHome();
   };
   window.gituAndroidBack = function () {
+    if (window.__gituAstryx && typeof window.__gituAstryx.handleBack === 'function' && window.__gituAstryx.handleBack()) return true;
     var settings = $('settings');
     if (settings && !settings.hidden) { closeSettings(); return true; }
     var modals = document.querySelectorAll('.modal:not([hidden])');

@@ -14,6 +14,7 @@
       var html = '<button class="newbtn" id="sbNew" title="starts in: ' + esc(activePath || 'choose a project first') + '">' + icon('pencil') + ' New session <span style="opacity:.6;font-weight:500;font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">· ' + esc(effectiveProjectName()) + '</span></button>' +
         '<div class="sb-action-row">' +
           '<button class="newbtn sb-newproj" id="sbNewProject" style="background:none;border:1px dashed var(--border2)">' + icon('folder') + ' New project</button>' +
+          '<button class="navitem sb-chip" id="sbAgents" title="Switch or manage agents"><span class="ico">' + icon('users') + '</span>Agents</button>' +
           '<button class="navitem sb-chip" data-set="workspace" title="Workspace settings"><span class="ico">' + icon('folder') + '</span>Workspace</button>' +
         '</div>' +
         '<div class="sb-tool-strip">' +
@@ -76,6 +77,7 @@
       updateTitle();
       $('sbNew').onclick = function () { openHome(); };
       $('sbNewProject').onclick = newProject;
+      if ($('sbAgents')) $('sbAgents').onclick = function () { toggleMobileNav(false); if (typeof cwOpenAgentSwitcherModal === 'function') cwOpenAgentSwitcherModal(); else if (typeof openCowork === 'function') openCowork(); };
       var byId = {};
       sessions.forEach(function (s) { byId[s.runId] = s; });
       $('sbScroll').querySelectorAll('[data-run]').forEach(function (el) {

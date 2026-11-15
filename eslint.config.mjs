@@ -4,7 +4,18 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   {
-    ignores: ['dist/**', 'release/**', 'coverage/**', 'node_modules/**', '.hermes/**', '.freebuff/**', 'tests/agent-evals/results/**'],
+    ignores: [
+      'dist/**',
+      'dist-astryx/**',
+      'release/**',
+      'coverage/**',
+      'node_modules/**',
+      '.hermes/**',
+      '.freebuff/**',
+      'tests/agent-evals/results/**',
+      'src/server/ui-assets/astryx/**',
+      'src/themes/**',
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

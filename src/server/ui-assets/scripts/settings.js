@@ -11,6 +11,10 @@
   function openSettings(section) {
     S.setSection = section || 'overview';
     closeToolPanel();
+    if (typeof window !== 'undefined' && window.__gituAstryx && typeof window.__gituAstryx.openSettings === 'function') {
+      window.__gituAstryx.openSettings(S.setSection);
+      return;
+    }
     var shell=document.querySelector('.shell');if($('settings').hidden){S.settingsFocus=document.activeElement;S.settingsShellInert=shell.inert;}
     shell.inert=true;
     $('settings').hidden = false;
@@ -20,9 +24,13 @@
     $('settings').onkeydown=function(event){if(event.key!=='Tab')return;var controls=Array.from(this.querySelectorAll('button:not(:disabled),input:not([type=hidden]):not(:disabled),textarea:not(:disabled),select:not(:disabled)')).filter(function(node){return node.getClientRects().length;});var first=controls[0],last=controls[controls.length-1];if(!first)return;if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}};
   }
   function closeSettings() {
+    S._legacySetBodyTarget = null;
+    if (typeof cwCloseConnectionManager === 'function') cwCloseConnectionManager();
+    if (typeof window !== 'undefined' && window.__gituAstryx && typeof window.__gituAstryx.closeSettings === 'function') {
+      window.__gituAstryx.closeSettings();
+    }
     if($('settings').hidden)return;
     $('settings').hidden = true;
-    if(typeof cwCloseConnectionManager==='function')cwCloseConnectionManager();
     document.querySelector('.shell').inert=!!S.settingsShellInert;
     var focus=S.settingsFocus&&S.settingsFocus.isConnected?S.settingsFocus:$('homeSettings')||$('mainChatHistory')||$('cwBack')||$('cwPageSearch');if(focus)focus.focus({preventScroll:true});
   }
@@ -62,6 +70,10 @@
   function renderSettings() {
     var items = WORKSPACE_SETTINGS;
     if(S.setSection!=='connections'&&typeof cwCloseConnectionManager==='function')cwCloseConnectionManager();
+    if (S._legacySetBodyTarget && document.body.contains(S._legacySetBodyTarget)) {
+      renderSettingsBody(S._legacySetBodyTarget);
+      return;
+    }
     var settings=$('settings');settings.classList.toggle('settings-directory',S.setSection==='overview');
     var close=$('settingsClose');if(!close){settings.insertAdjacentHTML('afterbegin','<button class="settings-close" id="settingsClose" aria-label="Close settings">'+icon('x')+'</button><button class="settings-top-back" id="settingsDirectoryBack">'+icon('back')+'<span>All settings</span></button>');close=$('settingsClose');}
     close.onclick=closeSettings;$('settingsDirectoryBack').hidden=S.setSection==='overview';$('settingsDirectoryBack').onclick=function(){openSettings('overview');};
@@ -124,7 +136,11 @@
     if ($('setTopClose')) $('setTopClose').onclick = closeSettings;
     if (typeof syncThemeControls === 'function') syncThemeControls();
     syncConsoleAccountFooter();
-    var b = $('setbody');
+    renderSettingsBody($('setbody'));
+  }
+
+  function renderSettingsBody(b) {
+    if (!b) return;
     if(S.setSection==='overview'){wsSettingsDirectory();return;}
     if(S.setSection==='files'){renderFileSettings(b);return;}
     // Async sections seed an instant loading row instead of a blank flash.
@@ -247,10 +263,18 @@
         $('gPersist').checked = a.persistent !== false;
         if ($('gSpend')) $('gSpend').value = a.maxCostUsd === undefined ? '' : String(a.maxCostUsd);
       }).catch(function () {});
-      b.insertAdjacentHTML('beforeend', '<h2>Getting started</h2><p class="appearance-description">Choose your theme, connect a provider, and pick a workspace.</p><button class="btn ghost" id="setupAgain">Open setup wizard</button>');
+      b.insertAdjacentHTML('beforeend', '<div class="ws-settings-grid" id="generalExtraGrid"><div class="setcard ws-grid-card"><div class="ws-grid-card-head"><div class="t">Getting started</div><div class="d">Choose your theme, connect a provider, and pick a primary workspace.</div></div><div class="ws-grid-card-foot"><button class="btn ghost" id="setupAgain">Open setup wizard</button></div></div><div class="setcard ws-grid-card"><div class="setrow" style="border:0;padding:0"><div class="grow"><div class="t">Developer diagnostics</div><div class="d">Show raw agent protocol repairs, checkpoints, and telemetry in timelines.</div></div><label style="display:flex;align-items:center;gap:8px;flex:none"><input type="checkbox" id="gDevModeInline" ' + (S.settings.devMode ? 'checked' : '') + ' style="width:18px;height:18px"><span style="font-size:12.5px">' + (S.settings.devMode ? 'on' : 'off') + '</span></label></div></div></div>');
       $('setupAgain').onclick = function () { closeSettings(); openSetupWizard(); };
+      if ($('gDevModeInline')) {
+        $('gDevModeInline').onchange = function () {
+          S.settings.devMode = $('gDevModeInline').checked;
+          persist();
+          renderSettings();
+        };
+      }
+      var extraGrid = $('generalExtraGrid') || b;
       if (window.gituAndroidPush) {
-        b.insertAdjacentHTML('beforeend', '<h2>Android notifications</h2><div class="setcard" id="androidPushCard"><div class="setrow"><div class="grow"><div class="t">Task updates on this phone</div><div class="d" id="androidPushStatus">Checking notification settings…</div></div><button class="btn ghost" id="androidPushToggle" disabled>Enable</button><button class="btn ghost" id="androidPushTest" disabled>Send test</button></div></div>');
+        extraGrid.insertAdjacentHTML('beforeend', '<div class="setcard ws-grid-card" id="androidPushCard"><div class="setrow" style="border:0;padding:0;align-items:flex-start;flex-direction:column;gap:12px"><div class="grow"><div class="t">Android notifications</div><div class="d" id="androidPushStatus">Checking notification settings…</div></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn ghost" id="androidPushToggle" disabled>Enable</button><button class="btn ghost" id="androidPushTest" disabled>Send test</button></div></div></div>');
         var pushState;
         var renderPush = function (status) {
           if (S.setSection !== 'general' || !$('androidPushStatus')) return;
@@ -269,11 +293,11 @@
         refreshPush().catch(function () { if ($('androidPushStatus')) $('androidPushStatus').textContent = 'Could not read notification settings. Reopen Settings to retry.'; });
       }
       if (window.gituDesktop && typeof window.gituDesktop.phoneAccess === 'function') {
-        b.insertAdjacentHTML('beforeend', '<h2>Phone access</h2><div class="setcard" id="phoneAccessCard"><div class="setrow"><div class="grow"><div class="t">Connect your Android phone</div><div class="d">Checking your Wi-Fi address…</div></div></div></div>');
+        extraGrid.insertAdjacentHTML('beforeend', '<div class="setcard ws-grid-card" id="phoneAccessCard"><div class="setrow" style="border:0;padding:0"><div class="grow"><div class="t">Connect your Android phone</div><div class="d">Checking your Wi-Fi address…</div></div></div></div>');
         var renderPhoneAccess = function (status) {
           var card = $('phoneAccessCard'); if (!card || S.setSection !== 'general') return;
           var addresses = status && status.addresses || [];
-          card.innerHTML = '<div class="setrow"><div class="grow"><div class="t">'+(status && status.enabled ? 'Starts automatically with Gitu' : 'Phone access is disabled')+'</div><div class="d">Connect both devices to the same Wi-Fi. Choose Local network in Android and sign in with your Gitu email and password.</div></div></div>' +
+          card.innerHTML = '<div class="setrow"><div class="grow"><div class="t">'+(status && status.enabled ? 'Phone access starts automatically' : 'Phone access is disabled')+'</div><div class="d">Connect both devices to the same Wi-Fi. Choose Local network in Android and sign in with your Gitu email and password.</div></div></div>' +
             addresses.map(function (address) { return '<div class="setrow"><div class="grow"><code style="overflow-wrap:anywhere">'+esc(address)+'</code></div></div>'; }).join('') +
             '<div class="setrow"><div class="grow"><div class="d">'+esc(status && status.pending ? 'Waiting for the Windows permission request…' : status && status.allowed ? 'Windows network permission is configured.' : status && status.message || 'No Wi-Fi address is available. Check your network connection.')+'</div><div class="d">Local HTTP sends passwords and workspace data unencrypted. Use trusted Wi-Fi.</div></div></div>' +
             (status && status.enabled ? '<div class="setrow"><button class="btn ghost" id="allowPhoneAccess">Allow Wi-Fi access</button><button class="btn ghost" id="refreshPhoneAccess">Refresh address</button></div>' : '');
@@ -283,17 +307,18 @@
         window.gituDesktop.phoneAccess().then(renderPhoneAccess).catch(function () { renderPhoneAccess({ enabled: true, addresses: [], message: 'Could not read phone access. Reopen Gitu and try again.' }); });
       }
     } else if (S.setSection === 'cowork') {
-      b.innerHTML = '<h1>Cowork</h1>' +
-        '<p style="color:var(--muted);font-size:12.5px;max-width:640px">Shared context for your agent team. Every teammate receives this in their system prompt, and they will update it themselves when you ask them to in a chat (or when you share something durable about you).</p>' +
-        '<div class="setcard" style="margin-bottom:12px"><div class="t" style="margin:14px 18px 10px">About you</div>' +
-        '<div style="display:grid;gap:8px;max-width:620px;padding:0 18px 16px">' +
-        '<input id="cwSetName" placeholder="Your name" style="background:var(--card2);border:1px solid var(--border2);color:var(--text);border-radius:8px;padding:7px 10px;font:inherit;font-size:13px">' +
-        '<textarea id="cwSetAbout" rows="4" placeholder="About you — role, company, current focus…" style="background:var(--card2);border:1px solid var(--border2);color:var(--text);border-radius:8px;padding:7px 10px;font:inherit;font-size:13px;resize:vertical"></textarea>' +
-        '<textarea id="cwSetPrefs" rows="3" placeholder="Working preferences — tone, hours, tools to prefer or avoid…" style="background:var(--card2);border:1px solid var(--border2);color:var(--text);border-radius:8px;padding:7px 10px;font:inherit;font-size:13px;resize:vertical"></textarea>' +
-        '<div><button class="btn dark" id="cwSetProfileSave">Save</button></div></div></div>' +
-        '<div class="setcard" style="margin-bottom:12px"><div class="setrow"><div class="grow"><div class="t">Learning mode</div><div class="d">Choose how your team learns from its conversations.</div></div><select id="cwLearningMode" aria-label="Cowork learning mode"><option value="off">Off</option><option value="reactive">When asked</option><option value="proactive">Proactive</option></select></div><div class="setrow"><div class="grow"><div class="t">Require approval for skill changes</div><div class="d">When on, teammates cannot save or improve skills directly — their changes are staged here for your review first. Applies to the whole team.</div></div><input type="checkbox" id="cwSkillApproval" style="width:18px;height:18px;flex:none"></div>' +
-        '<div class="setrow"><div class="grow"><div class="t">Enable company workspaces (Experimental)</div><div class="d">When enabled, company workspaces, teams, and background coordination are active. Switch off if not needed or unstable.</div></div><input type="checkbox" id="cwEnableCompanies" style="width:18px;height:18px;flex:none"></div>' +
-        '<div id="cwPendingBody"></div></div>';
+      b.innerHTML = '<h1>Cowork &amp; Team</h1>' +
+        '<p class="appearance-description">Shared context for your agent team and team-wide learning controls.</p>' +
+        '<div class="ws-settings-grid">' +
+        '<div class="setcard"><div class="t" style="margin:16px 18px 10px">About you</div>' +
+        '<div style="display:grid;gap:10px;padding:0 18px 18px">' +
+        '<input id="cwSetName" placeholder="Your name" style="background:var(--card2);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:8px 12px;font:inherit;font-size:13px">' +
+        '<textarea id="cwSetAbout" rows="4" placeholder="About you — role, company, current focus…" style="background:var(--card2);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:8px 12px;font:inherit;font-size:13px;resize:vertical"></textarea>' +
+        '<textarea id="cwSetPrefs" rows="3" placeholder="Working preferences — tone, hours, tools to prefer or avoid…" style="background:var(--card2);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:8px 12px;font:inherit;font-size:13px;resize:vertical"></textarea>' +
+        '<div style="display:flex;justify-content:flex-end"><button class="btn dark" id="cwSetProfileSave">Save context</button></div></div></div>' +
+        '<div class="setcard"><div class="setrow"><div class="grow"><div class="t">Learning mode</div><div class="d">Choose how your team learns from its conversations.</div></div><select id="cwLearningMode" aria-label="Cowork learning mode"><option value="off">Off</option><option value="reactive">When asked</option><option value="proactive">Proactive</option></select></div><div class="setrow"><div class="grow"><div class="t">Require approval for skill changes</div><div class="d">Teammates stage skill updates here for your review first.</div></div><input type="checkbox" id="cwSkillApproval" style="width:18px;height:18px;flex:none"></div>' +
+        '<div class="setrow"><div class="grow"><div class="t">Enable company workspaces (Experimental)</div><div class="d">Activate company workspaces, teams, and background coordination.</div></div><input type="checkbox" id="cwEnableCompanies" style="width:18px;height:18px;flex:none"></div>' +
+        '<div id="cwPendingBody"></div></div></div>';
       api('/api/cowork/profile').then(function (d) {
         if (S.setSection !== 'cowork' || !$('cwSetName')) return;
         $('cwSetName').value = (d.profile && d.profile.name) || '';
@@ -1150,3 +1175,57 @@
       });
     }
   }
+
+  (function registerSettingsHostBridge() {
+    if (typeof window === 'undefined') return;
+    var host = window.__gituHost = window.__gituHost || {};
+    host.getState = function () { return S; };
+    host.api = api;
+    host.toast = toast;
+    host.persist = persist;
+    host.setSettingSection = function (section) {
+      if (section !== 'connections' && typeof cwCloseConnectionManager === 'function') cwCloseConnectionManager();
+      S.setSection = section || 'overview';
+    };
+    host.renderLegacySettingsSection = function (section, target) {
+      if (section !== 'connections' && typeof cwCloseConnectionManager === 'function') cwCloseConnectionManager();
+      S.setSection = section || 'providers';
+      S._legacySetBodyTarget = target || null;
+      renderSettingsBody(target);
+    };
+    host.closeSettingsHost = function () {
+      S._legacySetBodyTarget = null;
+      if (typeof cwCloseConnectionManager === 'function') cwCloseConnectionManager();
+      var el = $('settings');
+      if (el && !el.hidden) el.hidden = true;
+    };
+    host.openSearchOverlay = function () { if (typeof wsOpen === 'function') wsOpen(); };
+    host.openFolderBrowser = function () { if (typeof openFolderBrowser === 'function') openFolderBrowser(); };
+    host.openSetupWizard = function () { if (typeof openSetupWizard === 'function') openSetupWizard(); };
+    host.effectiveProjectPath = effectiveProjectPath;
+    host.basename = basename;
+    host.updateProjChip = function () { if (typeof updateProjChip === 'function') updateProjChip(); };
+    host.renderSidebar = function () { if (typeof renderSidebar === 'function') renderSidebar(); };
+    host.loadModelCatalog = loadModelCatalog;
+    host.catalogModelGroups = catalogModelGroups;
+    host.openConnections = function (agentId) {
+      if (typeof cwOpenConnections === 'function') cwOpenConnections(agentId);
+      else openSettings('connections');
+    };
+    host.openTopup = function () { if (typeof openPikRouterTopup === 'function') openPikRouterTopup(); };
+    host.startOAuth = function () { if (typeof startPikRouterOAuth === 'function') startPikRouterOAuth('/callback'); };
+    host.getThemeMode = function () {
+      return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+    };
+    host.toggleThemeMode = function () {
+      var next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      if (typeof setTheme === 'function') setTheme(next);
+      else document.documentElement.setAttribute('data-theme', next);
+    };
+    host.getWorkspaceSettingItems = function () {
+      return (typeof WORKSPACE_SETTINGS !== 'undefined' ? WORKSPACE_SETTINGS : []).map(function (it) {
+        return { id: it[0], icon: it[1], title: it[2], detail: it[3] };
+      });
+    };
+    host.syncCodingPermissions = syncCodingPermissions;
+  })();

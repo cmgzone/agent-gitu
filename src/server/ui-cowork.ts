@@ -130,22 +130,7 @@ export const COWORK_CSS = String.raw`
   .cw-rail-foot .btn { flex: 1; padding: 6px 10px; font-size: 12px; }
   .cw-empty-note { font-size: 11.5px; color: var(--muted); padding: 8px 6px 4px; line-height: 1.5; }
   .cw-chat { position: relative; flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-  .cw-teammate-switcher { position:absolute; top:64px; right:14px; z-index:4; display:flex; flex-direction:column; align-items:center; gap:8px; width:58px; max-height:calc(100% - var(--cw-composer-height,148px) - 82px); padding:8px 6px; box-sizing:border-box; border-radius:20px; background:color-mix(in srgb,var(--card) 82%,transparent); border:1px solid color-mix(in srgb,var(--border2) 75%,transparent); backdrop-filter:blur(16px); box-shadow:0 12px 34px -10px rgba(0,0,0,.45); overflow-y:auto; overscroll-behavior:contain; scrollbar-width:none; }
-  .cw-teammate-switcher[hidden] { display:none; }
-  .cw-teammate-switcher::-webkit-scrollbar { display:none; }
-  .cw-quick-agent { position:relative; display:grid; place-items:center; flex:none; width:44px; height:44px; padding:3px; border:1px solid color-mix(in srgb,var(--border2) 65%,transparent); border-radius:14px; background:color-mix(in srgb,var(--card2) 88%,transparent); cursor:pointer; opacity:.94; filter:none; transition:transform .16s ease,border-color .16s ease,background .16s ease,opacity .16s ease,box-shadow .16s ease; }
-  .cw-quick-agent .cw-ava { width:38px; height:38px; background:transparent!important; overflow:visible; filter:drop-shadow(0 2px 5px rgba(0,0,0,.28)); }
-  .cw-quick-agent:hover,.cw-quick-agent:focus-visible { opacity:1; filter:none; transform:translateY(-1px) scale(1.06); border-color:var(--run,var(--accent)); background:color-mix(in srgb,var(--run,var(--accent)) 14%,var(--card)); box-shadow:0 6px 16px -4px rgba(0,0,0,.35); }
-  .cw-quick-agent.is-working { opacity:1; border-color:var(--cw-agent-color,var(--accent)); background:color-mix(in srgb,var(--cw-agent-color,var(--accent)) 18%,var(--card)); box-shadow:0 0 0 2px color-mix(in srgb,var(--cw-agent-color,var(--accent)) 30%,transparent),0 6px 18px -4px color-mix(in srgb,var(--cw-agent-color,var(--accent)) 45%,transparent); animation:cw-dock-pulse 2s ease-in-out infinite; }
-  .cw-quick-agent.is-working::after { content:''; position:absolute; top:-3px; right:-3px; width:9px; height:9px; border-radius:50%; background:var(--cw-agent-color,#38bdf8); border:2px solid var(--bg,#0b0f17); box-shadow:0 0 8px var(--cw-agent-color,#38bdf8); animation:cw-dock-beacon 1.4s ease-in-out infinite; }
-  @keyframes cw-dock-pulse { 0%,100% { transform:translateY(0) scale(1); } 50% { transform:translateY(-2px) scale(1.05); } }
-  @keyframes cw-dock-beacon { 0%,100% { transform:scale(.85); opacity:.85; } 50% { transform:scale(1.18); opacity:1; } }
-  @media(prefers-reduced-motion:reduce) { .cw-quick-agent.is-working,.cw-quick-agent.is-working::after { animation:none; } }
-  .cw-quick-agent:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
-  .cw-quick-agent:disabled { cursor:wait; opacity:.25; }
-  .cw .cw-chat.has-teammate-switcher .cw-msgs { padding-right:max(76px,calc((100% - var(--chat-column-width,620px))/2)); }
-  @media(max-width:720px) { .cw-teammate-switcher { right:6px; }.cw .cw-chat.has-teammate-switcher .cw-msgs { padding-right:68px; } }
-  @media(prefers-reduced-motion:reduce) { .cw-quick-agent { transition:none; } }
+  .cw-teammate-switcher { display:none!important; }
   .cw-composer-wrap { flex-shrink: 0; }
   .cw-jump-latest { position:absolute; z-index:3; left:50%; bottom:90px; transform:translateX(-50%); display:inline-flex; align-items:center; justify-content:center; width:36px; height:36px; padding:0; border:1px solid var(--border2); border-radius:50%; color:var(--text); background:color-mix(in srgb,var(--bg) 85%,transparent); backdrop-filter:blur(12px); box-shadow:var(--shadow-float); }
   .cw-jump-latest[hidden] { display:none; }
@@ -1360,7 +1345,8 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     }
     var active = cwActiveConv();
     var selectedAgentId = cw.selectedAgentId || (active && (active.kind === 'dm' ? active.memberIds[0] : active.chiefId || active.memberIds[0]));
-    var html = '<div class="cw-sec">TEAM</div>';
+    var html = '<div class="cw-rail-sec-row"><div class="cw-sec" style="padding:0;">AGENTS</div><button type="button" class="cw-rail-add" id="cwRailNewAgent" title="Create new teammate" aria-label="Create new teammate">+</button></div>';
+    html += '<button type="button" class="cw-item cw-rail-agents-btn" id="cwRailAgentsBtn" title="Open agent switcher grid"><span class="cw-chat-glyph">' + cwIcon('users') + '</span><span class="cw-item-main"><span class="cw-item-name">Agents</span><span class="cw-item-sub">' + cw.agents.length + ' ' + (cw.agents.length === 1 ? 'teammate' : 'teammates') + ' · Switcher &amp; grid</span></span></button>';
     if (cw.agents.length === 0) html += '<div class="cw-empty-note">No teammates yet. Create the first profile — pick a name, a character and instructions.</div>';
     cw.agents.forEach(function (a) {
       var selected = selectedAgentId === a.id;
@@ -1407,6 +1393,10 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     el.querySelectorAll('[data-agent]').forEach(function (b) {
       b.onclick = function () { cwOpenDm(b.getAttribute('data-agent')); };
     });
+    var railAgentsBtn = $('cwRailAgentsBtn');
+    if (railAgentsBtn) railAgentsBtn.onclick = function () { if (typeof cwOpenAgentSwitcherModal === 'function') cwOpenAgentSwitcherModal(); };
+    var railNewAgent = $('cwRailNewAgent');
+    if (railNewAgent) railNewAgent.onclick = function () { cwAgentModal(null); };
     el.querySelectorAll('[data-conv]').forEach(function (b) {
       b.onclick = function () { cwOpenConv(b.getAttribute('data-conv')); };
     });
@@ -1450,19 +1440,8 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
 
   function cwRenderTeammateSwitcher() {
     var host=$('cwTeammateSwitcher'),chat=$('cwChat');
-    if(!host||!chat)return;
-    var cw=cwEnsure(),conv=cwActiveConv(),current=conv&&(conv.kind==='dm'?conv.memberIds[0]:cw.selectedAgentId||conv.chiefId||conv.memberIds[0]);
-    var agents=cw.agents.filter(function(agent){return agent.id!==current;}),visible=Boolean(conv&&!cw.profileOpen&&!cw.connectionsOpen&&agents.length);
-    host.hidden=!visible;chat.classList.toggle('has-teammate-switcher',visible);
-    if(!visible)return;
-    var signature=JSON.stringify([current,agents.map(function(agent){return [agent.id,agent.name,agent.avatar];})]);
-    if(host._teammateSignature===signature)return;
-    host._teammateSignature=signature;
-    host.innerHTML=agents.map(function(agent){var label='Chat with '+agent.name;return '<button type="button" class="cw-quick-agent" data-quick-agent="'+esc(agent.id)+'" data-agent-name="'+esc(agent.name)+'" aria-label="'+esc(label)+'" title="'+esc(label)+'"><span aria-hidden="true">'+cwAva(agent)+'</span></button>';}).join('');
-    host.querySelectorAll('[data-quick-agent]').forEach(function(button){button.onclick=function(){
-      var buttons=host.querySelectorAll('[data-quick-agent]');buttons.forEach(function(item){item.disabled=true;});
-      Promise.resolve(cwOpenDm(button.getAttribute('data-quick-agent'))).finally(function(){buttons.forEach(function(item){item.disabled=false;});});
-    };});
+    if(host)host.hidden=true;
+    if(chat)chat.classList.remove('has-teammate-switcher');
   }
 
   function cwOpenDm(agentId) {
@@ -1650,6 +1629,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
         (conv.schedule && conv.schedule.enabled ? '<span class="chip" title="Scheduled messages on">' + cwIcon('clock') + esc(conv.schedule.every) + '</span>' : '') + '</div>' +
         '<button type="button" class="cw-tools-toggle" id="cwToolsBtn" aria-label="Tools and activities" title="Tools and activities" popovertarget="cwToolsMenu">' + cwIcon('dots') + '<span class="cw-tools-badge" id="cwToolsBadge" hidden></span></button>' +
         '<div class="cw-message-menu cw-tools-menu" id="cwToolsMenu" popover="auto" aria-label="Tools and activities">' +
+          '<button type="button" class="cw-tool-item" id="cwAgentsMenuBtn" aria-label="Agents" title="Agent switcher grid">' + cwIcon('users') + '<span>Agents</span></button>' +
           '<button type="button" class="cw-tool-item" id="cwInfoBtn" aria-label="Agent profile" title="Agent profile" aria-controls="cwChat" aria-pressed="false">' + cwIcon('user') + '<span>Profile</span></button>' +
           '<button type="button" class="cw-tool-item" id="cwConnectionsMenuBtn" aria-label="Connections" title="Connections">' + cwIcon('link') + '<span>Connections</span></button>' +
           '<button type="button" class="cw-tool-item" id="cwAssistantSettings" data-pa-settings aria-label="Personal assistant preferences" title="Personal assistant">' + cwIcon('crown') + '<span>Personal assistant</span></button>' +
@@ -1712,6 +1692,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
         }
       });
     }
+    var agentsMenuBtn = $('cwAgentsMenuBtn'); if (agentsMenuBtn) agentsMenuBtn.onclick = function () { var tm = $('cwToolsMenu'); if (tm && typeof tm.hidePopover === 'function') try { tm.hidePopover(); } catch (e) {} if (typeof cwOpenAgentSwitcherModal === 'function') cwOpenAgentSwitcherModal(); };
     var infoBtn = $('cwInfoBtn'); if (infoBtn) infoBtn.onclick = function () { cwOpenProfile(); };
     var connMenuBtn = $('cwConnectionsMenuBtn'); if (connMenuBtn) connMenuBtn.onclick = function () { cwOpenConnections(); };
     cwBindTopNav();
@@ -4318,7 +4299,58 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     });
   }
 
+  function cwAvatarImageUrl(shape) {
+    var html = cwAvaImg({ shape: shape || 'dot-orb' });
+    var match = /src="([^"]+)"/.exec(html);
+    return match ? match[1] : '/characters/orb.png?v=opendots1';
+  }
+
+  function cwRegisterHostBridge() {
+    if (typeof window === 'undefined') return;
+    var host = window.__gituHost = window.__gituHost || {};
+    host.ensureCowork = cwEnsure;
+    host.openDm = cwOpenDm;
+    host.openConv = cwOpenConv;
+    host.renderRail = cwRenderRail;
+    host.applyCharacterTheme = function () { if (typeof cwApplyCharacterTheme === 'function') cwApplyCharacterTheme(); };
+    host.renderInfo = cwRenderInfo;
+    host.activeConv = cwActiveConv;
+    host.getAvatarImageUrl = cwAvatarImageUrl;
+    host.getCharacterColor = function (avatar) { return typeof cwCharacterColor === 'function' ? cwCharacterColor(avatar) : ''; };
+    host.getConstants = function () {
+      return {
+        shapes: CW_SHAPES || ['dot-orb'],
+        characterNames: typeof CW_CHARACTER_NAMES !== 'undefined' ? CW_CHARACTER_NAMES : {},
+        characterPalette: typeof CW_CHARACTER_PALETTE !== 'undefined' ? CW_CHARACTER_PALETTE : [],
+        templates: CW_TEMPLATES || []
+      };
+    };
+    host.openCloudServerModal = cwCloudServerModal;
+    host.refreshCowork = function (force) { return cwLoad(Boolean(force)); };
+    host.onProfileOpened = function (agentId, section) {
+      var cw = cwEnsure();
+      cw.profileAgentId = agentId;
+      cw.profileOpen = true;
+      cw.profileSection = section || 'personality';
+      cw.profileRevision = (cw.profileRevision || 0) + 1;
+      if (typeof cwApplyCharacterTheme === 'function') cwApplyCharacterTheme();
+    };
+    host.onProfileClosed = function () {
+      var cw = cwEnsure();
+      cw.profileOpen = false;
+      cw.profileRevision = (cw.profileRevision || 0) + 1;
+      if (typeof cwApplyCharacterTheme === 'function') cwApplyCharacterTheme();
+      cwRenderRail();
+      cwRenderInfo();
+    };
+  }
+  cwRegisterHostBridge();
+
   function cwAgentModal(agent) {
+    if (typeof window !== 'undefined' && window.__gituAstryx && typeof window.__gituAstryx.openEditAgent === 'function') {
+      window.__gituAstryx.openEditAgent(agent || null);
+      return;
+    }
     var cw = cwEnsure();
     var isEdit = Boolean(agent && agent.id);
     // Gateways (Telegram/Discord) live on the agent's DM conversation. Find it

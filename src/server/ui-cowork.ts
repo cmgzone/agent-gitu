@@ -193,7 +193,12 @@ export const COWORK_CSS = String.raw`
   .cw-msgs { flex: 1; min-height: 0; margin-top: 0; overflow-y: auto; padding: 112px 22px 12px; display: flex; flex-direction: column; gap: 16px; }
   .cw-msgs > * { flex-shrink: 0; }
   .cw-row { display: flex; gap: 12px; max-width: min(92%, 820px); min-width: 0; }
-  .cw-row.me { align-self: flex-end; flex-direction: row-reverse; max-width: min(74%, 680px); }
+  .cw-row:has(> .cw-bubble) { display: grid; grid-template-columns: minmax(0, 1fr); row-gap: 2px; column-gap: 0; align-items: start; justify-items: start; }
+  .cw-row:has(> .cw-ava):has(> .cw-bubble) { grid-template-columns: auto minmax(0, 1fr); column-gap: 12px; }
+  .cw-row > .cw-ava { grid-column: 1; grid-row: 1; }
+  .cw-row:has(> .cw-bubble) > .cw-bubble { grid-column: 1; grid-row: 1; max-width: 100%; }
+  .cw-row:has(> .cw-ava):has(> .cw-bubble) > .cw-bubble { grid-column: 2; }
+  .cw-row.me { align-self: flex-end; flex-direction: row-reverse; justify-items: end; max-width: min(74%, 680px); }
   /* Milky bubbles: frosted, semi-translucent cards built from the theme tokens,
      so they read creamy in light mode and softly glazed in dark mode. */
   .cw-bubble { position: relative; min-width: 0; overflow-wrap: anywhere; font-size: 15px; line-height: 1.58;
@@ -207,10 +212,11 @@ export const COWORK_CSS = String.raw`
   .cw-row.me .cw-bubble { background: color-mix(in srgb, var(--run-dim) 84%, transparent);
     border-color: color-mix(in srgb, var(--run-border) 45%, transparent);
     border-radius: 20px; border-top-left-radius: 20px; border-bottom-right-radius: 7px; padding: 10px 16px; }
-  .cw-row > .cw-message-actions { flex: none; display: flex; flex-direction: column; align-items: flex-start; align-self: flex-start; gap: 4px; margin: 4px 0 0 -6px; }
-  .cw-row.me > .cw-message-actions { align-items: flex-end; margin: 4px -6px 0 0; }
-  .cw-row > .cw-message-actions .cw-message-more { position: static; flex: none; width: 28px; height: 28px; font-size: 19px; transition: opacity .15s ease, color .15s ease, background-color .15s ease; }
-  .cw-row > .cw-message-actions .cw-message-status { max-width: 96px; line-height: 1.25; }
+  .cw-row > .cw-message-actions { grid-column: 1; grid-row: 2; justify-self: start; flex: none; display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 0 2px; }
+  .cw-row:has(> .cw-ava):has(> .cw-bubble) > .cw-message-actions { grid-column: 2; }
+  .cw-row.me > .cw-message-actions { flex-direction: row-reverse; justify-self: end; align-items: center; margin: 0 2px 0 0; }
+  .cw-row > .cw-message-actions .cw-message-more { position: static; flex: none; display: inline-flex; align-items: center; justify-content: center; padding: 0; width: 28px; height: 26px; font-size: 19px; transition: opacity .15s ease, color .15s ease, background-color .15s ease; }
+  .cw-row > .cw-message-actions .cw-message-status { max-width: none; line-height: 1.25; }
   .cw-row.me > .cw-message-actions .cw-message-status { text-align: right; }
   .cw-bubble > .cw-message-refs { margin-top: 6px; }
   .cw-bubble .cw-meta { display: flex; align-items: center; gap: 7px; min-height: 24px; font-size: 11px; color: var(--muted); margin-bottom: 5px; }
@@ -593,7 +599,7 @@ export const COWORK_CSS = String.raw`
     .cw-panel-backdrop { position: absolute; inset: 0; z-index: 50; border: 0; padding: 0; background: var(--overlay); }
     .cw.overlay-open .cw-panel-backdrop { display: block; }
   }
-  @media (max-width: 720px) { .cw-msgs { padding: 112px 12px 8px; scroll-padding-top: 112px; gap: 14px; } .cw-row, .cw-row.me { max-width: 100%; } .cw-composer-wrap { padding: 8px 12px 12px; } .cw-chat-avatar { top: 7px; } .cw-chat-head .cw-ava { width: 62px; height: 62px; } .cw-file { min-width: 0; flex-wrap: wrap; } .cw-file-actions { margin-left: auto; } .cw-modal .box { max-width: 96vw; } .cw-modal .cw-2col { grid-template-columns: 1fr; } .cw-info-toggle, .cw-panel-toggle, .cw-send, .cw-attach { min-height: 40px; min-width: 40px; } }
+  @media (max-width: 720px) { .cw-msgs { padding: 112px 12px 8px; scroll-padding-top: 112px; gap: 14px; } .cw-row, .cw-row.me { max-width: 100%; } .cw .cw-msgs .cw-row > .cw-ava, .cw-msgs .cw-row > .cw-ava, .report-flat .cw-row > .cw-ava { display: none; } .cw-row:has(> .cw-ava):has(> .cw-bubble) { grid-template-columns: minmax(0, 1fr); column-gap: 0; } .cw-row:has(> .cw-ava):has(> .cw-bubble) > .cw-bubble, .cw-row:has(> .cw-ava):has(> .cw-bubble) > .cw-message-actions { grid-column: 1; } .cw-composer-wrap { padding: 8px 12px 12px; } .cw-chat-avatar { top: 7px; } .cw-chat-head .cw-ava { width: 62px; height: 62px; } .cw-file { min-width: 0; flex-wrap: wrap; } .cw-file-actions { margin-left: auto; } .cw-modal .box { max-width: 96vw; } .cw-modal .cw-2col { grid-template-columns: 1fr; } .cw-info-toggle, .cw-panel-toggle, .cw-send, .cw-attach { min-height: 40px; min-width: 40px; } }
   @media (max-width: 720px) { .cw-info { width: 100%; border-left: 0; } .cw-profile-close { min-width: 40px; min-height: 40px; }
     .cw.info-open .cw-chat { display: none; }
     .cw-rail { width: min(300px, 86vw); position: fixed; inset: 0 auto 0 0; z-index: 80; transform: translateX(-105%); transition: transform .18s ease; box-shadow: none; background: var(--bg); }

@@ -57,7 +57,7 @@ export const COWORK_NOW_CSS = String.raw`
   .cw .cw-top-nav .cw-chat-face .cw-ava img { position:relative!important; width:100%!important; height:100%!important; max-width:100%!important; left:0!important; top:0!important; object-fit:contain!important; transform:none!important; }
   /* Reserve room inside the transcript, so it scrolls beneath the floating
      controls instead of clipping at a separate header-sized viewport. */
-  .cw .cw-msgs { margin-top:0; padding:calc(88px + env(safe-area-inset-top, 0px)) max(24px,calc((100% - var(--chat-column-width,620px))/2)) calc(var(--cw-composer-height,148px) + 24px + env(safe-area-inset-bottom, 0px)); gap:14px; scroll-padding:calc(88px + env(safe-area-inset-top, 0px)) 0 calc(var(--cw-composer-height,148px) + 24px + env(safe-area-inset-bottom, 0px)); }
+  .cw .cw-msgs { margin-top:0; padding:calc(88px + env(safe-area-inset-top, 0px)) max(24px,calc((100% - var(--chat-column-width,620px))/2)) calc(var(--cw-composer-height,148px) + 24px + env(safe-area-inset-bottom, 0px)); gap:12px; scroll-padding:calc(88px + env(safe-area-inset-top, 0px)) 0 calc(var(--cw-composer-height,148px) + 24px + env(safe-area-inset-bottom, 0px)); }
   .cw .cw-row { align-self:flex-start; max-width:min(100%,520px); width:fit-content; }
   .cw .cw-row.me { align-self:flex-end; width:auto; max-width:82%; }
   .cw .cw-bubble { font-size:14px; line-height:1.5; }
@@ -85,7 +85,7 @@ export const COWORK_NOW_CSS = String.raw`
     .cw .cw-top-nav { top:calc(10px + env(safe-area-inset-top, 0px)); max-width:calc(100% - 96px); }
     .cw .cw-chat-head .cw-persona-status { max-width:calc(100vw - 190px); overflow:hidden; }
     .cw .cw-top-nav button { min-height:34px; padding:0 12px; font-size:12px; }
-    .cw .cw-msgs { margin-top:0; padding:calc(80px + env(safe-area-inset-top, 0px)) 16px calc(var(--cw-composer-height,128px) + 18px + env(safe-area-inset-bottom, 0px)); gap:12px; scroll-padding:calc(80px + env(safe-area-inset-top, 0px)) 0 calc(var(--cw-composer-height,128px) + 18px + env(safe-area-inset-bottom, 0px)); }
+    .cw .cw-msgs { margin-top:0; padding:calc(80px + env(safe-area-inset-top, 0px)) 16px calc(var(--cw-composer-height,128px) + 18px + env(safe-area-inset-bottom, 0px)); gap:10px; scroll-padding:calc(80px + env(safe-area-inset-top, 0px)) 0 calc(var(--cw-composer-height,128px) + 18px + env(safe-area-inset-bottom, 0px)); }
     .cw .cw-composer-wrap { padding:8px 12px calc(12px + env(safe-area-inset-bottom, 0px)); }
     .cw .cw-message-more { opacity:1; }
     .cw .cw-row.me { max-width:92%; }

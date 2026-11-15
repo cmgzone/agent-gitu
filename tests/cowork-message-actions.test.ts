@@ -1,7 +1,8 @@
 import { createContext, Script } from 'node:vm';
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import { COWORK_JS } from '../src/server/ui-cowork.js';
+import { COWORK_CSS, COWORK_JS } from '../src/server/ui-cowork.js';
+import { COWORK_CLEAN_ACTIVITY_CSS } from '../src/server/ui-cowork-activity.js';
 
 function fixture() {
   const nodes: Record<string, ReturnType<typeof node>> = {};
@@ -347,6 +348,15 @@ describe('Cowork message actions', () => {
 
     const standalone = u.context.cwMessageActionsHtml(message({ referencedMessageIds: ['ref-1'] }));
     expect(standalone).toContain('class="cw-message-refs"');
+  });
+
+  it('places message actions below the bottom of the bubble and hides agent character icons in mobile chat', () => {
+    expect(COWORK_CSS).toContain('.cw-row:has(> .cw-bubble) > .cw-bubble { grid-column: 1; grid-row: 1; max-width: 100%; }');
+    expect(COWORK_CSS).toContain('.cw-row > .cw-message-actions { grid-column: 1; grid-row: 2; justify-self: start;');
+    expect(COWORK_CSS).toContain('.cw-row.me > .cw-message-actions { flex-direction: row-reverse; justify-self: end;');
+    expect(COWORK_CSS).toMatch(/@media \(max-width: 720px\) \{[^\n]*\.cw \.cw-msgs \.cw-row > \.cw-ava, \.cw-msgs \.cw-row > \.cw-ava, \.report-flat \.cw-row > \.cw-ava \{ display: none; \}/);
+    expect(COWORK_CSS).toMatch(/@media \(max-width: 720px\) \{[^\n]*\.cw-row:has\(> \.cw-ava\):has\(> \.cw-bubble\) \{ grid-template-columns: minmax\(0, 1fr\); column-gap: 0; \}/);
+    expect(COWORK_CLEAN_ACTIVITY_CSS).toMatch(/@media\(max-width:720px\) \{[^\n]*\.cw-msgs \.cw-work-lead[^\n]*\{ display:none; \}/);
   });
 
   it('removes tool metadata and leaked protocol from replies but preserves user text and code examples', () => {

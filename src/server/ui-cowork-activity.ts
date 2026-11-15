@@ -121,6 +121,7 @@ export const COWORK_CLEAN_ACTIVITY_CSS = String.raw`
   .cw .cw-work-history > summary { font-weight:400; font-size:11px; color:var(--muted); }
   .cw .cw-work-history:not([open]) { display:none; }
   .cw .cw-work { display:none; }
+  @media(max-width:720px) { .cw-msgs .cw-work-lead, .cw-msgs .cw-conn-agent .cw-conn-node-ico, .cw-msgs .cw-collab-pill > .cw-ava, .cw-msgs .cw-receipt-avas { display:none; } .cw-msgs .cw-conn-agent { padding-left:10px; } .cw-msgs .cw-collab-pill { padding-left:9px; } }
   @media(max-width:600px) { .cw-team-strip { max-width:calc(100% - 96px); top:52px; } .cw-conn-verb { display:none; } }
   @media(prefers-reduced-motion:reduce) { .cw-working-dot,.cw-stage-ava,.cw-stage-ava-ring,.cw-conn-packet,.cw-collab-arrow-dot,.cw-step-item.is-active::after,.cw-step-spinner,.cw-strip-pulse,.cw .cw-live-row .cw-ava,.cw .cw-live-row .cw-progress-text:not(:empty)::after,.cw-working-row,.cw-team-strip,.cw-collab-pill,.cw-step-item,.cw-receipt-row { animation:none!important; } }
 `;

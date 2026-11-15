@@ -3,6 +3,7 @@
 !package.json
 !package-lock.json
 !tsconfig.json
+!tsconfig.client.json
 !src/
 !src/**
 !assets/
@@ -16,4 +17,5 @@
 !voice-worker/Dockerfile
 
 !scripts/
+!scripts/build-astryx-ui.mjs
 !scripts/build-ui-assets.mjs

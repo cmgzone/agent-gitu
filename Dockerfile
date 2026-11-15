@@ -13,9 +13,9 @@ RUN for attempt in 1 2 3; do \
       if [ "$attempt" -eq 3 ]; then exit 1; fi; \
       sleep $((attempt * 10)); \
     done
-COPY tsconfig.json ./
+COPY tsconfig.json tsconfig.client.json ./
 COPY src ./src
-COPY scripts/build-ui-assets.mjs ./scripts/build-ui-assets.mjs
+COPY scripts/build-astryx-ui.mjs scripts/build-ui-assets.mjs ./scripts/
 RUN npm run build && npm prune --omit=dev --no-audit --no-fund
 
 FROM node:22-bookworm-slim

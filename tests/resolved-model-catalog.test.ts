@@ -205,7 +205,7 @@ describe('resolveModelCatalog', () => {
 
   it('replaces hardcoded offline models and defaults for authoritative live providers like PikRouter', async () => {
     const pikSpec = spec('pikrouter', {
-      baseUrl: 'https://pikrouter.pikpam.com/v1',
+      baseUrl: 'https://pikpam.com/api',
       modelsUrl: 'https://pikpam.com/api/models',
       publicModels: true,
       authoritativeLiveModels: true,
@@ -236,7 +236,7 @@ describe('resolveModelCatalog', () => {
     const { providers } = await resolveModelCatalog({ ...deps, forceRefresh: true });
     const pik = providers[0]!;
     expect(deps.cachedLiveModels).toHaveBeenCalledWith({
-      baseUrl: 'https://pikrouter.pikpam.com/v1',
+      baseUrl: 'https://pikpam.com/api',
       modelsUrl: 'https://pikpam.com/api/models',
       apiKey: '',
       timeoutMs: 6000,

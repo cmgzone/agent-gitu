@@ -5,13 +5,13 @@ import { modelMetadataFor, peekModelCatalog } from './providers.js';
 import { selectedRuntime } from './runtime-mode.js';
 import { ensureGituHome } from '../workspace/home.js';
 
-export const DEFAULT_PIKROUTER_AUTH_URL = 'https://pikrouter.pikpam.com/api/auth/login';
-export const DEFAULT_PIKROUTER_REGISTER_URL = 'https://pikrouter.pikpam.com/api/auth/register';
+export const DEFAULT_PIKROUTER_AUTH_URL = 'https://pikpam.com/api/auth/login';
+export const DEFAULT_PIKROUTER_REGISTER_URL = 'https://pikpam.com/api/auth/register';
 export const DEFAULT_PIKROUTER_AUTHORIZE_URL = 'https://pikpam.com/oauth/authorize';
 export const DEFAULT_PIKROUTER_TOPUP_URL = 'https://pikpam.com/oauth/topup';
-export const DEFAULT_PIKROUTER_CREDITS_URL = 'https://pikrouter.pikpam.com/api/user/credits';
+export const DEFAULT_PIKROUTER_CREDITS_URL = 'https://pikpam.com/api/user/credits';
 export const DEFAULT_PIKROUTER_OAUTH_CLIENT_ID = 'client_gitu_agent';
-export const DEFAULT_PIKROUTER_BASE_URL = 'https://pikrouter.pikpam.com/v1';
+export const DEFAULT_PIKROUTER_BASE_URL = 'https://pikpam.com/api';
 export const DEFAULT_PIKROUTER_MODEL = 'DeepSeek-V4.1-Flash';
 export const PIKROUTER_CREDITS_PER_USD = 100;
 
@@ -98,7 +98,7 @@ export interface PikRouterTopupOptions {
 /**
  * Builds the PikRouter Top Up URL.
  * When user clicks "Top Up" or runs out of credits:
- * https://pikrouter.pikpam.com/oauth/topup?client_id=YOUR_CLIENT_ID&token=${userToken}&redirect_uri=${encodeURIComponent('https://your-app.com/dashboard')}
+ * https://pikpam.com/oauth/topup?client_id=YOUR_CLIENT_ID&token=${userToken}&redirect_uri=${encodeURIComponent('https://your-app.com/dashboard')}
  */
 export function buildPikRouterTopupUrl(opts: PikRouterTopupOptions = {}): string {
   const topupUrl = opts.topupUrl ?? DEFAULT_PIKROUTER_TOPUP_URL;
@@ -212,7 +212,7 @@ export function pikRouterPiTarget(
 ): PiModelTarget {
   return {
     providerId: 'gitu-pikrouter',
-    label: 'PikRouter (pikrouter.pikpam.com, OpenAI-compatible)',
+    label: 'PikRouter (pikpam.com, OpenAI-compatible)',
     baseUrl,
     apiKey,
     modelId: model,

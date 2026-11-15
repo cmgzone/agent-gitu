@@ -526,7 +526,7 @@ describe('Composio connections', () => {
     try {
       const apps = new ComposioConnections(() => 'owner-uuid', new MemoryKeys(), undefined, () => ({
         token: 'pik-token',
-        baseUrl: 'https://pikrouter.pikpam.com/v1',
+        baseUrl: 'https://pikpam.com/api',
       }));
       expect(apps.configured).toBe(true);
       expect(apps.setup).toEqual({ canConfigure: false, keyStorage: 'Pikpam account' });

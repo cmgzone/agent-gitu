@@ -2,9 +2,9 @@
 """
 PikRouter Python Client & CLI
 =============================
-Integrates with PikRouter (https://pikrouter.pikpam.com):
+Integrates with PikRouter (https://pikpam.com):
 1. Sign in via email & password to retrieve a user authentication token.
-2. Query the OpenAI-compatible router at https://pikrouter.pikpam.com/v1 using the user token.
+2. Query the OpenAI-compatible router at https://pikpam.com/api using the user token.
 
 Usage:
     python scripts/pikrouter_client.py --email customer@app.com --password password123 --prompt "How does sign-in auth work?"
@@ -28,8 +28,8 @@ except ImportError:
     print("Error: 'openai' package is required. Install with: pip install openai", file=sys.stderr)
     sys.exit(1)
 
-DEFAULT_AUTH_URL = "https://pikrouter.pikpam.com/api/auth/login"
-DEFAULT_BASE_URL = "https://pikrouter.pikpam.com/v1"
+DEFAULT_AUTH_URL = "https://pikpam.com/api/auth/login"
+DEFAULT_BASE_URL = "https://pikpam.com/api"
 DEFAULT_MODEL = "gemini-1.5-flash"
 
 

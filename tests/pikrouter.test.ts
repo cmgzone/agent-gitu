@@ -45,7 +45,12 @@ describe('PikRouter integration', () => {
     const spec = PROVIDERS['pikrouter'];
     expect(spec).toBeDefined();
     expect(spec!.id).toBe('pikrouter');
-    expect(spec!.baseUrl).toBe('https://pikrouter.pikpam.com/v1');
+    expect(spec!.baseUrl).toBe('https://pikpam.com/api');
+    expect(DEFAULT_PIKROUTER_BASE_URL).toBe('https://pikpam.com/api');
+    expect(DEFAULT_PIKROUTER_AUTH_URL).toBe('https://pikpam.com/api/auth/login');
+    expect(DEFAULT_PIKROUTER_REGISTER_URL).toBe('https://pikpam.com/api/auth/register');
+    expect(DEFAULT_PIKROUTER_CREDITS_URL).toBe('https://pikpam.com/api/user/credits');
+    expect(effortStyleFor('https://pikpam.com/api')).toBe('deepseek');
     expect(spec!.defaultModel).toBe('DeepSeek-V4.1-Flash');
     expect(spec!.keyEnvVars).toContain('PIKROUTER_API_KEY');
     expect(spec!.publicModels).toBe(true);
@@ -112,7 +117,7 @@ describe('PikRouter integration', () => {
       env: { PIKROUTER_API_KEY: 'test-token' } as NodeJS.ProcessEnv,
     });
     expect(resolved.providerId).toBe('pikrouter');
-    expect(resolved.baseUrl).toBe('https://pikrouter.pikpam.com/v1');
+    expect(resolved.baseUrl).toBe('https://pikpam.com/api');
     expect(resolved.model).toBe('DeepSeek-V4.1-Flash');
   });
 

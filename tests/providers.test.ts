@@ -305,7 +305,7 @@ describe('fetchLiveModels', () => {
 
   it('uses modelsUrl when configured, omits empty auth header, and parses Pikpam pricing', async () => {
     expect(PROVIDERS['pikrouter']).toMatchObject({
-      baseUrl: 'https://pikrouter.pikpam.com/v1',
+      baseUrl: 'https://pikpam.com/api',
       modelsUrl: 'https://pikpam.com/api/models',
       publicModels: true,
       authoritativeLiveModels: true,
@@ -338,7 +338,7 @@ describe('fetchLiveModels', () => {
     }) as typeof fetch;
 
     const models = await fetchLiveModels({
-      baseUrl: 'https://pikrouter.pikpam.com/v1',
+      baseUrl: 'https://pikpam.com/api',
       modelsUrl: 'https://pikpam.com/api/models',
       apiKey: '',
     });
@@ -615,14 +615,14 @@ describe('cachedLiveModels', () => {
 
     try {
       const first = await cachedLiveModels({
-        baseUrl: 'https://pikrouter.pikpam.com/v1',
+        baseUrl: 'https://pikpam.com/api',
         modelsUrl: 'https://pikpam.com/api/models',
         apiKey: '',
       });
       expect(first?.map((m) => m.id)).toEqual(['cohere/north-mini-code:free']);
 
       const refreshed = await cachedLiveModels({
-        baseUrl: 'https://pikrouter.pikpam.com/v1',
+        baseUrl: 'https://pikpam.com/api',
         modelsUrl: 'https://pikpam.com/api/models',
         apiKey: '',
         forceRefresh: true,

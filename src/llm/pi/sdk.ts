@@ -201,9 +201,9 @@ export function patchPiAiStringCompatibility(): void {
         code = code.replace(needleAssistant, `content: "",`);
         modified = true;
       }
-      const deepSeekRe = /const isDeepSeek = provider === "deepseek" \|\| baseUrl\.toLowerCase\(\)\.includes\("deepseek\.com"\)(?: \|\| provider\.includes\("pikrouter"\) \|\| baseUrl\.toLowerCase\(\)\.includes\("pikrouter"\))?;/;
-      const replacementDeepSeek = `const isDeepSeek = provider === "deepseek" || baseUrl.toLowerCase().includes("deepseek.com") || provider.includes("pikrouter") || baseUrl.toLowerCase().includes("pikrouter") || provider.includes("pikprovider") || baseUrl.toLowerCase().includes("pikprovider");`;
-      if (deepSeekRe.test(code) && !code.includes('pikprovider')) {
+      const deepSeekRe = /const isDeepSeek = provider === "deepseek" \|\| baseUrl\.toLowerCase\(\)\.includes\("deepseek\.com"\)(?: \|\| provider\.includes\("pikrouter"\) \|\| baseUrl\.toLowerCase\(\)\.includes\("pikrouter"\))?(?: \|\| provider\.includes\("pikprovider"\) \|\| baseUrl\.toLowerCase\(\)\.includes\("pikprovider"\))?;/;
+      const replacementDeepSeek = `const isDeepSeek = provider === "deepseek" || baseUrl.toLowerCase().includes("deepseek.com") || provider.includes("pikrouter") || baseUrl.toLowerCase().includes("pikrouter") || provider.includes("pikprovider") || baseUrl.toLowerCase().includes("pikprovider") || baseUrl.toLowerCase().includes("pikpam.com");`;
+      if (deepSeekRe.test(code) && !code.includes('pikpam.com')) {
         code = code.replace(deepSeekRe, replacementDeepSeek);
         modified = true;
       }

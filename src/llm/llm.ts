@@ -210,7 +210,7 @@ export const DASHSCOPE_THINKING_BUDGETS: Record<EffortLevel, number> = {
 
 export function effortStyleFor(baseUrl: string): EffortStyle {
   if (/aliyuncs|dashscope/i.test(baseUrl)) return 'dashscope';
-  if (/api\.deepseek\.com(?:\/|$)|pikrouter\.pikpam\.com|pikrouter/i.test(baseUrl)) return 'deepseek';
+  if (/api\.deepseek\.com(?:\/|$)|pikrouter\.pikpam\.com|(?:^|\/\/)(?:www\.)?pikpam\.com(?:\/|$)|pikrouter/i.test(baseUrl)) return 'deepseek';
   return 'openai';
 }
 

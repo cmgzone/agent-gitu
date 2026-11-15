@@ -95,8 +95,8 @@ export interface ProviderSpec {
 export const PROVIDERS: Record<string, ProviderSpec> = {
   pikrouter: {
     id: 'pikrouter',
-    label: 'PikRouter (pikrouter.pikpam.com, OpenAI-compatible)',
-    baseUrl: 'https://pikrouter.pikpam.com/v1',
+    label: 'PikRouter (pikpam.com, OpenAI-compatible)',
+    baseUrl: 'https://pikpam.com/api',
     modelsUrl: 'https://pikpam.com/api/models',
     keyEnvVars: ['HERMES_PIKROUTER_API_KEY', 'PIKROUTER_API_KEY', 'PIKROUTER_TOKEN'],
     defaultModel: 'DeepSeek-V4.1-Flash',
@@ -949,7 +949,7 @@ export async function resolveImageSupport(opts: {
   }
   // PikRouter text endpoints/models (such as DeepSeek) do not accept image inputs.
   // Only explicitly vision-capable models (e.g. with explicit catalog vision: true or /vl|vision/ in name) accept images.
-  if (providerId === 'pikrouter' || (baseUrl && /pikrouter|pikprovider/i.test(baseUrl))) {
+  if (providerId === 'pikrouter' || (baseUrl && /pikrouter|pikprovider|(?:^|\/\/)(?:www\.)?pikpam\.com(?:\/|$)/i.test(baseUrl))) {
     const meta = modelMetadataFor(opts.catalog, providerId ?? 'pikrouter', opts.model ?? '');
     if (meta?.vision !== undefined) return meta.vision;
     const m = (opts.model ?? '').toLowerCase();
@@ -1013,7 +1013,7 @@ function piRuntimeFor(
       apiKey,
       modelId: model,
       vision:
-        providerId === 'pikrouter' || /pikrouter|pikprovider/i.test(baseUrl)
+        providerId === 'pikrouter' || /pikrouter|pikprovider|(?:^|\/\/)(?:www\.)?pikpam\.com(?:\/|$)/i.test(baseUrl)
           ? false
           : resolveSupportedImages(
               peekModelCatalog(),

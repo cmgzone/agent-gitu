@@ -196,7 +196,7 @@ describe('Pi runtime evidence gate verification', () => {
       agentDir: root,
       target: {
         providerId: 'gitu-pikrouter',
-        baseUrl: 'https://pikrouter.pikpam.com/v1',
+        baseUrl: 'https://pikpam.com/api',
         apiKey: 'pik-test',
         modelId: 'deepseek-chat',
       },

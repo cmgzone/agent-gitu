@@ -122,7 +122,7 @@ import { PROVIDERS, ProviderError, allProviderSpecs, fetchModelCatalog, freeMode
 import { resolveModelCatalog } from '../llm/resolved-model-catalog.js';
 import { resolveEmbedder } from '../llm/providers.js';
 import { removeStoredKey, setStoredKey, storedKeyVars } from '../llm/keys.js';
-import { loginPikRouter, registerPikRouter, fetchPikRouterCredits, usdToPikRouterCredits, formatPikRouterCredits, buildPikRouterTopupUrl, type PikRouterCreditsResponse } from '../llm/pikrouter.js';
+import { DEFAULT_PIKROUTER_CREDITS_URL, loginPikRouter, registerPikRouter, fetchPikRouterCredits, usdToPikRouterCredits, formatPikRouterCredits, buildPikRouterTopupUrl, type PikRouterCreditsResponse } from '../llm/pikrouter.js';
 import { getVault } from '../vault/vault.js';
 import { SessionStore, type SessionUsage, type StoredSessionFile } from './session-store.js';
 import { McpManager } from '../mcp/client.js';
@@ -7231,7 +7231,7 @@ export class GituServer {
             let verifiedName = typeof body['name'] === 'string' ? body['name'].trim() : '';
             // Security: Verify the token is genuine by calling Pikpam's credits endpoint.
             try {
-              const verifyRes = await fetch('https://pikrouter.pikpam.com/api/user/credits', {
+              const verifyRes = await fetch(DEFAULT_PIKROUTER_CREDITS_URL, {
                 method: 'GET',
                 headers: { 'Authorization': `Bearer ${oauthToken}`, 'Content-Type': 'application/json' },
                 signal: AbortSignal.timeout(8000),

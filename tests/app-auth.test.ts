@@ -290,7 +290,7 @@ describe('whole-app authentication', () => {
 
       globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
         const target = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-        if (target.startsWith('https://pikrouter.pikpam.com/api/user/credits')) {
+        if (target.startsWith('https://pikpam.com/api/user/credits')) {
           return new Response(JSON.stringify({ ok: true, credits: { balance: 100, available: 100 } }), {
             status: 200,
             headers: { 'content-type': 'application/json' },

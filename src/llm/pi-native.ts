@@ -107,7 +107,7 @@ export function piProviderConfig(target: PiModelTarget): PiProviderConfig {
   const lowerUrl = target.baseUrl.toLowerCase();
   const isDirectOpenAi = lowerProvider === 'openai' || lowerProvider === 'gitu-openai' || lowerUrl.includes('api.openai.com');
   const isOpenRouter = lowerProvider.includes('openrouter') || lowerUrl.includes('openrouter.ai');
-  const isPikRouter = lowerProvider.includes('pikrouter') || lowerProvider.includes('pikprovider') || lowerUrl.includes('pikrouter') || lowerUrl.includes('pikprovider');
+  const isPikRouter = lowerProvider.includes('pikrouter') || lowerProvider.includes('pikprovider') || lowerUrl.includes('pikrouter') || lowerUrl.includes('pikprovider') || /(?:^|\/\/)(?:www\.)?pikpam\.com(?:\/|$)/.test(lowerUrl);
   const isDeepSeekStyle = lowerProvider.includes('deepseek') || lowerUrl.includes('deepseek.com') || isPikRouter;
   const supportsDeveloperRole = target.compat?.supportsDeveloperRole ?? (isDirectOpenAi && !isOpenRouter && !isDeepSeekStyle);
   return {

@@ -4,6 +4,21 @@
     S.browseInspect=mode==='inspect';
     $('browseUse').hidden=S.browseInspect;
     S.browseTagRun = mode === 'tag' && S.active !== 'home' ? S.active : null;
+    if ($('browseClear')) {
+      $('browseClear').hidden = Boolean(S.browseInspect || S.browseTagRun);
+      $('browseClear').onclick = function () {
+        S.settings.projectPath = '';
+        S.lastProjectPath = '';
+        if (typeof persist === 'function') persist();
+        if (typeof updateProjChip === 'function') updateProjChip();
+        api('/api/model-selection', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ projectPath: '' }) }).catch(function () {});
+        if (typeof cwSyncActiveProject === 'function') cwSyncActiveProject('', '', true);
+        if (typeof cwEnsure === 'function') { var cwState = cwEnsure(); if (cwState) cwState.projectCleared = true; }
+        $('browseModal').hidden = true;
+        toast('Switched to Default workspace (General)');
+        if (S.active === 'home') openHome();
+      };
+    }
     $('browseTitle').textContent = S.browseInspect?'Project folder':S.browseTagRun ? 'Tag a read-only reference folder' : 'Choose a project folder';
     $('browseUse').textContent = S.browseTagRun ? 'Tag folder' : 'Use this folder';
     $('browseModal').hidden = false;

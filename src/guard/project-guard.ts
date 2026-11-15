@@ -25,6 +25,10 @@ export interface ProjectGuardAccessOptions {
    * effect at the next tool call instead of the next task.
    */
   accessMode?: () => ProjectAccessMode;
+  /**
+   * Allow locking onto an explicitly user-selected directory even when no project marker file exists inside it.
+   */
+  allowUnmarked?: boolean;
 }
 
 export class ProjectGuardError extends Error {}
@@ -224,12 +228,12 @@ export class ProjectGuard {
   static detect(cwd: string, access?: ProjectGuardAccessOptions): ProjectGuard {
     if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new ProjectGuardError(`Selected workspace is not an existing directory: ${cwd}`);
     const located = findRepoRoot(cwd);
-    if (!located && !accessModeIsFull(access)) {
+    if (!located && !access?.allowUnmarked && !accessModeIsFull(access)) {
       throw new ProjectGuardError(
         `No project marker found at or above ${cwd}. Agent Gitu refuses to act without a locked project scope.`,
       );
     }
-    // Without a marker, Full Access still works on the folder the user chose.
+    // Without a marker, Full Access or explicit unmarked project selection still locks onto the chosen folder.
     const root = canonicalPath(located ? located.root : cwd);
     const workspace = discoverWorkspaceAuthority(root);
 

@@ -2946,7 +2946,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       if (draft) draft.values[key] = input.value;
       if (input === document.activeElement) reviewFocus = { id: id, key: key, start: input.selectionStart, end: input.selectionEnd, scroll: input.scrollTop };
     });
-    cwReplaceTranscript(wrap, cwTranscriptHtml() + '<section id="cwCodingActivity" class="cw-coding-activity" aria-label="Coding tasks" hidden></section><div class="cw-row cw-working-row" id="cwWorkingBubble" hidden><div class="cw-work-card"><div class="cw-working-head"><div class="cw-work-lead" id="cwWorkingLead"></div><div class="cw-working-bubble" role="status" aria-live="polite" aria-atomic="true"><span class="cw-working-dot" aria-hidden="true"></span><span id="cwWorkingLabel"></span><span class="cw-work-elapsed" id="cwWorkingElapsed" hidden></span></div></div><div class="cw-work-stage" id="cwWorkingStage" hidden></div></div></div><div id="cwLive" hidden></div><div class="cw-row cw-receipt-row" id="cwWorkReceipt" hidden></div>');
+    cwReplaceTranscript(wrap, cwTranscriptHtml() + '<section id="cwCodingActivity" class="cw-coding-activity" aria-label="Coding tasks" hidden></section><div class="cw-row cw-working-row" id="cwWorkingBubble" hidden><div class="cw-work-card"><div class="cw-working-head"><div class="cw-work-lead" id="cwWorkingLead" hidden></div><div class="cw-working-bubble" role="status" aria-live="polite" aria-atomic="true"><span id="cwWorkingLabel"></span><span class="cw-work-elapsed" id="cwWorkingElapsed" hidden></span></div></div><div class="cw-work-stage" id="cwWorkingStage" hidden></div></div></div><div id="cwLive" hidden></div><div class="cw-row cw-receipt-row" id="cwWorkReceipt" hidden></div>');
     wrap.querySelectorAll('details[data-card-details]').forEach(function(details){details.open=!!expandedCards[details.getAttribute('data-card-details')];});
     wrap.querySelectorAll('details[data-cwworkhistory]').forEach(function (details) {
       var saved = workHistoryState[details.getAttribute('data-cwworkhistory')];
@@ -3041,21 +3041,104 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     return progress && cwVisibleReply(progress.text) ? 'Working…' : 'Thinking…';
   }
 
+  function cwRedactActivityDetail(raw) {
+    var s = String(raw || '').replace(/\s+/g, ' ').trim();
+    if (!s) return '';
+    // Strip URL userinfo, queries, and hash fragments so tokens never appear in live text updates.
+    s = s.replace(/https?:\/\/[^\s"'<>]+/gi, function (match) {
+      var noCred = match.replace(/^(https?:\/\/)[^/@\s]+@/i, '$1');
+      return noCred.split(/[?#]/)[0];
+    });
+    s = s.replace(/\b(authorization)\b(\s*[:=]\s*)(?:(?:bearer|basic|token)\s+)?([^\s"']+)/gi, '$1$2***');
+    s = s.replace(/\b(bearer|token|password|passwd|secret|api[_-]?key|access[_-]?token)\b(\s*[:=]\s*|\s+)([^\s"']+)/gi, '$1$2***');
+    s = s.replace(/\b(?:sk|pk|rk)-[A-Za-z0-9_-]{8,}\b/g, '***').replace(/\b(?:ghp|gho|github_pat|AIza)[A-Za-z0-9_-]{8,}\b/g, '***');
+    if (s.length > 110) s = s.slice(0, 107).trimEnd() + '…';
+    return s;
+  }
+
+  function cwShortActivityTarget(raw) {
+    var s = cwRedactActivityDetail(raw);
+    if (!s) return '';
+    if (s.length <= 72) return s;
+    var parts = s.replace(/\\/g, '/').split('/');
+    return parts.length > 2 ? '…/' + parts.slice(-2).join('/') : s.slice(0, 69) + '…';
+  }
+
+  function cwUrlHost(url) {
+    var m = String(url || '').match(/^https?:\/\/(?:[^/@\s]+@)?([^/?#:\s]+)/i);
+    return m ? m[1].replace(/^www\./i, '') : '';
+  }
+
   function cwToolProgressText(progress) {
-    // Never include tool params here: they can contain private paths,
-    // commands, or credentials. The public category is enough context.
     var tool = progress && progress.tool;
-    if (tool === 'browse' || tool === 'web_fetch') return 'Checking the web for the requested information…';
-    if (tool === 'read_file' || tool === 'list_files' || tool === 'search_files') return 'Checking the relevant files…';
-    if (tool === 'write_file' || tool === 'apply_edit') return 'Updating the requested files…';
-    if (tool === 'create_document') return 'Preparing the requested document…';
+    var detail = progress && progress.detail ? String(progress.detail).trim() : '';
+    var text = progress && progress.text ? String(progress.text).trim() : '';
+    var host = cwUrlHost(progress && progress.webUrl);
+    if (tool === 'browse' || tool === 'browser' || tool === 'web_fetch') {
+      if (host) return (tool === 'web_fetch' ? 'Fetching ' : 'Browsing ') + host + '…';
+      if (detail.indexOf('browse ') === 0 && detail.length > 7) return 'Browsing: ' + cwRedactActivityDetail(detail.slice(7));
+      if (detail.indexOf('fetch ') === 0 && detail.length > 6) {
+        var fetchHost = cwUrlHost(detail.slice(6));
+        return fetchHost ? 'Fetching ' + fetchHost + '…' : 'Fetching ' + cwRedactActivityDetail(detail.slice(6));
+      }
+      return 'Checking the web for the requested information…';
+    }
+    if (tool === 'search_web' || tool === 'web_search') {
+      if (detail.indexOf('search web ') === 0 && detail.length > 11) return 'Searching web: ' + cwRedactActivityDetail(detail.slice(11));
+      return 'Searching the web…';
+    }
+    if (tool === 'read_file') {
+      return detail.indexOf('read ') === 0 && detail.length > 5 ? 'Reading ' + cwShortActivityTarget(detail.slice(5)) + '…' : 'Checking the relevant files…';
+    }
+    if (tool === 'list_files') {
+      return detail.indexOf('list ') === 0 && detail.length > 5 ? 'Listing files in ' + cwShortActivityTarget(detail.slice(5)) + '…' : 'Checking the relevant files…';
+    }
+    if (tool === 'search_files') {
+      return detail.indexOf('search ') === 0 && detail.length > 7 ? 'Searching ' + cwRedactActivityDetail(detail.slice(7)) + '…' : 'Checking the relevant files…';
+    }
+    if (tool === 'write_file') {
+      if (text.indexOf('Wrote ') === 0) return cwRedactActivityDetail(text);
+      return detail.indexOf('write ') === 0 && detail.length > 6 ? 'Writing ' + cwShortActivityTarget(detail.slice(6)) + '…' : 'Updating the requested files…';
+    }
+    if (tool === 'apply_edit') {
+      if (text.indexOf('Edited ') === 0) return cwRedactActivityDetail(text);
+      return detail.indexOf('edit ') === 0 && detail.length > 5 ? 'Editing ' + cwShortActivityTarget(detail.slice(5)) + '…' : 'Updating the requested files…';
+    }
+    if (tool === 'create_document') {
+      return detail.indexOf('create ') === 0 && detail.length > 7 ? 'Preparing ' + cwRedactActivityDetail(detail.slice(7)) + '…' : 'Preparing the requested document…';
+    }
     if (tool === 'share_file' || tool === 'receive_file') return 'Preparing the file preview…';
     if (tool === 'desktop_screenshot' || tool === 'desktop_input') return 'Working on the workspace desktop…';
-    if (tool === 'ssh_exec') return 'Checking the connected server…';
-    if (tool === 'run_command' || tool === 'computer_process') return 'Running a check in the workspace…';
-    if (tool === 'mcp_call' || tool === 'connected_apps' || tool === 'query_connection' || tool === 'inspect_connection_response') return 'Checking the connected service…';
-    if (tool === 'search_history') return 'Checking earlier conversation context…';
-    return tool ? 'Working on the next step…' : '';
+    if (tool === 'ssh_exec') return detail ? 'Running on server: ' + cwRedactActivityDetail(detail) : 'Checking the connected server…';
+    if (tool === 'run_command' || tool === 'computer_process') {
+      if (detail.indexOf('$ ') === 0 && detail.length > 2) return 'Running: ' + cwRedactActivityDetail(detail.slice(2));
+      if (detail.indexOf('command status ') === 0) return 'Checking command ' + cwRedactActivityDetail(detail.slice(15)) + '…';
+      if (detail.indexOf('command stop ') === 0) return 'Stopping command ' + cwRedactActivityDetail(detail.slice(13)) + '…';
+      return detail ? 'Running: ' + cwRedactActivityDetail(detail) : 'Running a check in the workspace…';
+    }
+    if (tool === 'mcp_call' || (progress && progress.mcpServer)) {
+      var srv = progress && progress.mcpServer ? cwRedactActivityDetail(progress.mcpServer) : 'MCP';
+      var mcpTool = detail.indexOf('mcp ') === 0 ? cwRedactActivityDetail(detail.slice(4)) : '';
+      return 'Using ' + srv + (mcpTool ? ' (' + mcpTool + ')' : '') + '…';
+    }
+    if (tool === 'connected_apps' || (progress && progress.appService) || tool === 'query_connection' || tool === 'inspect_connection_response') {
+      var svc = progress && progress.appService ? cwRedactActivityDetail(progress.appService) : 'connected service';
+      var appAction = detail.indexOf('app ') === 0 ? cwRedactActivityDetail(detail.replace(/^app\s+[^\s·]+\s*·?\s*/, '')) : '';
+      return 'Using ' + svc + (appAction ? ' (' + appAction + ')' : '') + '…';
+    }
+    if (tool === 'spawn_subagent') {
+      return detail.indexOf('delegate ') === 0 ? 'Delegating: ' + cwRedactActivityDetail(detail.slice(9)) : 'Delegating to a teammate…';
+    }
+    if (tool === 'message_teammate') {
+      return detail.indexOf('message ') === 0 ? 'Messaging ' + cwRedactActivityDetail(detail.slice(8)) + '…' : 'Coordinating with teammate…';
+    }
+    if (tool === 'todo_manage') {
+      return detail.indexOf('todo ') === 0 ? 'Updating checklist: ' + cwRedactActivityDetail(detail.slice(5)) : 'Updating task checklist…';
+    }
+    if (tool === 'search_history') {
+      return detail.indexOf('search history ') === 0 ? 'Searching history ' + cwRedactActivityDetail(detail.slice(15)) : 'Checking earlier conversation context…';
+    }
+    return tool ? (detail && detail.indexOf(tool + ' ') === 0 ? cwRedactActivityDetail(detail) : 'Running ' + String(tool).replace(/_/g, ' ') + (detail ? ': ' + cwRedactActivityDetail(detail) : '…')) : '';
   }
 
   /** thinking / reasoning / responding / working — drives the dot and waves. */

@@ -384,6 +384,25 @@ export function summarizeParams(tool: string, params: Record<string, unknown>): 
       return `list ${params['path'] ?? '.'}`;
     case 'search_files':
       return `search /${params['pattern']}/ in ${params['path'] ?? '.'}`;
+    case 'search_history':
+      return `search history "${String(params['query'] ?? '').slice(0, 80)}"`;
+    case 'web_fetch':
+      return `fetch ${String(params['url'] ?? '').slice(0, 140)}`;
+    case 'search_web':
+    case 'web_search':
+      return `search web "${String(params['query'] ?? params['q'] ?? '').slice(0, 100)}"`;
+    case 'todo_manage':
+      return `todo ${String(params['action'] ?? 'update')}${params['text'] ? ': ' + String(params['text']).slice(0, 80) : ''}`;
+    case 'spawn_subagent':
+      return `delegate ${String(params['role'] ?? params['name'] ?? 'specialist')}${params['task'] ? ': ' + String(params['task']).slice(0, 80) : ''}`;
+    case 'message_teammate':
+      return `message ${String(params['to'] ?? params['agent'] ?? params['recipient'] ?? 'teammate')}`;
+    case 'mcp_call':
+      return `mcp ${String(params['tool'] ?? '').slice(0, 80)}`;
+    case 'connected_apps':
+      return `app ${String(params['service'] ?? 'app')}${params['tool'] ? ' · ' + String(params['tool']).slice(0, 80) : params['action'] ? ' · ' + String(params['action']) : ''}`;
+    case 'create_document':
+      return `create ${String(params['title'] ?? params['name'] ?? 'document').slice(0, 80)}`;
     case 'lsp_diagnostics':
       return `lsp diagnostics ${params['path']}`;
     case 'lsp_definition':

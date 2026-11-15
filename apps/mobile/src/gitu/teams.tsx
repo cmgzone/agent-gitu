@@ -348,24 +348,24 @@ function TeamChat({ api, conversation, roster, back }: { api: GituApi; conversat
             />
           ))}
         {view?.busy && (
-          <View style={[s.row, { gap: 10 }]}>
-            <ActivityIndicator size="small" color={colors.blueDark} />
-            <Text style={[s.muted, { flex: 1 }]}>
-              {view.working || 'Your team is working…'}
-              {view.queued ? ` · ${view.queued} queued` : ''}
+          <Card style={{ gap: 6 }}>
+            <Text style={s.label}>
+              Live update{view.queued ? ` · ${view.queued} queued` : ''}
             </Text>
-          </View>
+            {view.progresses.length ? (
+              view.progresses.map((progress, index) => (
+                <View key={progress.agentId || index} style={{ gap: 2 }}>
+                  <Text style={s.small}>{progress.agentName || view.working || 'Teammate'}</Text>
+                  <Text selectable style={s.text}>
+                    {describeMobileTeamProgress(progress)}
+                  </Text>
+                </View>
+              ))
+            ) : (
+              <Text style={s.muted}>{view.working ? `${view.working} is working on your request…` : 'Working on your request…'}</Text>
+            )}
+          </Card>
         )}
-        {view?.progresses
-          .filter((progress) => progress.text)
-          .map((progress, index) => (
-            <Card key={progress.agentId || index}>
-              <Text style={s.label}>{progress.agentName}</Text>
-              <Text selectable style={s.text}>
-                {progress.text}
-              </Text>
-            </Card>
-          ))}
         {!!view?.workHistory.length && (
           <Card>
             <Text style={s.label}>Recent activity</Text>
@@ -486,4 +486,37 @@ function TeamRequestCard({
       )}
     </Card>
   );
+}
+
+function describeMobileTeamProgress(progress: {
+  text?: string;
+  tool?: unknown;
+  detail?: unknown;
+  phase?: unknown;
+  toolOk?: unknown;
+  webUrl?: unknown;
+  appService?: unknown;
+  mcpServer?: unknown;
+}): string {
+  const detail = typeof progress.detail === 'string' ? progress.detail.replace(/\s+/g, ' ').trim() : '';
+  const safeDetail = detail
+    .replace(/https?:\/\/[^\s"'<>]+/gi, (m) => m.replace(/^(https?:\/\/)[^/@\s]+@/i, '$1').split(/[?#]/)[0] || m)
+    .replace(/\b(authorization|bearer|token|password|passwd|secret|api[_-]?key|access[_-]?token)\b(\s*[:=]\s*|\s+)([^\s"']+)/gi, '$1$2***');
+  const tool = typeof progress.tool === 'string' ? progress.tool : '';
+  if (tool) {
+    if (progress.toolOk === false) return safeDetail ? `Step failed: ${safeDetail}` : 'A step failed';
+    if (typeof progress.appService === 'string' && progress.appService) return `Using ${progress.appService}…`;
+    if (typeof progress.mcpServer === 'string' && progress.mcpServer) return `Using ${progress.mcpServer}…`;
+    if (tool === 'read_file' && safeDetail.startsWith('read ')) return `Reading ${safeDetail.slice(5)}…`;
+    if (tool === 'write_file' && safeDetail.startsWith('write ')) return `Writing ${safeDetail.slice(6)}…`;
+    if (tool === 'apply_edit' && safeDetail.startsWith('edit ')) return `Editing ${safeDetail.slice(5)}…`;
+    if (tool === 'run_command' && safeDetail.startsWith('$ ')) return `Running: ${safeDetail.slice(2)}`;
+    if (safeDetail) return `${tool.replace(/_/g, ' ')}: ${safeDetail}`;
+    return `Running ${tool.replace(/_/g, ' ')}…`;
+  }
+  const text = typeof progress.text === 'string' ? progress.text.trim() : '';
+  if (text && !/^(?:working|thinking)[\s.…]*$/i.test(text)) return text;
+  if (progress.phase === 'responding') return 'Writing a reply…';
+  if (progress.phase === 'reasoning') return 'Planning next step…';
+  return 'Working on your request…';
 }

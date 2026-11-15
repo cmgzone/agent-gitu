@@ -627,6 +627,7 @@ export class GituServer {
   private coworkRecall?: CoworkRecall;
   private coworkTimer?: ReturnType<typeof setInterval>;
   private readonly coworkTools = new Map<string, ToolContext>();
+  private readonly coworkToolTargets = new Map<string, string>();
   private readonly coworkComputers = new Map<string, CoworkComputer>();
   private readonly cloudComputers = new Map<string, CloudComputerTransport>();
   private readonly coworkComputerTargets = new Map<string, string>();
@@ -3230,8 +3231,20 @@ export class GituServer {
     return mainRepositories([...selected,...runs,...listProjects().map(project=>project.path)],selected,this.companies().companies().map(company=>this.companies().workspace(company.id)));
   }
 
+  private resolvedSelectedHostProject(agent: Pick<CoworkAgent, 'companyId'>): string | undefined {
+    if (agent.companyId) return undefined;
+    const raw = readRuntimeSelection().projectPath?.trim();
+    if (!raw) return undefined;
+    try {
+      return statSync(raw).isDirectory() ? raw : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   private coworkComputerContext(agent: CoworkAgent, conversationId?: string): string {
     const host = agent.useHostComputer;
+    const selectedHostProject = this.resolvedSelectedHostProject(agent);
     const assigned = {
       mode: host ? 'installation-host' : agent.cloudConnectionId ? 'remote-linux-desktop' : 'private-linux-desktop',
       platform: host ? process.platform : 'linux',
@@ -3239,6 +3252,16 @@ export class GituServer {
       desktopToolsSupported: !host,
       browser: host ? 'host-agent-browser' : 'private-agent-browser',
       regularDesktopBrowser: host ? undefined : 'Use desktop_screenshot/desktop_input on this assigned desktop after the owner returns control; browse uses a separate agent profile.',
+      ...(!agent.companyId && host
+        ? {
+            workspaceRoot: selectedHostProject ?? ensureGituHome().workspace,
+            ...(selectedHostProject
+              ? { selectedProject: { name: nodePath.basename(selectedHostProject) || selectedHostProject, path: selectedHostProject, isActiveWorkspace: true } }
+              : {}),
+          }
+        : !agent.companyId && selectedHostProject
+          ? { selectedProject: { name: nodePath.basename(selectedHostProject) || selectedHostProject, path: selectedHostProject, isActiveWorkspace: false } }
+          : {}),
     };
     // The owner's Chrome profile is a different security principal. Share
     // identity/state metadata with personal teammates, never its page or keys.
@@ -3259,32 +3282,54 @@ export class GituServer {
   }
 
   private coworkToolContext(agent: CoworkAgent): ToolContext {
-    let context = this.coworkTools.get(this.coworkRuntimeKey(agent.id,agent.companyId));
+    const key = this.coworkRuntimeKey(agent.id, agent.companyId);
+    const selectedHostProject = agent.useHostComputer ? this.resolvedSelectedHostProject(agent) : undefined;
+    const workspace = agent.companyId
+      ? nodePath.join(this.companies().workspace(agent.companyId), 'agents', agent.id)
+      : agent.useHostComputer
+        ? (selectedHostProject ?? ensureGituHome().workspace)
+        : nodePath.join(ensureGituHome().root, 'Cowork', 'profiles', agent.id);
+    const targetKey = agent.companyId
+      ? `company:${workspace}`
+      : agent.useHostComputer
+        ? `${selectedHostProject ? 'host-project' : 'host-default'}:${workspace}`
+        : `profile:${workspace}`;
+    let context = this.coworkTools.get(key);
+    if (context && this.coworkToolTargets.get(key) !== targetKey) {
+      context.mcp?.killAll();
+      this.coworkTools.delete(key);
+      context = undefined;
+    }
     if (!context) {
-      const workspace = agent.companyId ? nodePath.join(this.companies().workspace(agent.companyId),'agents',agent.id) : agent.useHostComputer ? ensureGituHome().workspace : nodePath.join(ensureGituHome().root, 'Cowork', 'profiles', agent.id);
-      mkdirSync(workspace, { recursive: true });
-      const marker = nodePath.join(workspace, 'package.json');
-      if (!existsSync(marker)) writeFileSync(marker, '{"name":"cowork-profile","private":true}');
+      if (!selectedHostProject) {
+        mkdirSync(workspace, { recursive: true });
+        const marker = nodePath.join(workspace, 'package.json');
+        if (!existsSync(marker)) writeFileSync(marker, '{"name":"cowork-profile","private":true}');
+      }
+      const guard = ProjectGuard.detect(workspace, selectedHostProject ? { allowUnmarked: true } : undefined);
+      const effectiveCwd = selectedHostProject ? guard.activeWritableRoot : workspace;
       context = {
         appManagement:(params,actor)=>this.manageApp(params,actor),
         missionSessionLimit:agent.companyId?()=>this.companies().get(agent.companyId!)?.missionSessions??12:undefined,connectionResponseScope: agent.companyId ? this.companies().workspace(agent.companyId) : undefined,
-        guard: ProjectGuard.detect(workspace),
-        cwd: workspace,
-        skills: agent.companyId ? SkillStore.forCompany(this.companies().workspace(agent.companyId)) : SkillStore.forProject(ensureGituHome().workspace),
-        mcp: agent.companyId?this.companyMcp(agent.companyId):McpManager.forProject(workspace),
+        guard,
+        cwd: effectiveCwd,
+        skills: agent.companyId ? SkillStore.forCompany(this.companies().workspace(agent.companyId)) : SkillStore.forProject(agent.useHostComputer ? effectiveCwd : ensureGituHome().workspace),
+        mcp: agent.companyId?this.companyMcp(agent.companyId):McpManager.forProject(effectiveCwd),
         connections: agent.companyId?this.companyConnections(agent.companyId):this.connections,
         connectedApps: this.appHub,
         browser: this.browserImpl(agent.id),
         computerContext: conversationId => this.coworkComputerContext({ ...agent, ...this.cowork().getAgent(agent.id), companyId: agent.companyId }, conversationId),
         sharedBrowserTool: agent.companyId ? undefined : async (tool, params, signal, conversationId) => (this.chromeProfile ?? this.config.chromeProfile)?.agentExecute(agent.id, tool, params, signal, conversationId),
       };
-      this.coworkTools.set(this.coworkRuntimeKey(agent.id,agent.companyId), context);
+      this.coworkTools.set(key, context);
+      this.coworkToolTargets.set(key, targetKey);
     }
     if (!agent.companyId && agent.useHostComputer) {
       const getRepoPaths = () => {
         const current = this.cowork().getAgent(agent.id);
         if (!current?.useHostComputer) return [];
         const paths = [
+          ensureGituHome().workspace,
           ...this.mainAgentRepositories().map(repository => repository.path),
           ...(readRuntimeSelection().projectPath ? [readRuntimeSelection().projectPath!] : []),
         ];
@@ -7965,8 +8010,11 @@ export class GituServer {
       if(method==='POST'){
         try{const body=await this.readBody(req),provider=typeof body['provider']==='string'?body['provider']:undefined,model=typeof body['model']==='string'?body['model']:undefined;
           if(provider||model){if(!provider||!model)throw Error('Choose both provider and model.');resolveLlm({provider,model,workingDirectory:this.config.cwd});}
-          const projectPath=typeof body['projectPath']==='string'?realpathSync(body['projectPath']):undefined;
-          this.sendJson(res,200,saveRuntimeSelection({...provider&&{provider},...model&&{model},...projectPath&&{projectPath}}));
+          const hasProjectPath = typeof body['projectPath'] === 'string' || body['projectPath'] === null;
+          const rawProjectPath = typeof body['projectPath'] === 'string' ? body['projectPath'].trim() : '';
+          const projectPath = hasProjectPath ? (rawProjectPath ? realpathSync(rawProjectPath) : undefined) : undefined;
+          const projectPatch = hasProjectPath ? { projectPath, projectCleared: rawProjectPath ? undefined : true } : {};
+          this.sendJson(res,200,saveRuntimeSelection({...provider&&{provider},...model&&{model},...projectPatch}));
         }catch(error){this.sendJson(res,400,{error:(error as Error).message});}return;
       }
       this.sendJson(res,405,{error:'Method not allowed.'});return;

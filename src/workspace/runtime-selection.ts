@@ -6,6 +6,8 @@ export interface RuntimeSelection {
   provider?: string;
   model?: string;
   projectPath?: string;
+  /** True when the user explicitly switched back to the default workspace (no project selected). */
+  projectCleared?: boolean;
   updatedAt?: string;
 }
 const file = () => path.join(ensureGituHome().settings, 'runtime-selection.json');

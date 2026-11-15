@@ -1,4 +1,6 @@
 import type { LlmClient, LlmMessage, LlmActivityEvent, LlmTurnResult, LlmOptions } from '../llm/llm.js';
+import { statSync } from 'node:fs';
+import nodePath from 'node:path';
 import { setTimeout as waitForRetry } from 'node:timers/promises';
 import { resilientLlm } from '../llm/resilient.js';
 import { recoveringLlm, completionDisposition } from '../agent/task-recovery.js';
@@ -32,6 +34,29 @@ import { RICH_OUTPUT_GUIDANCE } from '../agent/output-style.js';
 import { runNativeCoworkTurn } from './codex-native.js';
 import { visibleCoworkText } from './visible-text.js';
 import { AGENT_CREATION_GUIDANCE, agentCreationKind } from './live-messages.js';
+
+/** Describe the user's UI-selected host project for personal Cowork agents. */
+function selectedHostProjectPrompt(agent: Pick<CoworkAgent, 'companyId' | 'useHostComputer'>): string | undefined {
+  if (agent.companyId) return undefined;
+  const raw = readRuntimeSelection().projectPath?.trim();
+  if (!raw) return undefined;
+  try {
+    if (!statSync(raw).isDirectory()) return undefined;
+  } catch {
+    return undefined;
+  }
+  const name = nodePath.basename(raw) || raw;
+  if (agent.useHostComputer) {
+    return (
+      `ACTIVE SELECTED PROJECT: ${name} (${raw})\n` +
+      `This is the project currently selected by the user and your active workspace root. File tools (relative paths), shell commands, and coding delegations (gitu_task) default to this project unless the user asks for another folder.`
+    );
+  }
+  return (
+    `SELECTED HOST PROJECT: ${name} (${raw})\n` +
+    `The user currently has this project selected in the UI (for coding delegations via gitu_task). Your own shell/file tools run in your assigned Linux desktop at /workspace.`
+  );
+}
 
 /**
  * The cowork conversation engine.
@@ -358,6 +383,8 @@ function systemPrompt(agent: CoworkAgent, conversation: CoworkConversation, memb
   } else {
     parts.push(`You are in a direct one-on-one chat with the user. Be helpful and keep replies as short as possible — state only what is important and what the user asked for, with no extra explanations.`);
   }
+  const selectedProject = selectedHostProjectPrompt(agent);
+  if (selectedProject) parts.push(selectedProject);
   const folders = conversation.folders ?? [];
   if (folders.length > 0) {
     parts.push(
@@ -1425,7 +1452,13 @@ const SUBAGENT_MAX_TOOL_ROUNDS = Infinity;
 const SUBAGENT_MAX_CALLS_PER_ROUND = Infinity;
 
 /** The sub-agent's briefing: one objective, report-only-to-parent, honest budget. */
-function subAgentSystemPrompt(instance: SubAgentInstance, parentName: string, docs: string, availableSharedUsd: number | undefined): string {
+function subAgentSystemPrompt(
+  instance: SubAgentInstance,
+  parentName: string,
+  docs: string,
+  availableSharedUsd: number | undefined,
+  selectedProjectNote?: string,
+): string {
   const granted = instance.grantedBudget?.maxCostUsd;
   const budget =
     granted !== undefined
@@ -1436,6 +1469,7 @@ function subAgentSystemPrompt(instance: SubAgentInstance, parentName: string, do
     `OBJECTIVE:\n${instance.objective}`,
     TASK_EFFICIENCY_GUIDANCE,
     'REPORTING: your final reply goes ONLY to your parent agent — the user never sees or hears you. Do the work now with your tools; your last message must be a plain-text report of what you found or did, with concrete facts, file paths or sources your parent can verify. Never claim a tool succeeded unless its result says so. If you are blocked, end your report with exactly what is missing.',
+    ...(selectedProjectNote ? [selectedProjectNote] : []),
     budget,
   ];
   if (docs) {
@@ -1526,7 +1560,7 @@ export function createSubAgentChildRunner(deps: CoworkRunnerDeps): SubAgentChild
       .filter((line) => !SUBAGENT_BLOCKED_TOOLS.some((name) => line.startsWith(`- ${name} `)))
       .join('\n');
     const messages: LlmMessage[] = [
-      { role: 'system', content: subAgentSystemPrompt(instance, parentAgent.name, docs, availableSharedUsd) },
+      { role: 'system', content: subAgentSystemPrompt(instance, parentAgent.name, docs, availableSharedUsd, selectedHostProjectPrompt(parentAgent)) },
       { role: 'user', content: 'Work the objective now. End with your report as plain text.' },
     ];
     let ctx: ToolContext | undefined;

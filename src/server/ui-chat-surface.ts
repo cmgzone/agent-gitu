@@ -54,6 +54,7 @@ export const CHAT_SURFACE_CSS = String.raw`
   .run-chat .usermsg .ub { max-width:85%; padding:11px 16px; border:1px solid var(--border); border-radius:var(--radius-bubble,20px); border-bottom-right-radius:6px; background:var(--chat-user-surface); box-shadow:var(--chat-user-shadow); }
   .run-chat .usermsg .umeta { display:none; }
   .run-chat .working { width:fit-content; max-width:100%; padding:10px 16px; border:1px solid var(--border); border-radius:var(--radius-card,16px); color:var(--muted); background:var(--card); box-shadow:var(--shadow); font-size:13px; }
+  .run-chat .working :is(.spinner,.thinking-waves) { display:none; }
   .run-chat .tl-tool-group > .tl-dot { display:none; }
   .run-chat .tl-tool-group > .tl-body { width:100%; }
   .run-chat .tool-group-details { padding:8px 14px; border:1px solid var(--border); border-radius:var(--radius-card,16px); background:var(--card); box-shadow:var(--shadow); }

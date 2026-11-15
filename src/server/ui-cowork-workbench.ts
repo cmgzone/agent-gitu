@@ -111,6 +111,8 @@ export const COWORK_WORKBENCH_CSS = String.raw`
   }
   .cw-project-menu button.cw-project-item[data-cwproj-action],
   .cw-project-item[data-cwproj-action] { justify-content: flex-start; }
+  .cw-project-menu button.cw-project-item[data-cwproj-action="clear"],
+  .cw-project-item[data-cwproj-action="clear"] { justify-content: space-between; }
   .cw-project-menu button.cw-project-item svg,
   .cw-project-item svg { width: 15px; height: 15px; flex: 0 0 auto; color: var(--muted); }
   .cw-project-item:hover { background: var(--hover); }
@@ -978,6 +980,8 @@ export const COWORK_WORKBENCH_JS = String.raw`
     if (cwState) {
       cwState.activeProjectPath = resolvedPath;
       cwState.activeProjectName = resolvedName;
+      if (resolvedPath) cwState.projectCleared = false;
+      else if (!skipSave) cwState.projectCleared = true;
       if (resolvedPath) {
         if (!Array.isArray(cwState.projects)) cwState.projects = [];
         var exists = cwState.projects.some(function (p) { return p && p.path === resolvedPath; });
@@ -986,11 +990,15 @@ export const COWORK_WORKBENCH_JS = String.raw`
     }
     if (typeof S !== 'undefined' && S && S.settings) {
       S.settings.projectPath = resolvedPath;
+      if (!resolvedPath && !skipSave && typeof S.lastProjectPath === 'string') {
+        S.lastProjectPath = '';
+        if (typeof persist === 'function') persist();
+      }
       if (typeof updateProjChip === 'function') updateProjChip();
     }
     cwRenderProjectPill();
     cwRenderRailProjects();
-    if (!skipSave && resolvedPath && typeof api === 'function') {
+    if (!skipSave && typeof api === 'function') {
       api('/api/model-selection', {
         method: 'POST',
         body: JSON.stringify({ projectPath: resolvedPath })
@@ -1007,16 +1015,23 @@ export const COWORK_WORKBENCH_JS = String.raw`
       var list = (res[0] && Array.isArray(res[0].projects)) ? res[0].projects : [];
       var cwState = cwStateRef();
       if (cwState) cwState.projects = list;
-      var selectedPath = (res[1] && res[1].projectPath) || (typeof S !== 'undefined' && S && S.settings && S.settings.projectPath) || '';
+      var cleared = Boolean((res[1] && res[1].projectCleared) || (cwState && cwState.projectCleared));
+      if (cwState && res[1] && res[1].projectCleared !== undefined) cwState.projectCleared = Boolean(res[1].projectCleared);
+      var selectedPath = (res[1] && res[1].projectPath) || (!cleared && typeof S !== 'undefined' && S && S.settings && S.settings.projectPath) || '';
       if (selectedPath) {
         var matched = null;
         for (var i = 0; i < list.length; i++) {
           if (list[i] && list[i].path === selectedPath) { matched = list[i]; break; }
         }
         cwSyncActiveProject(selectedPath, (matched && matched.name) || cwBasename(selectedPath), true);
-      } else if (cwState && !cwState.activeProjectPath && list.length === 1 && list[0] && list[0].path) {
-        cwSyncActiveProject(list[0].path, list[0].name || cwBasename(list[0].path), true);
+      } else if (cwState && !cleared && !cwState.activeProjectPath && list.length === 1 && list[0] && list[0].path) {
+        cwSyncActiveProject(list[0].path, list[0].name || cwBasename(list[0].path), false);
       } else {
+        if (cleared && cwState) {
+          cwState.activeProjectPath = '';
+          cwState.activeProjectName = '';
+          if (typeof S !== 'undefined' && S && S.settings) S.settings.projectPath = '';
+        }
         cwRenderProjectPill();
         cwRenderRailProjects();
       }
@@ -1035,7 +1050,7 @@ export const COWORK_WORKBENCH_JS = String.raw`
     var activeName = activePath ? cwBasename(activePath) : ((cwState && cwState.activeProjectName) || 'Default workspace');
     var eFn = typeof esc === 'function' ? esc : function (s) { return String(s || ''); };
     if (btn) {
-      btn.title = activePath ? ('Active project: ' + activePath) : 'Select or create a project for coding tasks';
+      btn.title = activePath ? ('Active project: ' + activePath) : 'Default workspace (General) — or choose a project';
       btn.innerHTML = (typeof cwIcon === 'function' ? cwIcon('folder') : '') +
         '<span class="cw-project-pill-name">' + eFn(activeName) + '</span>' +
         '<span class="cw-project-pill-caret" aria-hidden="true">&#9662;</span>';
@@ -1046,10 +1061,16 @@ export const COWORK_WORKBENCH_JS = String.raw`
     if (activePath && !projects.some(function (p) { return p && p.path === activePath; })) {
       projects.unshift({ path: activePath, name: activeName });
     }
-    var html = '<div class="cw-project-menu-head">Coding Project</div>';
+    var isDefault = !activePath;
+    var html = '<div class="cw-project-menu-head">Workspace &amp; Project</div>' +
+      '<button type="button" class="cw-project-item' + (isDefault ? ' active' : '') + '" data-cwproj-action="clear" title="General chat in your default workspace (no project selected)">' +
+        '<span>Default workspace (General)</span>' +
+        '<span class="cw-project-item-path">' + (isDefault ? 'Active' : '') + '</span>' +
+      '</button>';
     if (!projects.length) {
       html += '<div class="cw-empty-note" style="padding:6px 10px;">No projects yet — create one or pick a folder.</div>';
     } else {
+      html += '<div class="cw-project-menu-sep"></div>';
       html += projects.map(function (p, idx) {
         var isAct = activePath && p.path === activePath;
         var label = p.name || cwBasename(p.path);
@@ -1078,7 +1099,10 @@ export const COWORK_WORKBENCH_JS = String.raw`
         actBtn.onclick = function () {
           var act = actBtn.getAttribute('data-cwproj-action');
           if (menu.hidePopover) try { menu.hidePopover(); } catch {}
-          if (act === 'new' && typeof newProject === 'function') newProject();
+          if (act === 'clear') {
+            cwSyncActiveProject('', '');
+            if (typeof toast === 'function') toast('Switched to Default workspace (General)');
+          } else if (act === 'new' && typeof newProject === 'function') newProject();
           else if (act === 'browse' && typeof openFolderBrowser === 'function') openFolderBrowser('project');
         };
       });

@@ -56,12 +56,11 @@ export async function runNativeCoworkTurn(input: {
   const signal = input.signal ?? new AbortController().signal;
   const cwd = input.ctx.guard.activeWritableRoot;
   let session: CoworkNativeSession | undefined = input.store?.nativeCodexSession(key);
-  const savedSession = session;
   if (session && session.cwd !== cwd) {
-    active.delete(key);
     input.store?.clearNativeCodexSession(key);
-    throw new Error('The native session belongs to a different workspace. Start an explicit new task.');
+    session = undefined;
   }
+  const savedSession = session;
   const history = input.messages.filter((message) => message.role !== 'system');
   const keys = history.map((message) => sha256(canonicalJson(message)));
   const isAppend = session && session.historyKeys.length <= keys.length && session.historyKeys.every((hash, index) => keys[index] === hash);

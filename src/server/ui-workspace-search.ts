@@ -69,6 +69,9 @@ export const WORKSPACE_SEARCH_CSS = String.raw`
   .ws-result-list[data-ws-group="Schedules"] { display:flex; flex-direction:column; gap:8px; padding:0; background:transparent!important; border:0!important; box-shadow:none!important; backdrop-filter:none; -webkit-backdrop-filter:none; }
   .ws-result-list[data-ws-group="Schedules"] .ws-result + .ws-result { border-top:1px solid color-mix(in srgb,var(--border2) 55%,transparent); }
   .ws-aux { color:var(--muted); flex:none; padding:8px 10px; margin-right:6px; border-radius:999px; font-size:11px; font-weight:500; }
+  .ws-actions-bar { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-bottom:14px; }
+  .ws-scope-toggle { display:inline-flex; align-items:center; gap:6px; min-height:34px; padding:6px 12px; border-radius:var(--radius-full,9999px); background:var(--card)!important; border:1px solid var(--border)!important; color:var(--text); font-size:12px; font-weight:500; }
+  .ws-scope-toggle:hover { border-color:var(--border2)!important; background:var(--hover)!important; }
   .ws-aux svg { width:15px; height:15px; }
   .ws-empty { padding:36px 20px; text-align:center; color:var(--muted); font-size:13px; line-height:1.6; background:var(--card); border:1px solid var(--border); border-radius:var(--radius-card,16px); }
   .ws-more { display:inline-flex; align-items:center; justify-content:center; margin:10px auto 0; padding:7px 16px; font-size:12px; font-weight:500; color:var(--accent); background:var(--card)!important; border:1px solid var(--border)!important; border-radius:var(--radius-full,9999px); }
@@ -740,8 +743,31 @@ export const WORKSPACE_SEARCH_JS = String.raw`
     return items.filter(function(item){var text=wsNormalize(item.title+' '+item.detail+' '+(item.keywords||''));return (!category||category==='all'||item.category===category)&&terms.every(function(term){return text.indexOf(term)>=0;});});
   }
   function wsSettingsItems() {return WORKSPACE_SETTINGS.map(function(item){return {category:'Settings',title:item[2],detail:item[3],icon:item[1],action:'settings',id:item[0]};});}
-  function wsBuildItems(mode,data) {
+  function wsSelectedAgentId(data) {
+    var cw=typeof cwEnsure==='function'?cwEnsure():{};
+    var sel=cw.selectedAgentId;
+    if(sel){
+      var roster=(data&&Array.isArray(data.agents)&&data.agents.length)?data.agents:(cw.agents||[]);
+      if(!roster.length||roster.some(function(agent){return agent.id===sel;}))return sel;
+    }
+    var active=typeof cwActiveConv==='function'?cwActiveConv():null;
+    if(active)return active.kind==='dm'?(active.memberIds&&active.memberIds[0])||'':(active.chiefId||(active.memberIds&&active.memberIds[0])||'');
+    return '';
+  }
+  function wsSelectedAgent(data) {
+    var cw=typeof cwEnsure==='function'?cwEnsure():{},id=wsSelectedAgentId(data);
+    if(!id)return null;
+    var roster=(data&&Array.isArray(data.agents)&&data.agents.length)?data.agents:(cw.agents||[]);
+    return roster.find(function(agent){return agent.id===id;})||{id:id,name:id};
+  }
+  function wsConvMembers(conv,cw) {
+    if(conv&&Array.isArray(conv.memberIds))return conv.memberIds;
+    var cached=cw&&Array.isArray(cw.convs)&&cw.convs.find(function(c){return c.id===conv.id;});
+    return (cached&&Array.isArray(cached.memberIds))?cached.memberIds:null;
+  }
+  function wsBuildItems(mode,data,state) {
     var items=wsSettingsItems(),cw=cwEnsure();
+    var selectedAgentId=wsSelectedAgentId(data),showAll=Boolean(state&&state.showAllAgents);
     function item(category,title,detail,icon,action,id,extra){items.push(Object.assign({category:category,title:title,detail:detail,icon:icon,action:action,id:id},extra||{}));}
     if(mode==='main') {
       item('Tools','New session','Start a conversation in your selected project','plus','new-session');
@@ -750,7 +776,26 @@ export const WORKSPACE_SEARCH_JS = String.raw`
       item('Tools','Git','Review changes, branches, and commits','branch','tool','git');
       item('Tools','Cowork','Work with your agent team','users','cowork');
       if(S.active!=='home'&&S.active!=='cowork'){item('Tools','Task details','Plan, approvals, verification, and progress','layers','tool','state');item('Tools','Files and details','Artifacts and changed files for this session','folder','tool','files');}
-      (data.runs||[]).forEach(function(run){item('Sessions',sessionTitle(run.goal),[run.project,run.status,shortDate(run.startedAt)].filter(Boolean).join(' · '),'chat','run',run.runId,{run:run,keywords:run.goal,aux:'delete-run'});});
+      var mainRuns=data.runs||[],mainConvs=data.conversations||cw.convs||[];
+      if(selectedAgentId&&!showAll){
+        mainConvs.forEach(function(conv){
+          var members=wsConvMembers(conv,cw);
+          if(!Array.isArray(members)||members.indexOf(selectedAgentId)<0)return;
+          if(conv.kind==='group')item('Groups',conv.title||'Group conversation','Connected group','users','conversation',conv.id,{aux:'delete-conversation',enterWorkspace:true,agentId:selectedAgentId,conversation:conv});
+          else item('Sessions',conv.title||'Conversation','Agent conversation','chat','conversation',conv.id,{aux:'delete-conversation',enterWorkspace:true,agentId:selectedAgentId,conversation:conv});
+        });
+        mainRuns.filter(function(run){return run.coworkTask&&run.coworkTask.agentId===selectedAgentId;}).forEach(function(run){
+          item('Sessions',sessionTitle(run.goal),[run.coworkTask.agentName,run.project,run.status,shortDate(run.startedAt)].filter(Boolean).join(' · '),'chat','run',run.runId,{run:run,keywords:run.goal,aux:'delete-run'});
+        });
+      } else {
+        mainRuns.forEach(function(run){item('Sessions',sessionTitle(run.goal),[run.project,run.status,shortDate(run.startedAt)].filter(Boolean).join(' · '),'chat','run',run.runId,{run:run,keywords:run.goal,aux:'delete-run'});});
+        if(showAll&&Array.isArray(mainConvs)){
+          mainConvs.forEach(function(conv){
+            if(conv.kind==='group')item('Groups',conv.title||'Group conversation','Group conversation','users','conversation',conv.id,{aux:'delete-conversation',enterWorkspace:true,conversation:conv});
+            else item('Sessions',conv.title||'Conversation','Agent conversation','chat','conversation',conv.id,{aux:'delete-conversation',enterWorkspace:true,conversation:conv});
+          });
+        }
+      }
       homeBuildProjects(data.projects||[],data.runs||[],effectiveProjectPath()).forEach(function(project){item('Projects',project.name,project.sessions.length+' conversations','folder','project',project.path,{project:project});});
     } else {
       item('Tools','New session','Start a fresh conversation with one or more teammates','plus','new-cowork-session');
@@ -762,7 +807,13 @@ export const WORKSPACE_SEARCH_JS = String.raw`
       item('Tools','Main agent','Return to your coding workspace','terminal','home');
       (data.agents||[]).forEach(function(agent){item('Agents',agent.name,agent.tagline||agent.description||'AI teammate','users','agent',agent.id,{agent:agent,aux:'profile',keywords:agent.description});});
       (data.conversations||[]).forEach(function(conv){
-        item('Sessions',conv.title||'Conversation',conv.kind==='group'?'Group conversation':'Agent conversation','chat','conversation',conv.id,{aux:'delete-conversation'});
+        var members=wsConvMembers(conv,cw);
+        var connected=!selectedAgentId||showAll||(members?members.indexOf(selectedAgentId)>=0:(!cw.active||conv.id===cw.active));
+        if(conv.kind==='group'){
+          if(connected)item('Groups',conv.title||'Group conversation','Connected group','users','conversation',conv.id,{aux:'delete-conversation',conversation:conv});
+        } else if(connected) {
+          item('Sessions',conv.title||'Conversation','Agent conversation','chat','conversation',conv.id,{aux:'delete-conversation',conversation:conv});
+        }
         if(conv.schedule&&conv.schedule.every)item('Schedules',conv.schedule.goal||conv.title+' recurring task',(conv.schedule.enabled?'Active':'Paused')+' · Every '+conv.schedule.every+' · '+(conv.title||'Conversation'),'clock','conversation-schedule',conv.id,{keywords:conv.title,schedule:conv.schedule,conversation:conv});
       });
       (data.followUps||[]).slice().sort(function(a,b){return Date.parse(a.dueAt)-Date.parse(b.dueAt);}).forEach(function(followUp){
@@ -811,15 +862,16 @@ export const WORKSPACE_SEARCH_JS = String.raw`
   }
   async function wsLoad(state) {
     var loadRevision=state.loadRevision=(state.loadRevision||0)+1;
-    var routes=state.mode==='cowork'?[['agents','/api/cowork/agents'],['conversations','/api/cowork/conversations']]:[['runs','/api/runs'],['projects','/api/projects'],['skills','/api/skills'],['jobs','/api/cron']];
+    var routes=state.mode==='cowork'?[['agents','/api/cowork/agents'],['conversations','/api/cowork/conversations']]:[['runs','/api/runs'],['projects','/api/projects'],['skills','/api/skills'],['jobs','/api/cron'],['agents','/api/cowork/agents'],['conversations','/api/cowork/conversations']];
     var results=await Promise.allSettled(routes.map(function(route){return api(route[1]);}));if(workspaceSearchState!==state||state.loadRevision!==loadRevision)return;
-    var data={},previousFailures=state.failures;state.failures=[];results.forEach(function(result,index){var key=routes[index][0];if(result.status==='rejected'){state.failures.push(key);return;}var value=result.value;
-      if(key==='agents'){data.agents=value.agents||[];data.skills=value.availableSkills||[];var cw=cwEnsure();cw.agents=data.agents;cw.skills=data.skills;}
+    var data={},previousFailures=state.failures;state.failures=[];results.forEach(function(result,index){var key=routes[index][0];if(result.status==='rejected'){if(state.mode==='cowork'||(key!=='agents'&&key!=='conversations'))state.failures.push(key);return;}var value=result.value||{};
+      if(key==='agents'){data.agents=value.agents||[];data.skills=data.skills||value.availableSkills||[];var cw=cwEnsure();cw.agents=data.agents;if(value.availableSkills)cw.skills=value.availableSkills;}
       else if(key==='runs')data.runs=Array.isArray(value)?value:[];
       else {data[key]=value[key]||[];if(key==='conversations')data.followUps=value.followUps||[];}
     });
-    if(state.mode==='cowork'&&data.conversations)cwEnsure().convs=data.conversations;
-    var items=wsBuildItems(state.mode,data),changed=state.loading||JSON.stringify(items)!==JSON.stringify(state.items)||JSON.stringify(previousFailures)!==JSON.stringify(state.failures);
+    if(Array.isArray(data.conversations))cwEnsure().convs=data.conversations;
+    state.rawData=data;
+    var items=wsBuildItems(state.mode,data,state),changed=state.loading||JSON.stringify(items)!==JSON.stringify(state.items)||JSON.stringify(previousFailures)!==JSON.stringify(state.failures);
     state.items=items;state.loading=false;if(changed)wsRender(state);wsScheduleRefresh(state);
   }
   function wsScheduleRefresh(state) {
@@ -962,18 +1014,30 @@ export const WORKSPACE_SEARCH_JS = String.raw`
 
   function wsRender(state) {
     if(workspaceSearchState!==state)return;
-    var filters=state.mode==='cowork'?['all','Sessions','Threads','Agents','Tools','Skills','Schedules','Activity','Settings','Messages']:['all','Sessions','Projects','Tools','Skills','Schedules','Settings'];
+    var filters=state.mode==='cowork'?['all','Sessions','Groups','Threads','Agents','Tools','Skills','Schedules','Activity','Settings','Messages']:['all','Sessions','Groups','Projects','Tools','Skills','Schedules','Settings'];
     $('workspaceSearchFilters').innerHTML=filters.map(function(filter){return '<button data-ws-filter="'+filter+'" aria-pressed="'+(state.category===filter)+'">'+(filter==='all'?'All':filter)+'</button>';}).join('');
     $('workspaceSearchFilters').querySelectorAll('[data-ws-filter]').forEach(function(button){button.onclick=function(){state.category=button.dataset.wsFilter;state.limit=30;wsRender(state);var next=$('workspaceSearchFilters').querySelector('[data-ws-filter="'+state.category+'"]');if(next)next.focus();if(state.mode==='cowork'&&state.category==='Schedules')wsLoad(state);};});
     var base=wsFilter(state.items,state.query,state.category),hits=(!state.category||state.category==='all'||state.category==='Messages')?state.hits:[],items=base.concat(hits);
     state.rendered=items;
     var groups=new Map();items.forEach(function(item,index){if(!groups.has(item.category))groups.set(item.category,[]);groups.get(item.category).push({item:item,index:index});});
-    var order=state.mode==='cowork'?['Tools','Sessions','Threads','Agents','Messages','Activity','Skills','Schedules','Settings']:['Tools','Sessions','Projects','Skills','Schedules','Settings'];
-    $('workspaceSearchStatus').textContent=state.loading?'Loading your workspace…':state.failures.length?'Some '+state.failures.join(', ')+' could not load. You can retry.':state.recallFailed?'Message search is unavailable. Other results are still available.':state.query?items.length+' result'+(items.length===1?'':'s'):'';
+    var order=state.mode==='cowork'?['Tools','Sessions','Groups','Threads','Agents','Messages','Activity','Skills','Schedules','Settings']:['Tools','Sessions','Groups','Projects','Skills','Schedules','Settings'];
+    var activeAgent=wsSelectedAgent(state.rawData);
+    var scopeStatus=(activeAgent&&(state.category==='Sessions'||state.category==='Groups'))?(!state.showAllAgents?(state.category==='Groups'?'Showing groups connected to '+activeAgent.name:'Showing sessions for '+activeAgent.name):'Showing all '+(state.category==='Groups'?'groups':'sessions')):'';
+    $('workspaceSearchStatus').textContent=state.loading?'Loading your workspace…':state.failures.length?'Some '+state.failures.join(', ')+' could not load. You can retry.':state.recallFailed?'Message search is unavailable. Other results are still available.':state.query?items.length+' result'+(items.length===1?'':'s'):scopeStatus;
     var limit=(!state.query&&state.category==='all')?Math.min(state.limit||8,4):(state.limit||8);
     var html=order.filter(function(group){return groups.has(group);}).map(function(group){var rows=groups.get(group);return '<section class="ws-group" data-ws-group="'+group+'"><h2>'+group+'<span>'+rows.length+'</span></h2><div class="ws-result-list" data-ws-group="'+group+'">'+rows.slice(0,limit).map(function(row){var item=row.item;return group==='Schedules'?wsScheduleCardHtml(row,item):'<div class="ws-result"><button class="ws-result-action" data-ws-result="'+row.index+'"><span class="ws-result-icon" aria-hidden="true">'+(item.agent?cwAva(item.agent):wsIcon(item.icon))+'</span><span class="ws-result-copy"><strong>'+esc(item.title)+'</strong><small>'+esc(item.detail)+'</small></span></button>'+(item.aux?'<button class="ws-aux" data-ws-aux="'+row.index+'" aria-label="'+esc(item.aux==='profile'?'Profile for '+item.title:'Delete session '+item.title)+'">'+(item.aux==='profile'?'Profile':actionSvg('trash'))+'</button>':'')+'</div>';}).join('')+'</div>'+(rows.length>limit?'<button class="ws-more" data-ws-more="'+group+'">Show '+(rows.length-limit)+' more</button>':'')+'</section>';}).join('');
-    if(!items.length&&!state.loading)html='<div class="ws-empty">'+(state.mode==='cowork'&&state.category==='Schedules'&&!state.query?(state.failures.includes('conversations')?'Schedules could not load. Retry loading.':'No scheduled tasks yet. Ask a teammate to schedule a reminder, or use Schedule in the chat’s + menu.'):'No matches. Try a session title, agent name, skill, or setting.')+'</div>';
-    if(state.mode==='cowork'&&state.category==='Sessions')html='<button class="btn dark" id="workspaceSearchNewSession">'+icon('plus')+'New session</button>'+html;
+    if(!items.length&&!state.loading){
+      var emptyMsg='No matches. Try a session title, agent name, skill, or setting.';
+      if(state.mode==='cowork'&&state.category==='Schedules'&&!state.query)emptyMsg=state.failures.includes('conversations')?'Schedules could not load. Retry loading.':'No scheduled tasks yet. Ask a teammate to schedule a reminder, or use Schedule in the chat’s + menu.';
+      else if(state.category==='Groups'&&!state.query)emptyMsg=(activeAgent&&!state.showAllAgents)?('No groups connected to '+esc(activeAgent.name)+' yet.'):'No groups created yet.';
+      else if(state.category==='Sessions'&&!state.query&&activeAgent&&!state.showAllAgents)emptyMsg='No sessions for '+esc(activeAgent.name)+' yet. Start a new session or view all sessions.';
+      html='<div class="ws-empty">'+emptyMsg+'</div>';
+    }
+    var actionBtns='';
+    if(state.category==='Sessions'&&(state.mode==='cowork'||activeAgent))actionBtns+='<button class="btn dark" id="workspaceSearchNewSession">'+icon('plus')+'New session</button>';
+    if(state.category==='Groups')actionBtns+='<button class="btn dark" id="workspaceSearchNewGroup">'+icon('plus')+'New group</button>';
+    if(activeAgent&&(state.category==='Sessions'||state.category==='Groups'))actionBtns+='<button type="button" class="ws-scope-toggle" id="workspaceSearchScopeToggle">'+(state.showAllAgents?esc('Only '+activeAgent.name):'Show all')+'</button>';
+    if(actionBtns)html='<div class="ws-actions-bar">'+actionBtns+'</div>'+html;
     if(state.failures.length)html='<button class="btn" id="workspaceSearchRetry">'+icon('retry')+'Retry loading</button>'+html;
     var target=$('workspaceSearchResults');target.innerHTML=html;
     target.querySelectorAll('[data-ws-result]').forEach(function(button){button.onclick=function(){wsActivate(state.rendered[Number(button.dataset.wsResult)]);};});
@@ -1004,6 +1068,8 @@ export const WORKSPACE_SEARCH_JS = String.raw`
       };
     });
     if($('workspaceSearchNewSession'))$('workspaceSearchNewSession').onclick=function(){wsActivate({action:'new-cowork-session'});};
+    if($('workspaceSearchNewGroup'))$('workspaceSearchNewGroup').onclick=function(){wsActivate({action:'new-group',agentId:activeAgent&&activeAgent.id});};
+    if($('workspaceSearchScopeToggle'))$('workspaceSearchScopeToggle').onclick=function(){state.showAllAgents=!state.showAllAgents;state.items=wsBuildItems(state.mode,state.rawData||{runs:[],conversations:cwEnsure().convs||[],agents:cwEnsure().agents||[]},state);wsRender(state);};
     if($('workspaceSearchRetry'))$('workspaceSearchRetry').onclick=function(){state.loading=true;wsRender(state);wsLoad(state);};
   }
   function wsDeleteRun(state,item,button) {
@@ -1018,7 +1084,9 @@ export const WORKSPACE_SEARCH_JS = String.raw`
     if(button.dataset.confirmDelete!=='true'){button.dataset.confirmDelete='true';button.textContent='Delete?';button.setAttribute('aria-label','Confirm deleting session '+item.title+' and all its threads and messages');return;}
     button.disabled=true;
     return cwDeleteSession(item.id).then(function(){
+      if(typeof homeRenderSidebarAgentState==='function')homeRenderSidebarAgentState();
       if(workspaceSearchState!==state)return;
+      if(state.rawData&&Array.isArray(state.rawData.conversations))state.rawData.conversations=state.rawData.conversations.filter(function(c){return c.id!==item.id;});
       state.items=state.items.filter(function(result){return !(['conversation','conversation-schedule'].includes(result.action)&&result.id===item.id)&&!(result.action==='followup'&&result.conversationId===item.id);});
       state.hits=state.hits.filter(function(result){return result.id!==item.id;});wsRender(state);wsLoad(state);
     }).catch(function(error){if(button.isConnected){button.disabled=false;button.dataset.confirmDelete='false';button.textContent='Retry';}toast(error.message,true);});
@@ -1037,12 +1105,12 @@ export const WORKSPACE_SEARCH_JS = String.raw`
     else if(item.action==='cowork')openCowork();
     else if(item.action==='agent')cwOpenDm(item.id);
     else if(item.action==='profile')cwOpenProfile(item.id);
-    else if(item.action==='conversation')cwOpenConv(item.id,item.threadId);
+    else if(item.action==='conversation'){if(item.enterWorkspace&&S.active!=='cowork'&&typeof cwEnterWorkspace==='function')cwEnterWorkspace('conv',item.agentId||null,item.id,item.threadId||null);else cwOpenConv(item.id,item.threadId);}
     else if(item.action==='followup')cwOpenConv(item.conversationId,null);
     else if(item.action==='thread')cwSwitchThread(item.id);
     else if(item.action==='new-agent')cwAgentModal(null);
     else if(item.action==='new-cowork-session')cwNewSessionModal();
-    else if(item.action==='new-group')cwGroupModal();
+    else if(item.action==='new-group')cwGroupModal(item.agentId);
     else if(item.action==='connections')cwOpenConnections();
     else if(item.action==='lock')cwLockApp();
     else if(item.action==='new-thread')cwNewThreadModal();

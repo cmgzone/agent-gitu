@@ -71,7 +71,11 @@ function AstryxApp() {
     const conv = host.activeConv();
     const convAgentId =
       conv && conv.kind === 'dm' ? conv.memberIds?.[0] || '' : '';
-    setActiveAgentId(convAgentId || cw.selectedAgentId || cw.agents?.[0]?.id || '');
+    const selectedInRoster =
+      cw.selectedAgentId && cw.agents?.some(a => a.id === cw.selectedAgentId)
+        ? cw.selectedAgentId
+        : '';
+    setActiveAgentId(selectedInRoster || convAgentId || cw.agents?.[0]?.id || '');
   }, []);
 
   const refreshAgentsFromServer = useCallback(() => {
@@ -259,7 +263,10 @@ function AstryxApp() {
           onClose={() => setSwitcherOpen(false)}
           onSelect={agentId => {
             setSwitcherOpen(false);
-            getHostBridge()?.openDm(agentId);
+            const host = getHostBridge();
+            if (host?.selectAgent) host.selectAgent(agentId);
+            else host?.openDm(agentId);
+            syncFromHost();
           }}
           onCreateAgent={() => setEditState({open: true, agent: null})}
         />

@@ -76,6 +76,10 @@ export interface ProviderSpec {
   maxEffort?: 'distinct' | 'collapses-to-high';
   /** Model catalog is publicly fetchable without an API key (e.g. OpenCode Zen / Go). */
   publicModels?: boolean;
+  /** Explicit `/models` catalog URL when live discovery lives outside `${baseUrl}/models`. */
+  modelsUrl?: string;
+  /** When true and live discovery succeeds, live models replace offline seeds and drive defaultModel. */
+  authoritativeLiveModels?: boolean;
   /** This provider uses pi's managed ChatGPT sign-in (OAuth), never an API key. */
   auth?: 'api-key' | 'chatgpt-subscription';
   /** Saved user profile, not a built-in catalog entry. */
@@ -93,6 +97,7 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     id: 'pikrouter',
     label: 'PikRouter (pikrouter.pikpam.com, OpenAI-compatible)',
     baseUrl: 'https://pikrouter.pikpam.com/v1',
+    modelsUrl: 'https://pikpam.com/api/models',
     keyEnvVars: ['HERMES_PIKROUTER_API_KEY', 'PIKROUTER_API_KEY', 'PIKROUTER_TOKEN'],
     defaultModel: 'DeepSeek-V4.1-Flash',
     models: [
@@ -120,6 +125,7 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     maxEffort: 'distinct',
     toolMode: 'auto',
     publicModels: true,
+    authoritativeLiveModels: true,
     capabilities: { streamingTools: true },
   },
   alibaba: {
@@ -765,24 +771,56 @@ export function modelNameFromRaw(raw: Record<string, unknown>): string | undefin
   return undefined;
 }
 
+export function liveModelsCacheKey(opts: { baseUrl: string; modelsUrl?: string }): string {
+  return (opts.modelsUrl?.trim() || opts.baseUrl).replace(/\/$/, '');
+}
+
+/** Pick a valid live default model for providers whose `/models` response is authoritative. */
+export function pickLiveDefaultModel(
+  spec: Pick<ProviderSpec, 'defaultModel' | 'models'>,
+  liveModels: readonly Pick<ModelInfo, 'id'>[],
+): string {
+  const configured = spec.defaultModel.trim();
+  if (configured && liveModels.some((m) => m.id === configured)) return configured;
+  const preferredSeed = spec.models.find((seedId) => liveModels.some((m) => m.id === seedId));
+  if (preferredSeed) return preferredSeed;
+  const normalizedConfigured = configured.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (normalizedConfigured) {
+    const fuzzy = liveModels.find((m) => m.id.toLowerCase().replace(/[^a-z0-9]/g, '').includes(normalizedConfigured));
+    if (fuzzy) return fuzzy.id;
+  }
+  return liveModels[0]?.id ?? configured;
+}
+
 export async function fetchLiveModels(opts: {
   baseUrl: string;
+  modelsUrl?: string;
   apiKey: string;
   timeoutMs?: number;
 }): Promise<ModelInfo[] | undefined> {
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 8000);
-    const res = await fetch(`${opts.baseUrl.replace(/\/$/, '')}/models`, {
-      headers: { authorization: `Bearer ${opts.apiKey}` },
+    const url = opts.modelsUrl?.trim() || `${opts.baseUrl.replace(/\/$/, '')}/models`;
+    const headers: Record<string, string> = {};
+    if (opts.apiKey) headers['authorization'] = `Bearer ${opts.apiKey}`;
+    const res = await fetch(url, {
+      ...(Object.keys(headers).length > 0 ? { headers } : {}),
       signal: controller.signal,
     });
     clearTimeout(timer);
     if (!res.ok) return undefined;
-    const data = (await res.json()) as { data?: Record<string, unknown>[] };
-    if (!Array.isArray(data.data)) return undefined;
-    return data.data
-      .filter((m) => isRecord(m) && typeof m['id'] === 'string')
+    const raw = (await res.json()) as { data?: unknown; models?: unknown } | unknown[];
+    const rows = Array.isArray(raw)
+      ? raw
+      : isRecord(raw) && Array.isArray(raw['data'])
+        ? raw['data']
+        : isRecord(raw) && Array.isArray(raw['models'])
+          ? raw['models']
+          : undefined;
+    if (!rows) return undefined;
+    return rows
+      .filter((m): m is Record<string, unknown> => isRecord(m) && typeof m['id'] === 'string')
       .map((m) => {
         const pricing = isRecord(m['pricing']) ? (m['pricing'] as Record<string, unknown>) : undefined;
         const promptPrice = typeof pricing?.['promptUsdPerM'] === 'number' ? pricing['promptUsdPerM'] : undefined;
@@ -812,6 +850,19 @@ const liveModelsPending = new Map<string, Promise<ModelInfo[] | undefined>>();
 const LIVE_MODELS_TTL_MS = 10 * 60 * 1000;
 const LIVE_MODELS_MISS_TTL_MS = 60 * 1000;
 
+export function clearLiveModelsCache(): void {
+  liveModelsCache.clear();
+}
+
+export function peekCachedLiveDefaultModel(
+  spec: Pick<ProviderSpec, 'baseUrl' | 'modelsUrl' | 'defaultModel' | 'models' | 'authoritativeLiveModels'>,
+): string | undefined {
+  if (!spec.authoritativeLiveModels) return undefined;
+  const hit = liveModelsCache.get(liveModelsCacheKey(spec));
+  if (!hit || hit.models.length === 0 || Date.now() >= hit.expiresAt) return undefined;
+  return pickLiveDefaultModel(spec, hit.models);
+}
+
 /**
  * Fetch a provider's live /models list through a short-lived shared cache so
  * the model picker and run-time image-support resolution see the SAME data.
@@ -821,16 +872,22 @@ const LIVE_MODELS_MISS_TTL_MS = 60 * 1000;
  */
 export async function cachedLiveModels(opts: {
   baseUrl: string;
+  modelsUrl?: string;
   apiKey: string;
   timeoutMs?: number;
+  forceRefresh?: boolean;
 }): Promise<ModelInfo[] | undefined> {
-  const key = opts.baseUrl.replace(/\/$/, '');
-  const hit = liveModelsCache.get(key);
-  if (hit && Date.now() < hit.expiresAt) return hit.models.length > 0 ? hit.models : undefined;
-  // Dedupe concurrent misses: parallel callers must not stampede the provider
-  // with identical /models requests (and race-cache-overwrite each other).
-  const pending = liveModelsPending.get(key);
-  if (pending) return pending;
+  const key = liveModelsCacheKey(opts);
+  if (opts.forceRefresh) {
+    liveModelsCache.delete(key);
+  } else {
+    const hit = liveModelsCache.get(key);
+    if (hit && Date.now() < hit.expiresAt) return hit.models.length > 0 ? hit.models : undefined;
+    // Dedupe concurrent misses: parallel callers must not stampede the provider
+    // with identical /models requests (and race-cache-overwrite each other).
+    const pending = liveModelsPending.get(key);
+    if (pending) return pending;
+  }
   const task = (async (): Promise<ModelInfo[] | undefined> => {
     const fetched = await fetchLiveModels(opts);
     if (fetched && fetched.length > 0) {
@@ -840,7 +897,9 @@ export async function cachedLiveModels(opts: {
     }
     return fetched && fetched.length > 0 ? fetched : undefined;
   })();
-  void task.catch(() => {}).finally(() => liveModelsPending.delete(key));
+  void task.catch(() => {}).finally(() => {
+    if (liveModelsPending.get(key) === task) liveModelsPending.delete(key);
+  });
   liveModelsPending.set(key, task);
   return task;
 }
@@ -877,7 +936,15 @@ export async function resolveImageSupport(opts: {
     provider?.baseUrl ?? (providerId === 'custom' ? env['HERMES_BASE_URL'] ?? env['OPENAI_BASE_URL'] : undefined);
   if (baseUrl && opts.model) {
     const apiKey = provider ? (providerKey(provider, env)?.key ?? '') : (env['HERMES_API_KEY'] ?? env['OPENAI_API_KEY'] ?? '');
-    const vision = liveModelVision(await cachedLiveModels({ baseUrl, apiKey, timeoutMs: opts.timeoutMs }), opts.model);
+    const vision = liveModelVision(
+      await cachedLiveModels({
+        baseUrl,
+        ...(provider?.modelsUrl ? { modelsUrl: provider.modelsUrl } : {}),
+        apiKey,
+        timeoutMs: opts.timeoutMs,
+      }),
+      opts.model,
+    );
     if (vision !== undefined) return vision;
   }
   // PikRouter text endpoints/models (such as DeepSeek) do not accept image inputs.
@@ -961,14 +1028,25 @@ function piRuntimeFor(
 
 function build(
   providerId: string,
-  spec: { baseUrl: string; defaultModel: string; label?: string; toolMode?: ProviderSpec['toolMode']; capabilities?: ProviderCapabilities } | undefined,
+  spec: { baseUrl: string; modelsUrl?: string; defaultModel: string; models?: string[]; authoritativeLiveModels?: boolean; label?: string; toolMode?: ProviderSpec['toolMode']; capabilities?: ProviderCapabilities } | undefined,
   apiKey: string,
   keyEnvVar: string,
   opts: ResolveOptions,
   env: NodeJS.ProcessEnv,
 ): ResolvedLlm {
   const baseUrl = opts.baseUrl ?? env['HERMES_BASE_URL'] ?? spec?.baseUrl ?? 'https://api.openai.com/v1';
-  const model = opts.model ?? env['HERMES_MODEL'] ?? spec?.defaultModel ?? 'gpt-4.1-mini';
+  const requestedModel = opts.model?.trim() || undefined;
+  const cachedLiveDefault =
+    !requestedModel && !env['HERMES_MODEL'] && spec?.authoritativeLiveModels && spec.models
+      ? peekCachedLiveDefaultModel({
+          baseUrl: spec.baseUrl,
+          modelsUrl: spec.modelsUrl,
+          defaultModel: spec.defaultModel,
+          models: spec.models,
+          authoritativeLiveModels: spec.authoritativeLiveModels,
+        })
+      : undefined;
+  const model = requestedModel ?? env['HERMES_MODEL'] ?? cachedLiveDefault ?? spec?.defaultModel ?? 'gpt-4.1-mini';
   // Output-budget policy input: the model's known ceiling from the live
   // catalog (warmed by the model picker / settings flows). Cold cache →
   // undefined → requests carry no output-limit field (conservative, never

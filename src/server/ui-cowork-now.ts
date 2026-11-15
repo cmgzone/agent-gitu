@@ -68,7 +68,7 @@ export const COWORK_NOW_CSS = String.raw`
   .cw .cw-row.me .cw-meta { display:none; }
   .cw .cw-bubble .cw-meta .nm { font-weight:500; }
   .cw .cw-message-more { opacity:0; }
-  .cw .cw-bubble:hover .cw-message-more, .cw .cw-bubble:focus-within .cw-message-more { opacity:1; }
+  .cw .cw-row:hover .cw-message-more, .cw .cw-row:focus-within .cw-message-more { opacity:1; }
   .cw .cw-composer-wrap { position:absolute; inset:auto 0 0; z-index:3; padding:12px max(24px,calc((100% - var(--chat-column-width,620px))/2)) calc(16px + env(safe-area-inset-bottom, 0px)); background:transparent; border:0; box-shadow:none; pointer-events:none; }
   .cw .cw-composer-wrap > * { pointer-events:auto; }
   .cw .cw-composer { border-radius:var(--radius-chat,28px); padding:10px 12px; border:1.5px solid var(--border2); background:var(--card2); box-shadow:var(--shadow-float); } .cw .cw-composer:focus-within { background:var(--card); border-color:var(--dark); }

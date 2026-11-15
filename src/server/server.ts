@@ -7972,8 +7972,10 @@ export class GituServer {
       this.sendJson(res,405,{error:'Method not allowed.'});return;
     }
     if (method === 'GET' && path === '/api/models') {
+      const forceRefresh = url.searchParams.get('refresh') === '1' || url.searchParams.get('refresh') === 'true';
       this.sendJson(res, 200, {...await resolveModelCatalog({
         chatgptSubscriptionInfo: this.config.chatgptSubscriptionInfo,
+        ...(forceRefresh ? { forceRefresh: true } : {}),
       }),selection:readRuntimeSelection()});
       return;
     }

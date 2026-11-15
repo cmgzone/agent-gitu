@@ -420,7 +420,7 @@ describe('PikRouter integration', () => {
       modelSearchText: () => '',
       Date,
       api: async (url: string) => {
-        if (url === '/api/models') {
+        if (url === '/api/models' || url === '/api/models?refresh=1') {
           return {
             providers: [
               { id: 'pikrouter', label: 'PikRouter', usable: true, hasKey: true, defaultModel: 'DeepSeek-V4.1-Flash', models: [{ id: 'DeepSeek-V4.1-Flash' }] },

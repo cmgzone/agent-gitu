@@ -143,4 +143,43 @@ describe('Home projects', () => {
     expect(f.target.innerHTML).toBe('');
     expect(f.state.draft).toBe('Keep this draft');
   });
+
+  it('shows only connected groups and Cowork coding tasks for the selected agent in the sidebar', () => {
+    const f = fixture();
+    const groupButtons: any[] = [{ getAttribute: () => 'grp-atlas' }];
+    f.elements.homeSelectedAgentChip = { textContent: '' };
+    f.elements.homeAgentGroups = { innerHTML: '', querySelectorAll: () => groupButtons };
+    f.context.openCowork = vi.fn();
+    f.context.document = { querySelector: () => ({ dataset: {}, classList: { remove: vi.fn() } }) };
+    f.context.homeCloseNavigation = vi.fn();
+    f.cowork.agents = [{ id: 'writer', name: 'Atlas' }, { id: 'coder', name: 'Nova' }, { id: 'ops', name: 'Luna' }];
+    f.cowork.convs = [
+      { id: 'dm-writer', kind: 'dm', title: 'Atlas Direct', memberIds: ['writer'] },
+      { id: 'grp-atlas', kind: 'group', title: 'Docs Council', memberIds: ['writer', 'coder'] },
+      { id: 'grp-other', kind: 'group', title: 'CI Bench', memberIds: ['coder', 'ops'] },
+    ];
+    f.cowork.selectedAgentId = 'writer';
+
+    f.context.homeRenderSidebarAgentState();
+    expect(f.elements.homeSelectedAgentChip.textContent).toBe('Atlas');
+    expect(f.elements.homeAgentGroups.innerHTML).toContain('Docs Council');
+    expect(f.elements.homeAgentGroups.innerHTML).not.toContain('CI Bench');
+    groupButtons[0].onclick();
+    expect(f.cowork.homeAction).toEqual({ kind: 'conv', agentId: 'writer', convId: 'grp-atlas', threadId: null });
+    expect(f.context.openCowork).toHaveBeenCalledOnce();
+
+    f.context.homeRenderProjects(f.target, [{ path: 'C:\\work\\alpha', name: 'alpha' }], [
+      { runId: 'r-atlas', goal: 'Draft API notes', projectPath: 'C:\\work\\alpha', startedAt: '2026-11-10', coworkTask: { agentId: 'writer', agentName: 'Atlas' } },
+      { runId: 'r-nova', goal: 'Refactor CI', projectPath: 'C:\\work\\alpha', startedAt: '2026-11-11', coworkTask: { agentId: 'coder', agentName: 'Nova' } },
+    ]);
+    expect(f.target.innerHTML).toContain('Cowork coding · Atlas');
+    expect(f.target.innerHTML).toContain('Draft API notes');
+    expect(f.target.innerHTML).not.toContain('Refactor CI');
+
+    f.cowork.selectedAgentId = 'ops';
+    f.context.homeRenderSidebarAgentState();
+    expect(f.elements.homeSelectedAgentChip.textContent).toBe('Luna');
+    expect(f.elements.homeAgentGroups.innerHTML).not.toContain('Docs Council');
+    expect(f.elements.homeAgentGroups.innerHTML).toContain('CI Bench');
+  });
 });

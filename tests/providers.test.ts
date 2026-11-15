@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { PROVIDERS, ProviderError, cachedLiveModels, modelCapabilityTier, fetchLiveModels, fetchModelCatalog, freeModelFallback, isFreeModel, liveModelVision, modelMetadataFor, modelSupportsImages, parseModelCatalog, resolveImageSupport, resolveLlm, resolveSupportedImages } from '../src/llm/providers.js';
+import { PROVIDERS, ProviderError, cachedLiveModels, clearLiveModelsCache, modelCapabilityTier, fetchLiveModels, fetchModelCatalog, freeModelFallback, isFreeModel, liveModelVision, modelMetadataFor, modelSupportsImages, parseModelCatalog, resolveImageSupport, resolveLlm, resolveSupportedImages } from '../src/llm/providers.js';
 import { sanitizeCustomProviders } from '../src/workspace/home.js';
 
 const WS_URL = 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1';
@@ -303,6 +303,70 @@ describe('fetchLiveModels', () => {
     expect(models?.map((m) => m.id)).toEqual(['qwen3.6-flash', 'qwen3.7-max']);
   });
 
+  it('uses modelsUrl when configured, omits empty auth header, and parses Pikpam pricing', async () => {
+    expect(PROVIDERS['pikrouter']).toMatchObject({
+      baseUrl: 'https://pikrouter.pikpam.com/v1',
+      modelsUrl: 'https://pikpam.com/api/models',
+      publicModels: true,
+      authoritativeLiveModels: true,
+    });
+    const requests: Array<{ url: string; headers?: HeadersInit }> = [];
+    globalThis.fetch = (async (input, init) => {
+      requests.push({ url: String(input), headers: init?.headers });
+      return new Response(
+        JSON.stringify({
+          object: 'list',
+          data: [
+            {
+              id: 'deepseek/deepseek-v4-flash',
+              owned_by: 'pikpam-router',
+              context_window: 1_000_000,
+              max_output_tokens: 393_216,
+              pricing: { promptUsdPerM: 0.3, completionUsdPerM: 1.2 },
+            },
+            {
+              id: 'cohere/north-mini-code:free',
+              owned_by: 'pikpam-router',
+              context_window: 128_000,
+              max_output_tokens: 4_096,
+              pricing: { promptUsdPerM: 0.5, completionUsdPerM: 1.5 },
+            },
+          ],
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }) as typeof fetch;
+
+    const models = await fetchLiveModels({
+      baseUrl: 'https://pikrouter.pikpam.com/v1',
+      modelsUrl: 'https://pikpam.com/api/models',
+      apiKey: '',
+    });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.url).toBe('https://pikpam.com/api/models');
+    expect(requests[0]?.headers).toBeUndefined();
+    expect(models).toEqual([
+      {
+        id: 'cohere/north-mini-code:free',
+        ownedBy: 'pikpam-router',
+        vision: undefined,
+        contextWindow: 128_000,
+        maxOutputTokens: 4_096,
+        inputPricePerMillion: 0.5,
+        outputPricePerMillion: 1.5,
+      },
+      {
+        id: 'deepseek/deepseek-v4-flash',
+        ownedBy: 'pikpam-router',
+        vision: undefined,
+        contextWindow: 1_000_000,
+        maxOutputTokens: 393_216,
+        inputPricePerMillion: 0.3,
+        outputPricePerMillion: 1.2,
+      },
+    ]);
+  });
+
   it('returns undefined on HTTP errors or network failure', async () => {
     globalThis.fetch = (async () => new Response('nope', { status: 401 })) as typeof fetch;
     expect(await fetchLiveModels({ baseUrl: 'https://example.test/v1', apiKey: 'bad' })).toBeUndefined();
@@ -532,6 +596,48 @@ describe('cachedLiveModels', () => {
     expect(await cachedLiveModels({ baseUrl: 'https://miss-cache.test/v1', apiKey: 'k' })).toBeUndefined();
     expect(await cachedLiveModels({ baseUrl: 'https://miss-cache.test/v1', apiKey: 'k' })).toBeUndefined();
     expect(calls).toBe(1);
+  });
+
+  it('bypasses cache on forceRefresh and resolves pikrouter default from cached live Pikpam models', async () => {
+    clearLiveModelsCache();
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return new Response(
+        JSON.stringify({
+          data: calls === 1
+            ? [{ id: 'cohere/north-mini-code:free' }]
+            : [{ id: 'cohere/north-mini-code:free' }, { id: 'deepseek/deepseek-v4-flash' }],
+        }),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+
+    try {
+      const first = await cachedLiveModels({
+        baseUrl: 'https://pikrouter.pikpam.com/v1',
+        modelsUrl: 'https://pikpam.com/api/models',
+        apiKey: '',
+      });
+      expect(first?.map((m) => m.id)).toEqual(['cohere/north-mini-code:free']);
+
+      const refreshed = await cachedLiveModels({
+        baseUrl: 'https://pikrouter.pikpam.com/v1',
+        modelsUrl: 'https://pikpam.com/api/models',
+        apiKey: '',
+        forceRefresh: true,
+      });
+      expect(calls).toBe(2);
+      expect(refreshed?.map((m) => m.id)).toEqual(['cohere/north-mini-code:free', 'deepseek/deepseek-v4-flash']);
+
+      const resolved = resolveLlm({
+        provider: 'pikrouter',
+        env: { PIKROUTER_API_KEY: 'test-token' } as NodeJS.ProcessEnv,
+      });
+      expect(resolved.model).toBe('deepseek/deepseek-v4-flash');
+    } finally {
+      clearLiveModelsCache();
+    }
   });
 
   it('shares one successful listing across callers until the TTL expires', async () => {

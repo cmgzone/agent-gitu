@@ -333,7 +333,7 @@ export const COWORK_DASHBOARD_JS = String.raw`
         var isCurrent=agent.id===currentId,tagline=String(agent.tagline||'').trim();
         return '<button type="button" class="cw-sw-card'+(isCurrent?' is-active':'')+'" data-sw-chat="'+esc(agent.id)+'" aria-current="'+(isCurrent?'true':'false')+'"><div class="cw-sw-card-top"><span class="cw-sw-card-ava">'+cwAva(agent)+'</span>'+(isCurrent?'<span class="cw-sw-card-active">Active</span>':'')+'</div><div class="cw-sw-card-copy"><strong>'+esc(agent.name)+'</strong>'+(tagline?'<span>'+esc(tagline)+'</span>':'')+'</div></button>';
       }).join('');
-      grid.querySelectorAll('[data-sw-chat]').forEach(function(btn){btn.onclick=function(){var id=btn.getAttribute('data-sw-chat');close();if(S&&S.active==='cowork'&&typeof cwOpenDm==='function'){cwOpenDm(id);}else if(typeof cwEnterWorkspace==='function'){cwEnterWorkspace('chat',id);}};});
+      grid.querySelectorAll('[data-sw-chat]').forEach(function(btn){btn.onclick=function(){var id=btn.getAttribute('data-sw-chat');close();if(typeof cwSelectAgent==='function'){cwSelectAgent(id);}else if(S&&S.active==='cowork'&&typeof cwOpenDm==='function'){cwOpenDm(id);}else if(typeof cwEnterWorkspace==='function'){cwEnterWorkspace('chat',id);}};});
     }
     $('cwSwClose').onclick=close;
     $('cwSwNewAgent').onclick=function(){close();if(typeof cwAgentModal==='function')cwAgentModal(null);};

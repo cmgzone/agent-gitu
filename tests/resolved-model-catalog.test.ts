@@ -203,6 +203,73 @@ describe('resolveModelCatalog', () => {
     expect(deps.cachedLiveModels).not.toHaveBeenCalled();
   });
 
+  it('replaces hardcoded offline models and defaults for authoritative live providers like PikRouter', async () => {
+    const pikSpec = spec('pikrouter', {
+      baseUrl: 'https://pikrouter.pikpam.com/v1',
+      modelsUrl: 'https://pikpam.com/api/models',
+      publicModels: true,
+      authoritativeLiveModels: true,
+      defaultModel: 'DeepSeek-V4.1-Flash',
+      models: ['DeepSeek-V4.1-Flash', 'deepseek/deepseek-v4-flash', 'gpt-4o-mini'],
+      modelLabels: { 'deepseek/deepseek-v4-flash': 'DeepSeek V4.1 Flash' },
+    });
+    const deps = dependencies([pikSpec]);
+    deps.cachedLiveModels.mockResolvedValue([
+      {
+        id: 'cohere/north-mini-code:free',
+        ownedBy: 'pikpam-router',
+        contextWindow: 128_000,
+        maxOutputTokens: 4_096,
+        inputPricePerMillion: 0.5,
+        outputPricePerMillion: 1.5,
+      },
+      {
+        id: 'deepseek/deepseek-v4-flash',
+        ownedBy: 'pikpam-router',
+        contextWindow: 1_000_000,
+        maxOutputTokens: 393_216,
+        inputPricePerMillion: 0.3,
+        outputPricePerMillion: 1.2,
+      },
+    ]);
+
+    const { providers } = await resolveModelCatalog({ ...deps, forceRefresh: true });
+    const pik = providers[0]!;
+    expect(deps.cachedLiveModels).toHaveBeenCalledWith({
+      baseUrl: 'https://pikrouter.pikpam.com/v1',
+      modelsUrl: 'https://pikpam.com/api/models',
+      apiKey: '',
+      timeoutMs: 6000,
+      forceRefresh: true,
+    });
+    expect(pik.live).toBe(true);
+    expect(pik.defaultModel).toBe('deepseek/deepseek-v4-flash');
+    expect(ids(pik)).toEqual(['cohere/north-mini-code:free', 'deepseek/deepseek-v4-flash']);
+    expect(pik.models.find((m) => m.id === 'deepseek/deepseek-v4-flash')).toMatchObject({
+      label: 'DeepSeek V4.1 Flash',
+      metadata: {
+        contextTokens: 1_000_000,
+        outputTokens: 393_216,
+        inputPricePerMillion: 0.3,
+        outputPricePerMillion: 1.2,
+      },
+    });
+    expect(pik.models.find((m) => m.id === 'cohere/north-mini-code:free')).toMatchObject({
+      free: true,
+      metadata: {
+        contextTokens: 128_000,
+        outputTokens: 4_096,
+        inputPricePerMillion: 0.5,
+        outputPricePerMillion: 1.5,
+      },
+    });
+
+    deps.cachedLiveModels.mockResolvedValue([{ id: 'acme/brand-new-model', ownedBy: 'pikpam-router' }]);
+    const rotated = await resolveModelCatalog(deps);
+    expect(rotated.providers[0]?.defaultModel).toBe('acme/brand-new-model');
+    expect(ids(rotated.providers[0]!)).toEqual(['acme/brand-new-model']);
+  });
+
   it.each([true, false])('preserves signed-out subscription availability (%s) with offline seeds and default', async (available) => {
     const deps = dependencies([spec('subscription', { auth: 'chatgpt-subscription' })]);
     deps.chatgptSubscriptionInfo.mockResolvedValue({ available, signedIn: false, models: [] });

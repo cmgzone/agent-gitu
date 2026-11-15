@@ -4,7 +4,7 @@ import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ScriptedMockLlm } from '../src/llm/llm.js';
-import { parseModelCatalog, setModelCatalogForTest } from '../src/llm/providers.js';
+import { clearLiveModelsCache, parseModelCatalog, setModelCatalogForTest } from '../src/llm/providers.js';
 import { HermesServer } from '../src/server/server.js';
 import { UI_HTML } from '../src/server/ui.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
@@ -329,6 +329,64 @@ describe('HermesServer', () => {
       expect(publicProvider).toBeTruthy();
     } finally {
       globalThis.fetch = originalFetch;
+      setModelCatalogForTest(undefined);
+    }
+  });
+
+  it('fetches dynamic Pikpam models for pikrouter on /api/models and supports ?refresh=1 cache bypass', async () => {
+    const originalFetch = globalThis.fetch;
+    let pikpamCalls = 0;
+    clearLiveModelsCache();
+    setModelCatalogForTest(parseModelCatalog({}));
+    globalThis.fetch = (async (input, init) => {
+      const url = String(input);
+      if (url === 'https://pikpam.com/api/models') {
+        pikpamCalls += 1;
+        const data = pikpamCalls === 1
+          ? [
+              { id: 'cohere/north-mini-code:free', owned_by: 'pikpam-router', context_window: 128_000, max_output_tokens: 4_096, pricing: { promptUsdPerM: 0.5, completionUsdPerM: 1.5 } },
+              { id: 'deepseek/deepseek-v4-flash', owned_by: 'pikpam-router', context_window: 1_000_000, max_output_tokens: 393_216, pricing: { promptUsdPerM: 0.3, completionUsdPerM: 1.2 } },
+            ]
+          : [
+              { id: 'cohere/north-mini-code:free', owned_by: 'pikpam-router', context_window: 128_000, max_output_tokens: 4_096, pricing: { promptUsdPerM: 0.5, completionUsdPerM: 1.5 } },
+              { id: 'deepseek/deepseek-v4-flash', owned_by: 'pikpam-router', context_window: 1_000_000, max_output_tokens: 393_216, pricing: { promptUsdPerM: 0.3, completionUsdPerM: 1.2 } },
+              { id: 'pikpam/newly-released-model', owned_by: 'pikpam-router', context_window: 256_000, max_output_tokens: 16_384 },
+            ];
+        return new Response(JSON.stringify({ object: 'list', data }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.startsWith('http://127.0.0.1:')) return originalFetch(input, init);
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    try {
+      const dir = makeProject('pikpam-live-models');
+      const { base } = await startServer(dir, new ScriptedMockLlm([]));
+      const first = await fetch(`${base}/api/models`).then((r) => r.json());
+      const pikFirst = first.providers.find((p: { id: string }) => p.id === 'pikrouter');
+      expect(pikFirst.live).toBe(true);
+      expect(pikFirst.defaultModel).toBe('deepseek/deepseek-v4-flash');
+      expect(pikFirst.models.map((m: { id: string }) => m.id)).toEqual([
+        'cohere/north-mini-code:free',
+        'deepseek/deepseek-v4-flash',
+      ]);
+
+      const cached = await fetch(`${base}/api/models`).then((r) => r.json());
+      expect(pikpamCalls).toBe(1);
+      expect(cached.providers.find((p: { id: string }) => p.id === 'pikrouter').models).toHaveLength(2);
+
+      const refreshed = await fetch(`${base}/api/models?refresh=1`).then((r) => r.json());
+      expect(pikpamCalls).toBe(2);
+      const pikRefreshed = refreshed.providers.find((p: { id: string }) => p.id === 'pikrouter');
+      expect(pikRefreshed.models.map((m: { id: string }) => m.id)).toEqual([
+        'cohere/north-mini-code:free',
+        'deepseek/deepseek-v4-flash',
+        'pikpam/newly-released-model',
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+      clearLiveModelsCache();
       setModelCatalogForTest(undefined);
     }
   });

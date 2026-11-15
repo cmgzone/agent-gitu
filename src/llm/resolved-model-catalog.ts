@@ -6,9 +6,11 @@ import {
   fetchModelCatalog,
   isFreeModel,
   modelMetadataFor,
+  pickLiveDefaultModel,
   providerKey,
   resolveSupportedImages,
   type ModelInfo,
+  type ModelMetadata,
 } from './providers.js';
 
 /** Injectable discovery boundaries; enrichment uses the shared provider helpers. */
@@ -18,6 +20,10 @@ export interface ModelCatalogDependencies {
   cachedLiveModels: typeof cachedLiveModels;
   fetchModelCatalog: typeof fetchModelCatalog;
   chatgptSubscriptionInfo: typeof chatgptSubscriptionInfo;
+}
+
+export interface ResolveModelCatalogOptions extends Partial<ModelCatalogDependencies> {
+  forceRefresh?: boolean;
 }
 
 /** Preserve source order and the first explicit modality, without mutating cached rows. */
@@ -43,9 +49,11 @@ function normalizeModels(models: readonly ModelInfo[]): ModelInfo[] {
 
 /**
  * Shared, credential-free catalog response for any client. A nonempty normalized
- * live list replaces offline seeds, but never removes the configured default.
+ * live list replaces offline seeds, keeping configured defaults unless the
+ * provider's live catalog is marked authoritative (e.g. PikRouter / Pikpam).
  */
-export async function resolveModelCatalog(deps: Partial<ModelCatalogDependencies> = {}) {
+export async function resolveModelCatalog(deps: ResolveModelCatalogOptions = {}) {
+  const forceRefresh = Boolean(deps.forceRefresh);
   const catalogPromise = (deps.fetchModelCatalog ?? fetchModelCatalog)();
   const subscriptionPromise = (deps.chatgptSubscriptionInfo ?? chatgptSubscriptionInfo)();
   const providerRowsPromise = Promise.all(
@@ -60,20 +68,27 @@ export async function resolveModelCatalog(deps: Partial<ModelCatalogDependencies
         // Shared with run-time image resolution; do not introduce a second cache.
         discovered = await (deps.cachedLiveModels ?? cachedLiveModels)({
           baseUrl: spec.baseUrl,
+          ...(spec.modelsUrl ? { modelsUrl: spec.modelsUrl } : {}),
           apiKey: keyInfo?.key ?? '',
           timeoutMs: 6000,
+          ...(forceRefresh ? { forceRefresh: true } : {}),
         });
       }
       const liveModels = normalizeModels(discovered ?? []);
       const live = liveModels.length > 0;
-      // The signed-in plan decides which model is "default": a newer generation
-      // can be promoted runtime-side (GPT-6 replaced the 5.6 default), so the
-      // spec default only answers when the runtime reports nothing.
-      const defaultModel = (subscription?.models.find((model) => model.isDefault)?.id ?? spec.defaultModel).trim();
-      const models = normalizeModels([
-        ...(live ? liveModels : spec.models.map((id) => ({ id }))),
-        { id: defaultModel },
-      ]);
+      const authoritativeLive = live && Boolean(spec.authoritativeLiveModels);
+      // Authoritative live catalogs supply their own models and default without
+      // injecting offline seed models; subscription plans own their default too.
+      const defaultModel = (
+        subscription?.models.find((model) => model.isDefault)?.id
+        ?? (authoritativeLive ? pickLiveDefaultModel(spec, liveModels) : spec.defaultModel)
+      ).trim();
+      const models = authoritativeLive
+        ? liveModels
+        : normalizeModels([
+            ...(live ? liveModels : spec.models.map((id) => ({ id }))),
+            { id: defaultModel },
+          ]);
       return { spec, keyInfo, subscription, models, live, defaultModel };
     }),
   );
@@ -91,13 +106,19 @@ export async function resolveModelCatalog(deps: Partial<ModelCatalogDependencies
     publicModels: Boolean(spec.publicModels),
     live,
     models: models.map((mi) => {
-      const metadata = modelMetadataFor(catalog, spec.id, mi.id) ?? (mi.contextWindow || mi.inputPricePerMillion !== undefined ? {
-        contextTokens: mi.contextWindow,
-        outputTokens: mi.maxOutputTokens,
-        inputPricePerMillion: mi.inputPricePerMillion,
-        outputPricePerMillion: mi.outputPricePerMillion,
-        source: 'models.dev' as const,
-      } : undefined);
+      const liveMeta: ModelMetadata | undefined = (mi.contextWindow || mi.maxOutputTokens || mi.inputPricePerMillion !== undefined || mi.outputPricePerMillion !== undefined)
+        ? {
+            ...(mi.contextWindow ? { contextTokens: mi.contextWindow } : {}),
+            ...(mi.maxOutputTokens ? { outputTokens: mi.maxOutputTokens } : {}),
+            ...(mi.inputPricePerMillion !== undefined ? { inputPricePerMillion: mi.inputPricePerMillion } : {}),
+            ...(mi.outputPricePerMillion !== undefined ? { outputPricePerMillion: mi.outputPricePerMillion } : {}),
+            source: 'models.dev',
+          }
+        : undefined;
+      const catalogMeta = modelMetadataFor(catalog, spec.id, mi.id);
+      const metadata: ModelMetadata | undefined = spec.authoritativeLiveModels
+        ? (liveMeta ? { ...catalogMeta, ...liveMeta } : catalogMeta)
+        : (catalogMeta ?? liveMeta);
       // The provider's own published name wins, then Gitu's alias knowledge for
       // ids the provider names nothing for, then the live models.dev name. The
       // UI humanizes the raw id when none of these exist.

@@ -58,8 +58,10 @@ describe('model catalog loading and provider filtering', () => {
     await helpers.loadModelCatalog();
     await helpers.loadModelCatalog();
     expect(api).toHaveBeenCalledTimes(1);
+    expect(api).toHaveBeenNthCalledWith(1, '/api/models');
     await helpers.loadModelCatalog(true);
     expect(api).toHaveBeenCalledTimes(2);
+    expect(api).toHaveBeenNthCalledWith(2, '/api/models?refresh=1');
     const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 31000);
     try { await helpers.loadModelCatalog(); }
     finally { clock.mockRestore(); }
@@ -93,7 +95,7 @@ describe('model catalog loading and provider filtering', () => {
   });
 
   it('has one API loader and shared options for Specialists and Cowork', () => {
-    expect(UI_HTML.match(/api\('\/api\/models'\)/g)).toHaveLength(1);
+    expect(UI_HTML.match(/api\([^)]*\/api\/models/g)).toHaveLength(1);
     expect(UI_HTML).toContain("catalogSelectOptions(undefined, sel)");
     expect(UI_HTML).toContain('catalogSelectOptions(pid, d.model, query)');
     expect(() => new Function(UI_HTML.split('<script>')[1]!.split('</script>')[0]!)).not.toThrow();

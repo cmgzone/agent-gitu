@@ -14,7 +14,7 @@ export const COWORK_SESSIONS_JS = String.raw`
   function cwNewSessionModal() {
     var cw=cwEnsure();
     if(!cw.agents.length){toast('Create a teammate before starting a session.');cwAgentModal(null);return;}
-    var active=cwActiveConv(),chosen=active?active.memberIds.slice():[cw.selectedAgentId||cw.agents[0].id];
+    var active=(S&&S.active==='cowork')?cwActiveConv():null,chosen=active?active.memberIds.slice():[cw.selectedAgentId||cw.agents[0].id];
     var modal=document.createElement('div');modal.className='modal cw-modal';
     modal.setAttribute('role','dialog');modal.setAttribute('aria-modal','true');modal.setAttribute('aria-labelledby','cwSessionTitle');
     modal.innerHTML='<div class="box"><div class="bar"><span id="cwSessionTitle">New session</span><span style="flex:1"></span><button class="btn ghost" id="cwSessionCancel">Cancel</button></div>'+
@@ -35,9 +35,11 @@ export const COWORK_SESSIONS_JS = String.raw`
       save.disabled=true;
       var payload={kind:chosen.length===1?'dm':'group',title:modal.querySelector('#cwSessionName').value.trim(),memberIds:chosen.slice()};
       return api('/api/cowork/conversations',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)}).then(function(data){
-        var open=modal.isConnected!==false&&S.active==='cowork';close();
+        var connected=modal.isConnected!==false,inCowork=S.active==='cowork';close();
         cw.convs=cw.convs.filter(function(conv){return conv.id!==data.conversation.id;}).concat([data.conversation]);
-        if(open)cwOpenConv(data.conversation.id,null);
+        if(typeof homeRenderSidebarAgentState==='function')homeRenderSidebarAgentState();
+        if(connected&&inCowork)cwOpenConv(data.conversation.id,null);
+        else if(connected&&typeof cwEnterWorkspace==='function')cwEnterWorkspace('conv',chosen[0],data.conversation.id);
       }).catch(function(error){save.disabled=false;toast(error.message,true);});
     };
   }

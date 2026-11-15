@@ -79,12 +79,18 @@ export const COWORK_WORKBENCH_CSS = String.raw`
   .cw-status-badge[data-status="In Progress"] { color: var(--accent); border-color: var(--accent); }
   .cw-status-badge[data-status="Blocked"], .cw-status-badge[data-status="Requires Approval"] { color: var(--evidence, #d97706); border-color: var(--evidence, #d97706); }
   .cw-status-badge[data-status="Failed"] { color: var(--err); border-color: var(--err); }
+  .cw .cw-composer-wrap > .cw-composer-topline,
+  .cw-composer-topline {
+    display: flex; align-items: center; gap: 8px; min-width: 0;
+    padding: 0 6px 8px; pointer-events: none;
+  }
+  .cw-composer-topline > * { pointer-events: auto; }
   .cw-project-pill {
     display: inline-flex; align-items: center; gap: 6px;
-    height: 32px; padding: 0 11px; border-radius: 999px;
+    height: 28px; padding: 0 9px; border-radius: 999px;
     border: 1px solid var(--border); background: var(--bg2); color: var(--text);
     font-size: 12px; font-weight: 600; cursor: pointer; flex: 0 0 auto;
-    max-width: 170px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    max-width: min(260px, 100%); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     box-shadow: var(--shadow-sm);
     transition: border-color .15s, background .15s, transform .12s;
   }
@@ -97,13 +103,20 @@ export const COWORK_WORKBENCH_CSS = String.raw`
     padding: 6px 10px 4px; font-size: 10px; font-weight: 700;
     letter-spacing: .08em; text-transform: uppercase; color: var(--muted);
   }
+  .cw-project-menu button.cw-project-item,
   .cw-project-item {
     width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px;
     padding: 8px 10px; border: 0; border-radius: 10px; background: transparent;
     color: var(--text); font-size: 12.5px; text-align: left; cursor: pointer;
   }
+  .cw-project-menu button.cw-project-item[data-cwproj-action],
+  .cw-project-item[data-cwproj-action] { justify-content: flex-start; }
+  .cw-project-menu button.cw-project-item svg,
+  .cw-project-item svg { width: 15px; height: 15px; flex: 0 0 auto; color: var(--muted); }
   .cw-project-item:hover { background: var(--hover); }
+  .cw-project-menu button.cw-project-item.active,
   .cw-project-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .cw-project-item.active .cw-project-item-path { color: inherit; opacity: .78; }
   .cw-project-item-path {
     font-size: 11px; color: var(--muted);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 110px;
@@ -131,7 +144,9 @@ export const COWORK_WORKBENCH_CSS = String.raw`
     }
   }
   @media (max-width: 720px) {
-    .cw-project-pill { max-width: 125px; padding: 0 9px; font-size: 11.5px; }
+    .cw .cw-composer-wrap > .cw-composer-topline,
+    .cw-composer-topline { padding: 0 4px 6px; }
+    .cw-project-pill { max-width: min(240px, 100%); padding: 0 8px; font-size: 12px; }
   }
 `;
 

@@ -363,4 +363,69 @@ describe('Full-page workspace search', () => {
     expect(html).toContain('Due ');
     expect(html).toContain('Please verify the unit tests pass on CI and merge the PR.');
   });
+
+  it('scopes main sidebar Sessions and Groups strictly to the selected agent without mixing', () => {
+    const f = fixture();
+    const agents = [{ id: 'writer', name: 'Atlas' }, { id: 'coder', name: 'Nova' }];
+    const conversations = [
+      { id: 'dm-writer', title: 'Atlas Direct', kind: 'dm', memberIds: ['writer'] },
+      { id: 'dm-coder', title: 'Nova Direct', kind: 'dm', memberIds: ['coder'] },
+      { id: 'grp-shared', title: 'Docs + Code', kind: 'group', memberIds: ['writer', 'coder'] },
+      { id: 'grp-nova', title: 'Build Squad', kind: 'group', memberIds: ['coder', 'ops'] },
+    ];
+    const runs = [
+      { runId: 'run-writer', goal: 'Write API guide', project: 'alpha', status: 'completed', startedAt: '2026-11-10', coworkTask: { agentId: 'writer', agentName: 'Atlas' } },
+      { runId: 'run-coder', goal: 'Fix webhook retry', project: 'alpha', status: 'completed', startedAt: '2026-11-11', coworkTask: { agentId: 'coder', agentName: 'Nova' } },
+      { runId: 'run-general', goal: 'Main code task', project: 'alpha', status: 'completed', startedAt: '2026-11-12' },
+    ];
+
+    f.cw.agents = agents;
+    f.cw.selectedAgentId = 'writer';
+    const atlasItems = f.context.wsBuildItems('main', { agents, conversations, runs }, {});
+    const atlasSessions = atlasItems.filter((item: any) => item.category === 'Sessions').map((item: any) => item.id);
+    const atlasGroups = atlasItems.filter((item: any) => item.category === 'Groups').map((item: any) => item.id);
+    expect(atlasSessions).toEqual(['dm-writer', 'run-writer']);
+    expect(atlasGroups).toEqual(['grp-shared']);
+
+    const grpAction = atlasItems.find((item: any) => item.id === 'grp-shared');
+    f.context.wsClose = vi.fn();
+    f.context.wsActivate(grpAction);
+    expect(f.cw.homeAction).toEqual({ kind: 'conv', agentId: 'writer', convId: 'grp-shared', threadId: null });
+    expect(f.context.openCowork).toHaveBeenCalledOnce();
+
+    f.cw.selectedAgentId = 'coder';
+    const novaItems = f.context.wsBuildItems('main', { agents, conversations, runs }, {});
+    const novaSessions = novaItems.filter((item: any) => item.category === 'Sessions').map((item: any) => item.id);
+    const novaGroups = novaItems.filter((item: any) => item.category === 'Groups').map((item: any) => item.id);
+    expect(novaSessions).toEqual(['dm-coder', 'run-coder']);
+    expect(novaGroups).toEqual(['grp-shared', 'grp-nova']);
+
+    const allItems = f.context.wsBuildItems('main', { agents, conversations, runs }, { showAllAgents: true });
+    expect(allItems.filter((item: any) => item.category === 'Sessions').map((item: any) => item.id)).toEqual(['run-writer', 'run-coder', 'run-general', 'dm-writer', 'dm-coder']);
+    expect(allItems.filter((item: any) => item.category === 'Groups').map((item: any) => item.id)).toEqual(['grp-shared', 'grp-nova']);
+  });
+
+  it('scopes Cowork Sessions and Groups to the active/selected agent and exposes Groups navigation in sidebar and menu', () => {
+    const f = fixture();
+    const agents = [{ id: 'writer', name: 'Atlas' }, { id: 'coder', name: 'Nova' }];
+    const conversations = [
+      { id: 'dm-writer', title: 'Atlas Chat', kind: 'dm', memberIds: ['writer'] },
+      { id: 'dm-coder', title: 'Nova Chat', kind: 'dm', memberIds: ['coder'] },
+      { id: 'grp-atlas', title: 'Atlas Council', kind: 'group', memberIds: ['writer', 'ops'] },
+      { id: 'grp-nova', title: 'Nova Bench', kind: 'group', memberIds: ['coder', 'ops'] },
+    ];
+    f.state.active = 'cowork';
+    f.cw.agents = agents;
+    f.cw.convs = conversations;
+    f.cw.selectedAgentId = 'writer';
+
+    const items = f.context.wsBuildItems('cowork', { agents, conversations }, {});
+    expect(items.filter((item: any) => item.category === 'Sessions').map((item: any) => item.id)).toEqual(['dm-writer']);
+    expect(items.filter((item: any) => item.category === 'Groups').map((item: any) => item.id)).toEqual(['grp-atlas']);
+
+    expect(HOME_WORKSPACE_JS).toContain('id="homeGroupsBtn"');
+    expect(HOME_WORKSPACE_JS).toContain('id="homeAgentGroups"');
+    expect(HOME_WORKSPACE_JS).toContain('id="homeSelectedAgentChip"');
+    expect(COWORK_JS).toContain('id="cwGroupsMenuBtn"');
+  });
 });

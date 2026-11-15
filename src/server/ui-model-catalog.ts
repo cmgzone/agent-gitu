@@ -33,7 +33,7 @@ export const UI_MODEL_CATALOG_JS = String.raw`
     if (!force && S.modelsLoaded && Date.now() - modelCatalogLoadedAt < 30000) return Promise.resolve(S.models);
     var generation = ++modelCatalogGeneration;
     var selectionRevision=modelChoiceRevision;
-    var pending = api('/api/models').then(function (data) {
+    var pending = api(force ? '/api/models?refresh=1' : '/api/models').then(function (data) {
       if (generation !== modelCatalogGeneration) return modelCatalogPending || S.models;
       if (!data || !Array.isArray(data.providers)) throw new Error('Invalid model catalog');
       var pikOnly = data.providers.filter(function (p) { return p && p.id === 'pikrouter'; });

@@ -326,6 +326,29 @@ describe('Cowork message actions', () => {
     expect(html).toMatch(/data-cwaction="retry"[\s\S]*<\/div><span role="status"/);
   });
 
+  it('renders the message more button outside the text bubble for both user and agent rows while keeping refs inside', () => {
+    const u = fixture();
+    u.context.cwAva = () => '<div class="cw-ava"></div>';
+    u.cw.msgs = [message({ id: 'ref-1', text: 'Original prompt' })];
+    const agentHtml = u.context.cwBubbleHtml(message({ id: 'a1', role: 'agent', text: 'Agent reply', referencedMessageIds: ['ref-1'] }));
+    const agentBubbleEnd = agentHtml.lastIndexOf('</div>', agentHtml.indexOf('<div class="cw-message-actions">'));
+    expect(agentHtml).toContain('<div class="cw-row"');
+    expect(agentBubbleEnd).toBeGreaterThan(agentHtml.indexOf('<div class="cw-bubble">'));
+    expect(agentHtml.indexOf('class="cw-message-refs"')).toBeLessThan(agentBubbleEnd);
+    expect(agentHtml.indexOf('class="cw-message-more"')).toBeGreaterThan(agentBubbleEnd);
+
+    const userHtml = u.context.cwBubbleHtml(message({ id: 'u1', role: 'user', text: 'User prompt', referencedMessageIds: ['ref-1'], status: 'failed' }));
+    const userBubbleEnd = userHtml.lastIndexOf('</div>', userHtml.indexOf('<div class="cw-message-actions">'));
+    expect(userHtml).toContain('<div class="cw-row me"');
+    expect(userBubbleEnd).toBeGreaterThan(userHtml.indexOf('<div class="cw-bubble">'));
+    expect(userHtml.indexOf('class="cw-message-refs"')).toBeLessThan(userBubbleEnd);
+    expect(userHtml.indexOf('class="cw-message-more"')).toBeGreaterThan(userBubbleEnd);
+    expect(userHtml.indexOf('<span role="status"')).toBeGreaterThan(userBubbleEnd);
+
+    const standalone = u.context.cwMessageActionsHtml(message({ referencedMessageIds: ['ref-1'] }));
+    expect(standalone).toContain('class="cw-message-refs"');
+  });
+
   it('removes tool metadata and leaked protocol from replies but preserves user text and code examples', () => {
     const u = fixture();
     u.context.cwAva = () => '';

@@ -40,6 +40,20 @@ export const HOME_CSS = String.raw`
   .home-sidebar #cwPageSearch { background:var(--card)!important; border:1px solid var(--border)!important; border-radius:var(--radius-inner, 8px)!important; color:var(--muted); min-height:36px; padding:0 12px; margin-bottom:14px; font-size:12.5px; box-shadow:none; }
   .home-sidebar #cwPageSearch:hover { border-color:var(--border2)!important; color:var(--text); }
   .home-sidebar nav { display:grid; gap:4px; }
+  .home-agent-pill { margin-left:auto; padding:2px 7px; border-radius:var(--radius-full, 9999px); background:var(--hover); color:var(--text); font-size:11px; font-weight:550; max-width:96px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .home-agent-pill:empty { display:none; }
+  .home-groups { width:100%; margin-bottom:18px; }
+  .home-groups-heading { display:flex; align-items:center; justify-content:space-between; gap:6px; padding:0 4px; margin-bottom:6px; }
+  .home-groups-heading h2 { margin:0; min-width:0; flex:1; }
+  .home-sidebar .home-groups-heading #homeGroupsNav { min-height:32px; padding:4px 8px; font-size:12px; font-weight:600; }
+  .home-sidebar .home-groups-heading #homeNewGroup { width:30px; min-height:30px; padding:6px; justify-content:center; flex:none; }
+  .home-group-list { display:grid; gap:3px; }
+  .home-sidebar .home-group-open { gap:8px; padding:7px 8px; min-height:34px; color:var(--text); }
+  .home-group-open.is-active { background:var(--selected); font-weight:600; }
+  .home-group-copy { display:grid; gap:2px; min-width:0; flex:1; }
+  .home-group-copy strong { font-size:12px; font-weight:550; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .home-group-copy small { font-size:10px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .home-group-empty { font-size:11.5px; color:var(--muted); margin:2px 8px 6px; line-height:1.45; }
   .home-sidebar-foot { margin-top:auto; display:grid; gap:4px; padding-top:24px; }
   .home-menu-trigger,.home-nav-backdrop { display:none; }
   .home-composer-wrap { width:min(760px,100%); margin:0; }
@@ -127,6 +141,10 @@ export const HOME_CSS = String.raw`
     .home-sky[data-sidebar-collapsed=true] .home-sidebar > button > span,
     .home-sky[data-sidebar-collapsed=true] .home-sidebar nav button > span,
     .home-sky[data-sidebar-collapsed=true] .home-sidebar-foot button > span,
+    .home-sky[data-sidebar-collapsed=true] #homeSelectedAgentChip,
+    .home-sky[data-sidebar-collapsed=true] #homeGroupsNav > span,
+    .home-sky[data-sidebar-collapsed=true] #homeAgentGroups,
+    .home-sky[data-sidebar-collapsed=true] #homeNewGroup,
     .home-sky[data-sidebar-collapsed=true] #homeProjectsNav > span,
     .home-sky[data-sidebar-collapsed=true] #homeProjectCards,
     .home-sky[data-sidebar-collapsed=true] #homeNewProject,
@@ -201,7 +219,45 @@ export const HOME_CSS = String.raw`
   @media (prefers-reduced-motion: reduce) { .home-character,.home-blob * { animation: none !important; } .home-blob-tongue { transform: scaleY(.05); } }
 `;
 export const HOME_WORKSPACE_JS = PROJECT_PREFERENCES_JS + String.raw`
-  function cwEnterWorkspace(kind,agentId) { cwEnsure().homeAction={kind:kind,agentId:agentId};openCowork(); }
+  function cwEnterWorkspace(kind,agentId,convId,threadId) { cwEnsure().homeAction={kind:kind,agentId:agentId,convId:convId||null,threadId:threadId||null};openCowork(); }
+  function homeSelectedAgent() {
+    var cw=cwEnsure(),agents=cw.agents||[];
+    return agents.find(function(agent){return agent.id===cw.selectedAgentId;})||agents[0]||null;
+  }
+  function homeConnectedGroups(agentId) {
+    var cw=cwEnsure();
+    return (cw.convs||[]).filter(function(conv){
+      return conv&&conv.kind==='group'&&(!agentId||(Array.isArray(conv.memberIds)&&conv.memberIds.indexOf(agentId)>=0));
+    });
+  }
+  function homeRenderSidebarAgentState() {
+    var cw=cwEnsure(),agent=homeSelectedAgent(),selId=agent?agent.id:(cw.selectedAgentId||'');
+    var chip=$('homeSelectedAgentChip');
+    if(chip)chip.textContent=agent?agent.name:'';
+    var nav=$('cwCurrentChat');
+    if(nav&&agent&&typeof cwAva==='function'){var face=nav.querySelector('.cw-chat-face');if(face)face.innerHTML=cwAva(agent);}
+    var list=$('homeAgentGroups');
+    if(!list)return;
+    var groups=homeConnectedGroups(selId);
+    if(!groups.length){
+      list.innerHTML='<p class="home-group-empty">'+(agent?'No groups connected to '+esc(agent.name)+'.':'Select or create an agent to see groups.')+'</p>';
+      return;
+    }
+    var byId=Object.create(null);(cw.agents||[]).forEach(function(item){byId[item.id]=item.name;});
+    list.innerHTML=groups.map(function(conv){
+      var names=(conv.memberIds||[]).map(function(id){return byId[id];}).filter(Boolean).join(', ');
+      var subtitle=names||((conv.memberIds||[]).length+' members');
+      var active=S&&S.active==='cowork'&&cw.active===conv.id;
+      return '<button type="button" class="home-group-open'+(active?' is-active':'')+'" data-home-group="'+esc(conv.id)+'" title="'+esc(conv.title||'Group chat')+'">'+(typeof cwIcon==='function'?cwIcon('users'):icon('users'))+'<span class="home-group-copy"><strong>'+esc(conv.title||'Group chat')+'</strong><small>'+esc(subtitle)+'</small></span></button>';
+    }).join('');
+    list.querySelectorAll('[data-home-group]').forEach(function(btn){
+      btn.onclick=function(){var id=btn.getAttribute('data-home-group');homeCloseNavigation();cwEnterWorkspace('conv',selId,id);};
+    });
+  }
+  function homeRefreshSidebarProjects() {
+    var target=$('homeProjectCards');
+    if(target&&target._managed&&target._sessions)homeRenderProjects(target,target._managed,target._sessions);
+  }
   function homeProjectKey(path) {
     var key=String(path||'').replace(/\\/g,'/').replace(/\/+$/,'');
     return /^[a-z]:\//i.test(key)||key.indexOf('//')===0?key.toLowerCase():key;
@@ -261,7 +317,10 @@ export const HOME_WORKSPACE_JS = PROJECT_PREFERENCES_JS + String.raw`
   }
   function homeRenderProjects(target,managed,sessions) {
     if(!target.isConnected)return;
-    var all=homeBuildProjects(managed,sessions,homeSidebarPath(sessions)),archived=!!S.codeArchiveView;
+    var cwState=cwEnsure(),selAgentId=cwState.selectedAgentId;
+    var selAgent=selAgentId&&(cwState.agents||[]).find(function(agent){return agent.id===selAgentId;});
+    var visibleSessions=selAgentId?sessions.filter(function(run){return !run.coworkTask||run.coworkTask.agentId===selAgentId;}):sessions;
+    var all=homeBuildProjects(managed,visibleSessions,homeSidebarPath(visibleSessions)),archived=!!S.codeArchiveView;
     var visible=all.filter(function(project){return archived?!!(project.preference.archived||project.preference.hidden):!(project.preference.archived||project.preference.hidden);});
     var pinned=visible.filter(function(project){return project.preference.pinned;}),recent=visible.filter(function(project){return !project.preference.pinned;});
     var projects=archived?visible:pinned.concat(recent.slice(0,4));
@@ -271,10 +330,10 @@ export const HOME_WORKSPACE_JS = PROJECT_PREFERENCES_JS + String.raw`
       var chatRows=expanded?project.sessions.slice(0,pref.moreChats?project.sessions.length:6).map(function(run,runIndex){var status=homeRunStatus(run);return '<button type="button" class="home-project-chat'+(S.active===run.runId?' is-active':'')+'" data-home-chat="'+index+':'+runIndex+'" data-home-focus="chat:'+esc(run.runId)+'" aria-current="'+(S.active===run.runId)+'" title="'+esc(run.goal||'Untitled chat')+' · '+esc(status.label)+'"><span class="home-chat-dot '+status.kind+'" aria-hidden="true"></span><span>'+esc(sessionTitle(run.goal)||'Untitled chat')+'</span><small>'+esc(status.label)+'</small></button>';}).join(''):'';
       return '<article class="home-project-group"><div class="home-project'+(current?' is-current':'')+'"><button type="button" class="home-project-expand" data-home-expand="'+index+'" data-home-focus="expand:'+esc(project.path)+'" aria-label="'+(expanded?'Collapse':'Expand')+' chats for '+esc(project.name)+'" aria-expanded="'+expanded+'" aria-controls="'+groupId+'">'+icon(expanded?'chevDown':'chevRight')+'</button><button type="button" class="home-project-open" data-home-project="'+index+'" data-home-focus="select:'+esc(project.path)+'" aria-current="'+current+'" title="'+esc(project.path)+'" aria-label="Select project '+esc(project.name)+'"><span class="home-project-copy"><span class="home-project-title"><strong>'+esc(project.name)+'</strong>'+(pref.pinned?'<span class="home-project-pin" title="Pinned" aria-label="Pinned">'+icon('pin')+'</span>':'')+(current?'<span class="home-project-current" aria-label="Selected"></span>':'')+'</span><span class="home-project-path">'+esc(project.path)+'</span><span class="home-project-badges">'+project.status.map(homeProjectBadge).join('')+'</span></span></button><button type="button" class="home-project-options" data-home-options="'+index+'" data-home-focus="options:'+esc(project.path)+'" aria-label="Actions for '+esc(project.name)+'" title="Project actions">'+icon('more')+'</button></div><div class="home-project-chats" id="'+groupId+'"'+(expanded?'':' hidden')+'>'+chatRows+(expanded&&!project.sessions.length?'<p>No chats yet.</p>':'')+(expanded&&project.sessions.length>6?'<button type="button" class="home-project-more" data-home-more="'+index+'" data-home-focus="more:'+esc(project.path)+'">'+(pref.moreChats?'Show fewer chats':'Show all '+project.sessions.length+' chats')+'</button>':'')+'</div></article>';
     }).join('')+'</div>':'<div class="home-project-empty"><strong>'+(archived?'No archived or hidden projects':'A space for your next idea')+'</strong><p>'+(archived?'Archived projects can be restored here.':'Create a project or open a folder to keep your work and conversations together.')+'</p></div>';
-    var coworkTasks=sessions.filter(function(run){return !!run.coworkTask;}).sort(function(a,b){return homeSessionStamp(b).localeCompare(homeSessionStamp(a));});
+    var coworkTasks=sessions.filter(function(run){return !!run.coworkTask&&(!selAgentId||run.coworkTask.agentId===selAgentId);}).sort(function(a,b){return homeSessionStamp(b).localeCompare(homeSessionStamp(a));});
     if(coworkTasks.length&&!archived){
       function codingRow(run){var status=homeRunStatus(run);return '<button type="button" class="home-project-chat'+(S.active===run.runId?' is-active':'')+'" data-main-coding-task="'+esc(run.runId)+'" title="'+esc(run.goal)+'"><span class="home-chat-dot '+status.kind+'" aria-hidden="true"></span><span>'+esc(sessionTitle(run.goal))+'<small>'+esc(run.coworkTask.agentName)+'</small></span><small>'+esc(status.label)+'</small></button>';}
-      html='<section aria-label="Cowork coding tasks"><h3>Cowork coding</h3>'+coworkTasks.slice(0,8).map(codingRow).join('')+(coworkTasks.length>8?'<details><summary>Older coding tasks</summary>'+coworkTasks.slice(8).map(codingRow).join('')+'</details>':'')+'</section>'+html;
+      html='<section aria-label="Cowork coding tasks"><h3>Cowork coding'+(selAgent?' · '+esc(selAgent.name):'')+'</h3>'+coworkTasks.slice(0,8).map(codingRow).join('')+(coworkTasks.length>8?'<details><summary>Older coding tasks</summary>'+coworkTasks.slice(8).map(codingRow).join('')+'</details>':'')+'</section>'+html;
     }
     target._projects=projects;target._managed=managed;target._sessions=sessions;
     if(target._markup===html)return;target._markup=html;target.innerHTML=html;
@@ -307,7 +366,7 @@ export const HOME_WORKSPACE_JS = PROJECT_PREFERENCES_JS + String.raw`
     modal.querySelector('[data-project-action]').focus();
   }
   function homeNavigationHtml(agent) {
-    return '<button type="button" class="home-menu-trigger" id="homeMenu" aria-label="Open navigation" aria-expanded="false" aria-controls="homeSidebar">'+'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>'+'</button><div class="home-nav-backdrop" id="homeNavBackdrop" aria-hidden="true"></div><aside class="home-sidebar" id="homeSidebar" aria-label="Code navigation"><div class="home-sidebar-brand"><img src="/brand/agent-gitu-mark.svg" alt=""><span>Agent Gitu</span><button type="button" id="homeCollapse" aria-label="Collapse sidebar" aria-expanded="true" aria-controls="homeSidebar" title="Collapse sidebar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg></button></div><button type="button" id="cwPageSearch" aria-label="Search workspace" title="Search workspace">'+cwIcon('search')+'<span>Search workspace</span></button><nav aria-label="Code workspace">'+(S.active!=='home'?'<button type="button" id="homeNewChat">'+icon('pencil')+'<span>New task</span></button>':'')+'<button type="button" id="cwSessionsBtn" aria-label="Sessions" title="Sessions">'+cwIcon('chat')+'<span>Sessions</span></button><button type="button" id="homeAgentsBtn" aria-label="Agents" title="Switch agents (Grid)">'+cwIcon('users')+'<span>Agents</span></button><button type="button" id="homeConnections" aria-label="Connections" title="Connections">'+cwIcon('link')+'<span>Connections</span></button></nav><div class="home-sidebar-scroll"><section class="home-projects" aria-labelledby="homeProjectsTitle"><div class="home-project-heading"><h2 id="homeProjectsTitle"><button type="button" id="homeProjectsNav" aria-label="Projects" title="Projects">'+cwIcon('folder')+'<span>Projects</span></button></h2><button type="button" id="homeNewProject" aria-label="New project" title="New project">'+cwIcon('plus')+'</button></div><div id="homeProjectCards"><p class="home-project-summary" role="status">Loading projects…</p></div><div class="home-projects-footer"><button type="button" id="homeViewProjects">View all projects</button><button type="button" id="homeArchivedProjects" aria-pressed="false">Archived &amp; hidden</button></div></section></div><div class="home-sidebar-foot"><button type="button" id="cwInfoBtn" aria-label="Profile" title="Profile">'+cwIcon('user')+'<span>Profile</span></button><button type="button" id="homeSettings" aria-label="Settings" title="Settings">'+icon('gear')+'<span>Settings</span></button></div></aside><div class="cw-page-nav"><nav class="cw-top-nav" aria-label="App modes"><button type="button" id="cwHomeBtn" aria-pressed="true">'+cwIcon('home')+'<span>Code</span></button><button type="button" id="cwCurrentChat" aria-pressed="false"><span class="cw-chat-face" aria-hidden="true">'+(agent?cwAva(agent):'<span class="cw-ava"><img src="/characters/blue.png?v=opendots1" alt="" draggable="false"></span>')+'</span><span>Cowork</span></button></nav></div>';
+    return '<button type="button" class="home-menu-trigger" id="homeMenu" aria-label="Open navigation" aria-expanded="false" aria-controls="homeSidebar">'+'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>'+'</button><div class="home-nav-backdrop" id="homeNavBackdrop" aria-hidden="true"></div><aside class="home-sidebar" id="homeSidebar" aria-label="Code navigation"><div class="home-sidebar-brand"><img src="/brand/agent-gitu-mark.svg" alt=""><span>Agent Gitu</span><button type="button" id="homeCollapse" aria-label="Collapse sidebar" aria-expanded="true" aria-controls="homeSidebar" title="Collapse sidebar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg></button></div><button type="button" id="cwPageSearch" aria-label="Search workspace" title="Search workspace">'+cwIcon('search')+'<span>Search workspace</span></button><nav aria-label="Code workspace">'+(S.active!=='home'?'<button type="button" id="homeNewChat">'+icon('pencil')+'<span>New task</span></button>':'')+'<button type="button" id="cwSessionsBtn" aria-label="Sessions" title="Sessions">'+cwIcon('chat')+'<span>Sessions</span></button><button type="button" id="homeAgentsBtn" aria-label="Agents" title="Switch agents (Grid)">'+cwIcon('users')+'<span>Agents</span><span class="home-agent-pill" id="homeSelectedAgentChip">'+(agent?esc(agent.name):'')+'</span></button><button type="button" id="homeGroupsBtn" aria-label="Groups" title="Connected groups">'+cwIcon('users')+'<span>Groups</span></button><button type="button" id="homeConnections" aria-label="Connections" title="Connections">'+cwIcon('link')+'<span>Connections</span></button></nav><div class="home-sidebar-scroll"><section class="home-groups" id="homeAgentGroupsSection" aria-labelledby="homeGroupsTitle"><div class="home-groups-heading"><h2 id="homeGroupsTitle"><button type="button" id="homeGroupsNav" aria-label="Groups" title="Connected groups">'+cwIcon('users')+'<span>Groups</span></button></h2><button type="button" id="homeNewGroup" aria-label="New group" title="New group">'+cwIcon('plus')+'</button></div><div class="home-group-list" id="homeAgentGroups"><p class="home-group-empty">Loading groups…</p></div></section><section class="home-projects" aria-labelledby="homeProjectsTitle"><div class="home-project-heading"><h2 id="homeProjectsTitle"><button type="button" id="homeProjectsNav" aria-label="Projects" title="Projects">'+cwIcon('folder')+'<span>Projects</span></button></h2><button type="button" id="homeNewProject" aria-label="New project" title="New project">'+cwIcon('plus')+'</button></div><div id="homeProjectCards"><p class="home-project-summary" role="status">Loading projects…</p></div><div class="home-projects-footer"><button type="button" id="homeViewProjects">View all projects</button><button type="button" id="homeArchivedProjects" aria-pressed="false">Archived &amp; hidden</button></div></section></div><div class="home-sidebar-foot"><button type="button" id="cwInfoBtn" aria-label="Profile" title="Profile">'+cwIcon('user')+'<span>Profile</span></button><button type="button" id="homeSettings" aria-label="Settings" title="Settings">'+icon('gear')+'<span>Settings</span></button></div></aside><div class="cw-page-nav"><nav class="cw-top-nav" aria-label="App modes"><button type="button" id="cwHomeBtn" aria-pressed="true">'+cwIcon('home')+'<span>Code</span></button><button type="button" id="cwCurrentChat" aria-pressed="false"><span class="cw-chat-face" aria-hidden="true">'+(agent?cwAva(agent):'<span class="cw-ava"><img src="/characters/blue.png?v=opendots1" alt="" draggable="false"></span>')+'</span><span>Cowork</span></button></nav></div>';
   }
   function homeCloseNavigation() {
     var menu=$('homeMenu');if(!menu)return;var root=menu.closest('.home-sky');if(root)root.dataset.navOpen='false';menu.setAttribute('aria-expanded','false');menu.setAttribute('aria-label','Open navigation');
@@ -326,6 +385,9 @@ export const HOME_WORKSPACE_JS = PROJECT_PREFERENCES_JS + String.raw`
     $('homeProjectsNav').onclick=function(){close();wsOpen('main','Projects');};
     $('cwSessionsBtn').onclick=function(){close();wsOpen('main','Sessions');};
     if($('homeAgentsBtn'))$('homeAgentsBtn').onclick=function(){homeCaptureDrafts();close();if(typeof cwOpenAgentSwitcherModal==='function')cwOpenAgentSwitcherModal();else wsOpen('cowork','Agents');};
+    if($('homeGroupsBtn'))$('homeGroupsBtn').onclick=function(){close();wsOpen('main','Groups');};
+    if($('homeGroupsNav'))$('homeGroupsNav').onclick=function(){close();wsOpen('main','Groups');};
+    if($('homeNewGroup'))$('homeNewGroup').onclick=function(){homeCaptureDrafts();close();if(typeof cwGroupModal==='function')cwGroupModal(cwEnsure().selectedAgentId);else cwEnterWorkspace('chat',cwEnsure().selectedAgentId);};
     if($('homeConnections'))$('homeConnections').onclick=function(){homeCaptureDrafts();close();if(typeof cwOpenConnections==='function')cwOpenConnections();else openSettings('connections');};
     $('homeViewProjects').onclick=function(){close();wsOpen('main','Projects');};
     $('homeNewProject').onclick=function(){close();newProject();};
@@ -340,6 +402,7 @@ export const HOME_WORKSPACE_JS = PROJECT_PREFERENCES_JS + String.raw`
     $('cwPageSearch').onclick=function(){close();wsOpen('main');};
     var timer=setInterval(function(){if(!root.isConnected){clearInterval(timer);return;}if(!document.hidden)homeLoadProjects();},5000);
 
+    homeRenderSidebarAgentState();
   }
   async function homeLoadProjects() {
     var target=$('homeProjectCards');if(!target||target._loading)return;target._loading=true;
@@ -356,10 +419,19 @@ export const HOME_WORKSPACE_JS = PROJECT_PREFERENCES_JS + String.raw`
   }
   async function homeLoadProfile() {
     var nav=$('cwCurrentChat');if(!nav)return;
-    try {var data=await api('/api/cowork/agents');if(!nav.isConnected)return;
+    try {
+      var results=await Promise.allSettled([api('/api/cowork/agents'),api('/api/cowork/conversations')]);
+      if(!nav.isConnected)return;
+      if(results[0].status!=='fulfilled')return;
+      var data=results[0].value||{};
       var cw=cwEnsure();cw.agents=data.agents||[];cw.skills=data.availableSkills||[];
-      if(!cw.agents.some(function(agent){return agent.id===cw.selectedAgentId;}))cw.selectedAgentId=cw.agents[0]&&cw.agents[0].id;
-      var face=nav.querySelector('.cw-chat-face'),agent=cwProfileAgent()||cw.agents[0];if(face&&agent)face.innerHTML=cwAva(agent);
+      if(results[1].status==='fulfilled'&&results[1].value&&Array.isArray(results[1].value.conversations))cw.convs=results[1].value.conversations;
+      if(!cw.agents.some(function(agent){return agent.id===cw.selectedAgentId;})){
+        cw.selectedAgentId=cw.agents[0]&&cw.agents[0].id;
+        if(typeof cwSaveSelectedAgentId==='function')cwSaveSelectedAgentId(cw.selectedAgentId);
+      }
+      homeRenderSidebarAgentState();
+      homeRefreshSidebarProjects();
     }catch(e){/* Profile access can retry when opened; it does not block projects. */}
   }
 `;

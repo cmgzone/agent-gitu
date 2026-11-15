@@ -153,6 +153,7 @@ export interface GituHostBridge {
   api<T = unknown>(url: string, opts?: RequestInit): Promise<T>;
   toast(message: string, isError?: boolean): void;
   persist(): void;
+  selectAgent?(agentId: string): void;
   openDm(agentId: string): void;
   openConv(convId: string): void;
   renderRail(): void;

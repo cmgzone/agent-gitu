@@ -15,6 +15,7 @@ import {
   fetchModelCatalog,
   modelCapabilityTier,
   modelMetadataFor,
+  pickLiveDefaultModel,
   providerKey,
   resolveLlm,
   type ProviderSpec,
@@ -166,21 +167,30 @@ async function listProviderModels(spec: ProviderSpec, pick: boolean): Promise<vo
   const keyInfo = providerKey(spec);
   let ids: string[] | undefined;
   let source = 'built-in list (set a key to fetch the live list)';
-  if (keyInfo) {
-    const live = await fetchLiveModels({ baseUrl: spec.baseUrl, apiKey: keyInfo.key });
+  const catalogTarget = spec.modelsUrl ?? spec.baseUrl;
+  if (keyInfo || spec.publicModels) {
+    const live = await fetchLiveModels({
+      baseUrl: spec.baseUrl,
+      ...(spec.modelsUrl ? { modelsUrl: spec.modelsUrl } : {}),
+      apiKey: keyInfo?.key ?? '',
+    });
     if (live && live.length > 0) {
       ids = live.map((m) => m.id);
-      source = `live from ${spec.baseUrl} (${keyInfo.envVar})`;
+      source = `live from ${catalogTarget}${keyInfo ? ` (${keyInfo.envVar})` : ' (public catalog)'}`;
     } else {
-      source = `built-in list (live fetch from ${spec.baseUrl} failed)`;
+      source = `built-in list (live fetch from ${catalogTarget} failed)`;
     }
   }
+  const effectiveDefault =
+    spec.authoritativeLiveModels && ids && ids.length > 0
+      ? pickLiveDefaultModel(spec, ids.map((id) => ({ id })))
+      : spec.defaultModel;
   if (!ids) ids = [...spec.models];
 
   console.log(`\n${spec.id} — ${spec.label}`);
   console.log(`source: ${source}`);
   ids.forEach((id, i) => {
-    const marker = id === spec.defaultModel ? '  (default)' : '';
+    const marker = id === effectiveDefault ? '  (default)' : '';
     console.log(`  ${String(i + 1).padStart(3)}. ${id}${marker}`);
   });
 

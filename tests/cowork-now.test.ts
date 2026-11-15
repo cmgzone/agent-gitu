@@ -2,7 +2,7 @@ import { createContext, Script } from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
 import { COWORK_JS } from '../src/server/ui-cowork.js';
 import { COWORK_NOW_JS } from '../src/server/ui-cowork-now.js';
-import { COWORK_WORKBENCH_JS } from '../src/server/ui-cowork-workbench.js';
+import { COWORK_WORKBENCH_CSS, COWORK_WORKBENCH_JS } from '../src/server/ui-cowork-workbench.js';
 
 function overview() {
   const conv = { id: 'chat', title: 'Gitu', schedule: { enabled: true, every: '1d' } };
@@ -158,6 +158,26 @@ function coworkProjectWorkbench() {
 }
 
 describe('In-Cowork project & behind-the-scenes inspector', () => {
+  it('places #cwProjectBtn and #cwProjectMenu outside .cw-composer in #cwComposerTopline', () => {
+    const toplineIdx = COWORK_JS.indexOf('<div class="cw-composer-topline" id="cwComposerTopline">');
+    const projBtnIdx = COWORK_JS.indexOf('id="cwProjectBtn"');
+    const projMenuIdx = COWORK_JS.indexOf('id="cwProjectMenu"');
+    const composerIdx = COWORK_JS.indexOf('<div class="cw-composer">');
+
+    expect(toplineIdx).toBeGreaterThan(-1);
+    expect(projBtnIdx).toBeGreaterThan(toplineIdx);
+    expect(projMenuIdx).toBeGreaterThan(projBtnIdx);
+    expect(composerIdx).toBeGreaterThan(projMenuIdx);
+
+    const composerSegment = COWORK_JS.slice(composerIdx, composerIdx + 700);
+    expect(composerSegment).not.toContain('cwProjectBtn');
+    expect(composerSegment).not.toContain('cwProjectMenu');
+
+    expect(COWORK_WORKBENCH_CSS).toContain('.cw .cw-composer-wrap > .cw-composer-topline');
+    expect(COWORK_WORKBENCH_CSS).toContain('.cw-project-menu button.cw-project-item');
+    expect(COWORK_WORKBENCH_CSS).toContain('button.cw-project-item[data-cwproj-action]');
+  });
+
   it('syncs the active project in Cowork without leaving Cowork and renders the composer pill', () => {
     const u = coworkProjectWorkbench();
     u.context.cwSyncActiveProject('/workspace/demo-app', 'demo-app');

@@ -211,4 +211,178 @@ describe('In-Cowork project & behind-the-scenes inspector', () => {
       body: JSON.stringify({ text: 'Focus on unit tests next', delivery: 'steer' }),
     });
   });
+
+  it('streams conversational coding updates, diffs, tool output, structured reports, and closes SSE on Close', async () => {
+    const cwState: Record<string, any> = {
+      active: 'chat',
+      convs: [],
+      msgs: [],
+      codingTasks: [
+        { runId: 'run-99', status: 'running', goal: 'Stream <script>x</script> auth changes', project: 'demo-app' },
+        { runId: 'run-98', status: 'completed', goal: 'Previous migration', project: 'demo-app' },
+      ],
+    };
+    const streams: any[] = [];
+    class MockEventSource {
+      url: string;
+      onmessage: ((e: any) => void) | null = null;
+      onerror: (() => void) | null = null;
+      listeners: Record<string, Array<() => void>> = {};
+      closed = false;
+      constructor(url: string) {
+        this.url = url;
+        streams.push(this);
+      }
+      addEventListener(type: string, fn: () => void) {
+        (this.listeners[type] ||= []).push(fn);
+      }
+      close() {
+        this.closed = true;
+      }
+      emit(payload: unknown) {
+        this.onmessage?.({ data: JSON.stringify(payload) });
+      }
+    }
+
+    const railBtnClicks: Array<() => void> = [];
+    const elements: Record<string, any> = {
+      cwProjectBtn: { title: '', innerHTML: '' },
+      cwProjectMenu: { innerHTML: '', querySelectorAll: () => [], hidePopover: vi.fn() },
+      cwWorkbench: { hidden: true, innerHTML: '' },
+      cwWbInstruction: { value: '', placeholder: '', onkeydown: null },
+      cwWbAsk: { textContent: 'Ask', onclick: null },
+      cwWbClose: { onclick: null },
+      cwWbMeta: { innerHTML: '' },
+      cwWbFeed: {
+        innerHTML: '',
+        scrollTop: 0,
+        scrollHeight: 200,
+        clientHeight: 200,
+        querySelectorAll: () => [],
+      },
+      cwWbStreamTxt: { innerHTML: '' },
+      cwRailCoding: {
+        innerHTML: '',
+        querySelectorAll: () =>
+          cwState.codingTasks.map((t: any) => ({
+            getAttribute: (k: string) => (k === 'data-main-coding-task' ? t.runId : ''),
+            set onclick(fn: (e?: any) => void) {
+              railBtnClicks.push(() => fn({}));
+            },
+          })),
+      },
+    };
+
+    const api = vi.fn(async (url: string) => {
+      if (url === '/api/runs/run-99') {
+        return {
+          runId: 'run-99',
+          status: 'running',
+          project: 'demo-app',
+          goal: 'Stream <script>x</script> auth changes',
+          branch: 'feat/stream',
+          mode: 'build',
+          files: [],
+        };
+      }
+      return { ok: true };
+    });
+
+    const esc = (v: unknown) =>
+      String(v ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;');
+
+    const context = createContext({
+      S: { active: 'cowork', settings: { projectPath: '' }, cw: cwState },
+      cwEnsure: () => cwState,
+      cwActiveConv: () => ({ id: 'chat', kind: 'dm', memberIds: ['gitu'], title: 'Gitu' }),
+      $: (id: string) => elements[id] || null,
+      esc,
+      cwIcon: (name: string) => `[${name}]`,
+      toast: vi.fn(),
+      updateProjChip: vi.fn(),
+      api,
+      EventSource: MockEventSource,
+      openRun: vi.fn(),
+    });
+    new Script(COWORK_WORKBENCH_JS).runInContext(context);
+
+    expect(COWORK_JS).toContain('<div class="cw-sec">CODING</div>');
+    expect(COWORK_JS).toContain('<div id="cwRailCoding"></div>');
+    expect(COWORK_WORKBENCH_CSS).toContain('.cw-wb-feed');
+    expect(COWORK_WORKBENCH_CSS).toContain('.cw-rail-coding-btn');
+
+    context.cwRenderRailCoding();
+    expect(elements.cwRailCoding.innerHTML).toContain('data-main-coding-task="run-99"');
+    expect(elements.cwRailCoding.innerHTML).toContain('Coding live');
+    expect(elements.cwRailCoding.innerHTML).toContain('&lt;script&gt;x&lt;/script&gt;');
+    expect(elements.cwRailCoding.innerHTML).not.toContain('<script>');
+    expect(railBtnClicks).toHaveLength(2);
+
+    await context.cwInspectCodingTask('run-99');
+    expect(streams).toHaveLength(1);
+    expect(streams[0].url).toBe('/api/runs/run-99/stream');
+    expect(elements.cwWorkbench.hidden).toBe(false);
+    expect(elements.cwWorkbench.innerHTML).toContain('Coding live');
+    expect(elements.cwWorkbench.innerHTML).toContain('feat/stream');
+
+    streams[0].emit({ i: 1, text: 'tdelta Checking `src/auth.ts` ', replay: false });
+    expect(elements.cwWbMeta.innerHTML).toContain('Coding live');
+    expect(elements.cwWbMeta.innerHTML).toContain('feat/stream');
+    expect(elements.cwWbFeed.innerHTML).toContain('Agent Gitu · writing');
+    expect(elements.cwWbFeed.innerHTML).toContain('<code>src/auth.ts</code>');
+
+    streams[0].emit({ i: 2, text: 'tdelta now...' });
+    expect(elements.cwWbStreamTxt.innerHTML).toContain('Checking <code>src/auth.ts</code> now...');
+
+    streams[0].emit({ i: 3, text: 'say I found the token check bug and am fixing it.' });
+    expect(elements.cwWbFeed.innerHTML).toContain('I found the token check bug and am fixing it.');
+
+    streams[0].emit({ i: 4, text: 'run write src/auth.ts — Guard missing token' });
+    streams[0].emit({
+      typed: {
+        type: 'file_changed',
+        path: 'src/auth.ts',
+        linesAdded: 8,
+        linesRemoved: 2,
+        diff: [
+          { kind: 'remove', oldLine: 10, text: 'return true;' },
+          { kind: 'add', newLine: 10, text: 'return Boolean(token);' },
+        ],
+      },
+    });
+    streams[0].emit({ i: 5, text: 'ok write src/auth.ts (18ms)' });
+    expect(elements.cwWbFeed.innerHTML).toContain('Edited src/auth.ts');
+    expect(elements.cwWbFeed.innerHTML).toContain('+8');
+    expect(elements.cwWbFeed.innerHTML).toContain('-2');
+    expect(elements.cwWbFeed.innerHTML).toContain('return Boolean(token);');
+
+    streams[0].emit({ i: 6, text: 'run $ npm test — Verify auth guard' });
+    streams[0].emit({ i: 7, text: 'ok $ npm test (420ms)' });
+    streams[0].emit({ i: 8, text: 'out 12 tests passed' });
+    expect(elements.cwWbFeed.innerHTML).toContain('Ran npm test');
+    expect(elements.cwWbFeed.innerHTML).toContain('12 tests passed');
+
+    // Verify structured CompletionReport renders cleanly without [object Object]
+    streams[0].emit({ typed: { type: 'reasoning', text: 'Verified null token case.' } });
+    expect(elements.cwWbFeed.innerHTML).toContain('Thought process');
+    const activeItem = cwState.workbench.items[cwState.workbench.activeIndex];
+    activeItem.report = {
+      summary: 'Added token presence validation in auth guard.',
+      verification: ['npm test (12 passed)'],
+      filesChanged: ['src/auth.ts'],
+    };
+    activeItem.status = 'completed';
+    context.cwRefreshCodingView(activeItem, false);
+    expect(elements.cwWbFeed.innerHTML).toContain('Added token presence validation in auth guard.');
+    expect(elements.cwWbFeed.innerHTML).toContain('npm test (12 passed)');
+    expect(elements.cwWbFeed.innerHTML).not.toContain('[object Object]');
+
+    elements.cwWbClose.onclick?.();
+    expect(elements.cwWorkbench.hidden).toBe(true);
+    expect(streams[0].closed).toBe(true);
+  });
 });

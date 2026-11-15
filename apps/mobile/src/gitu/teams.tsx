@@ -1,6 +1,6 @@
 import { ArrowUp, ChevronLeft, MessageCircle, Plus, RefreshCw, Square, Users } from 'lucide-react-native';
 import { useCallback, useRef, useState } from 'react';
-import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Image, KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { Button, Card, CheckRow, colors, ErrorNotice, Field, IconButton, s, Sheet } from '../ui';
 import type { GituApi } from './client';
 import { usePolling } from './hooks';
@@ -353,14 +353,20 @@ function TeamChat({ api, conversation, roster, back }: { api: GituApi; conversat
               Live update{view.queued ? ` · ${view.queued} queued` : ''}
             </Text>
             {view.progresses.length ? (
-              view.progresses.map((progress, index) => (
-                <View key={progress.agentId || index} style={{ gap: 2 }}>
-                  <Text style={s.small}>{progress.agentName || view.working || 'Teammate'}</Text>
-                  <Text selectable style={s.text}>
-                    {describeMobileTeamProgress(progress)}
-                  </Text>
-                </View>
-              ))
+              view.progresses.map((progress, index) => {
+                const iconUri = mobileProgressFaviconUrl(progress);
+                return (
+                  <View key={progress.agentId || index} style={{ gap: 2 }}>
+                    <Text style={s.small}>{progress.agentName || view.working || 'Teammate'}</Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      {iconUri ? <MobileFaviconBadge uri={iconUri} /> : null}
+                      <Text selectable style={[s.text, { flex: 1 }]}>
+                        {describeMobileTeamProgress(progress)}
+                      </Text>
+                    </View>
+                  </View>
+                );
+              })
             ) : (
               <Text style={s.muted}>{view.working ? `${view.working} is working on your request…` : 'Working on your request…'}</Text>
             )}
@@ -488,6 +494,85 @@ function TeamRequestCard({
   );
 }
 
+const MOBILE_SERVICE_BRANDS: Record<string, { name: string; domain?: string }> = {
+  gmail: { name: 'Gmail', domain: 'gmail.com' },
+  googlemail: { name: 'Gmail', domain: 'gmail.com' },
+  mail: { name: 'Mail' },
+  github: { name: 'GitHub', domain: 'github.com' },
+  gitlab: { name: 'GitLab', domain: 'gitlab.com' },
+  googlecalendar: { name: 'Google Calendar', domain: 'calendar.google.com' },
+  googledrive: { name: 'Google Drive', domain: 'drive.google.com' },
+  googledocs: { name: 'Google Docs', domain: 'docs.google.com' },
+  googlesheets: { name: 'Google Sheets', domain: 'sheets.google.com' },
+  slack: { name: 'Slack', domain: 'slack.com' },
+  notion: { name: 'Notion', domain: 'notion.so' },
+  linear: { name: 'Linear', domain: 'linear.app' },
+  jira: { name: 'Jira', domain: 'atlassian.com' },
+  figma: { name: 'Figma', domain: 'figma.com' },
+  stripe: { name: 'Stripe', domain: 'stripe.com' },
+  shopify: { name: 'Shopify', domain: 'shopify.com' },
+  hubspot: { name: 'HubSpot', domain: 'hubspot.com' },
+  outlook: { name: 'Outlook', domain: 'outlook.com' },
+  dropbox: { name: 'Dropbox', domain: 'dropbox.com' },
+  whatsapp: { name: 'WhatsApp', domain: 'whatsapp.com' },
+  zoom: { name: 'Zoom', domain: 'zoom.us' },
+};
+
+function mobilePrettyService(raw: string): string {
+  const key = raw.trim().toLowerCase().replace(/[\s_-]+/g, '');
+  return MOBILE_SERVICE_BRANDS[key]?.name || raw.replace(/[_-]+/g, ' ').replace(/\b[a-z]/g, (c) => c.toUpperCase());
+}
+
+function mobilePrettyAction(rawOp: string, rawSvc: string): string {
+  let op = rawOp.trim();
+  if (!op) return '';
+  if (op.startsWith('mcp:')) {
+    const parts = op.split(':');
+    op = parts.slice(2).join(' ') || parts[parts.length - 1] || op;
+  }
+  const lowSvc = rawSvc.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (lowSvc && op.toLowerCase().replace(/[^a-z0-9]/g, '').startsWith(lowSvc) && op.length > lowSvc.length) {
+    const escaped = rawSvc.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/[\s_-]+/g, '[_:\\s-]*');
+    op = op.replace(new RegExp(`^${escaped}[_:\\s-]*`, 'i'), '') || op;
+  }
+  const words = op.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1).toLowerCase() : '';
+}
+
+function mobileProgressFaviconUrl(progress: {
+  text?: string;
+  webUrl?: unknown;
+  appService?: unknown;
+  mcpServer?: unknown;
+}): string | undefined {
+  const rawBrand = typeof progress.appService === 'string' && progress.appService
+    ? progress.appService
+    : typeof progress.mcpServer === 'string'
+      ? progress.mcpServer
+      : '';
+  const key = rawBrand.trim().toLowerCase().replace(/-?mcp$|-server$/g, '').replace(/[\s_-]+/g, '');
+  let domain = MOBILE_SERVICE_BRANDS[key]?.domain;
+  if (!domain && typeof progress.webUrl === 'string') {
+    const m = /^https?:\/\/([^/?#]+)/i.exec(progress.webUrl);
+    if (m?.[1]) domain = m[1].replace(/:\d+$/, '').toLowerCase();
+  }
+  return domain && /^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain)
+    ? `https://icons.duckduckgo.com/ip3/${domain}.ico`
+    : undefined;
+}
+
+function MobileFaviconBadge({ uri }: { uri: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) return null;
+  return (
+    <Image
+      source={{ uri }}
+      onError={() => setFailed(true)}
+      style={{ width: 14, height: 14, borderRadius: 3 }}
+    />
+  );
+}
+
 function describeMobileTeamProgress(progress: {
   text?: string;
   tool?: unknown;
@@ -505,8 +590,14 @@ function describeMobileTeamProgress(progress: {
   const tool = typeof progress.tool === 'string' ? progress.tool : '';
   if (tool) {
     if (progress.toolOk === false) return safeDetail ? `Step failed: ${safeDetail}` : 'A step failed';
-    if (typeof progress.appService === 'string' && progress.appService) return `Using ${progress.appService}…`;
-    if (typeof progress.mcpServer === 'string' && progress.mcpServer) return `Using ${progress.mcpServer}…`;
+    if (typeof progress.appService === 'string' && progress.appService) {
+      const action = safeDetail.startsWith('app ') ? mobilePrettyAction(safeDetail.replace(/^app\s+[^\s·]+\s*·?\s*/, ''), progress.appService) : '';
+      return `Using ${mobilePrettyService(progress.appService)}${action ? ` (${action})` : ''}…`;
+    }
+    if (typeof progress.mcpServer === 'string' && progress.mcpServer) {
+      const action = safeDetail.startsWith('mcp ') ? mobilePrettyAction(safeDetail.slice(4), progress.mcpServer) : '';
+      return `Using ${mobilePrettyService(progress.mcpServer)}${action ? ` (${action})` : ''}…`;
+    }
     if (tool === 'read_file' && safeDetail.startsWith('read ')) return `Reading ${safeDetail.slice(5)}…`;
     if (tool === 'write_file' && safeDetail.startsWith('write ')) return `Writing ${safeDetail.slice(6)}…`;
     if (tool === 'apply_edit' && safeDetail.startsWith('edit ')) return `Editing ${safeDetail.slice(5)}…`;

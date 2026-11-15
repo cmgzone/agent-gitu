@@ -145,6 +145,127 @@ export const COWORK_WORKBENCH_CSS = String.raw`
       box-shadow: var(--shadow); margin-left: 10px; overflow: hidden; background: var(--card);
     }
   }
+  .cw-rail-coding { display: flex; flex-direction: column; gap: 4px; padding: 0 6px 6px; }
+  .cw-rail-coding-empty { font-size: 11.5px; color: var(--muted); padding: 4px 10px 8px; }
+  .cw-rail-coding-btn {
+    width: 100%; display: flex; align-items: flex-start; gap: 8px;
+    padding: 8px 10px; border: 1px solid transparent; border-radius: 12px; background: transparent;
+    color: var(--text); font-size: 12px; text-align: left; cursor: pointer;
+    transition: background .15s ease, border-color .15s ease;
+  }
+  .cw-rail-coding-btn:hover { background: var(--hover); }
+  .cw-rail-coding-btn.active { background: var(--accent-soft); border-color: var(--border-strong); color: var(--accent); }
+  .cw-rail-coding-dot {
+    width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; margin-top: 4px;
+    background: var(--muted);
+  }
+  .cw-rail-coding-dot.is-live { background: #16a34a; box-shadow: 0 0 0 3px rgba(22,163,74,.2); animation: cwWbPulse 1.6s ease-in-out infinite; }
+  .cw-rail-coding-dot.is-warn { background: #d97706; box-shadow: 0 0 0 3px rgba(217,119,6,.2); }
+  .cw-rail-coding-dot.is-done { background: #16a34a; opacity: .78; }
+  .cw-rail-coding-dot.is-fail { background: #dc2626; }
+  .cw-rail-coding-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .cw-rail-coding-goal { font-weight: 600; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cw-rail-coding-meta { font-size: 10.5px; color: var(--muted); display: flex; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cw-wb-code-meta {
+    display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px;
+    padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--card); font-size: 11.5px;
+  }
+  .cw-wb-meta-left, .cw-wb-meta-right { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
+  .cw-wb-status {
+    display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px;
+    font-weight: 600; font-size: 11px; background: var(--card2); border: 1px solid var(--border); color: var(--text);
+  }
+  .cw-wb-status::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+  .cw-wb-status.is-live { background: rgba(22,163,74,.12); border-color: rgba(22,163,74,.32); color: #15803d; }
+  .cw-wb-status.is-live::before { background: #16a34a; animation: cwWbPulse 1.5s ease-in-out infinite; }
+  .cw-wb-status.is-warn { background: rgba(217,119,6,.12); border-color: rgba(217,119,6,.35); color: #b45309; }
+  .cw-wb-status.is-warn::before { background: #d97706; }
+  .cw-wb-status.is-done { background: rgba(22,163,74,.1); border-color: rgba(22,163,74,.25); color: #15803d; }
+  .cw-wb-status.is-done::before { background: #16a34a; }
+  .cw-wb-status.is-fail { background: rgba(220,38,38,.12); border-color: rgba(220,38,38,.32); color: #b91c1c; }
+  .cw-wb-status.is-fail::before { background: #dc2626; }
+  .cw-wb-pill {
+    display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px;
+    background: var(--card2); border: 1px solid var(--border); color: var(--muted); font-size: 11px;
+    max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .cw-workbench-body.is-coding { padding: 12px 14px; gap: 10px; background: var(--bg); }
+  .cw-wb-feed { display: flex; flex-direction: column; gap: 10px; flex: 1; min-height: 0; }
+  .cw-wb-msg {
+    display: flex; flex-direction: column; gap: 5px; padding: 10px 12px; border-radius: 14px;
+    border: 1px solid var(--border); background: var(--card); font-size: 12.5px; line-height: 1.55;
+    box-shadow: 0 1px 2px rgba(0,0,0,.04); overflow-wrap: anywhere;
+  }
+  .cw-wb-msg.is-user {
+    align-self: flex-end; max-width: 90%; background: var(--accent-soft);
+    border-color: var(--border-strong); border-bottom-right-radius: 4px;
+  }
+  .cw-wb-msg.is-agent { border-bottom-left-radius: 4px; }
+  .cw-wb-msg.is-streaming { border-color: rgba(22,163,74,.38); box-shadow: 0 0 0 2px rgba(22,163,74,.08); }
+  .cw-wb-msg-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; font-weight: 700; color: var(--muted); }
+  .cw-wb-msg-body code { font-family: var(--mono); font-size: 11.5px; padding: 1px 5px; border-radius: 5px; background: var(--card2); border: 1px solid var(--border); }
+  .cw-wb-msg-body pre { margin: 6px 0 2px; padding: 8px 10px; border-radius: 9px; background: var(--bg); border: 1px solid var(--border); font: 11.5px/1.5 var(--mono); overflow-x: auto; white-space: pre-wrap; }
+  .cw-wb-caret { display: inline-block; width: 7px; height: 13px; margin-left: 3px; vertical-align: text-bottom; border-radius: 2px; background: var(--accent); animation: cwWbBlink 1s steps(2, start) infinite; }
+  .cw-wb-think {
+    border: 1px dashed var(--border2); border-radius: 12px; background: var(--card);
+    padding: 7px 10px; font-size: 12px; color: var(--muted);
+  }
+  .cw-wb-think summary { cursor: pointer; font-weight: 600; color: var(--text); font-size: 11.5px; }
+  .cw-wb-think pre { margin: 6px 0 0; font: 11.5px/1.5 var(--mono); white-space: pre-wrap; max-height: 180px; overflow-y: auto; }
+  .cw-wb-step {
+    border: 1px solid var(--border); border-radius: 12px; background: var(--card);
+    padding: 8px 10px; font-size: 12px; display: flex; flex-direction: column; gap: 5px;
+  }
+  .cw-wb-step.is-running { border-color: rgba(22,163,74,.35); }
+  .cw-wb-step.is-error { border-color: rgba(220,38,38,.35); }
+  .cw-wb-step-row { display: flex; align-items: center; gap: 7px; min-width: 0; }
+  .cw-wb-step-ico {
+    width: 20px; height: 20px; border-radius: 6px; flex: 0 0 auto;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: var(--card2); border: 1px solid var(--border); font: 600 11px/1 var(--mono); color: var(--text);
+  }
+  .cw-wb-step-title { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cw-wb-step-why { font-size: 11.5px; color: var(--muted); padding-left: 27px; overflow-wrap: anywhere; }
+  .cw-wb-step-state { font-size: 10.5px; font-weight: 600; padding: 2px 7px; border-radius: 999px; background: var(--card2); color: var(--muted); flex: 0 0 auto; }
+  .cw-wb-step.is-running .cw-wb-step-state { background: rgba(22,163,74,.14); color: #15803d; }
+  .cw-wb-step.is-done .cw-wb-step-state { color: #15803d; }
+  .cw-wb-step.is-error .cw-wb-step-state { background: rgba(220,38,38,.12); color: #b91c1c; }
+  .cw-wb-diffstat { display: inline-flex; gap: 4px; font: 600 11px/1 var(--mono); flex: 0 0 auto; }
+  .cw-wb-diffstat .add { color: #16a34a; }
+  .cw-wb-diffstat .del { color: #dc2626; }
+  .cw-wb-step-details { padding-left: 27px; font-size: 11.5px; }
+  .cw-wb-step-details summary { cursor: pointer; color: var(--muted); font-size: 11px; }
+  .cw-wb-step-pre { margin: 5px 0 0; padding: 7px 9px; border-radius: 8px; background: var(--bg); border: 1px solid var(--border); font: 11px/1.45 var(--mono); white-space: pre-wrap; max-height: 170px; overflow: auto; }
+  .cw-wb-diffbox { margin-top: 5px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); overflow: auto; max-height: 190px; font: 11px/1.45 var(--mono); }
+  .cw-wb-dline { display: flex; gap: 6px; padding: 1px 8px; white-space: pre; }
+  .cw-wb-dline.add { background: rgba(22,163,74,.12); color: #15803d; }
+  .cw-wb-dline.remove { background: rgba(220,38,38,.11); color: #b91c1c; }
+  .cw-wb-dline .ln { min-width: 26px; color: var(--muted); user-select: none; text-align: right; }
+  .cw-wb-note {
+    display: flex; align-items: flex-start; gap: 8px; padding: 7px 10px; border-radius: 10px;
+    background: var(--card2); border: 1px solid var(--border); font-size: 12px; color: var(--text);
+  }
+  .cw-wb-note.is-pass { border-color: rgba(22,163,74,.32); background: rgba(22,163,74,.08); }
+  .cw-wb-note.is-fail { border-color: rgba(220,38,38,.32); background: rgba(220,38,38,.08); }
+  .cw-wb-note.is-warn { border-color: rgba(217,119,6,.32); background: rgba(217,119,6,.08); }
+  .cw-wb-gate {
+    display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: 12px;
+    border: 1px solid rgba(217,119,6,.45); background: rgba(217,119,6,.09); font-size: 12px;
+  }
+  .cw-wb-gate-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+  .cw-wb-report {
+    display: flex; flex-direction: column; gap: 8px; padding: 11px 12px; border-radius: 14px;
+    border: 1px solid var(--border); background: var(--card); font-size: 12px;
+  }
+  .cw-wb-filechips { display: flex; flex-wrap: wrap; gap: 5px; }
+  .cw-wb-filechip {
+    display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 8px;
+    background: var(--bg); border: 1px solid var(--border); font: 11px/1.3 var(--mono); color: var(--text);
+    max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .cw-wb-empty { padding: 16px 12px; text-align: center; color: var(--muted); font-size: 12px; border: 1px dashed var(--border); border-radius: 12px; }
+  @keyframes cwWbPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .45; transform: scale(.86); } }
+  @keyframes cwWbBlink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
   @media (max-width: 720px) {
     .cw .cw-composer-wrap > .cw-composer-topline,
     .cw-composer-topline { padding: 0 4px 6px; }
@@ -580,13 +701,877 @@ export const COWORK_WORKBENCH_JS = String.raw`
     }
   }
 
+  function cwCodingStatusInfo(status, needsAttention) {
+    var s = String(status || 'running').toLowerCase();
+    if (needsAttention) return { label: 'Needs response', tone: 'warn', active: true };
+    if (s === 'waiting_for_model') return { label: 'Waiting for model', tone: 'warn', active: true };
+    if (s === 'running') return { label: 'Coding live', tone: 'live', active: true };
+    if (s === 'failed' || s === 'error') return { label: 'Failed', tone: 'fail', active: false };
+    if (s === 'blocked' || s === 'denied') return { label: 'Blocked', tone: 'warn', active: false };
+    if (s === 'stopped' || s === 'aborted' || s === 'cancelled') return { label: 'Stopped', tone: 'warn', active: false };
+    return { label: 'Done', tone: 'done', active: false };
+  }
+
+  function cwEscapeCodeFence(text) {
+    var tick = String.fromCharCode(96);
+    var fence = tick + tick + tick;
+    var parts = String(text || '').split(fence);
+    var out = '';
+    for (var i = 0; i < parts.length; i++) {
+      if (i % 2 === 1) {
+        var block = parts[i].replace(/^[a-z0-9_-]{1,20}\r?\n/i, '');
+        out += '<pre>' + esc(block.trim()) + '</pre>';
+      } else {
+        var seg = esc(parts[i]);
+        var codeRe = new RegExp(tick + '([^' + tick + '\\n]+)' + tick, 'g');
+        seg = seg.replace(codeRe, '<code>$1</code>');
+        seg = seg.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+        seg = seg.replace(/\r?\n/g, '<br>');
+        out += seg;
+      }
+    }
+    return out;
+  }
+
+  function cwFormatCodingReport(report) {
+    if (!report) return null;
+    if (typeof report === 'string') {
+      var trimmed = report.trim();
+      return trimmed ? { summary: trimmed, verification: [], risks: [], files: [] } : null;
+    }
+    if (typeof report !== 'object') return null;
+    var sum = typeof report.summary === 'string' ? report.summary.trim() : '';
+    var idx = sum.indexOf('\nCHANGES:');
+    if (idx > 0) sum = sum.slice(0, idx).trim();
+    var ver = Array.isArray(report.verification) ? report.verification.map(function (v) { return String(v || '').trim(); }).filter(Boolean) : [];
+    var risks = Array.isArray(report.remainingRisks) ? report.remainingRisks.map(function (r) { return String(r || '').trim(); }).filter(Boolean) : [];
+    var files = Array.isArray(report.filesChanged) ? report.filesChanged.map(function (f) { return String(f || '').trim(); }).filter(Boolean) : [];
+    if (!sum && !ver.length && !risks.length && !files.length) return null;
+    return { summary: sum, verification: ver, risks: risks, files: files };
+  }
+
+  function cwCodingToolMeta(rawBody) {
+    var body = String(rawBody || '').trim();
+    var idx = body.indexOf(' — ');
+    var summary = (idx >= 0 ? body.slice(0, idx) : body).trim();
+    var reason = idx >= 0 ? body.slice(idx + 3).trim() : '';
+    var kind = 'tool';
+    var ico = '◇';
+    var label = summary || 'Tool action';
+    if (summary.indexOf('$ ') === 0) {
+      kind = 'shell';
+      ico = '>_';
+      var cmd = summary.slice(2).trim();
+      label = cmd ? 'Ran ' + cmd : 'Ran command';
+    } else if (/^(?:write|edit|update|patch|append|create)\s+/i.test(summary)) {
+      kind = 'edit';
+      ico = '±';
+      var target = summary.replace(/^(?:write|edit|update|patch|append|create)\s+/i, '').trim();
+      label = target ? 'Edited ' + target : 'Edited file';
+    } else if (/^(?:read|view|inspect|open)\s+/i.test(summary)) {
+      kind = 'read';
+      ico = '≡';
+      var rTarget = summary.replace(/^(?:read|view|inspect|open)\s+/i, '').trim();
+      label = rTarget ? 'Read ' + rTarget : 'Read file';
+    } else if (/^(?:search|grep|rg|find)\s+/i.test(summary)) {
+      kind = 'search';
+      ico = '⌕';
+      label = 'Searched ' + summary.replace(/^(?:search|grep|rg|find)\s+/i, '').trim();
+    } else if (/^(?:list|ls|tree|dir)\b/i.test(summary)) {
+      kind = 'list';
+      ico = '▤';
+      label = summary;
+    } else if (/^(?:browser|browse|navigate|click)\b/i.test(summary)) {
+      kind = 'browser';
+      ico = '◎';
+      label = summary;
+    }
+    return { kind: kind, ico: ico, summary: summary, reason: reason, label: label };
+  }
+
+  function cwNormalizeToolKey(text) {
+    return String(text || '').trim().replace(/^\$\s+/, '').replace(/^(?:write|edit|update|patch|read|search)\s+/i, '').replace(/\s+\(\d+ms\)$/, '').toLowerCase();
+  }
+
+  function cwTrimToolOutput(raw) {
+    var s = String(raw || '').replace(/ ⏎ /g, '\n').trim();
+    if (!s) return '';
+    var lines = s.split('\n');
+    if (lines.length > 60) s = '...\n' + lines.slice(-60).join('\n');
+    if (s.length > 4000) s = '...\n' + s.slice(-4000);
+    return s;
+  }
+
+  function cwPushCodingFeed(entry, item) {
+    if (!entry) return item;
+    entry.feedItems = entry.feedItems || [];
+    entry.feedItems.push(item);
+    if (entry.feedItems.length > 180) entry.feedItems = entry.feedItems.slice(-180);
+    return item;
+  }
+
+  function cwFindCodingStep(entry, hint, allowSettled) {
+    if (!entry || !Array.isArray(entry.feedItems)) return null;
+    var key = cwNormalizeToolKey(hint);
+    for (var i = entry.feedItems.length - 1; i >= 0; i--) {
+      var it = entry.feedItems[i];
+      if (!it || it.kind !== 'step') continue;
+      if (!allowSettled && it.status !== 'running') continue;
+      if (!key || cwNormalizeToolKey(it.summary) === key || cwNormalizeToolKey(it.path) === key) return it;
+    }
+    if (key) {
+      for (var j = entry.feedItems.length - 1; j >= 0; j--) {
+        var it2 = entry.feedItems[j];
+        if (!it2 || it2.kind !== 'step') continue;
+        if (!allowSettled && it2.status !== 'running') continue;
+        var sKey = cwNormalizeToolKey(it2.summary);
+        if (sKey.indexOf(key) >= 0 || key.indexOf(sKey) >= 0) return it2;
+      }
+    }
+    for (var k = entry.feedItems.length - 1; k >= 0; k--) {
+      var it3 = entry.feedItems[k];
+      if (it3 && it3.kind === 'step' && (allowSettled || it3.status === 'running')) return it3;
+    }
+    return null;
+  }
+
+  function cwAddCodingFile(entry, filePath) {
+    var clean = String(filePath || '').trim();
+    if (!clean || !entry) return;
+    entry.files = entry.files || [];
+    for (var i = 0; i < entry.files.length; i++) {
+      var existing = entry.files[i];
+      var p = (existing && (existing.path || existing.name || existing.id)) || String(existing || '');
+      if (p === clean) return;
+    }
+    entry.files.push({ path: clean });
+  }
+
+  function cwStopCodingStream() {
+    var wb = cwEnsureWorkbench();
+    if (wb._reconnectTimer && typeof clearTimeout === 'function') {
+      clearTimeout(wb._reconnectTimer);
+      wb._reconnectTimer = null;
+    }
+    if (wb._runEs) {
+      try { wb._runEs.close(); } catch (e) {}
+      wb._runEs = null;
+    }
+    wb._runStreamId = null;
+    wb._streamNotice = '';
+  }
+
+  function cwSyncCodingWorkbenchStatus(tasks) {
+    var wb = cwEnsureWorkbench();
+    if (!wb.open || !Array.isArray(wb.items) || !Array.isArray(tasks)) return;
+    var current = wb.items[wb.activeIndex];
+    if (!current || !current.runId) return;
+    var match = null;
+    for (var i = 0; i < tasks.length; i++) {
+      if (tasks[i] && tasks[i].runId === current.runId) { match = tasks[i]; break; }
+    }
+    if (!match) return;
+    var changed = current.status !== match.status || Boolean(current.needsAttention) !== Boolean(match.needsAttention);
+    if (!changed) return;
+    var wasActive = cwCodingStatusInfo(current.status, current.needsAttention).active;
+    current.status = match.status || current.status;
+    current.needsAttention = Boolean(match.needsAttention);
+    var st = cwCodingStatusInfo(current.status, current.needsAttention);
+    current.title = 'Code: ' + (current.project || 'Workspace') + ' (' + st.label + ')';
+    cwRefreshCodingView(current, false);
+    if (wasActive && !st.active) cwRefreshCodingRunDetails(current);
+  }
+
+  function cwRefreshCodingRunDetails(entry) {
+    if (!entry || !entry.runId || entry._fetchingSummary || typeof api !== 'function') return;
+    entry._fetchingSummary = true;
+    api('/api/runs/' + encodeURIComponent(entry.runId)).then(function (task) {
+      entry._fetchingSummary = false;
+      if (!task) return;
+      entry.status = task.status || entry.status;
+      entry.needsAttention = Boolean(task.needsAttention);
+      if (task.error !== undefined) entry.error = task.error || '';
+      if (task.report !== undefined) entry.report = task.report;
+      if (Array.isArray(task.files) && task.files.length) entry.files = task.files;
+      if (Array.isArray(task.pendingApprovals)) entry.pendingApprovals = task.pendingApprovals;
+      if (task.pendingPlanReview !== undefined) entry.pendingPlanReview = task.pendingPlanReview;
+      if (task.pendingQuestions !== undefined) entry.pendingQuestions = task.pendingQuestions;
+      var st = cwCodingStatusInfo(entry.status, entry.needsAttention);
+      entry.title = 'Code: ' + (entry.project || 'Workspace') + ' (' + st.label + ')';
+      cwRefreshCodingView(entry, false);
+      if (typeof cwRenderRailCoding === 'function') cwRenderRailCoding();
+    }).catch(function () {
+      entry._fetchingSummary = false;
+    });
+  }
+
+  function cwBindCodingFeedActions(feedEl, entry) {
+    if (!feedEl || typeof feedEl.querySelectorAll !== 'function') return;
+    var apprBtns = feedEl.querySelectorAll('[data-cw-appr]');
+    for (var i = 0; i < apprBtns.length; i++) {
+      (function (btn) {
+        btn.onclick = function () {
+          var apprId = btn.getAttribute('data-cw-appr');
+          var ok = btn.getAttribute('data-cw-ok') === '1';
+          if (!apprId || typeof api !== 'function') return;
+          btn.disabled = true;
+          api('/api/approvals/' + encodeURIComponent(apprId), {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ approved: ok })
+          }).then(function () {
+            entry.pendingApprovals = (entry.pendingApprovals || []).filter(function (a) { return a && a.id !== apprId; });
+            cwRefreshCodingView(entry, false);
+          }).catch(function (err) {
+            btn.disabled = false;
+            if (typeof toast === 'function') toast((err && err.message) || 'Approval failed', true);
+          });
+        };
+      })(apprBtns[i]);
+    }
+    var fullBtns = feedEl.querySelectorAll('[data-cw-open-run]');
+    for (var j = 0; j < fullBtns.length; j++) {
+      fullBtns[j].onclick = function () {
+        if (typeof openRun === 'function') openRun(entry.runId);
+      };
+    }
+  }
+
+  function cwBuildCodingMetaHtml(entry) {
+    var st = cwCodingStatusInfo(entry.status, entry.needsAttention);
+    var wb = cwEnsureWorkbench();
+    var left = '<span class="cw-wb-status is-' + esc(st.tone) + '">' + esc(st.label) + '</span>';
+    if (entry.project) left += '<span class="cw-wb-pill" title="' + esc(entry.projectPath || entry.project) + '">' + esc(entry.project) + '</span>';
+    if (entry.branch) left += '<span class="cw-wb-pill">' + esc(entry.branch) + '</span>';
+    if (entry.mode) left += '<span class="cw-wb-pill">' + esc(entry.mode) + '</span>';
+    if (wb._streamNotice) left += '<span class="cw-wb-pill">' + esc(wb._streamNotice) + '</span>';
+    var right = '';
+    if (wb.items && wb.items.length > 1) {
+      right += '<select id="cwWbVersion" aria-label="Workbench version">' + wb.items.map(function (it, idx) {
+        return '<option value="' + idx + '"' + (idx === wb.activeIndex ? ' selected' : '') + '>' + esc(it.title) + '</option>';
+      }).join('') + '</select>';
+    }
+    return '<div class="cw-wb-meta-left">' + left + '</div>' + (right ? '<div class="cw-wb-meta-right">' + right + '</div>' : '');
+  }
+
+  function cwRenderCodingFeedHtml(entry) {
+    var parts = [];
+    if (entry.goal) {
+      parts.push(
+        '<div class="cw-wb-msg is-user">' +
+          '<div class="cw-wb-msg-head"><span>You · Goal</span></div>' +
+          '<div class="cw-wb-msg-body">' + cwEscapeCodeFence(entry.goal) + '</div>' +
+        '</div>'
+      );
+    }
+    if (entry.reasoningText && entry.reasoningText.trim()) {
+      var rt = entry.reasoningText.trim();
+      parts.push(
+        '<details class="cw-wb-think" data-step-key="think">' +
+          '<summary>Thought process (' + rt.length + ' chars)</summary>' +
+          '<pre>' + esc(rt) + '</pre>' +
+        '</details>'
+      );
+    }
+    var items = entry.feedItems || [];
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      if (!it) continue;
+      if (it.kind === 'user') {
+        parts.push(
+          '<div class="cw-wb-msg is-user">' +
+            '<div class="cw-wb-msg-head"><span>You</span></div>' +
+            '<div class="cw-wb-msg-body">' + cwEscapeCodeFence(it.text || '') + '</div>' +
+          '</div>'
+        );
+      } else if (it.kind === 'agent') {
+        parts.push(
+          '<div class="cw-wb-msg is-agent">' +
+            '<div class="cw-wb-msg-head"><span>Agent Gitu</span></div>' +
+            '<div class="cw-wb-msg-body">' + cwEscapeCodeFence(it.text || '') + '</div>' +
+          '</div>'
+        );
+      } else if (it.kind === 'step') {
+        var cls = 'cw-wb-step is-' + esc(it.status || 'running');
+        var stateTxt = it.status === 'running' ? 'Running' : (it.status === 'error' ? 'Failed' : (it.status === 'blocked' ? 'Blocked' : 'Done'));
+        if (typeof it.exitCode === 'number' && it.exitCode !== 0 && it.status === 'error') stateTxt = 'Exit ' + it.exitCode;
+        var diffBadge = '';
+        if (it.added || it.removed) {
+          diffBadge = '<span class="cw-wb-diffstat">' +
+            (it.added ? '<span class="add">+' + it.added + '</span>' : '') +
+            (it.removed ? '<span class="del">-' + it.removed + '</span>' : '') +
+          '</span>';
+        }
+        var detailsHtml = '';
+        if (Array.isArray(it.diff) && it.diff.length) {
+          var diffRows = '';
+          for (var d = 0; d < it.diff.length && d < 120; d++) {
+            var dl = it.diff[d] || {};
+            var dCls = dl.kind === 'add' ? 'add' : (dl.kind === 'remove' ? 'remove' : 'context');
+            var prefix = dl.kind === 'add' ? '+' : (dl.kind === 'remove' ? '-' : ' ');
+            diffRows += '<div class="cw-wb-dline ' + dCls + '"><span class="ln">' + esc(dl.newLine || dl.oldLine || '') + '</span><span>' + esc(prefix + (dl.text || '')) + '</span></div>';
+          }
+          detailsHtml = '<details class="cw-wb-step-details" data-step-key="step-' + esc(it.id) + '"><summary>View diff</summary><div class="cw-wb-diffbox">' + diffRows + '</div></details>';
+        } else if (it.output) {
+          detailsHtml = '<details class="cw-wb-step-details" data-step-key="step-' + esc(it.id) + '"><summary>View output</summary><pre class="cw-wb-step-pre">' + esc(it.output) + '</pre></details>';
+        }
+        parts.push(
+          '<div class="' + cls + '">' +
+            '<div class="cw-wb-step-row">' +
+              '<span class="cw-wb-step-ico" aria-hidden="true">' + esc(it.ico || '◇') + '</span>' +
+              '<span class="cw-wb-step-title" title="' + esc(it.summary || it.label || '') + '">' + esc(it.label || it.summary || 'Action') + '</span>' +
+              diffBadge +
+              '<span class="cw-wb-step-state">' + esc(stateTxt) + '</span>' +
+            '</div>' +
+            (it.reason ? '<div class="cw-wb-step-why">' + esc(it.reason) + '</div>' : '') +
+            detailsHtml +
+          '</div>'
+        );
+      } else if (it.kind === 'note') {
+        var nCls = 'cw-wb-note' + (it.tone ? ' is-' + esc(it.tone) : '');
+        parts.push('<div class="' + nCls + '"><strong>' + esc(it.label || 'Update') + '</strong><span>' + esc(it.text || '') + '</span></div>');
+      }
+    }
+    if (entry.streamText && entry.streamText.trim()) {
+      var stLabel = entry.streamKind === 'thinking' ? 'Agent Gitu · thinking' : 'Agent Gitu · writing';
+      parts.push(
+        '<div class="cw-wb-msg is-agent is-streaming">' +
+          '<div class="cw-wb-msg-head"><span>' + esc(stLabel) + '</span></div>' +
+          '<div class="cw-wb-msg-body"><span id="cwWbStreamTxt">' + cwEscapeCodeFence(entry.streamText) + '</span><span class="cw-wb-caret" aria-hidden="true"></span></div>' +
+        '</div>'
+      );
+    }
+    var approvals = Array.isArray(entry.pendingApprovals) ? entry.pendingApprovals : [];
+    for (var a = 0; a < approvals.length; a++) {
+      var ap = approvals[a];
+      if (!ap) continue;
+      parts.push(
+        '<div class="cw-wb-gate">' +
+          '<strong>Approval needed: ' + esc(ap.tool || 'Action') + '</strong>' +
+          '<div>' + esc(ap.why || ap.summary || 'Waiting for your approval before continuing.') + '</div>' +
+          '<div class="cw-wb-gate-actions">' +
+            '<button type="button" class="btn dark" data-cw-appr="' + esc(ap.id) + '" data-cw-ok="1">Approve</button>' +
+            '<button type="button" class="btn ghost" data-cw-appr="' + esc(ap.id) + '" data-cw-ok="0">Deny</button>' +
+          '</div>' +
+        '</div>'
+      );
+    }
+    if (entry.pendingPlanReview) {
+      parts.push(
+        '<div class="cw-wb-gate">' +
+          '<strong>Plan ready for review</strong>' +
+          '<div>Review and approve the plan before implementation begins.</div>' +
+          (typeof openRun === 'function' ? '<div class="cw-wb-gate-actions"><button type="button" class="btn dark" data-cw-open-run="1">Review plan in full view</button></div>' : '') +
+        '</div>'
+      );
+    }
+    if (entry.pendingQuestions) {
+      var qFirst = entry.pendingQuestions.questions && entry.pendingQuestions.questions[0];
+      var qText = typeof qFirst === 'string' ? qFirst : (qFirst && qFirst.question) || 'The coding agent has a question for you.';
+      parts.push(
+        '<div class="cw-wb-gate">' +
+          '<strong>Agent needs your input</strong>' +
+          '<div>' + esc(qText) + '</div>' +
+          (typeof openRun === 'function' ? '<div class="cw-wb-gate-actions"><button type="button" class="btn dark" data-cw-open-run="1">Answer in full view</button></div>' : '') +
+        '</div>'
+      );
+    }
+    if (entry.error) {
+      parts.push('<div class="cw-wb-note is-fail"><strong>Error</strong><span>' + esc(entry.error) + '</span></div>');
+    }
+    var rep = cwFormatCodingReport(entry.report);
+    var fileList = (entry.files && entry.files.length) ? entry.files : ((rep && rep.files.length) ? rep.files.map(function (p) { return { path: p }; }) : []);
+    if (rep || fileList.length) {
+      var repHtml = '<div class="cw-wb-report">';
+      if (rep && rep.summary) repHtml += '<div class="cw-wb-msg-head"><span>Summary</span></div><div class="cw-wb-msg-body">' + cwEscapeCodeFence(rep.summary) + '</div>';
+      if (rep && rep.verification.length) {
+        repHtml += '<div><strong>Checks:</strong> ' + esc(rep.verification.join(' · ')) + '</div>';
+      }
+      if (fileList.length) {
+        repHtml += '<div class="cw-wb-msg-head"><span>Files (' + fileList.length + ')</span></div><div class="cw-wb-filechips">';
+        for (var f = 0; f < fileList.length && f < 24; f++) {
+          var fp = fileList[f];
+          var fn = (fp && (fp.path || fp.name || fp.id)) || String(fp || '');
+          if (fn) repHtml += '<span class="cw-wb-filechip">' + esc(fn) + '</span>';
+        }
+        repHtml += '</div>';
+      }
+      repHtml += '</div>';
+      parts.push(repHtml);
+    }
+    if (!items.length && !entry.streamText && !rep && !fileList.length && !entry.error) {
+      var liveSt = cwCodingStatusInfo(entry.status, entry.needsAttention);
+      parts.push('<div class="cw-wb-empty">' + esc(liveSt.active ? 'Connected — waiting for the next coding step…' : 'No streamed steps recorded for this run yet.') + '</div>');
+    }
+    return parts.join('');
+  }
+
+  function cwRefreshCodingView(entry, deltaOnly) {
+    var wb = cwEnsureWorkbench();
+    var pane = $('cwWorkbench');
+    if (!pane || !wb.open) return;
+    var current = wb.items[wb.activeIndex];
+    if (!current || !current.runId || (entry && current.runId !== entry.runId)) return;
+    var feedEl = $('cwWbFeed');
+    if (!feedEl) {
+      cwRenderWorkbench();
+      return;
+    }
+    if (deltaOnly) {
+      var streamTxt = $('cwWbStreamTxt');
+      if (streamTxt) {
+        streamTxt.innerHTML = cwEscapeCodeFence(current.streamText || '');
+        var nearB = (feedEl.scrollHeight - feedEl.scrollTop - feedEl.clientHeight) < 56;
+        if (nearB) feedEl.scrollTop = feedEl.scrollHeight;
+        return;
+      }
+    }
+    var openKeys = {};
+    if (typeof feedEl.querySelectorAll === 'function') {
+      var openEls = feedEl.querySelectorAll('details[open][data-step-key]');
+      for (var i = 0; i < openEls.length; i++) {
+        var k = openEls[i].getAttribute('data-step-key');
+        if (k) openKeys[k] = true;
+      }
+    }
+    var nearBottom = (feedEl.scrollHeight - feedEl.scrollTop - feedEl.clientHeight) < 56;
+    var metaEl = $('cwWbMeta');
+    if (metaEl) metaEl.innerHTML = cwBuildCodingMetaHtml(current);
+    var verSel = $('cwWbVersion');
+    if (verSel) verSel.onchange = function () { wb.activeIndex = Number(verSel.value) || 0; cwRenderWorkbench(); };
+    feedEl.innerHTML = cwRenderCodingFeedHtml(current);
+    cwBindCodingFeedActions(feedEl, current);
+    if (typeof feedEl.querySelectorAll === 'function') {
+      var dets = feedEl.querySelectorAll('details[data-step-key]');
+      for (var j = 0; j < dets.length; j++) {
+        if (openKeys[dets[j].getAttribute('data-step-key')]) dets[j].open = true;
+      }
+    }
+    if (nearBottom) feedEl.scrollTop = feedEl.scrollHeight;
+  }
+
+  function cwIngestCodingEvent(entry, ev) {
+    if (!entry || !ev) return;
+    if (ev.i != null) {
+      entry._seenIds = entry._seenIds || {};
+      if (entry._seenIds[ev.i]) return;
+      entry._seenIds[ev.i] = true;
+    }
+    if (ev.i == null && ev.typed) {
+      var tp = ev.typed;
+      if (tp.type === 'reasoning' && tp.text) {
+        entry.reasoningText = String(tp.text);
+        cwRefreshCodingView(entry, false);
+        return;
+      }
+      if (tp.type === 'file_changed' && tp.path) {
+        cwAddCodingFile(entry, tp.path);
+        var editStep = cwFindCodingStep(entry, tp.path, true);
+        if (editStep && editStep.kind === 'edit') {
+          if (typeof tp.linesAdded === 'number') editStep.added = tp.linesAdded;
+          if (typeof tp.linesRemoved === 'number') editStep.removed = tp.linesRemoved;
+          if (Array.isArray(tp.diff) && tp.diff.length) editStep.diff = tp.diff;
+        } else {
+          cwPushCodingFeed(entry, {
+            kind: 'step',
+            id: ++entry._stepCounter,
+            toolKind: 'edit',
+            ico: '±',
+            label: 'Edited ' + tp.path,
+            summary: tp.path,
+            path: tp.path,
+            status: 'done',
+            added: typeof tp.linesAdded === 'number' ? tp.linesAdded : 0,
+            removed: typeof tp.linesRemoved === 'number' ? tp.linesRemoved : 0,
+            diff: Array.isArray(tp.diff) ? tp.diff : null
+          });
+        }
+        cwRefreshCodingView(entry, false);
+        return;
+      }
+      if (tp.type === 'command_finished') {
+        var cmdStep = cwFindCodingStep(entry, tp.command || '', true);
+        if (cmdStep) {
+          cmdStep.status = tp.ok ? 'done' : 'error';
+          if (typeof tp.exitCode === 'number') cmdStep.exitCode = tp.exitCode;
+          cwRefreshCodingView(entry, false);
+        }
+        return;
+      }
+      if (tp.type === 'file_read' && tp.path) {
+        cwPushCodingFeed(entry, { kind: 'step', id: ++entry._stepCounter, toolKind: 'read', ico: '≡', label: 'Read ' + tp.path, summary: tp.path, path: tp.path, status: 'done' });
+        cwRefreshCodingView(entry, false);
+        return;
+      }
+      if (tp.type === 'test_started' && tp.command) {
+        cwPushCodingFeed(entry, { kind: 'step', id: ++entry._stepCounter, toolKind: 'shell', ico: '>_', label: 'Running tests: ' + tp.command, summary: tp.command, status: 'running' });
+        cwRefreshCodingView(entry, false);
+        return;
+      }
+      if (tp.type === 'test_finished') {
+        var tStep = cwFindCodingStep(entry, tp.command || '', true);
+        if (tStep) {
+          tStep.status = tp.status === 'passed' ? 'done' : 'error';
+        } else {
+          cwPushCodingFeed(entry, {
+            kind: 'note',
+            tone: tp.status === 'passed' ? 'pass' : 'fail',
+            label: 'Tests ' + (tp.status || 'finished'),
+            text: tp.command || ''
+          });
+        }
+        cwRefreshCodingView(entry, false);
+        return;
+      }
+      if (tp.type === 'policy_denied' || tp.type === 'operation_blocked') {
+        cwPushCodingFeed(entry, {
+          kind: 'note',
+          tone: 'warn',
+          label: tp.type === 'policy_denied' ? 'Blocked by policy' : 'Guard notice',
+          text: [tp.operation, tp.detail].filter(Boolean).join(' — ') || (tp.reason || 'Action stopped')
+        });
+        cwRefreshCodingView(entry, false);
+        return;
+      }
+      if (tp.type === 'completed' || tp.type === 'failed') {
+        entry.status = tp.type === 'completed' ? 'completed' : 'failed';
+        if (tp.reason) entry.error = tp.reason;
+        cwRefreshCodingView(entry, false);
+        cwRefreshCodingRunDetails(entry);
+        return;
+      }
+      if (ev.restored) return;
+      if (tp.type === 'approval_required' && tp.approvalId) {
+        entry.pendingApprovals = (entry.pendingApprovals || []).filter(function (a) { return a && a.id !== tp.approvalId; });
+        entry.pendingApprovals.push({ id: tp.approvalId, tool: tp.tool, why: tp.why, summary: tp.summary });
+        entry.needsAttention = true;
+        cwRefreshCodingView(entry, false);
+      } else if (tp.type === 'approval_resolved') {
+        entry.pendingApprovals = (entry.pendingApprovals || []).filter(function (a) { return a && a.id !== tp.approvalId; });
+        entry.needsAttention = entry.pendingApprovals.length > 0 || Boolean(entry.pendingPlanReview) || Boolean(entry.pendingQuestions);
+        cwRefreshCodingView(entry, false);
+      } else if (tp.type === 'plan_review_requested') {
+        entry.pendingPlanReview = { id: tp.requestId, criteria: tp.criteria || [], steps: tp.steps || [] };
+        entry.needsAttention = true;
+        cwRefreshCodingView(entry, false);
+      } else if (tp.type === 'plan_review_resolved') {
+        entry.pendingPlanReview = null;
+        entry.needsAttention = (entry.pendingApprovals || []).length > 0 || Boolean(entry.pendingQuestions);
+        cwRefreshCodingView(entry, false);
+      } else if (tp.type === 'questions_requested') {
+        entry.pendingQuestions = { id: tp.requestId, questions: tp.questions || [] };
+        entry.needsAttention = true;
+        cwRefreshCodingView(entry, false);
+      } else if (tp.type === 'questions_answered') {
+        entry.pendingQuestions = null;
+        entry.needsAttention = (entry.pendingApprovals || []).length > 0 || Boolean(entry.pendingPlanReview);
+        cwRefreshCodingView(entry, false);
+      }
+      return;
+    }
+
+    var text = String(ev.text || '');
+    if (!text) return;
+    if (text === 'activity reasoning-reset') { entry.reasoningText = ''; cwRefreshCodingView(entry, false); return; }
+    if (text.indexOf('activity reasoning-delta ') === 0) {
+      try {
+        var rDelta = JSON.parse(text.slice('activity reasoning-delta '.length));
+        if (typeof rDelta === 'string') {
+          entry.reasoningText = ((entry.reasoningText || '') + rDelta).slice(-16000);
+          cwRefreshCodingView(entry, false);
+        }
+      } catch (e) {}
+      return;
+    }
+    if (text.indexOf('live-chat ') === 0) {
+      try {
+        var ex = JSON.parse(text.slice(10));
+        if (ex && ex.content) {
+          cwPushCodingFeed(entry, { kind: ex.role === 'user' ? 'user' : 'agent', text: String(ex.content) });
+          cwRefreshCodingView(entry, false);
+        }
+      } catch (e2) {}
+      return;
+    }
+    if (text.indexOf('tdelta ') === 0 || text.indexOf('thought ') === 0) {
+      var isThought = text.indexOf('thought ') === 0;
+      var chunk = text.slice(isThought ? 8 : 7);
+      if (!entry.streamText && !chunk.trim()) return;
+      if (!entry.streamText && /^\s*\{/.test(chunk)) return;
+      var hadStream = Boolean(entry.streamText);
+      entry.streamText = (entry.streamText || '') + chunk;
+      entry.streamKind = isThought ? 'thinking' : 'writing';
+      cwRefreshCodingView(entry, hadStream);
+      return;
+    }
+    if (text.indexOf('say ') === 0) {
+      var prose = text.slice(4).trim();
+      entry.streamText = '';
+      if (!prose) { cwRefreshCodingView(entry, false); return; }
+      var lastItem = entry.feedItems.length ? entry.feedItems[entry.feedItems.length - 1] : null;
+      if (lastItem && lastItem.kind === 'agent' && String(lastItem.text || '').trim() === prose) {
+        cwRefreshCodingView(entry, false);
+        return;
+      }
+      cwPushCodingFeed(entry, { kind: 'agent', text: prose });
+      cwRefreshCodingView(entry, false);
+      return;
+    }
+    if (text.indexOf('user-msg ') === 0) {
+      var uText = text.slice(9).trim();
+      if (!uText) return;
+      if (entry._lastSteer === uText) { entry._lastSteer = ''; return; }
+      cwPushCodingFeed(entry, { kind: 'user', text: uText });
+      cwRefreshCodingView(entry, false);
+      return;
+    }
+    if (text.indexOf('run finished: ') === 0) {
+      entry.status = text.slice('run finished: '.length).trim() || entry.status;
+      var stFin = cwCodingStatusInfo(entry.status, entry.needsAttention);
+      entry.title = 'Code: ' + (entry.project || 'Workspace') + ' (' + stFin.label + ')';
+      cwRefreshCodingView(entry, false);
+      cwRefreshCodingRunDetails(entry);
+      return;
+    }
+    if (text.indexOf('lines ') === 0) {
+      var cnt = /\s+\+(\d+)(?:\s+-(\d+))?\s+lines.*$/i.exec(text);
+      var lHint = text.slice(6).replace(cnt ? cnt[0] : '', '').trim();
+      var stepHit = cwFindCodingStep(entry, lHint, true);
+      if (stepHit) {
+        if (cnt) {
+          stepHit.added = parseInt(cnt[1], 10) || 0;
+          stepHit.removed = cnt[2] ? (parseInt(cnt[2], 10) || 0) : 0;
+        }
+        cwRefreshCodingView(entry, false);
+      }
+      return;
+    }
+    var sp = text.indexOf(' ');
+    var tag = sp >= 0 ? text.slice(0, sp) : text;
+    var body = sp >= 0 ? text.slice(sp + 1).trim() : '';
+    if (tag === 'run') {
+      var tm = cwCodingToolMeta(body);
+      var newStep = {
+        kind: 'step',
+        id: ++entry._stepCounter,
+        toolKind: tm.kind,
+        ico: tm.ico,
+        label: tm.label,
+        summary: tm.summary,
+        reason: tm.reason,
+        path: tm.kind === 'edit' || tm.kind === 'read' ? tm.summary.replace(/^(?:write|edit|update|patch|append|create|read|view|inspect|open)\s+/i, '').trim() : '',
+        status: 'running',
+        added: 0,
+        removed: 0,
+        diff: null,
+        output: ''
+      };
+      if (newStep.toolKind === 'edit' && newStep.path) cwAddCodingFile(entry, newStep.path);
+      cwPushCodingFeed(entry, newStep);
+      cwRefreshCodingView(entry, false);
+      return;
+    }
+    if (tag === 'ok' || tag === 'error' || tag === 'denied' || tag === 'blocked') {
+      var targetStep = cwFindCodingStep(entry, body, false);
+      if (targetStep) {
+        targetStep.status = tag === 'ok' ? 'done' : (tag === 'denied' || tag === 'blocked' ? 'blocked' : 'error');
+        entry._lastOutputStep = targetStep;
+        cwRefreshCodingView(entry, false);
+      }
+      return;
+    }
+    if (tag === 'out') {
+      var outStep = entry._lastOutputStep || cwFindCodingStep(entry, '', true);
+      if (outStep) {
+        outStep.output = cwTrimToolOutput(body);
+        cwRefreshCodingView(entry, false);
+      }
+      return;
+    }
+    if (tag === 'evidence') {
+      var evPass = ev.typed && ev.typed.type === 'evidence_recorded' ? ev.typed.passed === true : body.indexOf('PASS') >= 0;
+      cwPushCodingFeed(entry, { kind: 'note', tone: evPass ? 'pass' : 'fail', label: evPass ? 'Verified' : 'Check failed', text: body });
+      cwRefreshCodingView(entry, false);
+      return;
+    }
+    if (tag === 'plan' || tag === 'step' || tag === 'todo' || tag === 'decision' || tag === 'replan' || tag === 'problem' || tag === 'resolved' || tag === 'recover') {
+      var lblMap = { plan: 'Plan', step: 'Step', todo: 'Todo', decision: 'Decision', replan: 'Replan', problem: 'Recovery', resolved: 'Resolved', recover: 'Retrying' };
+      var tone = tag === 'problem' ? 'warn' : (tag === 'resolved' || tag === 'step' ? 'pass' : '');
+      cwPushCodingFeed(entry, { kind: 'note', tone: tone, label: lblMap[tag] || tag, text: body });
+      cwRefreshCodingView(entry, false);
+    }
+  }
+
+  function cwStartCodingStream(entry) {
+    if (!entry || !entry.runId || typeof EventSource !== 'function') return;
+    var wb = cwEnsureWorkbench();
+    if (wb._runEs && wb._runStreamId === entry.runId) return;
+    cwStopCodingStream();
+    wb._runStreamId = entry.runId;
+    var es = new EventSource('/api/runs/' + encodeURIComponent(entry.runId) + '/stream');
+    wb._runEs = es;
+    if (typeof es.addEventListener === 'function') {
+      es.addEventListener('replay-end', function () {
+        entry.historyReady = true;
+        if (!cwCodingStatusInfo(entry.status, entry.needsAttention).active) {
+          cwStopCodingStream();
+        }
+      });
+    }
+    es.onmessage = function (msg) {
+      if (wb._runEs !== es) return;
+      wb._streamNotice = '';
+      var ev = null;
+      try { ev = JSON.parse(msg && msg.data); } catch (e) { return; }
+      cwIngestCodingEvent(entry, ev);
+    };
+    es.onerror = function () {
+      if (wb._runEs !== es) return;
+      try { es.close(); } catch (e) {}
+      wb._runEs = null;
+      var info = cwCodingStatusInfo(entry.status, entry.needsAttention);
+      if (!wb.open || wb._runStreamId !== entry.runId || (!info.active && entry.historyReady)) {
+        wb._streamNotice = '';
+        return;
+      }
+      wb._streamNotice = 'Reconnecting…';
+      cwRefreshCodingView(entry, false);
+      if (typeof setTimeout === 'function') {
+        wb._reconnectTimer = setTimeout(function () {
+          wb._reconnectTimer = null;
+          var cur = wb.items && wb.items[wb.activeIndex];
+          if (wb.open && cur && cur.runId === entry.runId) {
+            cwStartCodingStream(cur);
+          }
+        }, 2000);
+      }
+    };
+  }
+
+  function cwRenderCodingWorkbench(pane, wb, current) {
+    pane.innerHTML =
+      '<div class="cw-workbench-head">' +
+        '<strong>' + esc(current.title || 'Coding Live') + '</strong>' +
+        (typeof openRun === 'function' ? '<button type="button" class="btn ghost" id="cwWbOpenFull">Full view</button>' : '') +
+        '<button type="button" class="btn ghost" id="cwWbClose" aria-label="Close workbench">Close</button>' +
+      '</div>' +
+      '<div class="cw-wb-code-meta" id="cwWbMeta">' + cwBuildCodingMetaHtml(current) + '</div>' +
+      '<div class="cw-workbench-body is-coding">' +
+        '<div class="cw-wb-feed" id="cwWbFeed">' + cwRenderCodingFeedHtml(current) + '</div>' +
+      '</div>' +
+      '<div class="cw-workbench-foot">' +
+        '<input type="text" id="cwWbInstruction" placeholder="Steer this coding agent without leaving Cowork...">' +
+        '<button type="button" class="btn dark" id="cwWbAsk">Steer agent</button>' +
+      '</div>';
+    var closeBtn = $('cwWbClose');
+    if (closeBtn) closeBtn.onclick = function () { wb.open = false; cwStopCodingStream(); cwRenderWorkbench(); };
+    var fullBtn = $('cwWbOpenFull');
+    if (fullBtn) fullBtn.onclick = function () { if (typeof openRun === 'function') openRun(current.runId); };
+    var verSel = $('cwWbVersion');
+    if (verSel) verSel.onchange = function () { wb.activeIndex = Number(verSel.value) || 0; cwRenderWorkbench(); };
+    var feedEl = $('cwWbFeed');
+    cwBindCodingFeedActions(feedEl, current);
+    if (feedEl && feedEl.scrollHeight) feedEl.scrollTop = feedEl.scrollHeight;
+    var askBtn = $('cwWbAsk');
+    var askInput = $('cwWbInstruction');
+    var sendSteer = function () {
+      var instr = askInput && String(askInput.value || '').trim();
+      if (!instr) { if (typeof toast === 'function') toast('Enter steering instructions first'); return; }
+      current._lastSteer = instr;
+      cwPushCodingFeed(current, { kind: 'user', text: instr });
+      if (askInput) askInput.value = '';
+      cwRefreshCodingView(current, false);
+      if (typeof api === 'function') {
+        api('/api/runs/' + encodeURIComponent(current.runId) + '/message', {
+          method: 'POST',
+          body: JSON.stringify({ text: instr, delivery: 'steer' })
+        }).then(function () {
+          if (typeof toast === 'function') toast('Steering message sent to coding agent');
+          if (!wb._runEs) cwInspectCodingTask(current.runId);
+        }).catch(function (err) {
+          if (typeof toast === 'function') toast((err && err.message) || 'Could not steer agent', true);
+        });
+      }
+    };
+    if (askBtn) askBtn.onclick = sendSteer;
+    if (askInput) {
+      askInput.onkeydown = function (e) {
+        if (e && e.key === 'Enter' && !e.shiftKey) {
+          if (typeof e.preventDefault === 'function') e.preventDefault();
+          sendSteer();
+        }
+      };
+    }
+    cwStartCodingStream(current);
+  }
+
+  function cwRenderRailCoding() {
+    var host = $('cwRailCoding');
+    if (!host) return;
+    var cw = cwEnsure();
+    var wb = cwEnsureWorkbench();
+    var activeRunId = wb.open && wb.items && wb.items[wb.activeIndex] ? wb.items[wb.activeIndex].runId : '';
+    var tasks = Array.isArray(cw.codingTasks) ? cw.codingTasks : [];
+    var seen = {};
+    var unique = [];
+    for (var i = 0; i < tasks.length; i++) {
+      var t = tasks[i];
+      if (!t || !t.runId || seen[t.runId]) continue;
+      seen[t.runId] = true;
+      unique.push(t);
+    }
+    if (!unique.length) {
+      host.innerHTML = '<div class="cw-rail-coding-empty">No coding runs in this chat yet</div>';
+      return;
+    }
+    var eFn = typeof esc === 'function' ? esc : function (v) { return String(v || ''); };
+    host.innerHTML = '<div class="cw-rail-coding">' + unique.slice(0, 8).map(function (t) {
+      var info = cwCodingStatusInfo(t.status, t.needsAttention);
+      var isAct = activeRunId === t.runId;
+      var goalText = String(t.goal || 'Background coding task').trim();
+      if (goalText.length > 52) goalText = goalText.slice(0, 49) + '…';
+      var dotCls = 'cw-rail-coding-dot is-' + info.tone;
+      return '<button type="button" class="cw-rail-coding-btn' + (isAct ? ' active' : '') + '" data-main-coding-task="' + eFn(t.runId) + '" title="' + eFn(t.goal || t.runId) + '">' +
+        '<span class="' + dotCls + '" aria-hidden="true"></span>' +
+        '<span class="cw-rail-coding-main">' +
+          '<span class="cw-rail-coding-goal">' + eFn(goalText) + '</span>' +
+          '<span class="cw-rail-coding-meta"><span>' + eFn(info.label) + '</span>' + (t.project ? '<span>· ' + eFn(t.project) + '</span>' : '') + '</span>' +
+        '</span>' +
+      '</button>';
+    }).join('') + '</div>';
+    if (typeof host.querySelectorAll === 'function') {
+      var btns = host.querySelectorAll('[data-main-coding-task]');
+      for (var j = 0; j < btns.length; j++) {
+        (function (btn) {
+          btn.onclick = function (e) {
+            if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+            if (e && typeof e.preventDefault === 'function') e.preventDefault();
+            var id = btn.getAttribute('data-main-coding-task');
+            if (id) cwInspectCodingTask(id);
+          };
+        })(btns[j]);
+      }
+    }
+  }
+
   function cwRenderWorkbench() {
     var pane = $('cwWorkbench');
     if (!pane) return;
     var wb = cwEnsureWorkbench();
     pane.hidden = !wb.open;
-    if (!wb.open) return;
+    if (!wb.open) {
+      cwStopCodingStream();
+      if (typeof cwRenderRailCoding === 'function') cwRenderRailCoding();
+      return;
+    }
     var current = wb.items[wb.activeIndex] || { id: 'wb-0', title: 'Workbench', content: '', previousContent: '' };
+    if (current && current.runId) {
+      cwRenderCodingWorkbench(pane, wb, current);
+      if (typeof cwRenderRailCoding === 'function') cwRenderRailCoding();
+      return;
+    }
+    cwStopCodingStream();
+    if (typeof cwRenderRailCoding === 'function') cwRenderRailCoding();
     var optionsHtml = wb.items.map(function (item, idx) {
       return '<option value="' + idx + '"' + (idx === wb.activeIndex ? ' selected' : '') + '>' + esc('v' + (idx + 1) + ' · ' + item.title) + '</option>';
     }).join('');
@@ -1144,50 +2129,64 @@ export const COWORK_WORKBENCH_JS = String.raw`
   function cwInspectCodingTask(runId) {
     if (!runId || typeof api !== 'function') return Promise.resolve();
     return api('/api/runs/' + encodeURIComponent(runId)).then(function (task) {
+      var resolvedRunId = (task && task.runId) || runId;
       var projLabel = (task && (task.project || cwBasename(task.projectPath || ''))) || 'Workspace';
       var status = (task && task.status) || 'running';
-      var statusTitle = status === 'running' ? 'In Progress' : (status === 'failed' || status === 'error' ? 'Failed' : 'Done');
+      var needsAtt = Boolean(task && task.needsAttention);
+      var statusInfo = cwCodingStatusInfo(status, needsAtt);
+      var repFmt = cwFormatCodingReport(task && task.report);
       var lines = [];
-      lines.push('# Coding Task: ' + projLabel + ' (' + statusTitle + ')');
-      lines.push('');
-      if (task && task.goal) {
-        lines.push('Goal: ' + task.goal);
-        lines.push('');
-      }
-      lines.push('Run ID: ' + ((task && task.runId) || runId));
-      if (task && task.projectPath) lines.push('Project path: ' + task.projectPath);
-      if (task && task.worktreePath) lines.push('Worktree: ' + task.worktreePath);
-      if (task && task.branch) lines.push('Branch: ' + task.branch);
-      if (task && task.mode) lines.push('Mode: ' + task.mode);
-      if (task && task.error) {
-        lines.push('');
-        lines.push('Error: ' + task.error);
-      }
-      if (task && task.report) {
-        lines.push('');
-        lines.push('Summary:');
-        lines.push(String(task.report));
-      }
-      if (task && Array.isArray(task.files) && task.files.length) {
-        lines.push('');
-        lines.push('Artifacts / Modified Files (' + task.files.length + '):');
-        task.files.slice(0, 20).forEach(function (f) {
-          var fname = (f && (f.path || f.name || f.id)) || String(f || '');
-          if (fname) lines.push('- ' + fname);
-        });
-      }
+      lines.push('# Coding Task: ' + projLabel + ' (' + statusInfo.label + ')');
+      if (task && task.goal) lines.push('Goal: ' + task.goal);
+      if (repFmt && repFmt.summary) lines.push(repFmt.summary);
       var wb = cwEnsureWorkbench();
-      var entryId = 'run-' + ((task && task.runId) || runId);
+      var entryId = 'run-' + resolvedRunId;
+      var existingIdx = -1;
       if (wb && Array.isArray(wb.items)) {
-        wb.items = wb.items.filter(function (it) { return it && it.id !== entryId && it.runId !== runId; });
+        for (var k = 0; k < wb.items.length; k++) {
+          var cand = wb.items[k];
+          if (cand && (cand.runId === resolvedRunId || cand.id === entryId)) {
+            existingIdx = k;
+            break;
+          }
+        }
       }
-      cwOpenWorkbench({
-        id: entryId,
-        title: 'Code: ' + projLabel + ' (' + statusTitle + ')',
-        content: lines.join('\n')
-      });
-      if (wb && Array.isArray(wb.items) && wb.items.length) {
-        wb.items[wb.items.length - 1].runId = (task && task.runId) || runId;
+      var target = null;
+      if (existingIdx >= 0) {
+        wb.activeIndex = existingIdx;
+        wb.open = true;
+        target = wb.items[existingIdx];
+      } else {
+        cwOpenWorkbench({
+          id: entryId,
+          title: 'Code: ' + projLabel + ' (' + statusInfo.label + ')',
+          content: lines.join('\n')
+        });
+        target = wb && Array.isArray(wb.items) && wb.items.length ? wb.items[wb.items.length - 1] : null;
+      }
+      if (target) {
+        target.id = entryId;
+        target.runId = resolvedRunId;
+        target.coding = true;
+        target.title = 'Code: ' + projLabel + ' (' + statusInfo.label + ')';
+        target.goal = (task && task.goal) || target.goal || '';
+        target.project = projLabel;
+        target.projectPath = (task && task.projectPath) || '';
+        target.worktreePath = (task && task.worktreePath) || '';
+        target.branch = (task && task.branch) || '';
+        target.mode = (task && task.mode) || '';
+        target.status = status;
+        target.needsAttention = needsAtt;
+        target.error = (task && task.error) || '';
+        target.report = (task && task.report) || null;
+        if (task && Array.isArray(task.files)) target.files = task.files;
+        else if (!Array.isArray(target.files)) target.files = [];
+        if (task && Array.isArray(task.pendingApprovals)) target.pendingApprovals = task.pendingApprovals;
+        if (task && task.pendingPlanReview !== undefined) target.pendingPlanReview = task.pendingPlanReview;
+        if (task && task.pendingQuestions !== undefined) target.pendingQuestions = task.pendingQuestions;
+        if (!Array.isArray(target.feedItems)) target.feedItems = [];
+        if (!target._seenIds) target._seenIds = {};
+        if (typeof target._stepCounter !== 'number') target._stepCounter = 0;
         cwRenderWorkbench();
       }
       return task;

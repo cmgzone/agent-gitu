@@ -309,7 +309,7 @@ export const COWORK_CSS = String.raw`
      itself when it cannot load (offline), which is when the glyph shows. */
   .cw-tool-ico { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; flex: none; color: var(--muted); }
   .cw-tool-ico svg { width: 13px; height: 13px; }
-  .cw-tool-ico .cw-fav { position: absolute; inset: 0; width: 14px; height: 14px; border-radius: 3px; background: var(--card); }
+  .cw-tool-ico .cw-fav { position: absolute; inset: 0; width: 14px; height: 14px; border-radius: 3px; object-fit: contain; background: var(--card); }
   /* Streaming replies carry a caret while the model is still writing them. */
   .cw-progress-text::after { content: ''; display: inline-block; width: 7px; height: 13px; margin-left: 3px; vertical-align: -2px; border-radius: 1px; background: var(--accent); animation: cwcaret 1s steps(1) infinite; }
   .cw-progress-text[hidden]::after { display: none; }
@@ -761,6 +761,8 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     ,map: CW_SVG_OPEN + '<path d="M20 10c0 6-8 12-8 12S4 16 4 10a8 8 0 1 1 16 0z"/><circle cx="12" cy="10" r="3"/></svg>'
     ,external: CW_SVG_OPEN + '<path d="M14 3h7v7m0-7-11 11M10 3H3v18h18v-7"/></svg>'
     ,phone: CW_SVG_OPEN + '<path d="M22 17v3a2 2 0 0 1-2.2 2A20 20 0 0 1 3 5.2 2 2 0 0 1 5 3h3l2 6-2 2a16 16 0 0 0 5 5l2-2 7 3z"/></svg>'
+    ,mail: CW_SVG_OPEN + '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>'
+    ,calendar: CW_SVG_OPEN + '<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>'
     ,dots: '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.75"/><circle cx="12" cy="12" r="1.75"/><circle cx="19" cy="12" r="1.75"/></svg>'
   };
   function cwIcon(name) { return CW_ICONS[name] || ''; }
@@ -787,11 +789,69 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     googlecalendar: 'calendar.google.com', googlesheets: 'sheets.google.com', outlook: 'outlook.com',
   };
 
+  var CW_MCP_EXTRA_DOMAINS = {
+    gmail: 'mail.google.com', googlemail: 'mail.google.com', googledocs: 'docs.google.com',
+    googleslides: 'slides.google.com', googlemeet: 'meet.google.com', microsoftteams: 'teams.microsoft.com',
+    teams: 'teams.microsoft.com', whatsapp: 'whatsapp.com', zoom: 'zoom.us', dropbox: 'dropbox.com',
+    resend: 'resend.com', sendgrid: 'sendgrid.com', postmark: 'postmarkapp.com', hubspot: 'hubspot.com',
+    salesforce: 'salesforce.com', jira: 'atlassian.com', confluence: 'atlassian.com', linear: 'linear.app',
+    notion: 'notion.so', figma: 'figma.com', stripe: 'stripe.com', shopify: 'shopify.com',
+    vercel: 'vercel.com', netlify: 'netlify.com', supabase: 'supabase.com', cloudflare: 'cloudflare.com',
+    openai: 'openai.com', anthropic: 'anthropic.com', google: 'google.com', airtable: 'airtable.com',
+    asana: 'asana.com', trello: 'trello.com', clickup: 'clickup.com', twilio: 'twilio.com',
+    intercom: 'intercom.com', zendesk: 'zendesk.com', mailchimp: 'mailchimp.com', youtube: 'youtube.com',
+    reddit: 'reddit.com', spotify: 'spotify.com', calendar: 'calendar.google.com',
+    drive: 'drive.google.com', docs: 'docs.google.com', sheets: 'sheets.google.com',
+  };
+
+  function cwResolveServiceDomain(raw) {
+    var key = String(raw || '').trim().toLowerCase();
+    if (!key) return '';
+    var variants = [
+      key,
+      key.replace(/-?mcp$/, '').replace(/-server$/, ''),
+      key.replace(/[\s_-]+/g, ''),
+      key.replace(/-?mcp$/, '').replace(/-server$/, '').replace(/[\s_-]+/g, ''),
+    ];
+    for (var i = 0; i < variants.length; i++) {
+      var v = variants[i];
+      if (!v) continue;
+      if (CW_MCP_DOMAINS[v]) return CW_MCP_DOMAINS[v];
+      if (CW_MCP_EXTRA_DOMAINS[v]) return CW_MCP_EXTRA_DOMAINS[v];
+    }
+    return '';
+  }
+
+  function cwServiceFallbackGlyph(raw, fallback) {
+    var key = String(raw || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+    if (/^(?:gmail|googlemail|mail|outlook|resend|sendgrid|postmark|protonmail)$/.test(key)) return 'mail';
+    if (/^(?:calendar|googlecalendar|calendly)$/.test(key)) return 'calendar';
+    return fallback || 'plug';
+  }
+
+  function cwCachedAppLogoUrl(raw) {
+    var st = typeof cw === 'object' && cw ? cw : (typeof cwEnsure === 'function' ? cwEnsure() : null);
+    var map = st && st.appLogos;
+    if (!map) return '';
+    var key = String(raw || '').trim().toLowerCase();
+    var src = map[key] || map[key.replace(/[\s_-]+/g, '')] || '';
+    return /^https:\/\/[^\s"'<>@]+$/i.test(src) ? src : '';
+  }
+
+  function cwBrandImgHtml(src, fallbackUrl) {
+    if (!src) return '';
+    var fbAttr = fallbackUrl && fallbackUrl !== src ? ' data-fb="' + esc(fallbackUrl) + '"' : '';
+    var onErr = fbAttr
+      ? "if(this.dataset.fb){var u=this.dataset.fb;this.dataset.fb='';this.src=u;}else{this.remove();}"
+      : 'this.remove()';
+    return '<img class="cw-fav" src="' + esc(src) + '"' + fbAttr + ' alt="" width="14" height="14" loading="lazy" referrerpolicy="no-referrer" onerror="' + onErr + '">';
+  }
+
   /** A site/brand favicon that removes itself when it cannot load, revealing the glyph under it. */
   function cwFaviconHtml(domain) {
     var d = String(domain || '').trim().toLowerCase();
     if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(d)) return '';
-    return '<img class="cw-fav" src="https://icons.duckduckgo.com/ip3/' + esc(d) + '.ico" alt="" width="14" height="14" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">';
+    return cwBrandImgHtml('https://icons.duckduckgo.com/ip3/' + d + '.ico', '');
   }
 
   /**
@@ -803,21 +863,28 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
    */
   function cwToolIconHtml(p) {
     var tool = p && p.tool;
-    if (!tool) return '';
-    if (tool === 'connected_apps') {
-      var service = String(p.appService || '').toLowerCase();
-      return '<span class="cw-tool-ico" title="' + esc(service ? cwActionWords(service) : 'Connected app') + '">' + cwIcon('plug') + cwFaviconHtml(CW_MCP_DOMAINS[service]) + '</span>';
+    var service = String((p && p.appService) || '').trim().toLowerCase();
+    var server = String((p && p.mcpServer) || '').trim().toLowerCase();
+    var match = /^https?:\/\/([^/?#]+)/i.exec(String((p && p.webUrl) || ''));
+    var host = match ? match[1].replace(/:\d+$/, '').toLowerCase() : '';
+    if (!tool && !service && !server && !host) return '';
+    if (tool === 'connected_apps' || service) {
+      var domain = cwResolveServiceDomain(service) || host;
+      var ddg = /^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain) ? 'https://icons.duckduckgo.com/ip3/' + domain + '.ico' : '';
+      var logo = cwCachedAppLogoUrl(service);
+      var glyph = cwServiceFallbackGlyph(service, 'plug');
+      return '<span class="cw-tool-ico" title="' + esc(service ? cwActionWords(service) : 'Connected app') + '">' + cwIcon(glyph) + cwBrandImgHtml(logo || ddg, logo ? ddg : '') + '</span>';
     }
-    if (['browse', 'web_fetch', 'web_search', 'search_web'].indexOf(tool) >= 0) {
-      // The server sends origin-only URLs; parse the host without depending on URL().
-      var match = /^https?:\/\/([^/?#]+)/i.exec(String((p && p.webUrl) || ''));
-      var host = match ? match[1].replace(/:\d+$/, '').toLowerCase() : '';
-      return '<span class="cw-tool-ico" title="' + (host ? 'Browsing ' + esc(host) : 'Browsing the web') + '">' + cwIcon('globe') + cwFaviconHtml(host) + '</span>';
+    if (tool === 'mcp_call' || server) {
+      var mcpDomain = cwResolveServiceDomain(server) || host;
+      var mcpDdg = /^[a-z0-9.-]+\.[a-z]{2,}$/.test(mcpDomain) ? 'https://icons.duckduckgo.com/ip3/' + mcpDomain + '.ico' : '';
+      var mcpLogo = cwCachedAppLogoUrl(server);
+      var mcpGlyph = cwServiceFallbackGlyph(server, 'plug');
+      return '<span class="cw-tool-ico" title="' + (server ? esc(server) + ' · MCP' : 'MCP tool') + '">' + cwIcon(mcpGlyph) + cwBrandImgHtml(mcpLogo || mcpDdg, mcpLogo ? mcpDdg : '') + '</span>';
     }
-    if (tool === 'mcp_call') {
-      var server = String((p && p.mcpServer) || '').toLowerCase();
-      var domain = CW_MCP_DOMAINS[server] || CW_MCP_DOMAINS[server.replace(/-?mcp$/, '').replace(/-server$/, '')] || '';
-      return '<span class="cw-tool-ico" title="' + (server ? esc(server) + ' · MCP' : 'MCP tool') + '">' + cwIcon('plug') + cwFaviconHtml(domain) + '</span>';
+    if (['browse', 'web_fetch', 'web_search', 'search_web'].indexOf(tool) >= 0 || host) {
+      var title = host ? (tool && tool.indexOf('connection') === 0 ? 'Using ' + esc(host) : 'Browsing ' + esc(host)) : 'Browsing the web';
+      return '<span class="cw-tool-ico" title="' + title + '">' + cwIcon('globe') + cwFaviconHtml(host) + '</span>';
     }
     var byName = {
       run_command: ['terminal', 'Running a command'], ssh_exec: ['terminal', 'Checking a connected server'], computer_process: ['terminal', 'Computer process'], computer_status: ['terminal', 'Computer status'],
@@ -832,6 +899,10 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       create_skill: ['bolt', 'Saving a skill'], update_skill: ['bolt', 'Improving a skill'], use_skill: ['bolt', 'Loading a skill'], list_skills: ['bolt', 'Listing skills'],
       widget_manage: ['bolt', 'Updating a widget'], agent_memory: ['search', 'Remembering'], user_profile: ['users', 'Updating the profile'],
       ask_user: ['chat', 'Asking you'], request_permission: ['eye', 'Requesting permission'], recommend: ['bolt', 'Recommending a step'],
+      connection_read: ['plug', 'Reading connected service'], connection_execute: ['plug', 'Using connected service'],
+      connection_test: ['plug', 'Checking connection'], update_connection: ['plug', 'Updating connection'],
+      inspect_connection_response: ['eye', 'Inspecting response'], edit_file: ['edit', 'Editing a file'],
+      request_credential: ['eye', 'Connecting account'], request_browser_auth: ['globe', 'Signing in'], computer_handoff: ['external', 'Desktop handoff'],
     };
     var entry = byName[tool] || ['bolt', 'Using a tool'];
     return '<span class="cw-tool-ico" title="' + esc(entry[1]) + '">' + cwIcon(entry[0]) + '</span>';
@@ -1013,6 +1084,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     var cw = S.cw;
     if (!cw) return;
     cwDisposeSubagentOrbs();
+    if (typeof cwStopCodingStream === 'function') cwStopCodingStream();
     if (cw.closeDesktop) cw.closeDesktop();
     cw.generation = (cw.generation || 0) + 1;
     if (cw.timer) { clearInterval(cw.timer); cw.timer = null; }
@@ -1425,6 +1497,8 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     }
     html += '<div class="cw-rail-sec-row"><div class="cw-sec" style="padding:0;">PROJECTS</div><button type="button" class="cw-rail-add" id="cwRailNewProject" title="Create new project" aria-label="Create new project">+</button></div>';
     html += '<div id="cwRailProjects"></div>';
+    html += '<div class="cw-sec">CODING</div>';
+    html += '<div id="cwRailCoding"></div>';
     html += '<div class="cw-sec">WIDGETS</div>';
     if (!cw.widgets.length) html += '<div class="cw-empty-note">No widgets yet. Teammates pin live progress cards here; you can add one too.</div>';
     cw.widgets.forEach(function (w) {
@@ -1474,6 +1548,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       };
     }
     if (typeof cwRenderRailProjects === 'function') cwRenderRailProjects();
+    if (typeof cwRenderRailCoding === 'function') cwRenderRailCoding();
     var railNewProject = $('cwRailNewProject');
     if (railNewProject) {
       railNewProject.onclick = function () {
@@ -1689,7 +1764,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       '<div class="cw-composer-wrap" id="cwComposerWrap">' +
         '<div class="cw-slash-menu" id="cwSlashMenu" role="listbox" aria-label="Slash commands" hidden></div>' +
         '<div class="cw-context-bar" id="cwContextBar" hidden></div>' +
-        '<div class="cw-clean-activity" id="cwCleanActivity" hidden><span class="cw-clean-status" id="cwCleanStatus" role="status" aria-live="polite" aria-atomic="true"><span id="cwCleanLabel"></span></span><button type="button" id="cwCleanDetails" aria-label="View work details" hidden></button></div>' +
+        '<div class="cw-clean-activity" id="cwCleanActivity" hidden><span class="cw-clean-status" id="cwCleanStatus" role="status" aria-live="polite" aria-atomic="true"><span class="cw-clean-icon" id="cwCleanIcon" aria-hidden="true" hidden></span><span id="cwCleanLabel"></span></span><button type="button" id="cwCleanDetails" aria-label="View work details" hidden></button></div>' +
         '<div class="cw-delivery" id="cwDelivery" aria-label="Message delivery" hidden><button type="button" data-cwdelivery="steer" aria-pressed="true" title="Guide the current task at its next safe step">' + cwIcon('bolt') + 'Steer</button><button type="button" data-cwdelivery="queue" aria-pressed="false" title="Start this request after the current task finishes">' + cwIcon('clock') + 'Queue</button><button type="button" data-cwdelivery="question" aria-pressed="false" title="Ask a question while work continues">' + cwIcon('chat') + 'Ask</button><span class="cw-delivery-note" id="cwDeliveryNote"></span></div>' +
         '<div class="cw-work" id="cwWork"></div>' +
         '<div class="cw-composer-folders" id="cwComposerFolders" aria-label="Tagged folders" hidden></div>' +
@@ -2946,7 +3021,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       if (draft) draft.values[key] = input.value;
       if (input === document.activeElement) reviewFocus = { id: id, key: key, start: input.selectionStart, end: input.selectionEnd, scroll: input.scrollTop };
     });
-    cwReplaceTranscript(wrap, cwTranscriptHtml() + '<section id="cwCodingActivity" class="cw-coding-activity" aria-label="Coding tasks" hidden></section><div class="cw-row cw-working-row" id="cwWorkingBubble" hidden><div class="cw-work-card"><div class="cw-working-head"><div class="cw-work-lead" id="cwWorkingLead" hidden></div><div class="cw-working-bubble" role="status" aria-live="polite" aria-atomic="true"><span id="cwWorkingLabel"></span><span class="cw-work-elapsed" id="cwWorkingElapsed" hidden></span></div></div><div class="cw-work-stage" id="cwWorkingStage" hidden></div></div></div><div id="cwLive" hidden></div><div class="cw-row cw-receipt-row" id="cwWorkReceipt" hidden></div>');
+    cwReplaceTranscript(wrap, cwTranscriptHtml() + '<section id="cwCodingActivity" class="cw-coding-activity" aria-label="Coding tasks" hidden></section><div class="cw-row cw-working-row" id="cwWorkingBubble" hidden><div class="cw-work-card"><div class="cw-working-head"><div class="cw-work-lead" id="cwWorkingLead" hidden></div><div class="cw-working-bubble" role="status" aria-live="polite" aria-atomic="true"><span class="cw-work-icon" id="cwWorkingIcon" aria-hidden="true" hidden></span><span id="cwWorkingLabel"></span><span class="cw-work-elapsed" id="cwWorkingElapsed" hidden></span></div></div><div class="cw-work-stage" id="cwWorkingStage" hidden></div></div></div><div id="cwLive" hidden></div><div class="cw-row cw-receipt-row" id="cwWorkReceipt" hidden></div>');
     wrap.querySelectorAll('details[data-card-details]').forEach(function(details){details.open=!!expandedCards[details.getAttribute('data-card-details')];});
     wrap.querySelectorAll('details[data-cwworkhistory]').forEach(function (details) {
       var saved = workHistoryState[details.getAttribute('data-cwworkhistory')];
@@ -3116,15 +3191,95 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       if (detail.indexOf('command stop ') === 0) return 'Stopping command ' + cwRedactActivityDetail(detail.slice(13)) + '…';
       return detail ? 'Running: ' + cwRedactActivityDetail(detail) : 'Running a check in the workspace…';
     }
+    function cwPrettyServiceName(raw) {
+      var key = String(raw || '').trim();
+      if (!key) return '';
+      var low = key.toLowerCase().replace(/[\s_-]+/g, '');
+      var known = {
+        gmail: 'Gmail', googlemail: 'Gmail', mail: 'Mail', github: 'GitHub', gitlab: 'GitLab',
+        bitbucket: 'Bitbucket', youtube: 'YouTube', hubspot: 'HubSpot', openai: 'OpenAI',
+        whatsapp: 'WhatsApp', googlecalendar: 'Google Calendar', googledrive: 'Google Drive',
+        googledocs: 'Google Docs', googlesheets: 'Google Sheets', googleslides: 'Google Slides',
+        googlemeet: 'Google Meet', microsoftteams: 'Microsoft Teams', linkedin: 'LinkedIn',
+        sendgrid: 'SendGrid', cloudflare: 'Cloudflare', notion: 'Notion', slack: 'Slack',
+        linear: 'Linear', jira: 'Jira', figma: 'Figma', stripe: 'Stripe', shopify: 'Shopify',
+        dropbox: 'Dropbox', outlook: 'Outlook', resend: 'Resend', vercel: 'Vercel',
+        netlify: 'Netlify', supabase: 'Supabase', airtable: 'Airtable', zoom: 'Zoom', mcp: 'MCP'
+      };
+      if (known[low]) return known[low];
+      return cwRedactActivityDetail(key.replace(/[_-]+/g, ' ').replace(/\b[a-z]/g, function(ch) { return ch.toUpperCase(); }));
+    }
+    function cwPrettyActionName(rawOp, rawSvc) {
+      var op = String(rawOp || '').trim();
+      if (!op) return '';
+      if (op.indexOf('mcp:') === 0) {
+        var parts = op.split(':');
+        op = parts.slice(2).join(' ') || parts[parts.length - 1] || op;
+      }
+      var svc = String(rawSvc || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+      var tokens = op.split(/[_:\s-]+/).filter(Boolean);
+      var svcTokens = String(rawSvc || '').trim().toLowerCase().split(/[_:\s-]+/).filter(Boolean);
+      if (svcTokens.length && tokens.length > svcTokens.length) {
+        var matchTokens = true;
+        for (var ti = 0; ti < svcTokens.length; ti++) {
+          if (tokens[ti].toLowerCase() !== svcTokens[ti]) { matchTokens = false; break; }
+        }
+        if (matchTokens) op = tokens.slice(svcTokens.length).join(' ');
+      } else if (svc && tokens.length > 1 && tokens[0].toLowerCase() === svc) {
+        op = tokens.slice(1).join(' ');
+      }
+      var words = op.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+      if (!words) return '';
+      return cwRedactActivityDetail(words.charAt(0).toUpperCase() + words.slice(1).toLowerCase());
+    }
+    if (tool === 'connection_read' || tool === 'connection_execute' || tool === 'connection_test' || tool === 'update_connection') {
+      var connSvc = progress && progress.appService ? cwPrettyServiceName(progress.appService) : (progress && progress.webUrl ? cwUrlHost(progress.webUrl) : '');
+      var connOp = detail.indexOf('conn ') === 0 ? cwPrettyActionName(detail.replace(/^conn\s+[^\s·]+\s*·?\s*/, ''), connSvc) : '';
+      if (tool === 'connection_test') return 'Checking connection' + (connSvc ? ' to ' + connSvc : '') + '…';
+      return 'Using ' + (connSvc || 'connected service') + (connOp ? ' (' + connOp + ')' : '') + '…';
+    }
     if (tool === 'mcp_call' || (progress && progress.mcpServer)) {
-      var srv = progress && progress.mcpServer ? cwRedactActivityDetail(progress.mcpServer) : 'MCP';
-      var mcpTool = detail.indexOf('mcp ') === 0 ? cwRedactActivityDetail(detail.slice(4)) : '';
+      var rawSrv = progress && progress.mcpServer ? progress.mcpServer : '';
+      var srv = rawSrv ? cwPrettyServiceName(rawSrv) : 'MCP';
+      var rawMcpTool = detail.indexOf('mcp ') === 0 ? detail.slice(4) : '';
+      var mcpTool = cwPrettyActionName(rawMcpTool, rawSrv);
       return 'Using ' + srv + (mcpTool ? ' (' + mcpTool + ')' : '') + '…';
     }
-    if (tool === 'connected_apps' || (progress && progress.appService) || tool === 'query_connection' || tool === 'inspect_connection_response') {
-      var svc = progress && progress.appService ? cwRedactActivityDetail(progress.appService) : 'connected service';
-      var appAction = detail.indexOf('app ') === 0 ? cwRedactActivityDetail(detail.replace(/^app\s+[^\s·]+\s*·?\s*/, '')) : '';
+    if (tool === 'connected_apps' || (progress && progress.appService) || tool === 'query_connection') {
+      var rawSvc = progress && progress.appService ? progress.appService : '';
+      var svc = rawSvc ? cwPrettyServiceName(rawSvc) : 'connected service';
+      var rawAction = detail.indexOf('app ') === 0 ? detail.replace(/^app\s+[^\s·]+\s*·?\s*/, '')
+        : detail.indexOf('conn ') === 0 ? detail.replace(/^conn\s+[^\s·]+\s*·?\s*/, '') : '';
+      var appAction = cwPrettyActionName(rawAction, rawSvc);
       return 'Using ' + svc + (appAction ? ' (' + appAction + ')' : '') + '…';
+    }
+    if (tool === 'inspect_connection_response') {
+      return 'Reviewing response data…';
+    }
+    if (tool === 'ssh_exec') {
+      return 'Running a command on your server…';
+    }
+    if (tool === 'gitu_task') {
+      var goal = detail.indexOf('gitu ') === 0 ? cwRedactActivityDetail(detail.slice(5)) : '';
+      return goal ? 'Working on coding task: ' + goal + '…' : 'Working with Agent Gitu…';
+    }
+    if (tool === 'spawn_sub_agent') {
+      return 'Coordinating with a helper agent…';
+    }
+    if (tool === 'ask_user') {
+      return 'Waiting for your answer…';
+    }
+    if (tool === 'request_credential') {
+      return 'Waiting for account connection…';
+    }
+    if (tool === 'request_browser_auth') {
+      return 'Waiting for website sign-in…';
+    }
+    if (tool === 'request_permission') {
+      return 'Waiting for your approval…';
+    }
+    if (tool === 'computer_handoff') {
+      return 'Waiting for you in the browser…';
     }
     if (tool === 'spawn_subagent') {
       return detail.indexOf('delegate ') === 0 ? 'Delegating: ' + cwRedactActivityDetail(detail.slice(9)) : 'Delegating to a teammate…';
@@ -4020,6 +4175,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     cw.progresses = d.progresses || (d.progress ? [d.progress] : []);
     var historyChanged = JSON.stringify(cw.workHistory || []) !== JSON.stringify(d.workHistory || []);
     cw.workHistory = d.workHistory || [];
+    var codingChanged = JSON.stringify(cw.codingTasks || []) !== JSON.stringify(d.codingTasks || []);
     cw.codingTasks = d.codingTasks || [];
     cw.queued = d.queued || 0;
     var missionsChanged = JSON.stringify(cw.missions || []) !== JSON.stringify(d.missions || []);
@@ -4051,7 +4207,8 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     }
     if (cw.threadId && d.threads && !cw.threads.some(function (thread) { return thread.id === cw.threadId; })) { cwSwitchThread(null); return; }
     if (rosterChanged) cwApplyCharacterTheme();
-    if (rosterChanged || widgetsChanged || threadsChanged) cwRenderRail();
+    if (rosterChanged || widgetsChanged || threadsChanged || codingChanged) cwRenderRail();
+    if (codingChanged && typeof cwSyncCodingWorkbenchStatus === 'function') cwSyncCodingWorkbenchStatus(cw.codingTasks);
     if (rosterChanged || threadsChanged) cwRenderMembers();
     if (cw.galleryOpen && typeof cwRenderGallery === 'function') cwRenderGallery();
     else if (added || rosterChanged || artifactsChanged || requestsChanged || historyChanged || workerLayoutChanged) cwRenderMsgs(); else cwRenderProgress();

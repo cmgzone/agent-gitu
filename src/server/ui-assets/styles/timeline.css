@@ -190,7 +190,11 @@
   .tool-diff-line.add { color: var(--ok); background: var(--ok-dim); }
   .tool-diff-line.del { color: var(--err); background: var(--err-dim); }
   .tool-diff-line.hunk { color: var(--run); }
-  .tool-kind { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 20px; flex: none; border: 0; color: var(--faint); font: 11px var(--mono); background: transparent; }
+  .tool-kind { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 20px; flex: none; border: 0; color: var(--faint); font: 11px var(--mono); background: transparent; }
+  .tool-fav { position: absolute; left: 1px; top: 3px; width: 14px; height: 14px; border-radius: 3px; object-fit: contain; background: var(--card); }
+  .wtool-ico { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; flex: none; }
+  .wtool-ico[hidden] { display: none; }
+  .wtool-ico .tool-fav { position: static; width: 14px; height: 14px; }
   .tool-duration { color: var(--faint); font: 10px var(--mono); font-variant-numeric: tabular-nums; flex: none; min-width: 32px; text-align: right; }
   .exit-code { font: 10px var(--mono); color: var(--faint); flex: none; }
   .exit-code.bad { color: var(--err); }

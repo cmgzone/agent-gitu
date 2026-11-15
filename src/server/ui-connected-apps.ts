@@ -162,6 +162,7 @@ export const CONNECTED_APPS_JS = String.raw`
   function cwServiceIcon(service) {
     var name=String(service.name||service.toolkit||service.slug||'App'),logo='';
     try { var url=new URL(service.logo);if(url.protocol==='https:'&&!url.username&&!url.password)logo=url.href; } catch(e) {}
+    if(logo&&typeof cwEnsure==='function'){var st=cwEnsure();var svcKey=String(service.service||service.slug||service.toolkit||'').trim().toLowerCase();if(svcKey){(st.appLogos||(st.appLogos={}))[svcKey]=logo;st.appLogos[svcKey.replace(/[\s_-]+/g,'')]=logo;}}
     // Keep the camera recognisable when a role suggestion has no catalog logo.
     if(!logo&&(service.service||service.slug||service.toolkit)==='instagram')return '<div class="cw-service-symbol" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.5" cy="6.5" r=".8" fill="currentColor" stroke="none"/></svg></div>';
     if(!logo&&typeof cwToolIconHtml==='function')return '<div class="cw-service-symbol" aria-hidden="true">'+cwToolIconHtml({tool:'connected_apps',appService:service.service||service.slug||service.toolkit})+'</div>';

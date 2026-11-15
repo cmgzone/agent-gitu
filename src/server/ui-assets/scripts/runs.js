@@ -266,7 +266,7 @@
     w.className = 'working activity-indicator'; w.id = 'working';
     w.setAttribute('role', 'status');
     w.setAttribute('aria-live', 'polite');
-    w.innerHTML = '/* GITU_BINDING_ACTIVITY_MARK_HTML */<span class="wtext" id="workingText">Connecting…</span><span class="welapsed" id="workingElapsed"></span><div class="reasoning-stream" id="workingReasoning" aria-label="Model reasoning" hidden></div>';
+    w.innerHTML = '/* GITU_BINDING_ACTIVITY_MARK_HTML */<span class="wtool-ico" id="workingToolIcon" aria-hidden="true" hidden></span><span class="wtext" id="workingText">Connecting…</span><span class="welapsed" id="workingElapsed"></span><div class="reasoning-stream" id="workingReasoning" aria-label="Model reasoning" hidden></div>';
     $('stream').appendChild(w);
     setWorking('Thinking…');
     renderRunSide(runId);

@@ -135,7 +135,7 @@
     if (summary.indexOf('list ') === 0) return 'list';
     if (summary.indexOf('search ') === 0) return 'search';
     if (summary.indexOf('$ ') === 0) return 'shell';
-    if (summary.indexOf('browse') === 0) return 'browser';
+    if (summary.indexOf('browse') === 0 || summary.indexOf('fetch ') === 0) return 'browser';
     return 'tool';
   }
   // Human tool labels: what Gitu is doing, not the wire format. The raw
@@ -145,8 +145,60 @@
     if (kind === 'edit') return 'Edit ' + summary.slice(summary.indexOf(' ') + 1);
     if (kind === 'list') return 'List ' + summary.slice(5);
     if (kind === 'search') return 'Search ' + summary.slice(7);
-    if (kind === 'browser') return 'Browser · ' + summary;
+    if (kind === 'browser') {
+      if (summary.indexOf('fetch ') === 0) return 'Fetch ' + summary.slice(6);
+      return 'Browser · ' + summary;
+    }
     if (kind === 'shell') return summary.slice(2);
+    var prettyBrand = function (raw) {
+      var low = String(raw || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+      var map = { gmail: 'Gmail', googlemail: 'Gmail', mail: 'Mail', github: 'GitHub', gitlab: 'GitLab', googlecalendar: 'Google Calendar', googledrive: 'Google Drive', googledocs: 'Google Docs', googlesheets: 'Google Sheets', slack: 'Slack', notion: 'Notion', linear: 'Linear', jira: 'Jira', figma: 'Figma', stripe: 'Stripe', shopify: 'Shopify', hubspot: 'HubSpot', outlook: 'Outlook', youtube: 'YouTube', dropbox: 'Dropbox', whatsapp: 'WhatsApp', zoom: 'Zoom' };
+      return map[low] || (raw ? raw.replace(/[_-]+/g, ' ').replace(/\b[a-z]/g, function (c) { return c.toUpperCase(); }) : 'App');
+    };
+    var prettyOp = function (op, svc) {
+      var s = String(op || '').trim();
+      if (!s) return '';
+      var low = svc ? String(svc).trim().toLowerCase().replace(/[^a-z0-9]/g, '') : '';
+      var tokens = s.split(/[_:\s-]+/).filter(Boolean);
+      var svcTokens = svc ? String(svc).trim().toLowerCase().split(/[_:\s-]+/).filter(Boolean) : [];
+      if (svcTokens.length && tokens.length > svcTokens.length) {
+        var match = true;
+        for (var i = 0; i < svcTokens.length; i++) {
+          if (tokens[i].toLowerCase() !== svcTokens[i]) { match = false; break; }
+        }
+        if (match) s = tokens.slice(svcTokens.length).join(' ');
+      } else if (low && tokens.length > 1 && tokens[0].toLowerCase() === low) {
+        s = tokens.slice(1).join(' ');
+      }
+      var words = s.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+      return words ? words.charAt(0).toUpperCase() + words.slice(1).toLowerCase() : '';
+    };
+    if (summary.indexOf('app ') === 0) {
+      var appBody = summary.slice(4);
+      var sep = appBody.indexOf(' · ');
+      var rawSvc = (sep >= 0 ? appBody.slice(0, sep) : appBody).trim();
+      var rawAct = sep >= 0 ? appBody.slice(sep + 3).trim() : '';
+      var svc = prettyBrand(rawSvc);
+      var act = prettyOp(rawAct, rawSvc);
+      return act ? svc + ' · ' + act : svc;
+    }
+    if (summary.indexOf('mcp ') === 0) {
+      var mcpName = summary.slice(4).trim();
+      if (mcpName.indexOf('mcp:') === 0) {
+        var mParts = mcpName.split(':');
+        var mSrv = mParts[1] || 'MCP';
+        var mAct = prettyOp(mParts.slice(2).join(' '), mSrv);
+        return mAct ? prettyBrand(mSrv) + ' · ' + mAct : prettyBrand(mSrv);
+      }
+      return prettyOp(mcpName, '') || mcpName;
+    }
+    if (summary.indexOf('conn ') === 0) {
+      var cBody = summary.slice(5);
+      var cSep = cBody.indexOf(' · ');
+      var cName = prettyBrand(cSep >= 0 ? cBody.slice(0, cSep) : cBody);
+      var cAct = cSep >= 0 ? prettyOp(cBody.slice(cSep + 3), '') : '';
+      return cAct ? cName + ' · ' + cAct : cName;
+    }
     return summary;
   }
   function splitSummary(body) { var d = body.indexOf(' — '); return d >= 0 ? body.slice(0, d) : body; }
@@ -165,8 +217,19 @@
       if (k === 'read') return 'Reading ' + summary.slice(5) + '…';
       if (k === 'list') return 'Listing ' + summary.slice(5) + '…';
        if (k === 'search') return 'Searching…';
-       if (k === 'browser') return 'Checking in browser…';
+       if (k === 'browser') {
+        if (summary.indexOf('fetch ') === 0) {
+          var m = /^fetch\s+https?:\/\/([^/?#]+)/i.exec(summary);
+          return 'Fetching ' + (m ? m[1] : 'page') + '…';
+        }
+        return 'Checking in browser…';
+      }
       if (k === 'shell') return 'Running ' + summary.slice(2) + '…';
+      if (summary.indexOf('app ') === 0 || summary.indexOf('mcp ') === 0 || summary.indexOf('conn ') === 0) {
+        var label = humanToolSummary(k, summary);
+        var sep = label.indexOf(' · ');
+        return 'Using ' + (sep >= 0 ? label.slice(0, sep) + ' (' + label.slice(sep + 3) + ')' : label) + '…';
+      }
       return 'Working: ' + summary + '…';
     }
     if (text.indexOf('plan ') === 0) return 'Building plan…';
@@ -186,6 +249,7 @@
   function syncWorkingActivity(runId, text) {
     if (S.active && S.active !== runId) return;
     var status = null;
+    var detailSummary = text.indexOf('run ') === 0 ? splitSummary(text.slice(4)).trim() : '';
     if (text === 'activity indexing-project') status = 'Indexing project…';
     else if (text === 'activity preparing-project') status = 'Preparing project…';
     else if (text === 'activity preparing-model') status = 'Preparing model…';
@@ -193,21 +257,60 @@
     else if (text.indexOf('activity content') === 0 || text.indexOf('activity tool') === 0) status = 'Thinking…';
     else if (/^(?:ok|error|denied|blocked) /.test(text)) status = 'Thinking…';
     else status = workingTextFor(text);
-    if (status) setWorking(status);
+    if (status) setWorking(status, detailSummary);
+  }
+  function toolBrandIconHtml(kind, summary, onlyBrand) {
+    var s = String(summary || '').trim();
+    var svc = '';
+    if (s.indexOf('app ') === 0) svc = (s.slice(4).split(' · ')[0] || '').trim().toLowerCase();
+    else if (s.indexOf('mcp ') === 0) {
+      var m = s.slice(4).trim();
+      svc = (m.indexOf('mcp:') === 0 ? m.split(':')[1] : m.split(':')[0] || '').trim().toLowerCase();
+    } else if (s.indexOf('conn ') === 0) {
+      svc = (s.slice(5).split(' · ')[0] || '').trim().toLowerCase();
+    }
+    var key = svc.replace(/[\s_-]+/g, '');
+    var domains = {
+      gmail: 'mail.google.com', googlemail: 'mail.google.com', github: 'github.com', gitlab: 'gitlab.com',
+      bitbucket: 'bitbucket.org', slack: 'slack.com', discord: 'discord.com', notion: 'notion.so',
+      linear: 'linear.app', figma: 'figma.com', stripe: 'stripe.com', shopify: 'shopify.com',
+      hubspot: 'hubspot.com', salesforce: 'salesforce.com', jira: 'atlassian.com', confluence: 'atlassian.com',
+      googlecalendar: 'calendar.google.com', googledrive: 'drive.google.com', googledocs: 'docs.google.com',
+      googlesheets: 'sheets.google.com', outlook: 'outlook.com', dropbox: 'dropbox.com', whatsapp: 'whatsapp.com',
+      zoom: 'zoom.us', vercel: 'vercel.com', netlify: 'netlify.com', supabase: 'supabase.com',
+      resend: 'resend.com', sendgrid: 'sendgrid.com', youtube: 'youtube.com', google: 'google.com'
+    };
+    var urlMatch = /\bhttps?:\/\/([^/?#\s]+)/i.exec(s);
+    var domain = domains[key] || domains[key.replace(/mcp$|server$/, '')] || (urlMatch ? urlMatch[1].replace(/:\d+$/, '').toLowerCase() : '');
+    var glyph = /^(?:gmail|googlemail|mail|outlook|resend|sendgrid)$/.test(key)
+      ? '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>'
+      : ({ shell: '&gt;_', read: '≡', edit: '±', search: '⌕', list: '▤', browser: '◎', tool: '◇' }[kind] || '◇');
+    var fav = /^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain)
+      ? '<img class="tool-fav" src="https://icons.duckduckgo.com/ip3/' + domain + '.ico" alt="" width="14" height="14" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">'
+      : '';
+    if (onlyBrand) return fav ? (glyph + fav) : (/^(?:gmail|googlemail|mail|outlook|resend|sendgrid)$/.test(key) ? glyph : '');
+    return glyph + fav;
   }
   // Working indicator with an elapsed-seconds counter that escalates after
   // 60s on the SAME phase text — a hung command becomes visible instead of
   // looking alive forever. Counter resets whenever the phase text changes.
-  function setWorking(text) {
+  function setWorking(text, detailSummary) {
     var w = $('working');
     if (!w) return;
+    var ico = $('workingToolIcon');
     if (!text) {
       w.style.display = 'none';
       w.classList.remove('slow');
+      if (ico) { ico.hidden = true; if (ico._sig) { ico._sig = ''; ico.innerHTML = ''; } }
       if (S.workingTimer) { clearInterval(S.workingTimer); S.workingTimer = null; }
       S.workingSince = null; S.lastWorkingText = null;
       var e0 = $('workingElapsed'); if (e0) e0.textContent = '';
       return;
+    }
+    if (ico) {
+      var icoHtml = detailSummary ? toolBrandIconHtml(toolKind(detailSummary), detailSummary, true) : '';
+      ico.hidden = !icoHtml;
+      if (ico._sig !== icoHtml) { ico._sig = icoHtml; ico.innerHTML = icoHtml; }
     }
     // A tool row owns its own spinner. Otherwise keep the live thinking line
     // at the tail so the animation follows the current narration.

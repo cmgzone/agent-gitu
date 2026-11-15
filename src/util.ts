@@ -401,6 +401,35 @@ export function summarizeParams(tool: string, params: Record<string, unknown>): 
       return `mcp ${String(params['tool'] ?? '').slice(0, 80)}`;
     case 'connected_apps':
       return `app ${String(params['service'] ?? 'app')}${params['tool'] ? ' · ' + String(params['tool']).slice(0, 80) : params['action'] ? ' · ' + String(params['action']) : ''}`;
+    case 'connection_read':
+    case 'connection_execute': {
+      const conn = String(params['connectionId'] ?? '').slice(0, 50);
+      const inlineOp = params['operation'] && typeof params['operation'] === 'object' ? (params['operation'] as Record<string, unknown>) : undefined;
+      const op = String(params['operationId'] ?? inlineOp?.['label'] ?? inlineOp?.['id'] ?? '').slice(0, 70);
+      return `conn ${conn || 'service'}${op ? ' · ' + op : ''}`;
+    }
+    case 'connection_test':
+      return `conn-test ${String(params['connectionId'] ?? 'service').slice(0, 60)}`;
+    case 'update_connection':
+      return `conn-update ${String(params['label'] ?? params['connectionId'] ?? 'service').slice(0, 60)}`;
+    case 'inspect_connection_response':
+      return `inspect response${params['path'] ? ' ' + String(params['path']).slice(0, 60) : params['search'] ? ' search' : ''}`;
+    case 'gitu_task':
+      return `gitu ${String(params['goal'] ?? '').slice(0, 90)}`;
+    case 'ssh_exec':
+      return `ssh ${String(params['connectionId'] ?? 'server').slice(0, 40)} ${String(params['command'] ?? '').slice(0, 80)}`.trim();
+    case 'spawn_sub_agent':
+      return `sub-agent ${String(params['role'] ?? params['objective'] ?? '').slice(0, 70)}`;
+    case 'ask_user':
+      return `ask user ${String(params['question'] ?? '').slice(0, 80)}`;
+    case 'request_permission':
+      return 'request permission';
+    case 'request_credential':
+      return `request credential ${String(params['label'] ?? params['provider'] ?? '').slice(0, 50)}`.trim();
+    case 'request_browser_auth':
+      return `request sign-in (${String(params['mode'] ?? 'signin').slice(0, 20)})`;
+    case 'computer_handoff':
+      return 'handoff desktop';
     case 'create_document':
       return `create ${String(params['title'] ?? params['name'] ?? 'document').slice(0, 80)}`;
     case 'lsp_diagnostics':

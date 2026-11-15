@@ -504,6 +504,18 @@ describe('animated teammate characters and web activity', () => {
     expect(unknown).toContain('<svg');
     expect(unknown).toContain('Unknown app');
     expect(unknown).not.toContain('<img');
+    const gmail = context.cwToolIconHtml({ tool: 'connected_apps', appService: 'gmail' });
+    expect(gmail).toContain('gmail.com.ico');
+    expect(gmail).toContain('<rect x="3" y="5"');
+    const calendar = context.cwToolIconHtml({ tool: 'connected_apps', appService: 'google_calendar' });
+    expect(calendar).toContain('calendar.google.com.ico');
+    const restConn = context.cwToolIconHtml({ tool: 'connection_read', appService: 'github', webUrl: 'https://api.github.com' });
+    expect(restConn).toContain('github.com.ico');
+    context.S.cw.appLogos = { notion: 'https://cdn.example.com/notion.png', unsafe: 'javascript:alert(1)' };
+    const cachedNotion = context.cwToolIconHtml({ tool: 'connected_apps', appService: 'notion' });
+    expect(cachedNotion).toContain('https://cdn.example.com/notion.png');
+    expect(cachedNotion).toContain('data-fb="https://icons.duckduckgo.com/ip3/notion.so.ico"');
+    expect(context.cwToolIconHtml({ tool: 'connected_apps', appService: 'unsafe' })).not.toContain('javascript:');
     expect(context.cwToolIconHtml({ tool: 'connected_apps', appService: '<script>' })).not.toContain('<script>');
   });
 });

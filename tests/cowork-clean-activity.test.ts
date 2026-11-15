@@ -302,4 +302,109 @@ describe('Cowork clean activity', () => {
     expect(COWORK_CLEAN_ACTIVITY_CSS).toContain('.cw-work-lead, .cw-working-dot, .cw-team-strip { display:none; }');
     expect(COWORK_CLEAN_ACTIVITY_CSS).not.toContain('@keyframes');
   });
+
+  it('shows service favicons, website icons, and plain-English labels side by side without flicker', () => {
+    const esc = (v: unknown) => String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
+    const state: any = { active: 'c1', activeThreadId: 'main', busy: true, agents: [{ id: 'a1', name: 'Jelly' }], progresses: [], requests: [], workHistory: [] };
+    const elements: Record<string, any> = {
+      cwCleanActivity: { hidden: true },
+      cwCleanStatus: { hidden: true },
+      cwCleanIcon: { hidden: true, innerHTML: '' },
+      cwCleanLabel: { textContent: '' },
+      cwCleanDetails: { hidden: true, textContent: '', onclick: null },
+      cwWorkingBubble: { hidden: true },
+      cwWorkingIcon: { hidden: true, innerHTML: '' },
+      cwWorkingLabel: { textContent: '' },
+      cwWorkingLead: { hidden: true, innerHTML: '', _cwSig: '' },
+      cwWorkingStage: { hidden: true, innerHTML: '', _cwSig: '' },
+      cwWorkingElapsed: { hidden: true, textContent: '' },
+      cwTeamStrip: { hidden: true, innerHTML: '', _cwSig: '', onclick: null },
+      cwWorkReceipt: { hidden: true, innerHTML: '', _cwSig: '', onclick: null },
+      cwMsgs: { scrollHeight: 100, scrollTop: 100, clientHeight: 100 },
+    };
+    const context = createContext({
+      window: { addEventListener() {} },
+      document: { addEventListener() {}, querySelectorAll: () => [] },
+      S: { cw: state },
+      esc,
+      URL,
+      $: (id: string) => elements[id] || null,
+    });
+    new Script(COWORK_JS).runInContext(context);
+    new Script(COWORK_CLEAN_ACTIVITY_JS).runInContext(context);
+
+    state.progresses = [{
+      agentId: 'a1',
+      agentName: 'Jelly',
+      tool: 'connected_apps',
+      appService: 'gmail',
+      detail: summarizeParams('connected_apps', { service: 'gmail', action: 'execute', tool: 'GMAIL_FETCH_EMAILS' }),
+    }];
+    context.cwRenderCleanActivity();
+    expect(elements.cwWorkingLabel.textContent).toBe('Using Gmail (Fetch emails)…');
+    expect(elements.cwWorkingIcon.hidden).toBe(false);
+    expect(elements.cwWorkingIcon.innerHTML).toContain('gmail.com.ico');
+    expect(elements.cwWorkingIcon.innerHTML).toContain('<svg');
+    expect(elements.cwWorkingIcon.innerHTML).toContain('onerror="this.remove()"');
+
+    // Re-rendering with the exact same icon keeps the existing element content intact (no favicon reload flicker).
+    let innerWrites = 0;
+    const rawIcon = elements.cwWorkingIcon.innerHTML;
+    Object.defineProperty(elements.cwWorkingIcon, 'innerHTML', {
+      get: () => rawIcon,
+      set: () => { innerWrites++; },
+    });
+    context.cwRenderCleanActivity();
+    expect(innerWrites).toBe(0);
+
+    // Replace cwWorkingIcon with a fresh node for subsequent steps and exercise MCP, REST connection, and top status bar.
+    elements.cwWorkingIcon = { hidden: true, innerHTML: '' };
+    state.progresses = [{
+      agentId: 'a1',
+      agentName: 'Jelly',
+      tool: 'mcp_call',
+      mcpServer: 'github',
+      detail: summarizeParams('mcp_call', { tool: 'mcp:github:create_issue' }),
+    }];
+    context.cwRenderCleanActivity();
+    expect(elements.cwWorkingLabel.textContent).toBe('Using GitHub (Create issue)…');
+    expect(elements.cwWorkingIcon.innerHTML).toContain('github.com.ico');
+
+    state.progresses = [{
+      agentId: 'a1',
+      agentName: 'Jelly',
+      tool: 'connection_read',
+      appService: 'stripe',
+      webUrl: 'https://api.stripe.com',
+      detail: summarizeParams('connection_read', { connectionId: 'stripe_prod', operationId: 'list_customers', query: { api_key: 'sk_live_secret' } }),
+    }];
+    context.cwRenderCleanActivity();
+    expect(elements.cwWorkingLabel.textContent).toBe('Using Stripe (List customers)…');
+    expect(elements.cwWorkingLabel.textContent).not.toContain('sk_live_secret');
+    expect(elements.cwWorkingIcon.innerHTML).toContain('stripe.com.ico');
+
+    // When inline chat bubble is absent (e.g. compact header bar), #cwCleanIcon gets the same icon beside #cwCleanLabel.
+    const savedBubble = elements.cwWorkingBubble;
+    delete elements.cwWorkingBubble;
+    context.cwRenderCleanActivity();
+    expect(elements.cwCleanStatus.hidden).toBe(false);
+    expect(elements.cwCleanIcon.hidden).toBe(false);
+    expect(elements.cwCleanIcon.innerHTML).toContain('stripe.com.ico');
+    expect(elements.cwCleanLabel.textContent).toBe('Using Stripe (List customers)…');
+
+    // While streaming reply text with no active tool, tool icon hides cleanly.
+    state.progresses = [{ agentId: 'a1', agentName: 'Jelly', phase: 'responding', text: 'Here are the invoices.' }];
+    context.cwRenderCleanActivity();
+    expect(elements.cwCleanIcon.hidden).toBe(true);
+    elements.cwWorkingBubble = savedBubble;
+
+    // Completion receipt preserves the tool icons inside expandable step rows.
+    state.busy = false;
+    state.progresses = [];
+    context.cwRenderCleanActivity();
+    expect(elements.cwWorkReceipt.hidden).toBe(false);
+    expect(elements.cwWorkReceipt.innerHTML).toContain('cw-step-ico');
+    expect(elements.cwWorkReceipt.innerHTML).toContain('gmail.com.ico');
+    expect(elements.cwWorkReceipt.innerHTML).toContain('Using Gmail (Fetch emails)…');
+  });
 });

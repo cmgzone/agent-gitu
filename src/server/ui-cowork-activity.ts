@@ -3,15 +3,18 @@ export const COWORK_CLEAN_ACTIVITY_CSS = String.raw`
   .cw-working-row { width:100%; max-width:min(94%,660px); }
   .cw-working-row[hidden] { display:none; }
   .cw-work-card { display:flex; flex-direction:column; gap:6px; min-width:0; max-width:100%; padding:10px 14px; border:1px solid var(--border); border-left:3px solid var(--border2); border-radius:14px; background:var(--card); box-shadow:none; }
-  .cw-working-head { display:flex; align-items:baseline; gap:10px; min-width:0; }
+  .cw-working-head { display:flex; align-items:center; gap:10px; min-width:0; }
   .cw-work-lead, .cw-working-dot, .cw-team-strip { display:none; }
-  .cw-working-bubble { display:flex; align-items:baseline; justify-content:space-between; gap:10px; min-width:0; flex:1; padding:0; border:0; border-radius:0; background:transparent; color:var(--text); font-size:13px; font-weight:600; line-height:1.45; overflow-wrap:anywhere; }
+  .cw-working-bubble { display:flex; align-items:center; justify-content:space-between; gap:8px; min-width:0; flex:1; padding:0; border:0; border-radius:0; background:transparent; color:var(--text); font-size:13px; font-weight:600; line-height:1.45; overflow-wrap:anywhere; }
+  .cw-work-icon, .cw-clean-icon, .cw-step-ico { display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px; flex:none; }
+  .cw-work-icon[hidden], .cw-clean-icon[hidden] { display:none; }
+  #cwWorkingLabel, #cwCleanLabel { flex:1; min-width:0; }
   .cw-work-elapsed { margin-left:auto; flex:none; font-size:11px; font-weight:500; font-variant-numeric:tabular-nums; color:var(--muted); }
   .cw-work-elapsed[hidden] { display:none; }
   .cw-work-stage { display:flex; flex-direction:column; gap:4px; min-width:0; }
   .cw-work-stage[hidden] { display:none; }
   .cw-step-trail { display:flex; flex-direction:column; gap:3px; min-width:0; padding-top:6px; border-top:1px solid var(--border); }
-  .cw-step-item { display:flex; align-items:baseline; gap:7px; min-width:0; padding:2px 0; font-size:12px; line-height:1.4; color:var(--muted); }
+  .cw-step-item { display:flex; align-items:center; gap:7px; min-width:0; padding:2px 0; font-size:12px; line-height:1.4; color:var(--muted); }
   .cw-step-item.is-active { color:var(--text); }
   .cw-step-item.is-error { color:#ef4444; }
   .cw-step-state { width:14px; flex:none; text-align:center; font-size:11px; font-weight:600; color:var(--muted); }
@@ -177,13 +180,15 @@ export const COWORK_CLEAN_ACTIVITY_JS = String.raw`
         }
         if (cwActHasMeaningfulStep(p, cw, label)) {
           var stepKey = aKey + '|' + label + '|' + (p.toolOk === false ? 'err' : 'ok');
+          var stepIcon = cwActToolIconHtml(p);
           var lastStep = run.steps[run.steps.length - 1];
           if (!lastStep || lastStep.key !== stepKey) {
             for (var j = 0; j < run.steps.length; j++) { if (run.steps[j].state === 'active') run.steps[j].state = 'done'; }
-            run.steps.push({ key:stepKey, agentKey:aKey, agentName:agent.name || '', label:label, state:p.toolOk === false ? 'error' : 'active', ts:now });
+            run.steps.push({ key:stepKey, agentKey:aKey, agentName:agent.name || '', label:label, iconHtml:stepIcon, state:p.toolOk === false ? 'error' : 'active', ts:now });
             if (run.steps.length > 12) run.steps.shift();
           } else {
             lastStep.state = p.toolOk === false ? 'error' : 'active';
+            if (stepIcon && !lastStep.iconHtml) lastStep.iconHtml = stepIcon;
           }
         }
       }
@@ -207,10 +212,24 @@ export const COWORK_CLEAN_ACTIVITY_JS = String.raw`
     strip._cwSig = '';
     if (strip.innerHTML) strip.innerHTML = '';
   }
+  function cwActToolIconHtml(p) {
+    if (!p || typeof cwToolIconHtml !== 'function') return '';
+    try { return cwToolIconHtml(p) || ''; } catch (e) { return ''; }
+  }
+  function cwActSetIcon(el, html) {
+    if (!el) return;
+    var next = html || '';
+    el.hidden = !next;
+    if (el._cwIco !== next) {
+      el._cwIco = next;
+      el.innerHTML = next;
+    }
+  }
   function cwActRenderStepRow(st) {
     var glyph = st.state === 'done' ? '✓' : st.state === 'error' ? '!' : '•';
     var who = st.agentName ? '<span class="cw-step-who">' + cwActEsc(st.agentName) + '</span>' : '';
-    return '<div class="cw-step-item is-' + st.state + '"><span class="cw-step-state" aria-hidden="true">' + glyph + '</span>' + who + '<span class="cw-step-label">' + cwActEsc(st.label) + '</span></div>';
+    var ico = st.iconHtml ? '<span class="cw-step-ico" aria-hidden="true">' + st.iconHtml + '</span>' : '';
+    return '<div class="cw-step-item is-' + st.state + '"><span class="cw-step-state" aria-hidden="true">' + glyph + '</span>' + ico + who + '<span class="cw-step-label">' + cwActEsc(st.label) + '</span></div>';
   }
   function cwActRenderStage(cw, progresses, inChat, sync) {
     var lead = $('cwWorkingLead'), stage = $('cwWorkingStage'), elapsed = $('cwWorkingElapsed');
@@ -292,24 +311,33 @@ export const COWORK_CLEAN_ACTIVITY_JS = String.raw`
   function cwRenderCleanActivity() {
     var line=$('cwCleanActivity');if(!line)return;
     var cw=cwEnsure(),progresses=(cw.progresses&&cw.progresses.length)?cw.progresses:(cw.progress?[cw.progress]:[]);
-    var working=$('cwWorkingBubble'),workingLabel=$('cwWorkingLabel');
+    var working=$('cwWorkingBubble'),workingLabel=$('cwWorkingLabel'),workingIcon=$('cwWorkingIcon');
     var hasOpenReq=(cw.requests||[]).some(function(r){return r.status==='open';});
     var replying=progresses.some(function(p){if(typeof cwVisibleReply!=='function')return false;var t=cwVisibleReply(p.text);return !!t&&!/^(?:Continuing automatically \(checkpoint \d+\)|Working(?:\u2026|\.\.\.)$)/.test(t);});
     var inChat=!!working&&cw.busy&&!replying&&!hasOpenReq;
     var sync=cwActSyncTracker(cw,progresses,hasOpenReq);
     var text=cwCleanActivityText();
+    var iconHtml='';
+    if(cw.busy&&!hasOpenReq){
+      for(var pi=progresses.length-1;pi>=0;pi--){
+        iconHtml=cwActToolIconHtml(progresses[pi]);
+        if(iconHtml)break;
+      }
+    }
     cwActRenderTeamStrip();
     cwActRenderStage(cw,progresses,inChat,sync);
     cwActRenderReceipt(cw,sync,hasOpenReq);
     if(working){
       var messages=$('cwMsgs'),atBottom=messages&&messages.scrollHeight-messages.scrollTop-messages.clientHeight<120;
       working.hidden=!inChat;
+      cwActSetIcon(workingIcon,inChat?iconHtml:'');
       if(workingLabel&&workingLabel.textContent!==(inChat?text:''))workingLabel.textContent=inChat?text:'';
       if(atBottom)messages.scrollTop=messages.scrollHeight;
     }
     line.hidden=!((cw.workHistory||[]).length)&&(!text||inChat);
-    var status=$('cwCleanStatus'),label=$('cwCleanLabel'),details=$('cwCleanDetails');
+    var status=$('cwCleanStatus'),cleanIcon=$('cwCleanIcon'),label=$('cwCleanLabel'),details=$('cwCleanDetails');
     status.hidden=!text||inChat;
+    cwActSetIcon(cleanIcon,(!inChat&&text)?iconHtml:'');
     if(label.textContent!==text)label.textContent=text;
     var count=(cw.workHistory||[]).length;
     details.hidden=!count;

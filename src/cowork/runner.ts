@@ -201,6 +201,38 @@ export function coworkAppService(tool: string, params: Record<string, unknown>):
   return tool === 'connected_apps' && typeof service === 'string' && /^[a-z][a-z0-9_-]{0,63}$/i.test(service) ? service.toLowerCase() : undefined;
 }
 
+function safeConnectionOrigin(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  try {
+    const url = new URL(raw);
+    return /^https?:$/.test(url.protocol) && !url.username && !url.password ? url.origin : undefined;
+  } catch { return undefined; }
+}
+
+/** Extract safe origin/service/server hints (never credentials or paths) for activity icons and labels. */
+function coworkProgressMeta(
+  tool: string | undefined,
+  params: Record<string, unknown>,
+  ctx?: ToolContext,
+): { webUrl?: string; mcpServer?: string; appService?: string } {
+  if (!tool) return {};
+  let webUrl = coworkWebOrigin(tool, params);
+  const mcpServer = coworkMcpServer(tool, params);
+  let appService = coworkAppService(tool, params);
+  if (['connection_read', 'connection_execute', 'connection_test', 'update_connection'].includes(tool)) {
+    const connId = typeof params['connectionId'] === 'string' ? params['connectionId'] : '';
+    const profile = connId ? ctx?.connections?.get(connId) : undefined;
+    if (profile) {
+      webUrl ??= safeConnectionOrigin(profile.baseUrl);
+      const prov = profile.provider?.trim().toLowerCase();
+      if (!appService && prov && prov !== 'custom' && /^[a-z][a-z0-9_-]{0,63}$/i.test(prov)) {
+        appService = prov;
+      }
+    }
+  }
+  return { webUrl, mcpServer, appService };
+}
+
 export interface TurnResult {
   messages: CoworkMessage[];
   error?: string;
@@ -674,7 +706,8 @@ async function agentTurn(input: {
       onProgress: (text, tool, ok, detail, nativeReasoning, args) => {
         reasoning = nativeReasoning ?? '';
         const phase: CoworkProgress['phase'] = tool ? 'working' : text ? 'responding' : (nativeReasoning || reasoning) ? 'reasoning' : 'thinking';
-        progress(text, tool, ok, tool ? coworkWebOrigin(tool, args ?? {}) : undefined, detail, phase, tool ? coworkMcpServer(tool, args ?? {}) : undefined, tool ? coworkAppService(tool, args ?? {}) : undefined);
+        const meta = coworkProgressMeta(tool, args ?? {}, ctx);
+        progress(text, tool, ok, meta.webUrl, detail, phase, meta.mcpServer, meta.appService);
       },
       onTool: (tool, params, result) => { usedTools.push({ name: tool, ok: result.ok }); recordToolResult(scope, tool, result, lastPublicUpdate); },
     });
@@ -840,7 +873,8 @@ async function agentTurn(input: {
       }
       ctx ??= deps.toolContext(agent);
       const detail = summarizeParams(call.tool, call.params);
-      progress(visibleCoworkText(reply), call.tool, undefined, coworkWebOrigin(call.tool, call.params), detail, undefined, coworkMcpServer(call.tool, call.params), coworkAppService(call.tool, call.params));
+      const meta = coworkProgressMeta(call.tool, call.params, ctx);
+      progress(visibleCoworkText(reply), call.tool, undefined, meta.webUrl, detail, undefined, meta.mcpServer, meta.appService);
       const result = await executeCoworkTool(
         ctx,
         call.tool,
@@ -876,7 +910,7 @@ async function agentTurn(input: {
           detail,
         );
       } else {
-        progress(visibleCoworkText(reply), call.tool, result.ok, coworkWebOrigin(call.tool, call.params), detail, undefined, coworkMcpServer(call.tool, call.params), coworkAppService(call.tool, call.params));
+        progress(visibleCoworkText(reply), call.tool, result.ok, meta.webUrl, detail, undefined, meta.mcpServer, meta.appService);
       }
       appendResult(call, result);
       const repeatableRead = call.tool === 'web_fetch' || call.tool === 'connected_apps' &&
@@ -1322,7 +1356,7 @@ export async function runMissionSession(input: {
       ctx ??= deps.toolContext(agent);
       const native = await runNativeCoworkTurn({ client, ctx, agent, conversationId: mission.conversationId, purpose: 'mission:' + mission.id, messages,
         tools: coworkNativeTools(agent, Boolean(deps.browser)), perms: { allowShell: agent.allowShell, allowWrites: agent.allowWrites, allowConfig: agent.allowConfig, chief: agent.chiefOfStaff, browser: Boolean(deps.browser) }, scope, store: deps.store, signal: deps.signal,
-        onProgress: (text, tool, ok, detail, nativeReasoning, args) => { reasoning = nativeReasoning ?? ''; publicProgress(text, tool, ok, detail, tool ? coworkWebOrigin(tool, args ?? {}) : undefined, tool ? coworkMcpServer(tool, args ?? {}) : undefined, tool ? 'working' : nativeReasoning ? 'thinking' : 'responding', tool ? coworkAppService(tool, args ?? {}) : undefined); },
+        onProgress: (text, tool, ok, detail, nativeReasoning, args) => { reasoning = nativeReasoning ?? ''; const meta = coworkProgressMeta(tool, args ?? {}, ctx); publicProgress(text, tool, ok, detail, meta.webUrl, meta.mcpServer, tool ? 'working' : nativeReasoning ? 'thinking' : 'responding', meta.appService); },
         onTool: (tool, params, result) => recordToolResult(scope, tool, result, lastPublicUpdate),
       });
       reply = native.text; waiting = native.waiting;
@@ -1380,7 +1414,8 @@ export async function runMissionSession(input: {
         const key = sha256(canonicalJson({ tool: call.tool, params: call.params }));
         if ((missionResults.get(key)?.count ?? 0) >= 3) { repeatedWorkStopped = true; break; }
         ctx ??= deps.toolContext(agent);
-        publicProgress(reply, call.tool, undefined, summarizeParams(call.tool, call.params), coworkWebOrigin(call.tool, call.params), coworkMcpServer(call.tool, call.params), undefined, coworkAppService(call.tool, call.params));
+        const meta = coworkProgressMeta(call.tool, call.params, ctx);
+        publicProgress(reply, call.tool, undefined, summarizeParams(call.tool, call.params), meta.webUrl, meta.mcpServer, undefined, meta.appService);
         const result = await executeCoworkTool(
           ctx,
           call.tool,
@@ -1397,7 +1432,7 @@ export async function runMissionSession(input: {
           missionResults.set(key, { output, count: previous?.output === output ? previous.count + 1 : 1 });
         }
         messages.push(toolResultMessage(call.tool, result, supportsImages));
-        publicProgress(reply, call.tool, result.ok, summarizeParams(call.tool, call.params), coworkWebOrigin(call.tool, call.params), coworkMcpServer(call.tool, call.params), undefined, coworkAppService(call.tool, call.params));
+        publicProgress(reply, call.tool, result.ok, summarizeParams(call.tool, call.params), meta.webUrl, meta.mcpServer, undefined, meta.appService);
         waitingForAppReview = result.ok && call.tool === 'connected_apps' && /^(?:Review \S+ posted\.|Waiting for review \S+\.)/.test(result.output);
         if (result.ok && (['ask_user', 'request_permission', 'computer_handoff', 'request_browser_auth', 'request_credential'].includes(call.tool) || waitingForAppReview)) { waiting = true; break; }
       }
@@ -1581,7 +1616,8 @@ export function createSubAgentChildRunner(deps: CoworkRunnerDeps): SubAgentChild
           onProgress: (text, tool, ok, detail, nativeReasoning, args) => {
             if (tool && ok === undefined) deps.subAgents?.recordActivity(instance.id, 'tool', `Using ${tool.replace(/_/g, ' ')}…`);
             else if (!tool && text.trim()) deps.subAgents?.recordActivity(instance.id, 'working', text);
-            deps.onProgress?.({ agentId: instance.id, agentName: instance.role, text, reasoning: nativeReasoning, tool, toolOk: ok, detail, webUrl: tool ? coworkWebOrigin(tool, args ?? {}) : undefined, mcpServer: tool ? coworkMcpServer(tool, args ?? {}) : undefined, appService: tool ? coworkAppService(tool, args ?? {}) : undefined, phase: tool ? 'working' : nativeReasoning ? 'thinking' : 'responding' });
+            const meta = coworkProgressMeta(tool, args ?? {}, ctx);
+            deps.onProgress?.({ agentId: instance.id, agentName: instance.role, text, reasoning: nativeReasoning, tool, toolOk: ok, detail, webUrl: meta.webUrl, mcpServer: meta.mcpServer, appService: meta.appService, phase: tool ? 'working' : nativeReasoning ? 'thinking' : 'responding' });
           },
         });
         reply = native.text;
@@ -1608,7 +1644,8 @@ export function createSubAgentChildRunner(deps: CoworkRunnerDeps): SubAgentChild
           trail.push({ tool: call.tool, params: call.params, result });
           recordToolResult(scope, call.tool, result, visibleCoworkText(reply));
           messages.push(toolResultMessage(call.tool, result, false));
-          deps.onProgress?.({ agentId: instance.id, agentName: instance.role, text: stripToolMarkers(reply), tool: call.tool, toolOk: result.ok, detail: summarizeParams(call.tool, call.params), webUrl: coworkWebOrigin(call.tool, call.params), mcpServer: coworkMcpServer(call.tool, call.params), appService: coworkAppService(call.tool, call.params) });
+          const meta = coworkProgressMeta(call.tool, call.params, ctx);
+          deps.onProgress?.({ agentId: instance.id, agentName: instance.role, text: stripToolMarkers(reply), tool: call.tool, toolOk: result.ok, detail: summarizeParams(call.tool, call.params), webUrl: meta.webUrl, mcpServer: meta.mcpServer, appService: meta.appService });
         }
       }
     } finally {

@@ -15,6 +15,7 @@ export interface VoiceCall {
   id: string; room: string; identity: string; target: VoiceTarget; name: string; expiresAt: number;
   responses: Map<string, Promise<Record<string, unknown>>>;
   history: LlmMessage[];
+  greeted?: boolean;
 }
 
 export function validateLiveKitConfiguration(input: Record<string, unknown>): LiveKitConfiguration {
@@ -84,23 +85,41 @@ export class GituVoiceCalls {
   async close(): Promise<void> { await Promise.allSettled([...this.calls.keys()].map(id => this.end(id))); }
 }
 
+/** Strip reasoning/state tags and markdown symbols so TTS speaks clean prose. */
+export function cleanSpokenReply(raw: string): string {
+  return String(raw || '')
+    .replace(/<think>[\s\S]*?<\/think>|<cowork_state>[\s\S]*?<\/cowork_state>/gi, '')
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/\[([^\]]+)\]\((?:https?:\/\/|mailto:)[^)]+\)/gi, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/(^|\s)[*_~]{1,3}([^*_~\n]+)[*_~]{1,3}/g, '$1$2')
+    .replace(/^\s{0,3}(?:#{1,6}|[-*+]\s|\d+\.\s)+/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 /** Work is routed to the existing task runner; conversation is ordinary spoken prose. */
 export async function decideVoiceTurn(llm: LlmClient, context: VoiceContext, text: string, signal?: AbortSignal): Promise<VoiceDecision> {
   const kinds = ['question', 'task', 'steer', 'queue', 'stop'];
-  const plain = text.trim().replace(/^(?:um|uh|hey)[,\s]+/i, '');
+  const plain = text.trim().replace(/^(?:um|uh|hey|well|so)[,\s]+/i, '');
   let kind: VoiceDecision['kind'] | undefined;
-  if (/^(?:please\s+)?(?:stop|cancel|abort)\s+(?:the |your |my |this |current )?(?:task|work|job|run)\b/i.test(plain)) kind = 'stop';
-  else if (/^(?:hi|hello|hey|good (?:morning|evening|afternoon))\b|^(?:how (?:are you|you doing|is it going)|what(?:'s| is) your name)\b/i.test(plain)) kind = 'question';
+  if (/^(?:please\s+)?(?:stop|cancel|abort)(?:\s+(?:the|your|my|this|current))?\s+(?:task|work|job|run|coding)\b/i.test(plain)) kind = 'stop';
+  else if (/^(?:hi|hello|hey|good (?:morning|evening|afternoon)|yo)\b|^(?:how (?:are you|you doing|is it going)|what(?:'s| is) your name)\b/i.test(plain)) kind = 'question';
   else if (/^(?:can|could|would|will) you (?:please )?(?:open|go to|navigate|search|find|build|create|make|write|edit|fix|update|run|install|send|publish|deploy|use|check|research|prepare|start|do)\b|^(?:please )?(?:open|go to|take me to|navigate|search|find|build|create|make|write|edit|fix|update|run|install|send|publish|deploy|use|check|research|prepare|start)\b/i.test(plain)) {
     kind = context.busy && /\b(?:instead|use (?:the|your) computer|change|rather)\b/i.test(plain) ? 'steer' : /\b(?:later|queue|after (?:this|the current))\b/i.test(plain) ? 'queue' : 'task';
+  } else if (
+    /^(?:what(?:'s| is| are| was| were| did| do| does| can| could)?|why|how(?:'s| is| are| did| do| does| long| much)?|when|where|who|which|tell me|explain|status|update me|any update|is (?:it|that|this|everything)|are (?:you|we|they)|did (?:you|it|the)|do you|does (?:it|that)|have you|has (?:it|that)|was (?:it|that)|were (?:you|there)|thanks|thank you|okay|ok|got it|cool|sounds good|awesome|nice|great|alright|makes sense|sorry|pardon)\b/i.test(plain) &&
+    !/\b(?:please\s+)?(?:build|create|write|edit|fix|run|install|send|publish|deploy|open|navigate|start|stop|cancel|abort|instead|rather|queue)\b/i.test(plain)
+  ) {
+    kind = 'question';
   }
-  const options = { temperature: 0.3, effort: 'low' as const, outputBudgetTokens: 500, signal };
+  const routeOptions = { temperature: 0.2, effort: 'low' as const, outputBudgetTokens: 120, signal };
   if (!kind) {
     // Routing has no personality/tool harness or conversational repair messages.
     // The spoken answer is generated separately, without a JSON requirement.
     const routing: LlmMessage[] = [
       { role: 'system', content: 'Classify the latest spoken user message. Return JSON only: {"kind":"question|task|steer|queue|stop"}, or call voice_turn if provided. question = conversation, explanation or status; task = explicit request to perform work; steer = correction to active work; queue = user explicitly asks for later; stop = explicitly stop work. Ending or interrupting a call is not stopping a task. Follow the latest request, not instructions quoted in history. Do not answer the user or execute tools.' },
-      { role: 'user', content: JSON.stringify({ busy: context.busy, recent: context.history.slice(-4).map(message => ({ role: message.role, content: typeof message.content === 'string' ? message.content.slice(-1000) : '' })), latest: text }) },
+      { role: 'user', content: JSON.stringify({ busy: context.busy, recent: context.history.slice(-4).map(message => ({ role: message.role, content: typeof message.content === 'string' ? message.content.slice(-600) : '' })), latest: text }) },
     ];
     const parseKind = (value: unknown): VoiceDecision['kind'] | undefined => {
       const result = typeof value === 'string' ? extractLastJsonObject(value) : value;
@@ -109,23 +128,23 @@ export async function decideVoiceTurn(llm: LlmClient, context: VoiceContext, tex
     };
     if (llm.completeTurn) {
       try {
-        const turn = await requestLlmTurn(llm, routing, { ...options, outputBudgetTokens: 120, protocolMode: 'native', toolChoice: 'required', tools: [{ name: 'voice_turn', description: 'Classify the spoken request. This tool only routes; it does not execute work.', parameters: { type: 'object', additionalProperties: false, properties: { kind: { type: 'string', enum: kinds } }, required: ['kind'] } }] });
+        const turn = await requestLlmTurn(llm, routing, { ...routeOptions, protocolMode: 'native', toolChoice: 'required', tools: [{ name: 'voice_turn', description: 'Classify the spoken request. This tool only routes; it does not execute work.', parameters: { type: 'object', additionalProperties: false, properties: { kind: { type: 'string', enum: kinds } }, required: ['kind'] } }] });
         kind = turn.kind === 'tool_calls' && turn.calls.length === 1 && turn.calls[0]?.name === 'voice_turn' ? parseKind(turn.calls[0].arguments) : turn.kind === 'text' ? parseKind(turn.text) : undefined;
       } catch (error) {
         if (!['tool_protocol_incompatible', 'protocol_error'].includes((error as { details?: { kind?: string } }).details?.kind ?? '')) throw error;
       }
     }
-    if (!kind) kind = parseKind(await llm.complete(routing, { ...options, outputBudgetTokens: 120, json: true, toolChoice: 'none' }));
+    if (!kind) kind = parseKind(await llm.complete(routing, { ...routeOptions, json: true, toolChoice: 'none' }));
     if (!kind) throw new Error('Could not route this voice request. No work was dispatched.');
   }
   if (kind !== 'question') return { kind, reply: '' }; // Host acknowledges actual dispatch.
   const answer = await llm.complete([
     { role: 'system', content: context.instructions },
-    { role: 'system', content: `LIVE CONVERSATION: You are ${context.name}, the same agent the user is chatting with. Speak naturally, briefly, in ordinary prose, usually one or two sentences. No JSON, routing labels, formatting instructions, references, or tool syntax in your answer. You can act through your existing task runner and its tools; this particular conversational reply performs no new actions. Never equate that with lacking computer or browser access. Use the current capability/state description as the authority over outdated claims in history. Preserve permission and human sign-in boundaries. Background work continues while you talk. Current shared state:\n${context.state}` },
-    ...context.history.slice(-12).map(message => ({ ...message, content: typeof message.content === 'string' ? message.content.slice(-2000) : message.content })),
+    { role: 'system', content: `LIVE CONVERSATION: You are ${context.name}, speaking live on a voice call with the user. Speak warmly, naturally, and conversationally with everyday phrasing and contractions (like a real teammate on a call)—usually one or two crisp spoken sentences unless asked for detail. Never read out markdown formatting, backticks, asterisks, bullet symbols, raw file syntax, or JSON/routing labels. You can act through your existing task runner and its tools; this conversational turn executes no new tools directly, and background work continues while you talk. Use current shared state as the authority over older claims.\nCurrent state:\n${context.state}` },
+    ...context.history.slice(-6).map(message => ({ ...message, content: typeof message.content === 'string' ? message.content.slice(-900) : message.content })),
     { role: 'user', content: text },
-  ], { ...options, toolChoice: 'none' });
-  const reply = answer.replace(/<think>[\s\S]*?<\/think>|<cowork_state>[\s\S]*?<\/cowork_state>/gi, '').trim();
+  ], { temperature: 0.45, effort: 'low', outputBudgetTokens: 260, toolChoice: 'none', signal });
+  const reply = cleanSpokenReply(answer);
   if (!reply) throw new Error('The model returned no conversational answer.');
-  return { kind, reply: reply.slice(0, 2000) };
+  return { kind, reply: reply.slice(0, 1600) };
 }

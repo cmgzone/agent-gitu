@@ -83,7 +83,7 @@ export class LiveKitCloudWorker {
     this.controller = new AbortController();
     this.step = 'worker files';
     this.state = { phase: 'deploying', message: 'Preparing your LiveKit Cloud voice worker…' };
-    const pending = this.deploy(config, this.controller.signal).then(() => { this.readyUntil = Date.now() + 5 * 60_000; }).catch(error => {
+    const pending = this.deploy(config, this.controller.signal).then(() => { this.readyUntil = Date.now() + 15 * 60_000; }).catch(error => {
       const failure = error as { name?: string; code?: string; cause?: { code?: string } };
       const rawCode = typeof failure.cause?.code === 'string' ? failure.cause.code : typeof failure.code === 'string' ? failure.code : failure.name ?? 'UNKNOWN';
       const code = /^[a-zA-Z0-9_]{1,64}$/.test(rawCode) ? rawCode : 'UNKNOWN';

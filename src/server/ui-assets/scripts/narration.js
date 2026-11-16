@@ -135,7 +135,8 @@
     if (summary.indexOf('list ') === 0) return 'list';
     if (summary.indexOf('search ') === 0) return 'search';
     if (summary.indexOf('$ ') === 0) return 'shell';
-    if (summary.indexOf('browse') === 0 || summary.indexOf('fetch ') === 0) return 'browser';
+    if (summary.indexOf('fetch ') === 0) return 'web';
+    if (summary.indexOf('browse') === 0) return 'browser';
     return 'tool';
   }
   // Human tool labels: what Gitu is doing, not the wire format. The raw
@@ -145,6 +146,7 @@
     if (kind === 'edit') return 'Edit ' + summary.slice(summary.indexOf(' ') + 1);
     if (kind === 'list') return 'List ' + summary.slice(5);
     if (kind === 'search') return 'Search ' + summary.slice(7);
+    if (kind === 'web') return 'Fetch ' + summary.slice(6);
     if (kind === 'browser') {
       if (summary.indexOf('fetch ') === 0) return 'Fetch ' + summary.slice(6);
       return 'Browser · ' + summary;
@@ -217,6 +219,10 @@
       if (k === 'read') return 'Reading ' + summary.slice(5) + '…';
       if (k === 'list') return 'Listing ' + summary.slice(5) + '…';
        if (k === 'search') return 'Searching…';
+       if (k === 'web') {
+         var wm = /^fetch\s+https?:\/\/([^/?#]+)/i.exec(summary);
+         return 'Fetching ' + (wm ? wm[1] : 'page') + '…';
+       }
        if (k === 'browser') {
         if (summary.indexOf('fetch ') === 0) {
           var m = /^fetch\s+https?:\/\/([^/?#]+)/i.exec(summary);
@@ -284,7 +290,7 @@
     var domain = domains[key] || domains[key.replace(/mcp$|server$/, '')] || (urlMatch ? urlMatch[1].replace(/:\d+$/, '').toLowerCase() : '');
     var glyph = /^(?:gmail|googlemail|mail|outlook|resend|sendgrid)$/.test(key)
       ? '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>'
-      : ({ shell: '&gt;_', read: '≡', edit: '±', search: '⌕', list: '▤', browser: '◎', tool: '◇' }[kind] || '◇');
+      : ({ shell: '&gt;_', read: '≡', edit: '±', search: '⌕', list: '▤', browser: '◎', web: '◎', tool: '◇' }[kind] || '◇');
     var fav = /^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain)
       ? '<img class="tool-fav" src="https://icons.duckduckgo.com/ip3/' + domain + '.ico" alt="" width="14" height="14" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">'
       : '';

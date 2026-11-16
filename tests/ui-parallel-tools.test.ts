@@ -143,6 +143,28 @@ function renderer() {
 }
 
 describe('UI — parallel tool lifecycle', () => {
+  it('updates live working text for native command_started and test_started frames when running', () => {
+    const r = renderer();
+    r.context.applyReasoning = () => {};
+    r.context.handleTypedFrame('run', { t: '2026-01-01T00:00:00Z', typed: { type: 'command_started', command: 'npm test' } });
+    r.context.handleTypedFrame('run', { t: '2026-01-01T00:00:01Z', typed: { type: 'test_started', command: 'vitest' } });
+    r.context.handleTypedFrame('run', { t: '2026-01-01T00:00:02Z', restored: true, typed: { type: 'command_started', command: 'ignored' } });
+    expect(r.working).toEqual(['Running npm test…', 'Running tests…']);
+  });
+  it('keeps web_fetch classified as web and does not auto-open the chat browser panel on fetch or browse', () => {
+    const r = renderer();
+    let showCalls = 0;
+    r.context.showChatBrowser = () => { showCalls++; };
+    r.event(0, 'run fetch https://example.com/docs — Read API documentation');
+    r.event(1, 'run browse https://example.com/app — Inspect page');
+    const rows = r.rows();
+    expect(rows[0]!.dataset.toolKind).toBe('web');
+    expect(rows[0]!.textContent).toContain('Fetch https://example.com/docs');
+    expect(rows[1]!.dataset.toolKind).toBe('browser');
+    expect(rows[1]!.textContent).toContain('Browser · browse https://example.com/app');
+    expect(showCalls).toBe(0);
+  });
+
   it('advances beyond indexing even when technical activity rows are hidden', () => {
     const r = renderer();
     r.session.chatish = true;

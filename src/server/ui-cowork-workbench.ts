@@ -932,7 +932,8 @@ export const COWORK_WORKBENCH_JS = String.raw`
     var fullBtns = feedEl.querySelectorAll('[data-cw-open-run]');
     for (var j = 0; j < fullBtns.length; j++) {
       fullBtns[j].onclick = function () {
-        if (typeof openRun === 'function') openRun(entry.runId);
+        cwStopCodingStream();
+        if (typeof openRun === 'function') openRun(entry.runId, { projectPath: entry.projectPath || undefined, mode: entry.mode || undefined });
       };
     }
   }
@@ -1099,9 +1100,11 @@ export const COWORK_WORKBENCH_JS = String.raw`
       repHtml += '</div>';
       parts.push(repHtml);
     }
-    if (!items.length && !entry.streamText && !rep && !fileList.length && !entry.error) {
-      var liveSt = cwCodingStatusInfo(entry.status, entry.needsAttention);
-      parts.push('<div class="cw-wb-empty">' + esc(liveSt.active ? 'Connected — waiting for the next coding step…' : 'No streamed steps recorded for this run yet.') + '</div>');
+    var activeSt = cwCodingStatusInfo(entry.status, entry.needsAttention);
+    if (activeSt.active && !entry.streamText && entry.liveStatus && !approvals.length && !entry.pendingPlanReview && !entry.pendingQuestions) {
+      parts.push('<div class="cw-wb-note"><strong>Live</strong><span>' + esc(entry.liveStatus) + '</span></div>');
+    } else if (!items.length && !entry.streamText && !rep && !fileList.length && !entry.error) {
+      parts.push('<div class="cw-wb-empty">' + esc(activeSt.active ? 'Connected — waiting for the next coding step…' : 'No streamed steps recorded for this run yet.') + '</div>');
     }
     return parts.join('');
   }
@@ -1161,7 +1164,59 @@ export const COWORK_WORKBENCH_JS = String.raw`
       var tp = ev.typed;
       if (tp.type === 'reasoning' && tp.text) {
         entry.reasoningText = String(tp.text);
+        entry.liveStatus = 'Reasoning…';
         cwRefreshCodingView(entry, false);
+        return;
+      }
+      if (tp.type === 'command_started' && tp.command) {
+        var existingCmd = cwFindCodingStep(entry, tp.command, false);
+        if (!existingCmd) {
+          cwPushCodingFeed(entry, {
+            kind: 'step',
+            id: ++entry._stepCounter,
+            toolKind: 'shell',
+            ico: '>_',
+            label: 'Ran ' + tp.command,
+            summary: '$ ' + tp.command,
+            status: 'running',
+            added: 0,
+            removed: 0,
+            diff: null,
+            output: ''
+          });
+        }
+        entry.liveStatus = 'Running ' + tp.command + '…';
+        cwRefreshCodingView(entry, false);
+        return;
+      }
+      if (tp.type === 'plan_created' && typeof tp.steps === 'number') {
+        cwPushCodingFeed(entry, { kind: 'note', tone: '', label: 'Plan', text: tp.steps + (tp.steps === 1 ? ' step' : ' steps') + ' ready' });
+        cwRefreshCodingView(entry, false);
+        return;
+      }
+      if (tp.type === 'checkpoint_created' || tp.type === 'checkpoint_restored') {
+        cwPushCodingFeed(entry, {
+          kind: 'note',
+          tone: tp.type === 'checkpoint_restored' ? 'warn' : 'pass',
+          label: 'Checkpoint',
+          text: tp.type === 'checkpoint_restored' ? 'Restored checkpoint ' + (tp.checkpointId || '') : 'Saved ' + (tp.label || tp.checkpointId || 'checkpoint')
+        });
+        cwRefreshCodingView(entry, false);
+        return;
+      }
+      if (tp.type === 'recovering') {
+        var rMsg = tp.message || 'Retrying';
+        entry.liveStatus = 'Recovering — ' + rMsg;
+        cwPushCodingFeed(entry, { kind: 'note', tone: 'warn', label: 'Retrying', text: rMsg });
+        cwRefreshCodingView(entry, false);
+        return;
+      }
+      if (tp.type === 'log' && tp.text) {
+        var logTxt = String(tp.text).trim();
+        if (logTxt && logTxt.indexOf('Main Agent Gitu owns this task') !== 0) {
+          entry.liveStatus = logTxt;
+          cwRefreshCodingView(entry, false);
+        }
         return;
       }
       if (tp.type === 'file_changed' && tp.path) {
@@ -1273,11 +1328,15 @@ export const COWORK_WORKBENCH_JS = String.raw`
     var text = String(ev.text || '');
     if (!text) return;
     if (text === 'activity reasoning-reset') { entry.reasoningText = ''; cwRefreshCodingView(entry, false); return; }
+    if (text === 'activity reasoning') { entry.liveStatus = 'Reasoning…'; cwRefreshCodingView(entry, false); return; }
+    if (text === 'activity content') { entry.liveStatus = 'Responding…'; cwRefreshCodingView(entry, false); return; }
+    if (text === 'activity tool') { entry.liveStatus = 'Preparing next tool action…'; cwRefreshCodingView(entry, false); return; }
     if (text.indexOf('activity reasoning-delta ') === 0) {
       try {
         var rDelta = JSON.parse(text.slice('activity reasoning-delta '.length));
         if (typeof rDelta === 'string') {
           entry.reasoningText = ((entry.reasoningText || '') + rDelta).slice(-16000);
+          entry.liveStatus = 'Reasoning…';
           cwRefreshCodingView(entry, false);
         }
       } catch (e) {}
@@ -1307,6 +1366,7 @@ export const COWORK_WORKBENCH_JS = String.raw`
     if (text.indexOf('say ') === 0) {
       var prose = text.slice(4).trim();
       entry.streamText = '';
+      entry.liveStatus = '';
       if (!prose) { cwRefreshCodingView(entry, false); return; }
       var lastItem = entry.feedItems.length ? entry.feedItems[entry.feedItems.length - 1] : null;
       if (lastItem && lastItem.kind === 'agent' && String(lastItem.text || '').trim() === prose) {
@@ -1327,6 +1387,7 @@ export const COWORK_WORKBENCH_JS = String.raw`
     }
     if (text.indexOf('run finished: ') === 0) {
       entry.status = text.slice('run finished: '.length).trim() || entry.status;
+      entry.liveStatus = '';
       var stFin = cwCodingStatusInfo(entry.status, entry.needsAttention);
       entry.title = 'Code: ' + (entry.project || 'Workspace') + ' (' + stFin.label + ')';
       cwRefreshCodingView(entry, false);
@@ -1349,6 +1410,24 @@ export const COWORK_WORKBENCH_JS = String.raw`
     var sp = text.indexOf(' ');
     var tag = sp >= 0 ? text.slice(0, sp) : text;
     var body = sp >= 0 ? text.slice(sp + 1).trim() : '';
+    if (tag === 'think') {
+      entry.liveStatus = body ? (body.charAt(0).toUpperCase() + body.slice(1) + '…') : 'Thinking…';
+      cwRefreshCodingView(entry, false);
+      return;
+    }
+    if (tag === 'verify') {
+      entry.liveStatus = body || 'Verifying locally…';
+      cwRefreshCodingView(entry, false);
+      return;
+    }
+    if (tag === 'branch') {
+      var bm = /(?:Switched to existing|Created|Already on)\s+(\S+)/.exec(body);
+      if (bm && bm[1]) {
+        entry.branch = bm[1];
+        cwRefreshCodingView(entry, false);
+      }
+      return;
+    }
     if (tag === 'run') {
       var tm = cwCodingToolMeta(body);
       var newStep = {
@@ -1367,6 +1446,7 @@ export const COWORK_WORKBENCH_JS = String.raw`
         output: ''
       };
       if (newStep.toolKind === 'edit' && newStep.path) cwAddCodingFile(entry, newStep.path);
+      entry.liveStatus = tm.label + '…';
       cwPushCodingFeed(entry, newStep);
       cwRefreshCodingView(entry, false);
       return;
@@ -1376,6 +1456,7 @@ export const COWORK_WORKBENCH_JS = String.raw`
       if (targetStep) {
         targetStep.status = tag === 'ok' ? 'done' : (tag === 'denied' || tag === 'blocked' ? 'blocked' : 'error');
         entry._lastOutputStep = targetStep;
+        entry.liveStatus = 'Reviewing result…';
         cwRefreshCodingView(entry, false);
       }
       return;
@@ -1466,7 +1547,7 @@ export const COWORK_WORKBENCH_JS = String.raw`
     var closeBtn = $('cwWbClose');
     if (closeBtn) closeBtn.onclick = function () { wb.open = false; cwStopCodingStream(); cwRenderWorkbench(); };
     var fullBtn = $('cwWbOpenFull');
-    if (fullBtn) fullBtn.onclick = function () { if (typeof openRun === 'function') openRun(current.runId); };
+    if (fullBtn) fullBtn.onclick = function () { cwStopCodingStream(); if (typeof openRun === 'function') openRun(current.runId, { projectPath: current.projectPath || undefined, mode: current.mode || undefined }); };
     var verSel = $('cwWbVersion');
     if (verSel) verSel.onchange = function () { wb.activeIndex = Number(verSel.value) || 0; cwRenderWorkbench(); };
     var feedEl = $('cwWbFeed');

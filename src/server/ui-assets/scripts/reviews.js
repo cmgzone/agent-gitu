@@ -55,13 +55,26 @@
     // (it carries the reason text, which the typed start does not), so the
     // start frame is a no-op and the finish frame only contributes the exit
     // code fact prose cannot express.
-    if (typed.type === 'command_started') return;
+    var isLive = !frame.restored && (!sess.session || sess.session.status === 'running');
+    if (typed.type === 'command_started') {
+      if (isLive && typeof setWorking === 'function') setWorking('Running ' + (typeof shortText === 'function' ? shortText(typed.command || 'command', 70) : (typed.command || 'command')) + '…');
+      return;
+    }
     if (typed.type === 'command_finished') { applyCommandFinish(runId, typed); return; }
-  // A file change and the model's reasoning are both display-only facts the
-  // prose stream cannot carry: the diff body (with its removals) and the trace
-  // itself. Handled before the gate section so a restored frame renders too.
-  if (typed.type === 'file_changed') { applyFileChange(runId, typed); return; }
-  if (typed.type === 'reasoning') { applyReasoning(runId, typed); return; }
+    // A file change and the model's reasoning are both display-only facts the
+    // prose stream cannot carry: the diff body (with its removals) and the trace
+    // itself. Handled before the gate section so a restored frame renders too.
+    if (typed.type === 'file_changed') { applyFileChange(runId, typed); return; }
+    if (typed.type === 'reasoning') {
+      applyReasoning(runId, typed);
+      if (isLive && typeof setWorking === 'function') setWorking('Reasoning…');
+      return;
+    }
+    if (isLive && typeof setWorking === 'function') {
+      if (typed.type === 'test_started') { setWorking('Running tests…'); return; }
+      if (typed.type === 'file_read' && typed.path) { setWorking('Reading ' + (typeof shortText === 'function' ? shortText(typed.path, 70) : typed.path) + '…'); return; }
+      if (typed.type === 'recovering') { setWorking('Recovering' + (typed.message && typeof shortText === 'function' ? ' — ' + shortText(typed.message, 80) : '') + '…'); return; }
+    }
     // A refused action is a fact about the run, not a request: it renders from a
     // restored frame too, which is why it is handled before the history guard.
     if (typed.type === 'policy_denied' || typed.type === 'operation_blocked') {

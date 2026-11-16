@@ -470,7 +470,6 @@
 
     if (tag === 'run') {
       var kind = toolKind(body);
-      if (kind === 'browser' && typeof showChatBrowser === 'function') showChatBrowser();
       var summary = splitSummary(body);
       var reason = splitReason(body);
       var group = ensureToolActivityGroup(sess, insert);
@@ -480,7 +479,7 @@
       row.dataset.toolKind = kind;
       row.innerHTML =
         '<button type="button" class="tl-cmd tool-call-head" aria-expanded="false">' +
-          '<span class="tool-kind" aria-hidden="true">' + (typeof toolBrandIconHtml === 'function' ? toolBrandIconHtml(kind, summary, false) : ({ shell: '&gt;_', read: '≡', edit: '±', search: '⌕', list: '▤', browser: '◎', tool: '◇' }[kind] || '◇')) + '</span>' +
+          '<span class="tool-kind" aria-hidden="true">' + (typeof toolBrandIconHtml === 'function' ? toolBrandIconHtml(kind, summary, false) : ({ shell: '&gt;_', read: '≡', edit: '±', search: '⌕', list: '▤', browser: '◎', web: '◎', tool: '◇' }[kind] || '◇')) + '</span>' +
           '<span class="cmd">' + esc(humanToolSummary(kind, summary)) + '</span>' +
           (reason ? '<span class="why">— ' + esc(reason) + '</span>' : '') +
           '<span class="st st-run">Running</span><span class="tool-duration">0s</span><span class="tool-chevron" aria-hidden="true">›</span>' +

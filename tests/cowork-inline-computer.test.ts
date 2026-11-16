@@ -40,8 +40,16 @@ describe('contextual inline computer',()=>{
     f.cw.busy=true;f.cw.progresses=[{agentId:'gitu',phase:'reasoning'}];f.context.cwRenderComputerActivity();
     expect(f.nodes.cwComputerBtn.hidden).toBe(false);expect(f.nodes.cwInlineComputer).toBeUndefined();expect(f.frames).toHaveLength(0);expect(f.context.api).not.toHaveBeenCalled();
   });
-  it('reveals a live read-only preview, preserves it through progress changes, and removes it after work',()=>{
-    const f=fixture();f.cw.busy=true;f.cw.progresses=[{agentId:'gitu',tool:'browse'}];f.context.cwRenderComputerActivity();
+  it('reveals a live read-only preview only for GUI desktop tools, preserves it through progress changes, and removes it after work',()=>{
+    const f=fixture();
+    f.cw.busy=true;
+    for(const nonGuiTool of ['run_command','computer_status','computer_process','browse']){
+      f.cw.progresses=[{agentId:'gitu',tool:nonGuiTool}];
+      f.context.cwRenderComputerActivity();
+      expect(f.nodes.cwInlineComputer).toBeUndefined();
+      expect(f.frames).toHaveLength(0);
+    }
+    f.cw.progresses=[{agentId:'gitu',tool:'desktop_screenshot'}];f.context.cwRenderComputerActivity();
     const card=f.nodes.cwInlineComputer;
     expect(f.nodes.cwComputerBtn.hidden).toBe(false);expect(f.frames[0].src).toBe('/api/cowork/agents/gitu/computer/view?preview=1');expect(f.frames[0].tabIndex).toBe(-1);
     f.cw.progresses=[{agentId:'gitu',phase:'responding'}];f.context.cwRenderComputerActivity();
@@ -61,11 +69,17 @@ describe('contextual inline computer',()=>{
     expect(f.context.cwOpenDesktop).not.toHaveBeenCalled();expect(f.context.api).not.toHaveBeenCalled();
     f.cw.requests[0].status='answered';f.context.cwRenderComputerActivity();expect(card.remove).toHaveBeenCalledOnce();
   });
-  it('does not show another conversation’s handoff or start a private desktop for a host agent',()=>{
-    const f=fixture();f.cw.computers[0]={agentId:'gitu',state:'running',control:'user',handoff:{requestId:'elsewhere'}};
+  it('does not show stale user-control state, another conversation’s handoff, or auto-open the host browser during background tools',()=>{
+    const f=fixture();f.cw.computers[0]={agentId:'gitu',state:'running',control:'user'};
+    f.context.cwRenderComputerActivity();
+    expect(f.nodes.cwInlineComputer).toBeUndefined();
+    f.cw.computers[0]={agentId:'gitu',state:'running',control:'user',handoff:{requestId:'elsewhere'}};
     f.cw.requests=[{id:'elsewhere',agentId:'gitu',conversationId:'other',desktopHandoff:true,status:'open'}];f.context.cwRenderComputerActivity();
     expect(f.nodes.cwComputerBtn.hidden).toBe(false);expect(f.nodes.cwComputerBtn.attrs['data-handoff']).toBe('false');expect(f.nodes.cwInlineComputer).toBeUndefined();
-    f.agent.useHostComputer=true;f.cw.busy=true;f.cw.progresses=[{agentId:'gitu',tool:'run_command'}];f.context.cwRenderComputerActivity();expect(f.nodes.cwInlineComputer).toBeUndefined();f.cw.progresses=[{agentId:'gitu',tool:'browse'}];f.context.cwRenderComputerActivity();
+    f.agent.useHostComputer=true;f.cw.busy=true;f.cw.progresses=[{agentId:'gitu',tool:'run_command'}];f.context.cwRenderComputerActivity();expect(f.nodes.cwInlineComputer).toBeUndefined();
+    f.cw.progresses=[{agentId:'gitu',tool:'browse'}];f.context.cwRenderComputerActivity();
+    expect(f.nodes.cwInlineComputer).toBeUndefined();expect(f.frames).toHaveLength(0);
+    f.cw.inlineBrowser={agentId:'gitu',conversationId:'chat'};f.context.cwRenderComputerActivity();
     expect(f.nodes.cwInlineComputer.querySelector('[data-expand-computer]').hidden).toBe(false);expect(f.frames[0].src).toBe('/api/server-browser/gitu/view');expect(f.frames[0].tabIndex).toBe(0);expect(f.context.api).not.toHaveBeenCalled();
   });
   it('disconnects the inline stream on profile navigation and while the desktop is expanded',()=>{

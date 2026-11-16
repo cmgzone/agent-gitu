@@ -541,6 +541,20 @@ export interface SubAgentChildRunInput {
   availableSharedUsd?: number;
   /** Tripped by termination, the parent turn stopping, or the runtime cap. */
   signal: AbortSignal;
+  /** Live turn/tool progress stream forwarded to coding session viewers when bound. */
+  onProgress?: (update: SubAgentProgressUpdate) => void;
+}
+
+export interface SubAgentProgressUpdate {
+  phase?: 'thinking' | 'reasoning' | 'working' | 'tool' | 'responding';
+  text?: string;
+  messageDone?: boolean;
+  reasoning?: string;
+  tool?: string;
+  toolParams?: Record<string, unknown>;
+  toolOk?: boolean;
+  toolOutput?: string;
+  detail?: string;
 }
 
 export interface SubAgentChildRunOutcome {
@@ -559,7 +573,7 @@ export type SubAgentChildRunner = (input: SubAgentChildRunInput) => Promise<SubA
 
 /** What the tool surface gets: identity already bound, params the only input. */
 export interface CoworkSubAgentBridge {
-  run: (params: Record<string, unknown>, signal?: AbortSignal) => Promise<ToolResult>;
+  run: (params: Record<string, unknown>, signal?: AbortSignal, onProgress?: (update: SubAgentProgressUpdate) => void) => Promise<ToolResult>;
 }
 
 /**
@@ -582,6 +596,8 @@ export interface SubAgentToolScope {
   hostPermissions?: SubAgentPermissions;
   /** The calling turn's signal: the child stops when the parent turn does. */
   signal?: AbortSignal;
+  /** Optional listener for child activity/tool events during this delegated run. */
+  onChildProgress?: (update: SubAgentProgressUpdate) => void;
 }
 
 /**
@@ -780,7 +796,18 @@ export class CoworkSubAgentRunner {
 
   /** Bind host-derived identity to a child runner, producing the tool bridge. */
   bridgeFor(scope: SubAgentToolScope, runChild: SubAgentChildRunner): CoworkSubAgentBridge {
-    return { run: (params, signal) => this.run(signal ? { ...scope, signal: scope.signal ? AbortSignal.any([scope.signal, signal]) : signal } : scope, runChild, params) };
+    return {
+      run: (params, signal, onProgress) => {
+        const nextSignal = signal ? (scope.signal ? AbortSignal.any([scope.signal, signal]) : signal) : scope.signal;
+        const onChildProgress = onProgress
+          ? (update: SubAgentProgressUpdate) => {
+              scope.onChildProgress?.(update);
+              onProgress(update);
+            }
+          : scope.onChildProgress;
+        return this.run({ ...scope, ...(nextSignal ? { signal: nextSignal } : {}), ...(onChildProgress ? { onChildProgress } : {}) }, runChild, params);
+      },
+    };
   }
 
   async run(scope: SubAgentToolScope, runChild: SubAgentChildRunner, params: Record<string, unknown>): Promise<ToolResult> {
@@ -831,6 +858,7 @@ export class CoworkSubAgentRunner {
         account,
         ...(scope.parentAccount?.remaining().costUsd !== undefined ? { availableSharedUsd: scope.parentAccount.remaining().costUsd } : {}),
         signal: controller.signal,
+        ...(scope.onChildProgress ? { onProgress: scope.onChildProgress } : {}),
       });
       const outcome = this.worker?await this.worker(instance,controller.signal,executeChild):await executeChild();
       if (controller.signal.aborted) {

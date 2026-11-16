@@ -329,6 +329,13 @@ describe('In-Cowork project & behind-the-scenes inspector', () => {
     expect(elements.cwWorkbench.innerHTML).toContain('Coding live');
     expect(elements.cwWorkbench.innerHTML).toContain('feat/stream');
 
+    streams[0].emit({ i: 0, text: 'think  reviewing task state', replay: false });
+    expect(elements.cwWbFeed.innerHTML).toContain('Reviewing task state…');
+
+    streams[0].emit({ typed: { type: 'command_started', command: 'git status' } });
+    expect(elements.cwWbFeed.innerHTML).toContain('Ran git status');
+    expect(elements.cwWbFeed.innerHTML).toContain('Running');
+
     streams[0].emit({ i: 1, text: 'tdelta Checking `src/auth.ts` ', replay: false });
     expect(elements.cwWbMeta.innerHTML).toContain('Coding live');
     expect(elements.cwWbMeta.innerHTML).toContain('feat/stream');

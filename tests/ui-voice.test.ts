@@ -119,4 +119,42 @@ describe('Live call lifecycle', () => {
     expect(u.mic.stop).toHaveBeenCalledOnce();
     expect(u.api.mock.calls.map(call => call[0])).toEqual(['/api/voice/config', '/api/voice/prepare', '/api/voice/worker']);
   });
+
+  it('opens the live visualizer stage showing the agent talking, supports minimize/expand, and syncs Main Home runId', async () => {
+    const u = voiceUi();
+    u.context.S = { active: 'home', cw: { active: 'atlas' } };
+    u.context.cwAgentById = () => ({ id: 'atlas', name: 'Atlas', avatar: { shape: 'dot-blue', color: '#257ad8' } });
+    u.context.cwAvaImg = (_av: unknown, id: string) => `<span class="cw-plush" data-agent="${id}"></span>`;
+    u.context.plushCharacterHtml = () => '<span class="cw-plush"></span>';
+    u.context.openRun = vi.fn();
+    u.context.renderSidebar = vi.fn();
+
+    await u.context.startGituVoice({ kind: 'main' });
+    expect(u.elements.gituVoiceStage).toBeDefined();
+    expect(u.elements.gituVoiceStage.hidden).toBe(false);
+    expect(u.elements.gituVoiceBar.hidden).toBe(true);
+    expect(u.elements.gituVoiceStage.innerHTML).toContain('voice-stage-avatar');
+    expect(u.elements.gituVoiceStage.innerHTML).toContain('voice-stage-wave');
+
+    // Minimize collapses back to bar; Open Stage expands visualizer again
+    u.context.voiceState.stageMinimized = true;
+    u.context.voiceSyncStageVisibility();
+    expect(u.elements.gituVoiceStage.hidden).toBe(true);
+    expect(u.elements.gituVoiceBar.hidden).toBe(false);
+    u.context.voiceState.stageMinimized = false;
+    u.context.voiceSyncStageVisibility();
+    expect(u.elements.gituVoiceStage.hidden).toBe(false);
+
+    // Worker enters speaking phase while reply spawns a run from Home
+    u.handlers.ParticipantAttributesChanged!({ 'lk.agent.state': 'speaking' }, { isAgent: true, attributes: { 'lk.agent.state': 'speaking' } });
+    expect(u.elements.gituVoiceStage.dataset.phase).toBe('speaking');
+    u.api.mockResolvedValueOnce({ text: 'Starting your fix now.', runId: 'run-new' });
+    const rpcRes = JSON.parse(await u.methods['gitu.voice.reply']!({ callerIdentity: 'agent', payload: JSON.stringify({ callId: 'call-1', id: 'turn-start', text: 'Fix the build' }) }));
+    expect(rpcRes.runId).toBe('run-new');
+    expect(u.context.voiceState.target.runId).toBe('run-new');
+    expect(u.context.openRun).toHaveBeenCalledWith('run-new');
+
+    await u.context.voiceEnd();
+    expect(u.context.voiceState.phase).toBe('idle');
+  });
 });

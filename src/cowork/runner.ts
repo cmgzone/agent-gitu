@@ -1530,7 +1530,7 @@ function subAgentSystemPrompt(
  * child is still accounted rather than invisible.
  */
 export function createSubAgentChildRunner(deps: CoworkRunnerDeps): SubAgentChildRunner {
-  return async ({ instance, permissions, account, availableSharedUsd, signal }) => {
+  return async ({ instance, permissions, account, availableSharedUsd, signal, onProgress }) => {
     const parentAgent = agentById(deps, instance.parentAgentId);
     if (!parentAgent) throw new Error('the parent agent no longer exists');
     // The child borrows its parent's model, avatar and computer mode — and
@@ -1562,7 +1562,7 @@ export function createSubAgentChildRunner(deps: CoworkRunnerDeps): SubAgentChild
     let budgetStopped = false;
     const llm = resilientLlm(
       deps.subAgentLlm ? deps.subAgentLlm(childAgent, account, () => { budgetStopped = true; }) : deps.resolveLlm(childAgent),
-      { label: `sub-agent ${instance.role}`, onRetry: () => deps.subAgents?.recordActivity(instance.id, 'waiting', 'Waiting to retry the model request…') },
+      { label: `sub-agent ${instance.role}`, onRetry: () => { deps.subAgents?.recordActivity(instance.id, 'waiting', 'Waiting to retry the model request…'); onProgress?.({ phase: 'thinking', detail: 'Retrying the model request…' }); } },
     );
     const perms: CoworkToolPerms = { allowShell: permissions.allowShell, allowWrites: permissions.allowWrites, allowConfig: permissions.allowConfig, chief: false, browser: permissions.browser && Boolean(deps.browser) };
     const taggedFolders = (deps.store?.getConversation(instance.conversationId)?.folders ?? []).map((folder) => folder.path);
@@ -1612,15 +1612,26 @@ export function createSubAgentChildRunner(deps: CoworkRunnerDeps): SubAgentChild
           tools: coworkNativeTools(childAgent, perms.browser).filter(tool => !SUBAGENT_BLOCKED_TOOLS.includes(tool.name)), perms, scope, store: deps.store, signal,
           beforeTool: () => { signal.throwIfAborted(); if (account.exhausted()) { budgetStopped = true; throw new Error('The parent budget is exhausted.'); } },
           onUsage: () => { turns++; if (!metered && !account.charge({ turns: 1 })) { budgetStopped = true; throw new Error('The sub-agent turn budget is exhausted.'); } },
-          onTool: (tool, params, result) => { deps.subAgents?.recordActivity(instance.id, 'working', `${tool.replace(/_/g, ' ')} ${result.ok ? 'completed' : 'reported a problem'}.`); trail.push({ tool, params, result }); recordToolResult(scope, tool, result, ''); },
+          onTool: (tool, params, result) => {
+            deps.subAgents?.recordActivity(instance.id, 'working', `${tool.replace(/_/g, ' ')} ${result.ok ? 'completed' : 'reported a problem'}.`);
+            onProgress?.({ phase: 'working', tool, toolParams: params, toolOk: result.ok, toolOutput: result.output, detail: summarizeParams(tool, params) });
+            trail.push({ tool, params, result });
+            recordToolResult(scope, tool, result, '');
+          },
           onProgress: (text, tool, ok, detail, nativeReasoning, args) => {
-            if (tool && ok === undefined) deps.subAgents?.recordActivity(instance.id, 'tool', `Using ${tool.replace(/_/g, ' ')}…`);
-            else if (!tool && text.trim()) deps.subAgents?.recordActivity(instance.id, 'working', text);
+            if (tool && ok === undefined) {
+              deps.subAgents?.recordActivity(instance.id, 'tool', `Using ${tool.replace(/_/g, ' ')}…`);
+              onProgress?.({ phase: 'tool', tool, toolParams: args, detail });
+            } else if (!tool) {
+              if (text.trim()) deps.subAgents?.recordActivity(instance.id, 'working', text);
+              onProgress?.({ phase: nativeReasoning ? 'reasoning' : 'responding', text, reasoning: nativeReasoning });
+            }
             const meta = coworkProgressMeta(tool, args ?? {}, ctx);
             deps.onProgress?.({ agentId: instance.id, agentName: instance.role, text, reasoning: nativeReasoning, tool, toolOk: ok, detail, webUrl: meta.webUrl, mcpServer: meta.mcpServer, appService: meta.appService, phase: tool ? 'working' : nativeReasoning ? 'thinking' : 'responding' });
           },
         });
         reply = native.text;
+        if (reply.trim()) onProgress?.({ phase: 'responding', text: reply.trim(), messageDone: true });
       }
       for (let round = 0; !llm.nativeTask && round < SUBAGENT_MAX_TOOL_ROUNDS; round++) {
         signal.throwIfAborted();
@@ -1629,23 +1640,29 @@ export function createSubAgentChildRunner(deps: CoworkRunnerDeps): SubAgentChild
         if (!metered && !account.charge({ turns: 1 })) { budgetStopped = true; break; }
         turns += 1;
         deps.subAgents?.recordActivity(instance.id, 'reasoning', `Planning the next step (round ${round + 1})…`, estimateTokens(messages.reduce((chars, message) => chars + messageTextChars(message), 0)));
+        onProgress?.({ phase: 'thinking', detail: `Planning the next step (round ${round + 1})…` });
         deps.onProgress?.({ agentId: instance.id, agentName: instance.role, text: `sub-agent working (round ${round + 1})`, phase: 'thinking' });
         reply = await llm.complete(messages, { temperature: 0.4, effort: childAgent.effort, signal });
         signal.throwIfAborted();
         messages.push({ role: 'assistant', content: reply });
+        const visibleNarration = stripToolMarkers(reply).trim();
+        if (visibleNarration) onProgress?.({ phase: 'responding', text: visibleNarration, messageDone: true });
         const calls = parseToolCalls(reply).slice(0, SUBAGENT_MAX_CALLS_PER_ROUND);
         if (calls.length === 0) break;
         for (const call of calls) {
           signal.throwIfAborted();
           ctx ??= deps.toolContext(parentAgent);
+          const detail = summarizeParams(call.tool, call.params);
           deps.subAgents?.recordActivity(instance.id, 'tool', `Using ${call.tool.replace(/_/g, ' ')}…`);
+          onProgress?.({ phase: 'tool', tool: call.tool, toolParams: call.params, detail });
           const result = await executeCoworkTool(ctx, call.tool, call.params, perms, scope);
           deps.subAgents?.recordActivity(instance.id, 'working', `${call.tool.replace(/_/g, ' ')} ${result.ok ? 'completed' : 'reported a problem'}.`);
+          onProgress?.({ phase: 'working', tool: call.tool, toolParams: call.params, toolOk: result.ok, toolOutput: result.output, detail });
           trail.push({ tool: call.tool, params: call.params, result });
           recordToolResult(scope, call.tool, result, visibleCoworkText(reply));
           messages.push(toolResultMessage(call.tool, result, false));
           const meta = coworkProgressMeta(call.tool, call.params, ctx);
-          deps.onProgress?.({ agentId: instance.id, agentName: instance.role, text: stripToolMarkers(reply), tool: call.tool, toolOk: result.ok, detail: summarizeParams(call.tool, call.params), webUrl: meta.webUrl, mcpServer: meta.mcpServer, appService: meta.appService });
+          deps.onProgress?.({ agentId: instance.id, agentName: instance.role, text: visibleNarration, tool: call.tool, toolOk: result.ok, detail, webUrl: meta.webUrl, mcpServer: meta.mcpServer, appService: meta.appService });
         }
       }
     } finally {

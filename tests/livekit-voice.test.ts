@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LiveKitCloudWorker } from '../src/voice/cloud-worker.js';
 import { AgentDispatchClient, RoomServiceClient, TokenVerifier } from 'livekit-server-sdk';
-import { GituVoiceCalls, validateLiveKitConfiguration, decideVoiceTurn } from '../src/voice/livekit.js';
+import { GituVoiceCalls, cleanSpokenReply, validateLiveKitConfiguration, decideVoiceTurn } from '../src/voice/livekit.js';
 import type { LlmClient, LlmMessage } from '../src/llm/llm.js';
 import { GituServer } from '../src/server/server.js';
 import type { CoworkMessage } from '../src/cowork/store.js';
@@ -104,5 +104,59 @@ describe('LiveKit voice bridge', () => {
       expect((await request(voiceRoute + '/reply', 'POST', payload)).status).toBe(404);
       release('Done.');
     } finally { release('Done.'); await server.stop(); if (oldHome === undefined) delete process.env.AGENT_GITU_HOME; else process.env.AGENT_GITU_HOME = oldHome; rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
+  }, 20_000);
+
+  it('fast-paths natural conversational questions in one LLM call, strips markdown for TTS, and retries failed turns cleanly', async () => {
+    const complete = vi.fn().mockResolvedValue('<think>internal</think>All checks passed in `src/auth.ts` with **zero errors** — check [report](https://example.com).');
+    const decision = await decideVoiceTurn(
+      { name: 'test', complete },
+      { name: 'Atlas', instructions: 'Helper', state: 'Ready', history: [], busy: false },
+      'Did the tests pass?',
+    );
+    expect(decision.kind).toBe('question');
+    expect(decision.reply).toBe('All checks passed in src/auth.ts with zero errors — check report.');
+    expect(complete).toHaveBeenCalledOnce();
+    expect(cleanSpokenReply('## Title\n- **Done** with `foo.ts`')).toBe('Title Done with foo.ts');
+
+    // Verify failed replies are not cached forever and empty mid-call turns do not re-greet
+    vi.spyOn(RoomServiceClient.prototype, 'createRoom').mockResolvedValue({} as never);
+    vi.spyOn(RoomServiceClient.prototype, 'deleteRoom').mockResolvedValue(undefined);
+    vi.spyOn(AgentDispatchClient.prototype, 'createDispatch').mockResolvedValue({} as never);
+    secrets.keys.GITU_LIVEKIT_CONFIG = JSON.stringify(config);
+    const home = mkdtempSync(path.join(tmpdir(), 'gitu-voice-retry-'));
+    const oldHome = process.env.AGENT_GITU_HOME; process.env.AGENT_GITU_HOME = home;
+    let attempt = 0;
+    const llm: LlmClient = {
+      name: 'test',
+      complete: async () => {
+        attempt++;
+        if (attempt === 1) throw new Error('temporary network drop');
+        return 'Everything looks good.';
+      },
+    };
+    const server = new GituServer({ cwd: home, port: 0, passwordRequired: false, llm });
+    try {
+      const base = 'http://127.0.0.1:' + await server.start();
+      const post = async (route: string, body?: unknown) => {
+        const res = await fetch(base + route, { method: 'POST', headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+        return { status: res.status, data: await res.json() };
+      };
+      const agent = (await post('/api/cowork/agents', { name: 'Atlas', systemPrompt: 'Engineer' })).data.agent;
+      const conv = (await post('/api/cowork/conversations', { kind: 'dm', memberIds: [agent.id] })).data.conversation;
+      const call = (await post('/api/voice/calls', { kind: 'cowork', conversationId: conv.id, agentId: agent.id })).data;
+      const greeting = await post('/api/voice/calls/' + call.callId + '/reply', { id: 'greeting', text: '' });
+      expect(greeting.data.text).toContain('Atlas');
+      const blankMid = await post('/api/voice/calls/' + call.callId + '/reply', { id: 'turn-blank', text: '' });
+      expect(blankMid.data.text).toBe('');
+      const failed = await post('/api/voice/calls/' + call.callId + '/reply', { id: 'turn-retry', text: 'What is the status?' });
+      expect(failed.status).toBe(502);
+      const recovered = await post('/api/voice/calls/' + call.callId + '/reply', { id: 'turn-retry', text: 'What is the status?' });
+      expect(recovered.status).toBe(200);
+      expect(recovered.data.text).toBe('Everything looks good.');
+    } finally {
+      await server.stop();
+      if (oldHome === undefined) delete process.env.AGENT_GITU_HOME; else process.env.AGENT_GITU_HOME = oldHome;
+      rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    }
   }, 20_000);
 });

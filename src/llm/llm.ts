@@ -1169,6 +1169,11 @@ export class UsageTrackingClient implements LlmClient {
   }
 
   async completeStream(messages: LlmMessage[], opts: LlmOptions = {}, onDelta: LlmDeltaHandler): Promise<string> {
+    if (typeof this.inner.completeStream !== 'function') {
+      const out = await this.complete(messages, opts);
+      if (out) onDelta(out);
+      return out;
+    }
     let seen = false;
     const out = await this.inner.completeStream(
       messages,

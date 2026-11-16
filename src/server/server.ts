@@ -62,7 +62,7 @@ import { Gitu } from '../agent/gitu.js';
 import { providerRecoveryDelay } from '../agent/task-recovery.js';
 import { createGitu, type GituFactoryDependencies } from '../coding/gitu-factory.js';
 import { GituSessionRuntime, type GituCodingSession } from '../coding/session-runtime.js';
-import { privateCodingSession } from '../coding/private-coding-session.js';
+import { createPrivateCodingProgressBridge, privateCodingSession } from '../coding/private-coding-session.js';
 import { resolveAutonomy, type AutonomyPolicy } from '../agent/autonomy.js';
 import { createBudgetAccount, type BudgetAccount } from '../coding/budget.js';
 import type { ChiefResolver } from '../coding/chief.js';
@@ -2313,12 +2313,12 @@ export class GituServer {
       budgetPool: (scope) => this.delegationBudgetFor(scope.missionId, scope.conversationId),
       createSession: (input, scope) => {
         const runtime = input.workspace.type === 'container' || company !== undefined
-          ? (()=>{const assignment=this.cowork().getAgent(scope.agent.id)!;let first=true;return privateCodingSession(input.goal, input.workspace, (signal,instruction) => {
+          ? (()=>{const assignment=this.cowork().getAgent(scope.agent.id)!;let first=true;return privateCodingSession(input.goal, input.workspace, (signal,instruction,emit) => {
               const parent=this.cowork().getAgent(scope.agent.id);if(!parent)throw Error('The requesting teammate was removed.');
               if(parent.useHostComputer!==assignment.useHostComputer||parent.cloudConnectionId!==assignment.cloudConnectionId)throw Error('The assigned computer changed. Start a new coding task on the selected computer.');
               const bridge=first&&!scope.background&&(input.workspace.type==='host'||input.workspace.path==='/workspace')&&parent.allowWrites===assignment.allowWrites&&parent.allowShell===assignment.allowShell?scope.subAgents:this.codingWorkerBridge(parent,scope.conversationId!,signal,scope.missionId,input.workspace.type==='container'?input.workspace.path:undefined);first=false;
               if (!bridge) throw new Error('The private coding runtime is unavailable. Restore it before continuing this task.');
-              return bridge.run({ role: 'Agent Gitu coding', objective: (instruction??input.goal) + '\nProject: ' + input.workspace.path + '\nMain Agent Gitu owns this engineering task. Before editing, verify that the folder and actual repository identity match the requested project. If missing, ambiguous or mismatched, stop and report that the user must choose the correct folder. Do not reuse another project, silently switch folders or continue editing. Implement and verify only in the confirmed workspace, keeping company and computer permissions in force. Return concrete evidence and remaining blockers. Do not delegate further.', reason: 'Main-agent coding task', budget: input.budget ?? {}, maxRuntimeMinutes: input.runOptions.timeoutMinutes }, signal);
+              return bridge.run({ role: 'Agent Gitu coding', objective: (instruction??input.goal) + '\nProject: ' + input.workspace.path + '\nMain Agent Gitu owns this engineering task. Before editing, verify that the folder and actual repository identity match the requested project. If missing, ambiguous or mismatched, stop and report that the user must choose the correct folder. Do not reuse another project, silently switch folders or continue editing. Implement and verify only in the confirmed workspace, keeping company and computer permissions in force. Return concrete evidence and remaining blockers. Do not delegate further.', reason: 'Main-agent coding task', budget: input.budget ?? {}, maxRuntimeMinutes: input.runOptions.timeoutMinutes }, signal, createPrivateCodingProgressBridge(emit));
             },readRuntimeSelection);})()
           : this.createDelegatedSession(input);
         this.trackCoworkCodingSession(runtime, input, scope);
@@ -2838,8 +2838,13 @@ export class GituServer {
       if (this.sessions.get(runtime.id) !== task || task.runtime !== runtime) return;
       sync();
       this.recordCodingChiefDecision(task,event);
-      if (event.source !== undefined) this.pushEvent(task, event.source, true, event);
-      else this.publishNativeEvent(task, event);
+      if (event.source !== undefined) {
+        const ledgerMatch = event.source.match(/ledger\s+(?:created|resumed|recovered):\s+(\S+)/);
+        if (ledgerMatch) task.taskId = ledgerMatch[1];
+        const branchMatch = event.source.match(/branch\s+(?:Switched to existing|Created|Already on)\s+(\S+)/);
+        if (branchMatch) task.branch = branchMatch[1];
+        this.pushEvent(task, event.source, true, event);
+      } else this.publishNativeEvent(task, event);
     });
     const release = this.delegatedSessionResources.get(runtime.id);
     this.delegatedSessionResources.set(runtime.id, () => {
@@ -3611,6 +3616,7 @@ export class GituServer {
         this.refreshPikCreditsBackground();
       }
     });
+    if (typeof base.completeStream !== 'function') (tracked as { completeStream?: unknown }).completeStream = undefined;
     if (!base.completeTurn) (tracked as { completeTurn?: unknown }).completeTurn = undefined;
     if (!base.completeTurnStream) (tracked as { completeTurnStream?: unknown }).completeTurnStream = undefined;
     return tracked;
@@ -6983,7 +6989,7 @@ export class GituServer {
       target.agentId = agent.id;
       const run = this.coworkRuns.get(conversation.id), sameTopic = (run?.threadId ?? null) === (target.threadId ?? null);
       const publicProgress = sameTopic ? Object.values(run?.progresses ?? {}).map(progress => `${progress.agentName}: ${progress.text || 'Working'}`).join('\n') : '';
-      const workers = store.subAgents({ conversationId: conversation.id }).filter(worker => worker.threadId === target.threadId && worker.parentAgentId === agent.id);
+      const workers = store.subAgents({ conversationId: conversation.id }).filter(worker => (worker.threadId ?? null) === (target.threadId ?? null) && worker.parentAgentId === agent.id);
       const computer = this.coworkComputer(agent.id).status();
       const capabilities = `Computer: ${agent.useHostComputer ? 'user workspace' : agent.cloudConnectionId ? 'cloud desktop' : 'private desktop'}, ${computer.state}. Browser, files and shell are available through the normal task runner; shell ${agent.allowShell ? 'enabled' : 'disabled'}, file writes ${agent.allowWrites ? 'enabled' : 'disabled'}. ${computer.control === 'user' ? 'The user currently controls the desktop; wait for their handoff before operating it.' : 'The agent can use its computer subject to the existing permissions.'} A stopped desktop can be started for a requested task. Human sign-in or account verification stays with the user.`;
       return {
@@ -6991,28 +6997,36 @@ export class GituServer {
         instructions: `You are ${agent.name}, ${agent.tagline || 'the user’s AI teammate'}. This is the voice channel of your existing conversation.\n${agent.systemPrompt}\n${this.coworkUserContext() ?? ''}\n${this.coworkMemoryFor(agent)}\nThe voice routing instruction determines the response format; task execution and tool permissions are handled by your normal task runner.`,
         state: (publicProgress || (run?.busy && sameTopic ? 'Work is continuing.' : 'No active task in this topic.')) + '\nWorkers: ' + workers.map(worker => `${worker.role}: ${worker.status}`).join(', ') + '\n' + capabilities,
         busy: Boolean(run?.busy && sameTopic),
-        history: store.messages(conversation.id, 0, target.threadId ?? null).filter(message => message.role !== 'system').slice(-12).map(message => ({ role: message.role === 'user' ? 'user' as const : 'assistant' as const, content: (message.agentName ? message.agentName + ': ' : '') + message.text })),
+        history: store.messages(conversation.id, 0, target.threadId ?? null).filter(message => message.role !== 'system').slice(-8).map(message => ({ role: message.role === 'user' ? 'user' as const : 'assistant' as const, content: (message.agentName ? message.agentName + ': ' : '') + message.text })),
       };
     }
     const session = target.runId ? this.sessions.get(target.runId) : undefined;
     if (target.runId && !session) throw new Error('The call’s task is unavailable.');
     const root = session?.worktreePath ?? session?.projectPath ?? target.projectPath ?? this.config.cwd;
-    const guard = ProjectGuard.detect(root);
+    const projectLabel = session?.project ?? nodePath.basename(root);
     return {
-      name: 'Agent Gitu', instructions: buildSystemPrompt(guard, MemoryStore.forProject(guard.lock.repoRoot), { memoryQuery: session?.goal, agentWorkflow: true }),
+      name: 'Agent Gitu',
+      instructions: `You are Agent Gitu, the user’s engineering and workspace assistant${projectLabel ? ` working in ${projectLabel}` : ''}. Respond naturally and concisely on this live voice call; coding and shell tasks run via your normal workspace task runner.`,
       state: session ? `Task: ${session.goal}\nStatus: ${session.status}\n` + session.events.filter(event => /^(?:say |activity (?:tool|working)|done )/.test(event.text)).slice(-6).map(event => event.text).join('\n') : 'No task has started yet.',
       busy: session?.status === 'running',
-      history: (session?.events ?? []).filter(event => /^(?:user-msg |live-chat |say )/.test(event.text)).slice(-24).map(event => {
+      history: (session?.events ?? []).filter(event => /^(?:user-msg |live-chat |say )/.test(event.text)).slice(-12).map(event => {
         if (event.text.startsWith('live-chat ')) { try { return JSON.parse(event.text.slice(10)) as { role: 'user' | 'assistant'; content: string }; } catch { /* skip malformed legacy entries */ } }
         return { role: event.text.startsWith('say ') ? 'assistant' as const : 'user' as const, content: event.text.replace(/^(?:user-msg |say )/, '') };
       }),
     };
   }
 
-  private async voiceTurn(call: VoiceCall, text: string, req: http.IncomingMessage): Promise<Record<string, unknown>> {
+  private async voiceTurn(call: VoiceCall, text: string, req: http.IncomingMessage, id = ''): Promise<Record<string, unknown>> {
     const context = this.voiceContext(call.target);
     context.history.push(...call.history);
-    if (!text) return { text: `Hi, I’m ${context.name}. ${context.busy ? 'I’m still working. What would you like to discuss?' : 'What would you like me to do?'}` };
+    if (!text) {
+      if (!call.greeted && (!id || id === 'greeting')) {
+        call.greeted = true;
+        return { text: `Hi, I’m ${context.name}. ${context.busy ? 'I’m still working—what would you like to talk about?' : 'How can I help?'}` };
+      }
+      return { text: '' };
+    }
+    call.greeted = true;
     const safe = credentialChatInput(text);
     if (safe.detected) return { text: 'Please enter credentials in the secure Connections form.' };
     text = safe.safeText;
@@ -7053,7 +7067,7 @@ export class GituServer {
     const route = decision.kind === 'stop' ? target.runId ? `/api/runs/${target.runId}/stop` : undefined : target.runId ? `/api/runs/${target.runId}/message` : '/api/runs';
     if (!route) return { text: 'There is no task to stop.' };
     const headers: Record<string, string> = { 'content-type': 'application/json' };
-    for (const name of ['host', 'origin', 'cookie', 'authorization', 'x-forwarded-proto']) if (typeof req.headers[name] === 'string') headers[name] = req.headers[name]!;
+    for (const name of ['cookie', 'authorization']) if (typeof req.headers[name] === 'string') headers[name] = req.headers[name]!;
     const response = await fetch(`http://127.0.0.1:${address.port}` + route, { method: 'POST', headers, body: JSON.stringify(target.runId ? { text, delivery: decision.kind === 'queue' || decision.kind === 'task' && context.busy ? 'queue' : 'steer' } : { goal: text, provider: target.provider, model: target.model, projectPath: target.projectPath, mode: 'agent', autoApprove: false }), signal: AbortSignal.timeout(30_000) });
     const result = await response.json() as Record<string, unknown>;
     if (!response.ok) throw new Error(typeof result.error === 'string' ? result.error : 'The task could not be started.');
@@ -7104,8 +7118,16 @@ export class GituServer {
           if (!/^[\w-]{1,80}$/.test(id)) { this.sendJson(res, 400, { error: 'A voice turn ID is required.' }); return; }
           let reply = call.responses.get(id);
           if (!reply) {
-            if (call.responses.size >= 128) { this.sendJson(res, 429, { error: 'Start a fresh call to continue.' }); return; }
-            reply = this.voiceTurn(call, text, req); call.responses.set(id, reply);
+            if (call.responses.size >= 128) {
+              const oldest = call.responses.keys().next().value;
+              if (oldest !== undefined) call.responses.delete(oldest);
+            }
+            const pending = this.voiceTurn(call, text, req, id).catch(error => {
+              if (call.responses.get(id) === pending) call.responses.delete(id);
+              throw error;
+            });
+            call.responses.set(id, pending);
+            reply = pending;
           }
           this.sendJson(res, 200, await reply); return;
         }

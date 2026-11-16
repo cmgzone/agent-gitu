@@ -134,6 +134,7 @@ describe('Live call lifecycle', () => {
     expect(u.elements.gituVoiceStage.hidden).toBe(false);
     expect(u.elements.gituVoiceBar.hidden).toBe(true);
     expect(u.elements.gituVoiceStage.innerHTML).toContain('voice-stage-avatar');
+    expect(u.elements.gituVoiceStage.innerHTML).toContain('voice-stage-aura');
     expect(u.elements.gituVoiceStage.innerHTML).toContain('voice-stage-wave');
 
     // Minimize collapses back to bar; Open Stage expands visualizer again

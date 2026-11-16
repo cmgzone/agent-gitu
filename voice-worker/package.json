@@ -4,5 +4,8 @@
   "type": "module",
   "engines": { "node": ">=22.22.3" },
   "scripts": { "dev": "node agent.mjs dev", "start": "node agent.mjs start", "check": "node --check agent.mjs" },
-  "dependencies": { "@livekit/agents": "1.9.1" }
+  "dependencies": {
+    "@livekit/agents": "1.9.1",
+    "@livekit/noise-cancellation-node": "0.3.1"
+  }
 }

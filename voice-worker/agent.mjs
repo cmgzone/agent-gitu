@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { cli, defineAgent, inference, llm, ServerOptions, voice } from '@livekit/agents';
+import { BackgroundVoiceCancellation } from '@livekit/noise-cancellation-node';
 
 /** Audio runs in LiveKit Cloud. The existing authenticated Gitu tab remains the task authority. */
 class ExistingGituModel extends llm.LLM {
@@ -36,6 +37,7 @@ export default defineAgent({
     if (!/^[\w-]{1,80}$/.test(metadata.callId || '') || !/^user-[\w-]+$/.test(metadata.participantIdentity || '')) throw new Error('Invalid Gitu voice dispatch.');
     await ctx.connect();
     await ctx.waitForParticipant(metadata.participantIdentity);
+    const cloud = (() => { try { return new URL(ctx.info?.url || '').hostname.endsWith('.livekit.cloud'); } catch { return false; } })();
     const report = status => ctx.room.localParticipant.performRpc({
       destinationIdentity: metadata.participantIdentity, method: 'gitu.voice.status',
       payload: JSON.stringify({ callId: metadata.callId, ...status }), responseTimeout: 5_000,
@@ -61,7 +63,11 @@ export default defineAgent({
     session.on(voice.AgentSessionEventTypes.MetricsCollected, event => {
       if (event.metrics?.type === 'tts_metrics' && event.metrics.audioDurationMs > 0) void report({ stage: 'audio' });
     });
-    await session.start({ agent: voice.Agent.create({ instructions: 'Speak through the existing Gitu conversation bridge. All identity, memory, task routing and permissions belong to that conversation.' }), room: ctx.room, record: false });
+    await session.start({
+      agent: voice.Agent.create({ instructions: 'Speak through the existing Gitu conversation bridge. All identity, memory, task routing and permissions belong to that conversation.' }),
+      room: ctx.room, record: false,
+      inputOptions: cloud ? { noiseCancellation: BackgroundVoiceCancellation() } : undefined,
+    });
     ctx.addShutdownCallback(async () => { await session.close(); });
     await session.generateReply();
   },

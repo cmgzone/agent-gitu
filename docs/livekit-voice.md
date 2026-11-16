@@ -17,6 +17,7 @@ The worker defaults to LiveKit Inference's AssemblyAI speech recognition and Fis
 - Questions use public current task state and conversation context without acquiring the execution lock or running tools.
 - New tasks, queued requests and live corrections go through the existing Gitu dispatchers and permission checks.
 - Cowork exposes Steer, Queue and Ask while busy. Steer is applied at the next safe model/tool boundary; Queue starts after current work; Ask leaves work untouched.
+- On LiveKit Cloud, inbound audio uses background voice cancellation so nearby speakers do not trigger turns. Self-hosted LiveKit keeps the standard pipeline.
 - Interrupting speech or ending a call does not cancel a task. Only an explicit stop-task request or the existing Stop control cancels work.
 - Final voice exchanges appear in the existing chat. Raw audio recording is disabled.
 - Calls stay attached to their original agent and topic when the user browses elsewhere. A new call selects the new target explicitly.

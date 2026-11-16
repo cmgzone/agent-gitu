@@ -264,12 +264,12 @@ export const VOICE_CSS = String.raw`
   .voice-stage[data-phase="thinking"] .voice-stage-aura { opacity:.8; }
   .voice-stage[data-phase="speaking"] .voice-stage-avatar { animation:voice-talk-bob .55s ease-in-out infinite alternate; }
   .voice-stage-avatar {
-    position:relative; z-index:1; width:116px; height:116px; border-radius:36px; display:grid; place-items:center;
+    position:relative; z-index:1; width:44px; height:44px; border-radius:14px; display:grid; place-items:center;
     background:var(--card2); border:1px solid var(--border2); overflow:hidden;
-    box-shadow:0 12px 30px -14px rgba(0,0,0,.35);
+    box-shadow:0 8px 18px -10px rgba(0,0,0,.35);
     transform:scale(calc(1 + var(--voice-amp) * 0.08)); transition:transform .08s ease-out;
   }
-  .voice-stage-plush { width:98px; height:98px; }
+  .voice-stage-plush { width:38px; height:38px; }
   .voice-stage-wave {
     display:flex; align-items:center; justify-content:center; gap:5px; height:36px; width:100%; max-width:280px;
   }

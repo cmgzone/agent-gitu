@@ -123,7 +123,7 @@ describe('Live call lifecycle', () => {
   it('opens the live visualizer stage showing the agent talking, supports minimize/expand, and syncs Main Home runId', async () => {
     const u = voiceUi();
     u.context.S = { active: 'home', cw: { active: 'atlas' } };
-    u.context.cwAgentById = () => ({ id: 'atlas', name: 'Atlas', avatar: { shape: 'dot-blue', color: '#257ad8' } });
+    u.context.cwAgentById = () => ({ id: 'atlas', name: 'Atlas', avatar: { shape: 'dot-block', color: '#257ad8' } });
     u.context.cwAvaImg = (_av: unknown, id: string) => `<span class="cw-plush" data-agent="${id}"></span>`;
     u.context.plushCharacterHtml = () => '<span class="cw-plush"></span>';
     u.context.openRun = vi.fn();

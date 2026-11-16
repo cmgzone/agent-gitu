@@ -5,10 +5,6 @@ export function plushCharacterHtml(color: string, identity = '', filter = '', cl
   // Eye bounds match the original 512px PNGs. A clipped sample of the same
   // plush texture becomes an eyelid; no flattened/recolored assets are needed.
   const eyes: Record<string, number[][]> = {
-    blue: [[155, 206, 54, 68, 228, 165], [304, 206, 54, 68, 230, 165]],
-    purple: [[153, 193, 55, 65, 229, 155], [302, 193, 55, 65, 228, 155]],
-    orange: [[175, 190, 46, 58, 235, 154], [306, 171, 46, 57, 238, 140]],
-    mint: [[171, 230, 45, 55, 232, 200], [294, 230, 46, 57, 231, 198]],
     orb: [[160, 215, 67, 71, 228, 130], [285, 215, 69, 71, 228, 130]],
     block: [[174, 194, 42, 52, 220, 130], [295, 193, 43, 54, 220, 130]],
     tip: [[174, 213, 70, 76, 220, 130]],
@@ -20,7 +16,7 @@ export function plushCharacterHtml(color: string, identity = '', filter = '', cl
     plus: [[167, 183, 42, 50, 196, 130], [281, 183, 42, 50, 196, 130]],
     pill: [[144, 147, 36, 43, 160, 250], [227, 147, 36, 43, 160, 250]],
   };
-  if (!Object.prototype.hasOwnProperty.call(eyes, color)) color = 'purple';
+  if (!Object.prototype.hasOwnProperty.call(eyes, color)) color = 'orb';
   let seed = 0;
   const key = color + identity;
   for (let i = 0; i < key.length; i++) seed = (seed * 31 + key.charCodeAt(i)) >>> 0;
@@ -70,8 +66,7 @@ export const CHARACTER_JS = String.raw`
   ${plushCharacterHtml.toString()}
   var CW_CHARACTER_NAMES = {
     'dot-orb': 'Orb', 'dot-block': 'Block', 'dot-tip': 'Tip', 'dot-hexa': 'Hexa', 'dot-nova': 'Nova',
-    'dot-dia': 'Dia', 'dot-penta': 'Penta', 'dot-luna': 'Luna', 'dot-plus': 'Plus', 'dot-pill': 'Pill',
-    'dot-blue': 'Blue', 'dot-mint': 'Mint', 'dot-orange': 'Orange', 'dot-purple': 'Purple'
+    'dot-dia': 'Dia', 'dot-penta': 'Penta', 'dot-luna': 'Luna', 'dot-plus': 'Plus', 'dot-pill': 'Pill'
   };
   function cwWebActivity(p) {
     if (!p || !/^(browse|web_fetch|web_search|search_web)$/.test(p.tool || '')) return '';

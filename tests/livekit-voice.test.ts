@@ -126,10 +126,12 @@ describe('LiveKit voice bridge', () => {
     const home = mkdtempSync(path.join(tmpdir(), 'gitu-voice-retry-'));
     const oldHome = process.env.AGENT_GITU_HOME; process.env.AGENT_GITU_HOME = home;
     let attempt = 0;
+    let lastServerMessages: LlmMessage[] = [];
     const llm: LlmClient = {
       name: 'test',
-      complete: async () => {
+      complete: async messages => {
         attempt++;
+        lastServerMessages = messages;
         if (attempt === 1) throw new Error('temporary network drop');
         return 'Everything looks good.';
       },
@@ -153,6 +155,31 @@ describe('LiveKit voice bridge', () => {
       const recovered = await post('/api/voice/calls/' + call.callId + '/reply', { id: 'turn-retry', text: 'What is the status?' });
       expect(recovered.status).toBe(200);
       expect(recovered.data.text).toBe('Everything looks good.');
+
+      // Asking/discussing phrasing stays conversational without starting background work or repeating own name prefix
+      let seenFollowup: LlmMessage[] = [];
+      const captureLlm: LlmClient = { name: 'test', complete: async messages => { seenFollowup = messages; return 'Atlas: Let’s keep the current header and add dark mode second.'; } };
+      const discussed = await decideVoiceTurn(captureLlm, { name: 'Atlas', instructions: 'Engineer', state: 'Idle', history: [{ role: 'assistant', content: 'Earlier reply' }], busy: false }, 'Can you check why the sidebar shows Thinking or should we fix CSS?');
+      expect(discussed.kind).toBe('question');
+      expect(discussed.reply).toBe('Let’s keep the current header and add dark mode second.');
+      expect(String(seenFollowup[1]?.content)).toContain('never repeat, announce, or prefix "Atlas"');
+
+      const goAhead = await decideVoiceTurn({ name: 'test', complete: vi.fn() }, { name: 'Atlas', instructions: 'Engineer', state: 'Idle', history: [], busy: false }, 'Go ahead and build the settings page.');
+      expect(goAhead.kind).toBe('task');
+
+      // Cowork follow-up call should not inject "Atlas: " prefixes into its own prior assistant turns
+      const followup = await post('/api/voice/calls/' + call.callId + '/reply', { id: 'turn-discuss', text: 'What if we change the layout first?' });
+      expect(followup.status).toBe(200);
+      expect(followup.data.text).toBe('Everything looks good.');
+      const assistantHistory = lastServerMessages.filter(message => message.role === 'assistant').map(message => String(message.content));
+      expect(assistantHistory).toContain('Everything looks good.');
+      expect(assistantHistory.some(entry => entry.startsWith('Atlas:'))).toBe(false);
+      expect(cleanSpokenReply('Assistant: Sure, let us simplify it.')).toBe('Sure, let us simplify it.');
+      expect(cleanSpokenReply('Atlas: Here is the idea.', 'Atlas')).toBe('Here is the idea.');
+      expect(cleanSpokenReply('[Atlas] Here is the idea.', 'Atlas')).toBe('Here is the idea.');
+      expect(cleanSpokenReply('Atlas — sounds good.', 'Atlas')).toBe('sounds good.');
+      const convView = await (await fetch(base + '/api/cowork/conversations/' + conv.id + '/messages')).json() as { busy: boolean };
+      expect(convView.busy).toBe(false);
     } finally {
       await server.stop();
       if (oldHome === undefined) delete process.env.AGENT_GITU_HOME; else process.env.AGENT_GITU_HOME = oldHome;

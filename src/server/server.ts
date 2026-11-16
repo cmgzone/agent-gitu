@@ -6994,10 +6994,10 @@ export class GituServer {
       const capabilities = `Computer: ${agent.useHostComputer ? 'user workspace' : agent.cloudConnectionId ? 'cloud desktop' : 'private desktop'}, ${computer.state}. Browser, files and shell are available through the normal task runner; shell ${agent.allowShell ? 'enabled' : 'disabled'}, file writes ${agent.allowWrites ? 'enabled' : 'disabled'}. ${computer.control === 'user' ? 'The user currently controls the desktop; wait for their handoff before operating it.' : 'The agent can use its computer subject to the existing permissions.'} A stopped desktop can be started for a requested task. Human sign-in or account verification stays with the user.`;
       return {
         name: agent.name,
-        instructions: `You are ${agent.name}, ${agent.tagline || 'the user’s AI teammate'}. This is the voice channel of your existing conversation.\n${agent.systemPrompt}\n${this.coworkUserContext() ?? ''}\n${this.coworkMemoryFor(agent)}\nThe voice routing instruction determines the response format; task execution and tool permissions are handled by your normal task runner.`,
+        instructions: `You are ${agent.name}, ${agent.tagline || 'the user’s AI teammate'}. This is the voice channel of your existing conversation.\n${agent.systemPrompt}\n${this.coworkUserContext() ?? ''}\n${this.coworkMemoryFor(agent)}\nSpeak directly to the user without repeating or prefixing your own name ("${agent.name}:"), and never start background tasks when the user is just asking questions or discussing ideas.`,
         state: (publicProgress || (run?.busy && sameTopic ? 'Work is continuing.' : 'No active task in this topic.')) + '\nWorkers: ' + workers.map(worker => `${worker.role}: ${worker.status}`).join(', ') + '\n' + capabilities,
         busy: Boolean(run?.busy && sameTopic),
-        history: store.messages(conversation.id, 0, target.threadId ?? null).filter(message => message.role !== 'system').slice(-8).map(message => ({ role: message.role === 'user' ? 'user' as const : 'assistant' as const, content: (message.agentName ? message.agentName + ': ' : '') + message.text })),
+        history: store.messages(conversation.id, 0, target.threadId ?? null).filter(message => message.role !== 'system').slice(-8).map(message => ({ role: message.role === 'user' ? 'user' as const : 'assistant' as const, content: (message.agentId && message.agentId !== agent.id && message.agentName ? `[${message.agentName}] ` : '') + message.text })),
       };
     }
     const session = target.runId ? this.sessions.get(target.runId) : undefined;
@@ -7006,7 +7006,7 @@ export class GituServer {
     const projectLabel = session?.project ?? nodePath.basename(root);
     return {
       name: 'Agent Gitu',
-      instructions: `You are Agent Gitu, the user’s engineering and workspace assistant${projectLabel ? ` working in ${projectLabel}` : ''}. Respond naturally and concisely on this live voice call; coding and shell tasks run via your normal workspace task runner.`,
+      instructions: `You are Agent Gitu, the user’s engineering and workspace assistant${projectLabel ? ` working in ${projectLabel}` : ''}. Speak naturally and directly on this live voice call without repeating or prefixing your own name. Talk through questions and plans conversationally—only start background work on a clear execution command.`,
       state: session ? `Task: ${session.goal}\nStatus: ${session.status}\n` + session.events.filter(event => /^(?:say |activity (?:tool|working)|done )/.test(event.text)).slice(-6).map(event => event.text).join('\n') : 'No task has started yet.',
       busy: session?.status === 'running',
       history: (session?.events ?? []).filter(event => /^(?:user-msg |live-chat |say )/.test(event.text)).slice(-12).map(event => {
@@ -7059,13 +7059,13 @@ export class GituServer {
       }
       const result = this.dispatchCoworkMessage(target.conversationId!, text, 'web', undefined, undefined, target.threadId, { id: 'voice-' + crypto.randomUUID(), mentionedAgentIds: [target.agentId!], delivery: decision.kind === 'queue' || decision.kind === 'task' && context.busy ? 'queue' : 'steer' });
       if (!result.ok) throw new Error(result.error);
-      return { text: result.queued ? 'I’ve queued that request. The current work continues.' : result.steered ? 'I’ll apply that to the current task at the next safe step.' : 'I’m starting that now. You can follow the results in this chat.' };
+      return { text: result.queued ? 'Got it—I’ve queued that up to run next while the current work finishes.' : result.steered ? 'Got it, I’ll adjust what I’m working on at the next safe step.' : 'On it—I’ve kicked that off in the background, and we can keep talking here.' };
     }
     // Reuse the normal authenticated task APIs, including their permission and gate checks.
     const address = this.server?.address() as AddressInfo | undefined;
     if (!address) throw new Error('Gitu is stopping.');
     const route = decision.kind === 'stop' ? target.runId ? `/api/runs/${target.runId}/stop` : undefined : target.runId ? `/api/runs/${target.runId}/message` : '/api/runs';
-    if (!route) return { text: 'There is no task to stop.' };
+    if (!route) return { text: 'Nothing is running in the background right now.' };
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     for (const name of ['cookie', 'authorization']) if (typeof req.headers[name] === 'string') headers[name] = req.headers[name]!;
     const response = await fetch(`http://127.0.0.1:${address.port}` + route, { method: 'POST', headers, body: JSON.stringify(target.runId ? { text, delivery: decision.kind === 'queue' || decision.kind === 'task' && context.busy ? 'queue' : 'steer' } : { goal: text, provider: target.provider, model: target.model, projectPath: target.projectPath, mode: 'agent', autoApprove: false }), signal: AbortSignal.timeout(30_000) });
@@ -7077,7 +7077,7 @@ export class GituServer {
       if (session) for (const message of call.history) this.pushEvent(session, 'live-chat ' + JSON.stringify(message));
       call.history = [];
     }
-    return { text: decision.kind === 'stop' ? 'I’m stopping the task.' : result.queued ? 'That is queued for when the current task finishes.' : result.steered ? 'I’ll apply that at the next safe step.' : 'I’m starting that now. You can follow the results in chat.', runId: target.runId };
+    return { text: decision.kind === 'stop' ? 'Stopping the current task now.' : result.queued ? 'Got it—I’ve queued that up next while the current task wraps up.' : result.steered ? 'Got it, I’ll fold that into the active task at the next step.' : 'On it—I’ve kicked that off in the background, and we can keep talking here.', runId: target.runId };
   }
 
   private async handleVoiceApi(req: http.IncomingMessage, res: http.ServerResponse, path: string, method: string): Promise<void> {

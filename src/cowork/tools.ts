@@ -1363,7 +1363,7 @@ function coworkRecommend(scope: CoworkToolScope | undefined, params: Record<stri
 }
 
 function nextTeammateAvatar(roster: CoworkAgent[]): CoworkAvatar {
-  const shapes: CoworkAvatar['shape'][] = ['orb', 'cube', 'diamond', 'pyramid', 'home-blob'];
+  const shapes: CoworkAvatar['shape'][] = ['dot-orb', 'dot-block', 'dot-tip', 'dot-hexa', 'dot-nova', 'dot-dia', 'dot-penta', 'dot-luna', 'dot-plus', 'dot-pill'];
   const shape = shapes.reduce((best, candidate) =>
     roster.filter((a) => a.avatar.shape === candidate).length < roster.filter((a) => a.avatar.shape === best).length ? candidate : best,
   );

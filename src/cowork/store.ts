@@ -17,10 +17,10 @@ import { normalizeConnectionAuth, type ConnectionAuth } from '../connections/con
 
 /** Saved plush character choice, retaining legacy avatar styles on disk. */
 export interface CoworkAvatar {
-  /** Hex accent color, also used to match legacy avatars to a plush. */
+  /** Hex accent color, also used to match legacy avatars to a character. */
   color: string;
   /** Character style rendered consistently throughout the UI. */
-  shape: 'orb' | 'cube' | 'home-blob' | 'diamond' | 'pyramid' | 'dot-blue' | 'dot-mint' | 'dot-orange' | 'dot-purple' | 'dot-orb' | 'dot-block' | 'dot-tip' | 'dot-hexa' | 'dot-nova' | 'dot-dia' | 'dot-penta' | 'dot-luna' | 'dot-plus' | 'dot-pill';
+  shape: 'orb' | 'cube' | 'home-blob' | 'diamond' | 'pyramid' | 'dot-orb' | 'dot-block' | 'dot-tip' | 'dot-hexa' | 'dot-nova' | 'dot-dia' | 'dot-penta' | 'dot-luna' | 'dot-plus' | 'dot-pill';
 }
 
 class CoworkScopeError extends Error {}
@@ -2193,10 +2193,11 @@ function artifactMime(name: string, supplied?: string): string {
   return known[path.extname(name).toLowerCase()] ?? (typeof supplied === 'string' && /^[\w.+-]+\/[\w.+-]+(?:;.*)?$/.test(supplied) ? supplied : 'application/octet-stream');
 }
 
-const AVATAR_SHAPES = new Set(['orb', 'cube', 'home-blob', 'diamond', 'pyramid', 'dot-blue', 'dot-mint', 'dot-orange', 'dot-purple', 'dot-orb', 'dot-block', 'dot-tip', 'dot-hexa', 'dot-nova', 'dot-dia', 'dot-penta', 'dot-luna', 'dot-plus', 'dot-pill']);
+const AVATAR_SHAPES = new Set(['orb', 'cube', 'home-blob', 'diamond', 'pyramid', 'dot-orb', 'dot-block', 'dot-tip', 'dot-hexa', 'dot-nova', 'dot-dia', 'dot-penta', 'dot-luna', 'dot-plus', 'dot-pill']);
 const LEGACY_AVATAR_SHAPES = new Map<string, CoworkAvatar['shape']>([
   ['jelly', 'orb'], ['cat', 'orb'], ['sprout', 'orb'], ['ufo', 'orb'],
   ['visor', 'cube'], ['antenna', 'cube'], ['bot', 'cube'],
+  ['dot-blue', 'dot-block'], ['dot-mint', 'dot-hexa'], ['dot-orange', 'dot-penta'], ['dot-purple', 'dot-nova'],
 ]);
 function sanitizeAvatar(value: unknown, fallback: CoworkAvatar | undefined): CoworkAvatar {
   const raw = (value ?? {}) as Record<string, unknown>;

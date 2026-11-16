@@ -16,14 +16,14 @@ export const COWORK_COLORS_CSS = String.raw`
 `;
 
 export const COWORK_COLORS_JS = String.raw`
-  var CW_CHARACTER_PALETTE=[['Blue','#5ba8ff'],['Mint','#3fd68f'],['Orange','#f39b52'],['Purple','#8f80ff'],['Rose','#e66ca9'],['Teal','#29b7ad']];
+  var CW_CHARACTER_PALETTE=[['Coral','#ff6b57'],['Blue','#4c7df0'],['Amber','#eab308'],['Mint','#3fd68f'],['Violet','#9c6df2'],['Teal','#29b7ad'],['Orange','#f39b52'],['Indigo','#4f6396'],['Lime','#7ccf35'],['Rose','#e66ca9']];
   function cwCharacterColor(avatar) {
     var shape=cwAvatarShape(avatar&&avatar.shape,avatar&&avatar.color),color=avatar&&avatar.color;
     return /^#[0-9a-f]{6}$/i.test(color||'')?color.toLowerCase():CW_DOT_COLORS[shape];
   }
   function cwColorRgb(color){return [1,3,5].map(function(index){return parseInt(color.slice(index,index+2),16);});}
   function cwColorHue(color){var rgb=cwColorRgb(color).map(function(channel){return channel/255;}),max=Math.max.apply(Math,rgb),min=Math.min.apply(Math,rgb),delta=max-min;if(!delta)return 0;var hue=max===rgb[0]?(rgb[1]-rgb[2])/delta:max===rgb[1]?(rgb[2]-rgb[0])/delta+2:(rgb[0]-rgb[1])/delta+4;return (hue*60+360)%360;}
-  function cwCharacterFilter(avatar,shape){if(/^dot-(orb|block|tip|hexa|nova|dia|penta|luna|plus|pill)$/.test(shape||''))return '';var color=cwCharacterColor(avatar),base=CW_DOT_COLORS[shape];if(color===base)return '';var rgb=cwColorRgb(color),source=cwColorRgb(base),high=Math.max.apply(Math,rgb),low=Math.min.apply(Math,rgb),sourceHigh=Math.max.apply(Math,source),sourceLow=Math.min.apply(Math,source),saturation=high?(high-low)/high:0,sourceSaturation=(sourceHigh-sourceLow)/sourceHigh;return 'hue-rotate('+Math.round(cwColorHue(color)-cwColorHue(base))+'deg) saturate('+Math.min(2,saturation/sourceSaturation).toFixed(2)+') brightness('+Math.max(.25,Math.min(1.8,high/sourceHigh)).toFixed(2)+')';}
+  function cwCharacterFilter(avatar,shape){var color=cwCharacterColor(avatar),base=CW_DOT_COLORS[shape];if(!base||color===base)return '';var rgb=cwColorRgb(color),source=cwColorRgb(base),high=Math.max.apply(Math,rgb),low=Math.min.apply(Math,rgb),sourceHigh=Math.max.apply(Math,source),sourceLow=Math.min.apply(Math,source),saturation=high?(high-low)/high:0,sourceSaturation=sourceHigh?(sourceHigh-sourceLow)/sourceHigh:1;return 'hue-rotate('+Math.round(cwColorHue(color)-cwColorHue(base))+'deg) saturate('+Math.min(2,(sourceSaturation?saturation/sourceSaturation:1)).toFixed(2)+') brightness('+Math.max(.25,Math.min(1.8,(sourceHigh?high/sourceHigh:1))).toFixed(2)+')';}
   function cwColorLuminance(rgb){return rgb.map(function(channel){var n=channel/255;return n<=.04045?n/12.92:Math.pow((n+.055)/1.055,2.4);}).reduce(function(sum,n,index){return sum+n*[.2126,.7152,.0722][index];},0);}
   function cwReadableAccent(color,light){var rgb=cwColorRgb(color),background=cwColorLuminance(light?[250,250,249]:[17,17,17]),target=light?0:255;for(var i=0;i<25;i++){var luminance=cwColorLuminance(rgb),contrast=(Math.max(luminance,background)+.05)/(Math.min(luminance,background)+.05);if(contrast>=4.5)break;rgb=rgb.map(function(channel){return Math.round(channel*.88+target*.12);});}return '#'+rgb.map(function(channel){return channel.toString(16).padStart(2,'0');}).join('');}
   function cwThemeElement(node,agent) {

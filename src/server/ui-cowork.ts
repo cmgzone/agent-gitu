@@ -629,19 +629,15 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
   // ==================== COWORK MODE ====================
   var CW_DOT_COLORS = {
     'dot-orb': '#ff6b57', 'dot-block': '#4c7df0', 'dot-tip': '#eab308', 'dot-hexa': '#3fd68f', 'dot-nova': '#9c6df2',
-    'dot-dia': '#29b7ad', 'dot-penta': '#f39b52', 'dot-luna': '#4f6396', 'dot-plus': '#7ccf35', 'dot-pill': '#ec4899',
-    'dot-blue': '#5ba8ff', 'dot-mint': '#3fd68f', 'dot-orange': '#c9a86a', 'dot-purple': '#8f80ff'
+    'dot-dia': '#29b7ad', 'dot-penta': '#f39b52', 'dot-luna': '#4f6396', 'dot-plus': '#7ccf35', 'dot-pill': '#ec4899'
   };
   var CW_SHAPES = [
     'dot-orb', 'dot-block', 'dot-tip', 'dot-hexa', 'dot-nova',
-    'dot-dia', 'dot-penta', 'dot-luna', 'dot-plus', 'dot-pill',
-    'dot-blue', 'dot-mint', 'dot-orange', 'dot-purple'
-  ];
-  var CW_LEGACY_FALLBACK_SHAPES = ['dot-blue', 'dot-mint', 'dot-orange', 'dot-purple'];
-  var CW_MASCOT_SHAPES = [
-    'dot-orb', 'dot-block', 'dot-tip', 'dot-hexa', 'dot-nova',
     'dot-dia', 'dot-penta', 'dot-luna', 'dot-plus', 'dot-pill'
   ];
+  var CW_LEGACY_SHAPE_MAP = {
+    'dot-blue': 'dot-block', 'dot-mint': 'dot-hexa', 'dot-orange': 'dot-penta', 'dot-purple': 'dot-nova'
+  };
   var CW_MASCOT_BY_NAME = {
     'p.a': { shape: 'dot-orb', color: '#ff6b57' },
     'pa': { shape: 'dot-orb', color: '#ff6b57' },
@@ -657,8 +653,11 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
   };
   function cwEffectiveAvatar(agent) {
     var avatar = agent && agent.avatar;
-    if (avatar && CW_MASCOT_SHAPES.indexOf(avatar.shape) >= 0) {
-      return { shape: avatar.shape, color: CW_DOT_COLORS[avatar.shape] || avatar.color };
+    if (avatar && CW_SHAPES.indexOf(avatar.shape) >= 0) {
+      return { shape: avatar.shape, color: /^#[0-9a-f]{6}$/i.test(avatar.color || '') ? avatar.color.toLowerCase() : CW_DOT_COLORS[avatar.shape] };
+    }
+    if (avatar && /^#[0-9a-f]{6}$/i.test(avatar.color || '')) {
+      return { shape: cwAvatarShape(avatar.shape, avatar.color), color: avatar.color.toLowerCase() };
     }
     var nameKey = String((agent && agent.name) || '').trim().toLowerCase();
     if (Object.prototype.hasOwnProperty.call(CW_MASCOT_BY_NAME, nameKey)) {
@@ -676,7 +675,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       for (var j = 0; j < key.length; j++) hash = (hash * 31 + key.charCodeAt(j)) >>> 0;
       idx = hash;
     }
-    var picked = CW_MASCOT_SHAPES[idx % CW_MASCOT_SHAPES.length];
+    var picked = CW_SHAPES[idx % CW_SHAPES.length];
     return { shape: picked, color: CW_DOT_COLORS[picked] };
   }
   ${COWORK_COLORS_JS}
@@ -693,12 +692,13 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
   ${COWORK_WORKBENCH_JS}
   function cwAvatarShape(shape, color) {
     if (CW_SHAPES.indexOf(shape) >= 0) return shape;
-    // Existing profiles keep their identity and settings; display the plush
+    if (Object.prototype.hasOwnProperty.call(CW_LEGACY_SHAPE_MAP, shape)) return CW_LEGACY_SHAPE_MAP[shape];
+    // Existing profiles keep their identity and settings; display the character
     // closest to their saved color until the user picks one explicitly.
-    if (!/^#[0-9a-f]{6}$/i.test(color || '')) return 'dot-purple';
+    if (!/^#[0-9a-f]{6}$/i.test(color || '')) return 'dot-nova';
     var rgb = [1, 3, 5].map(function (i) { return parseInt(color.slice(i, i + 2), 16); });
-    var best = 'dot-purple', distance = Infinity;
-    CW_LEGACY_FALLBACK_SHAPES.forEach(function (candidate) {
+    var best = 'dot-nova', distance = Infinity;
+    CW_SHAPES.forEach(function (candidate) {
       var d = [1, 3, 5].reduce(function (sum, i, channel) { return sum + Math.pow(rgb[channel] - parseInt(CW_DOT_COLORS[candidate].slice(i, i + 2), 16), 2); }, 0);
       if (d < distance) { best = candidate; distance = d; }
     });
@@ -4553,7 +4553,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
             tagline: spec.tagline || '',
             description: spec.description || '',
             systemPrompt: spec.systemPrompt || spec.prompt || '',
-            avatar: spec.avatar || { shape: spec.shape || 'dot-blue', color: spec.color || '#5ba8ff' },
+            avatar: spec.avatar || { shape: spec.shape || 'dot-orb', color: spec.color || '#ff6b57' },
             provider: activeProv,
             model: activeModel,
             skills: Array.isArray(spec.skills) ? spec.skills : [],
@@ -4735,6 +4735,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     updateComputerChoice();
     modal.querySelector('#cwAmCloudAdd').onclick = function () { cwCloudServerModal(function (server) { renderCloudServers(server.id); }); };
     if (dmGw) dmGw.bind();
+    var customColorPicked = Boolean(isEdit && agent && agent.avatar && /^#[0-9a-f]{6}$/i.test(agent.avatar.color || '') && agent.avatar.color.toLowerCase() !== CW_DOT_COLORS[d.avatar.shape]);
     function refreshPreview() {
       var wrap = modal.querySelector('#cwAmAvaWrap');
       if (wrap) wrap.innerHTML = cwAvaImg(d.avatar);
@@ -4746,8 +4747,8 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       modal.querySelector('#cwAmColor').value=cwCharacterColor(d.avatar);
       modal.querySelectorAll('[data-character-color]').forEach(function(button){button.setAttribute('aria-pressed',String(button.getAttribute('data-character-color')===d.avatar.color));});
     }
-    modal.querySelector('#cwAmColor').oninput=function(){d.avatar.color=cwCharacterColor({shape:d.avatar.shape,color:this.value});refreshPreview();};
-    modal.querySelectorAll('[data-character-color]').forEach(function(button){button.onclick=function(){d.avatar.color=button.getAttribute('data-character-color');refreshPreview();};});
+    modal.querySelector('#cwAmColor').oninput=function(){customColorPicked=true;d.avatar.color=cwCharacterColor({shape:d.avatar.shape,color:this.value});refreshPreview();};
+    modal.querySelectorAll('[data-character-color]').forEach(function(button){button.onclick=function(){customColorPicked=true;d.avatar.color=button.getAttribute('data-character-color');refreshPreview();};});
     modal.querySelector('#cwAmWork').onclick = function () {
       var working = this.getAttribute('aria-pressed') !== 'true';
       this.setAttribute('aria-pressed', String(working));
@@ -4757,7 +4758,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     modal.querySelectorAll('[data-shape]').forEach(function (b) {
       b.onclick = function () {
         d.avatar.shape = b.getAttribute('data-shape');
-        d.avatar.color = CW_DOT_COLORS[d.avatar.shape];
+        if (!customColorPicked) d.avatar.color = CW_DOT_COLORS[d.avatar.shape];
         modal.querySelectorAll('[data-shape]').forEach(function (x) { x.classList.remove('cur'); x.setAttribute('aria-pressed', 'false'); });
         b.classList.add('cur');
         b.setAttribute('aria-pressed', 'true');

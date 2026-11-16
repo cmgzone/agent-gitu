@@ -5,7 +5,10 @@ describe('static asset policy', () => {
   it('allows only bundled names and safe download file names', () => {
     expect(FONT_FILES['inter-latin-400-normal.woff2']).toBe('font/woff2');
     expect(BRAND_FILES['agent-gitu-logo.svg']).toBe('image/svg+xml');
-    expect(CHARACTER_FILES['purple.png']).toBe('image/png');
+    expect(CHARACTER_FILES['orb.png']).toBe('image/png');
+    expect(CHARACTER_FILES['nova.png']).toBe('image/png');
+    expect(Object.hasOwn(CHARACTER_FILES, 'blue.png')).toBe(false);
+    expect(Object.hasOwn(CHARACTER_FILES, 'purple.png')).toBe(false);
     expect(Object.hasOwn(CHARACTER_FILES, '../LICENSE')).toBe(false);
     expect(Object.hasOwn(CHARACTER_FILES, 'constructor')).toBe(false);
     expect(safeFileName('../unsafe\\report?.txt')).toBe('report-.txt');

@@ -49,7 +49,7 @@ describe('animated teammate characters and web activity', () => {
     try {
       const file = path.join(dir, 'cowork.json');
       const store = new CoworkStore(file);
-      for (const shape of ['dot-orb', 'dot-block', 'dot-tip', 'dot-hexa', 'dot-nova', 'dot-dia', 'dot-penta', 'dot-luna', 'dot-plus', 'dot-pill', 'dot-blue', 'dot-mint', 'dot-orange', 'dot-purple', 'home-blob', 'orb', 'cube', 'diamond', 'pyramid'] as const) {
+      for (const shape of ['dot-orb', 'dot-block', 'dot-tip', 'dot-hexa', 'dot-nova', 'dot-dia', 'dot-penta', 'dot-luna', 'dot-plus', 'dot-pill', 'home-blob', 'orb', 'cube', 'diamond', 'pyramid'] as const) {
         const agent = store.saveAgent({ name: shape, systemPrompt: 'Help.', avatar: { shape, color: '#3fd68f' } });
         store.saveAgent({ id: agent.id, name: shape, systemPrompt: 'Help with research.' });
         expect(new CoworkStore(file).listAgents().find(a => a.id === agent.id)?.avatar).toEqual({ shape, color: '#3fd68f' });
@@ -57,20 +57,22 @@ describe('animated teammate characters and web activity', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
-  it('offers four bundled plush characters with safe legacy fallbacks', () => {
+  it('offers ten bundled characters with safe legacy fallbacks', () => {
     const { context } = ui();
-    expect(Array.from(context.CW_SHAPES)).toEqual(['dot-orb', 'dot-block', 'dot-tip', 'dot-hexa', 'dot-nova', 'dot-dia', 'dot-penta', 'dot-luna', 'dot-plus', 'dot-pill', 'dot-blue', 'dot-mint', 'dot-orange', 'dot-purple']);
-    expect(Object.values(context.CW_CHARACTER_NAMES)).toEqual(['Orb', 'Block', 'Tip', 'Hexa', 'Nova', 'Dia', 'Penta', 'Luna', 'Plus', 'Pill', 'Blue', 'Mint', 'Orange', 'Purple']);
+    expect(Array.from(context.CW_SHAPES)).toEqual(['dot-orb', 'dot-block', 'dot-tip', 'dot-hexa', 'dot-nova', 'dot-dia', 'dot-penta', 'dot-luna', 'dot-plus', 'dot-pill']);
+    expect(Object.values(context.CW_CHARACTER_NAMES)).toEqual(['Orb', 'Block', 'Tip', 'Hexa', 'Nova', 'Dia', 'Penta', 'Luna', 'Plus', 'Pill']);
     for (const shape of ['home-blob', 'orb', 'cube', 'cat', 'diamond', 'pyramid']) {
-      expect(context.cwAvaImg({ shape, color: '#3fd68f' })).toContain('/characters/mint.png');
+      expect(context.cwAvaImg({ shape, color: '#3fd68f' })).toContain('/characters/hexa.png');
     }
-    expect(context.cwAvaImg({ shape: 'cat', color: '<script>bad</script>' })).toContain('/characters/purple.png');
-    expect(context.cwAvaImg({ shape: 'dot-../../secret', color: '#5ba8ff' })).toContain('/characters/blue.png');
+    expect(context.cwAvaImg({ shape: 'dot-blue', color: '#5ba8ff' })).toContain('/characters/block.png');
+    expect(context.cwAvaImg({ shape: 'dot-mint', color: '#3fd68f' })).toContain('/characters/hexa.png');
+    expect(context.cwAvaImg({ shape: 'cat', color: '<script>bad</script>' })).toContain('/characters/nova.png');
+    expect(context.cwAvaImg({ shape: 'dot-../../secret', color: '#4c7df0' })).toContain('/characters/block.png');
   });
 
   it('ships the original transparent PNGs and their license locally', () => {
     const { context } = ui();
-    for (const color of ['orb', 'block', 'tip', 'hexa', 'nova', 'dia', 'penta', 'luna', 'plus', 'pill', 'blue', 'mint', 'orange', 'purple']) {
+    for (const color of ['orb', 'block', 'tip', 'hexa', 'nova', 'dia', 'penta', 'luna', 'plus', 'pill']) {
       expect(context.cwAvaImg({ shape: 'dot-' + color })).toContain('/characters/' + color + '.png');
       const png = readFileSync(new URL('../assets/cowork-dots/' + color + '.png', import.meta.url));
       expect(png.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
@@ -92,7 +94,7 @@ describe('animated teammate characters and web activity', () => {
   it('renders plush images immediately even when WebGL is unavailable', () => {
     const { context } = ui();
     context.window.__coworkAvatar = { render: () => { throw new Error('WebGL unavailable'); } };
-    for (const shape of ['dot-blue', 'dot-mint', 'dot-orange', 'dot-purple', 'home-blob', 'cube']) {
+    for (const shape of ['dot-orb', 'dot-block', 'dot-hexa', 'dot-nova', 'home-blob', 'cube']) {
       expect(context.cwAvaImg({ shape, color: '#8f80ff' })).toContain('<img src="/characters/');
     }
   });
@@ -116,13 +118,13 @@ describe('animated teammate characters and web activity', () => {
     try {
       const file = path.join(dir, 'cowork.json');
       const store = new CoworkStore(file);
-      const shapes = ['cat', 'ufo', 'jelly', 'sprout', 'visor', 'antenna', 'bot'];
+      const shapes = ['cat', 'ufo', 'jelly', 'sprout', 'visor', 'antenna', 'bot', 'dot-blue', 'dot-mint', 'dot-orange', 'dot-purple'];
       for (const shape of shapes) store.saveAgent({ name: shape, systemPrompt: 'Keep my profile.', avatar: { shape: 'orb', color: '#3fd68f' } });
       const document = JSON.parse(readFileSync(file, 'utf8'));
       document.agents.forEach((agent: { avatar: { shape: string } }, i: number) => { agent.avatar.shape = shapes[i]; });
       writeFileSync(file, JSON.stringify(document));
       const migrated = new CoworkStore(file).listAgents();
-      expect(migrated.map(agent => agent.avatar.shape)).toEqual(['orb', 'orb', 'orb', 'orb', 'cube', 'cube', 'cube']);
+      expect(migrated.map(agent => agent.avatar.shape)).toEqual(['orb', 'orb', 'orb', 'orb', 'cube', 'cube', 'cube', 'dot-block', 'dot-hexa', 'dot-penta', 'dot-nova']);
       expect(migrated.map(agent => agent.id)).toEqual(document.agents.map((agent: { id: string }) => agent.id));
       expect(migrated.every(agent => agent.avatar.color === '#3fd68f' && agent.systemPrompt === 'Keep my profile.')).toBe(true);
       expect(JSON.parse(readFileSync(file, 'utf8')).agents.map((agent: { avatar: { shape: string } }) => agent.avatar.shape)).toEqual(migrated.map(agent => agent.avatar.shape));

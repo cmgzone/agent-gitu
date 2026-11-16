@@ -90,6 +90,10 @@ export const ONBOARDING_CSS = String.raw`
   .setup-char-pick:hover { border-color:var(--border2)!important; color:var(--text)!important; transform:translateY(-1px); }
   .setup-char-pick[aria-pressed=true] { border-color:var(--run)!important; background:color-mix(in srgb,var(--run) 12%,var(--card))!important; color:var(--text)!important; box-shadow:0 0 0 1px var(--run)!important; }
   .setup-char-pick img { width:36px; height:36px; object-fit:contain; display:block; }
+  .setup-custom-colors { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-top:8px; }
+  .setup-custom-colors input[type=color] { width:32px; height:32px; padding:2px; border-radius:50%; border:1px solid var(--border2); background:var(--card); cursor:pointer; }
+  .setup-color-dot { width:22px; height:22px; padding:0!important; border-radius:50%!important; border:2px solid var(--card)!important; box-shadow:0 0 0 1px var(--border)!important; cursor:pointer; }
+  .setup-color-dot[aria-pressed=true] { box-shadow:0 0 0 2px var(--run)!important; }
   .setup-sr-only-select { position:absolute; width:1px; height:1px; opacity:0; pointer-events:none; }
   .setup-custom-queue { display:flex; flex-wrap:wrap; gap:6px; }
   .setup-custom-chip { display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:999px; border:1px solid var(--border); background:var(--card); font-size:12px; }
@@ -280,8 +284,7 @@ export const ONBOARDING_JS = String.raw`
   ];
   var SETUP_SHAPE_COLORS = {
     'dot-orb': '#ff6b57', 'dot-block': '#4c7df0', 'dot-tip': '#eab308', 'dot-hexa': '#3fd68f', 'dot-nova': '#9c6df2',
-    'dot-dia': '#29b7ad', 'dot-penta': '#f39b52', 'dot-luna': '#4f6396', 'dot-plus': '#7ccf35', 'dot-pill': '#ec4899',
-    'dot-blue': '#5ba8ff', 'dot-mint': '#3fd68f', 'dot-orange': '#c9a86a', 'dot-purple': '#8f80ff'
+    'dot-dia': '#29b7ad', 'dot-penta': '#f39b52', 'dot-luna': '#4f6396', 'dot-plus': '#7ccf35', 'dot-pill': '#ec4899'
   };
   var SETUP_SHAPE_OPTIONS = [
     ['dot-orb', 'Orb (Coral)'],
@@ -293,21 +296,33 @@ export const ONBOARDING_JS = String.raw`
     ['dot-penta', 'Penta (Orange)'],
     ['dot-luna', 'Luna (Indigo)'],
     ['dot-plus', 'Plus (Lime)'],
-    ['dot-pill', 'Pill (Rose)'],
-    ['dot-blue', 'Classic Blue'],
-    ['dot-purple', 'Classic Purple'],
-    ['dot-mint', 'Classic Mint'],
-    ['dot-orange', 'Classic Orange']
+    ['dot-pill', 'Pill (Rose)']
   ];
+  var SETUP_COLOR_SWATCHES = [['Coral', '#ff6b57'], ['Blue', '#4c7df0'], ['Amber', '#eab308'], ['Mint', '#3fd68f'], ['Violet', '#9c6df2'], ['Teal', '#29b7ad'], ['Orange', '#f39b52'], ['Indigo', '#4f6396'], ['Lime', '#7ccf35'], ['Rose', '#e66ca9']];
+  function setupCharFilter(shape, color) {
+    if (typeof cwCharacterFilter === 'function') return cwCharacterFilter({ shape: shape, color: color }, shape);
+    var base = SETUP_SHAPE_COLORS[shape];
+    if (!base || !/^#[0-9a-f]{6}$/i.test(color || '') || color.toLowerCase() === base) return '';
+    var rgb = function (hex) { return [1, 3, 5].map(function (i) { return parseInt(hex.slice(i, i + 2), 16); }); };
+    var hue = function (c) {
+      var v = rgb(c).map(function (n) { return n / 255; }), hi = Math.max.apply(Math, v), lo = Math.min.apply(Math, v), d = hi - lo;
+      if (!d) return 0;
+      return ((hi === v[0] ? (v[1] - v[2]) / d : hi === v[1] ? (v[2] - v[0]) / d + 2 : (v[0] - v[1]) / d + 4) * 60 + 360) % 360;
+    };
+    var t = rgb(color), s = rgb(base), th = Math.max.apply(Math, t), tl = Math.min.apply(Math, t), sh = Math.max.apply(Math, s), sl = Math.min.apply(Math, s);
+    var sat = th ? (th - tl) / th : 0, ssat = sh ? (sh - sl) / sh : 1;
+    return 'hue-rotate(' + Math.round(hue(color) - hue(base)) + 'deg) saturate(' + Math.min(2, ssat ? sat / ssat : 1).toFixed(2) + ') brightness(' + Math.max(0.25, Math.min(1.8, sh ? th / sh : 1)).toFixed(2) + ')';
+  }
   function buildSetupCustomAgent(draft) {
     var d = draft || {};
     var name = String(d.name || '').trim();
-    var shape = d.shape || 'dot-orb';
+    var shape = SETUP_SHAPE_COLORS[d.shape] ? d.shape : 'dot-orb';
+    var color = /^#[0-9a-f]{6}$/i.test(String(d.color || '')) ? String(d.color).toLowerCase() : (SETUP_SHAPE_COLORS[shape] || '#ff6b57');
     return {
       name: name,
       tagline: String(d.tagline || '').trim() || 'Custom specialist',
       systemPrompt: String(d.systemPrompt || '').trim() || ('You are ' + name + ', a helpful Pikpam specialist.'),
-      avatar: { shape: shape, color: SETUP_SHAPE_COLORS[shape] || '#ff6b57' },
+      avatar: { shape: shape, color: color },
       skills: ['browser-workflow', 'pikpam-ecosystem'],
       allowShell: true,
       allowWrites: true,
@@ -339,6 +354,7 @@ export const ONBOARDING_JS = String.raw`
     if ($('setupCustomName')) setupState.customDraft.name = $('setupCustomName').value;
     if ($('setupCustomTagline')) setupState.customDraft.tagline = $('setupCustomTagline').value;
     if ($('setupCustomShape')) setupState.customDraft.shape = $('setupCustomShape').value;
+    if ($('setupCustomColor') && /^#[0-9a-f]{6}$/i.test($('setupCustomColor').value || '')) setupState.customDraft.color = $('setupCustomColor').value.toLowerCase();
     if ($('setupCustomPrompt')) setupState.customDraft.systemPrompt = $('setupCustomPrompt').value;
   }
   function setupAgentSummaryText() {
@@ -376,8 +392,9 @@ export const ONBOARDING_JS = String.raw`
             return '<span class="setup-custom-chip"><span>' + esc(a.name) + (a.tagline ? ' · ' + esc(a.tagline) : '') + '</span><button type="button" class="btn ghost" style="min-height:20px;padding:0 6px" data-remove-custom="' + idx + '" aria-label="Remove ' + esc(a.name) + '">&times;</button></span>';
           }).join('') + '</div>'
         : '';
-      var activeShape = draft.shape || 'dot-orb';
-      var visualChars = SETUP_SHAPE_OPTIONS.slice(0, 10);
+      var activeShape = SETUP_SHAPE_COLORS[draft.shape] ? draft.shape : 'dot-orb';
+      var activeColor = /^#[0-9a-f]{6}$/i.test(draft.color || '') ? String(draft.color).toLowerCase() : (SETUP_SHAPE_COLORS[activeShape] || '#ff6b57');
+      var visualChars = SETUP_SHAPE_OPTIONS;
       return modesHtml +
         '<div class="setup-custom-box">' +
           '<div class="setup-custom-row">' +
@@ -391,10 +408,18 @@ export const ONBOARDING_JS = String.raw`
                 var shape = opt[0];
                 var charName = shape.replace(/^dot-/, '');
                 var label = String(opt[1]).split(' ')[0];
+                var charFilter = activeShape === shape ? setupCharFilter(shape, activeColor) : '';
                 return '<button type="button" class="setup-char-pick" data-setup-char="' + shape + '" aria-pressed="' + (activeShape === shape) + '">' +
-                  '<img src="/characters/' + esc(charName) + '.png?v=opendots1" alt="" width="36" height="36" loading="lazy">' +
+                  '<img src="/characters/' + esc(charName) + '.png?v=opendots1" alt="" width="36" height="36" loading="lazy"' + (charFilter ? ' style="filter:' + esc(charFilter) + '"' : '') + '>' +
                   '<span>' + esc(label) + '</span>' +
                 '</button>';
+              }).join('') +
+            '</div>' +
+            '<div class="setup-custom-colors">' +
+              '<label class="setup-field" style="margin-top:0" for="setupCustomColor">Character color</label>' +
+              '<input type="color" id="setupCustomColor" value="' + esc(activeColor) + '" aria-label="Character color">' +
+              SETUP_COLOR_SWATCHES.map(function (choice) {
+                return '<button type="button" class="setup-color-dot" data-setup-color="' + choice[1] + '" style="background:' + choice[1] + '" title="' + choice[0] + '" aria-label="' + choice[0] + ' color" aria-pressed="' + (activeColor === choice[1]) + '"></button>';
               }).join('') +
             '</div>' +
             '<select id="setupCustomShape" class="setup-sr-only-select" tabindex="-1" aria-label="Character mascot">' +
@@ -532,32 +557,61 @@ export const ONBOARDING_JS = String.raw`
       setupState.selectedAgentIndexes = [0, 1, 3];
       renderSetup();
     };
+    function syncSetupCharVisuals() {
+      var shape = (setupState.customDraft && setupState.customDraft.shape) || 'dot-orb';
+      var color = (setupState.customDraft && setupState.customDraft.color) || SETUP_SHAPE_COLORS[shape] || '#ff6b57';
+      if ($('setupCustomColor')) $('setupCustomColor').value = color;
+      root.querySelectorAll('[data-setup-color]').forEach(function (dot) {
+        dot.setAttribute('aria-pressed', String(dot.getAttribute('data-setup-color') === color));
+      });
+      root.querySelectorAll('[data-setup-char]').forEach(function (other) {
+        var pressed = other.getAttribute('data-setup-char') === shape;
+        other.setAttribute('aria-pressed', String(pressed));
+        var img = typeof other.querySelector === 'function' ? other.querySelector('img') : null;
+        if (img && img.style) img.style.filter = pressed ? setupCharFilter(shape, color) : '';
+      });
+    }
     root.querySelectorAll('[data-setup-char]').forEach(function (btn) {
       btn.onclick = function () {
         var shape = btn.getAttribute('data-setup-char') || 'dot-orb';
         syncSetupCustomDraft();
         if (!setupState.customDraft) setupState.customDraft = {};
         setupState.customDraft.shape = shape;
+        if (!setupState.customDraft.customColorPicked) setupState.customDraft.color = SETUP_SHAPE_COLORS[shape] || '#ff6b57';
         if ($('setupCustomShape')) $('setupCustomShape').value = shape;
-        root.querySelectorAll('[data-setup-char]').forEach(function (other) {
-          other.setAttribute('aria-pressed', String(other.getAttribute('data-setup-char') === shape));
-        });
+        syncSetupCharVisuals();
       };
     });
     if ($('setupCustomShape')) $('setupCustomShape').onchange = function () {
       var shape = this.value || 'dot-orb';
       if (!setupState.customDraft) setupState.customDraft = {};
       setupState.customDraft.shape = shape;
-      root.querySelectorAll('[data-setup-char]').forEach(function (other) {
-        other.setAttribute('aria-pressed', String(other.getAttribute('data-setup-char') === shape));
-      });
+      if (!setupState.customDraft.customColorPicked) setupState.customDraft.color = SETUP_SHAPE_COLORS[shape] || '#ff6b57';
+      syncSetupCharVisuals();
     };
+    if ($('setupCustomColor')) $('setupCustomColor').oninput = function () {
+      syncSetupCustomDraft();
+      if (!setupState.customDraft) setupState.customDraft = {};
+      setupState.customDraft.customColorPicked = true;
+      setupState.customDraft.color = String(this.value || '').toLowerCase();
+      syncSetupCharVisuals();
+    };
+    root.querySelectorAll('[data-setup-color]').forEach(function (dot) {
+      dot.onclick = function () {
+        syncSetupCustomDraft();
+        if (!setupState.customDraft) setupState.customDraft = {};
+        setupState.customDraft.customColorPicked = true;
+        setupState.customDraft.color = dot.getAttribute('data-setup-color') || '#ff6b57';
+        syncSetupCharVisuals();
+      };
+    });
     if ($('setupCustomAdd')) $('setupCustomAdd').onclick = function () {
       syncSetupCustomDraft();
       var draft = setupState.customDraft || {};
       if (!String(draft.name || '').trim()) { setupMessage('Enter a name for your custom agent first.', true); return; }
       setupState.customAgents.push(buildSetupCustomAgent(draft));
-      setupState.customDraft = { name: '', tagline: '', shape: draft.shape || 'dot-orb', systemPrompt: '' };
+      var nextShape = draft.shape || 'dot-orb';
+      setupState.customDraft = { name: '', tagline: '', shape: nextShape, color: SETUP_SHAPE_COLORS[nextShape] || '#ff6b57', systemPrompt: '' };
       setupMessage('Added ' + setupState.customAgents[setupState.customAgents.length - 1].name + ' to your setup queue.');
       renderSetup();
     };
@@ -627,7 +681,7 @@ export const ONBOARDING_JS = String.raw`
             tagline: spec.tagline || '',
             description: spec.description || '',
             systemPrompt: spec.systemPrompt || '',
-            avatar: spec.avatar || { shape: 'dot-blue', color: '#5ba8ff' },
+            avatar: spec.avatar || { shape: 'dot-orb', color: '#ff6b57' },
             provider: activeProv || 'pikrouter',
             model: activeModel || '',
             skills: Array.isArray(spec.skills) ? spec.skills : [],

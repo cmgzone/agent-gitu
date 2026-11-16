@@ -18,10 +18,6 @@ export const FONTS_DIR = path.join(moduleDir, '../../assets/fonts');
 export const BRAND_DIR = path.join(moduleDir, '../../assets');
 export const CHARACTERS_DIR = path.join(BRAND_DIR, 'cowork-dots');
 export const CHARACTER_FILES: Record<string, string> = {
-  'blue.png': 'image/png',
-  'mint.png': 'image/png',
-  'orange.png': 'image/png',
-  'purple.png': 'image/png',
   'orb.png': 'image/png',
   'block.png': 'image/png',
   'tip.png': 'image/png',

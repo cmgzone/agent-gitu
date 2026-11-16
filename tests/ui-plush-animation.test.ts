@@ -5,19 +5,19 @@ import { CHARACTER_CSS, CHARACTER_JS, plushCharacterHtml } from '../src/server/u
 describe('shared plush character animation', () => {
   it('uses the same blinking renderer in server-built and browser-rendered surfaces', () => {
     const context = createContext({}); new Script(CHARACTER_JS).runInContext(context);
-    for (const color of ['blue', 'purple', 'orange', 'mint']) {
+    for (const color of ['orb', 'block', 'tip', 'hexa', 'nova', 'dia', 'penta', 'luna', 'plus', 'pill']) {
       const html = context.plushCharacterHtml(color, 'atlas');
       expect(html).toBe(plushCharacterHtml(color, 'atlas'));
-      expect(html.match(/class="cw-blink-lid"/g)).toHaveLength(2);
+      expect(html.match(/class="cw-blink-lid"/g)).toHaveLength(color === 'tip' || color === 'dia' ? 1 : 2);
       expect(html).toContain('src="/characters/' + color + '.png');
       expect(html).toContain('clip-path:ellipse(50% 50%)');
       expect(html).not.toMatch(/<script|onload|setInterval|data:/);
     }
   });
   it('staggers characters deterministically and filters the whole image with its eyelids', () => {
-    expect(plushCharacterHtml('blue', 'atlas')).toBe(plushCharacterHtml('blue', 'atlas'));
-    expect(plushCharacterHtml('blue', 'atlas')).not.toBe(plushCharacterHtml('blue', 'nova'));
-    const html = plushCharacterHtml('blue', 'atlas', 'hue-rotate(50deg) saturate(1.20)');
+    expect(plushCharacterHtml('orb', 'atlas')).toBe(plushCharacterHtml('orb', 'atlas'));
+    expect(plushCharacterHtml('orb', 'atlas')).not.toBe(plushCharacterHtml('orb', 'nova'));
+    const html = plushCharacterHtml('orb', 'atlas', 'hue-rotate(50deg) saturate(1.20)');
     expect(html).toContain(';filter:hue-rotate(50deg) saturate(1.20)');
     expect(html).not.toContain('filter:url(');
     expect(plushCharacterHtml('constructor', '" onclick="bad', 'url(https://bad.test)', '" onload="bad')).not.toMatch(/onclick|onload|bad.test/);

@@ -124,7 +124,7 @@ export const VOICE_JS = String.raw`
       var a=cwAgentById(target.agentId);
       if(a)return cwAvaImg(a.avatar,a.id);
     }
-    if(typeof plushCharacterHtml==='function')return plushCharacterHtml('blue','gitu-voice','','voice-stage-plush');
+    if(typeof plushCharacterHtml==='function')return plushCharacterHtml('orb','gitu-voice','','voice-stage-plush');
     return VOICE_PHONE;
   }
   function voiceSyncStageVisibility() {

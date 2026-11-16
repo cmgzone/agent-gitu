@@ -5,17 +5,19 @@ import { COWORK_JS } from '../src/server/ui-cowork.js';
 function fixture(){
   const node=()=>({style:{setProperty:vi.fn(),removeProperty:vi.fn()},setAttribute:vi.fn(),removeAttribute:vi.fn()});
   const nodes=Object.fromEntries(['cw','cwChat','cwInfoPanel'].map(id=>[id,node()])),body=node();
-  const cw={active:'atlas-dm',selectedAgentId:undefined as string|undefined,profileOpen:false,profileAgentId:undefined as string|undefined,convs:[{id:'atlas-dm',kind:'dm',memberIds:['atlas']},{id:'nova-dm',kind:'dm',memberIds:['nova']},{id:'team',kind:'group',memberIds:['atlas','nova']}],agents:[{id:'atlas',avatar:{shape:'dot-blue',color:'#e66ca9'}},{id:'nova',avatar:{shape:'dot-orange',color:'#f39b52'}}]};
+  const cw={active:'atlas-dm',selectedAgentId:undefined as string|undefined,profileOpen:false,profileAgentId:undefined as string|undefined,convs:[{id:'atlas-dm',kind:'dm',memberIds:['atlas']},{id:'nova-dm',kind:'dm',memberIds:['nova']},{id:'team',kind:'group',memberIds:['atlas','nova']}],agents:[{id:'atlas',avatar:{shape:'dot-block',color:'#e66ca9'}},{id:'nova',avatar:{shape:'dot-penta',color:'#f39b52'}}]};
   const context=createContext({S:{cw},window:{addEventListener:vi.fn()},document:{body,addEventListener:vi.fn(),documentElement:{getAttribute:()=> 'light'}},$: (id:string)=>nodes[id]});
   new Script(COWORK_JS).runInContext(context);return {context,cw,nodes,body,node};
 }
 describe('Cowork character colors',()=>{
-  it('recolors the selected character while retaining bundled assets and safe attributes',()=>{
-    const u=fixture(),original=u.context.cwAvaImg({shape:'dot-blue',color:'#5ba8ff'}),rose=u.context.cwAvaImg({shape:'dot-blue',color:'#e66ca9'});
-    expect(original).toContain('/characters/blue.png');expect(original).not.toContain('hue-rotate');
-    expect(rose).toContain('/characters/blue.png');expect(rose).toContain('hue-rotate(');
-    expect(u.context.cwAvaImg({shape:'dot-blue',color:'#000000'})).toContain('saturate(0.00) brightness(0.25)');
-    const unsafe=u.context.cwAvaImg({shape:'dot-blue',color:'" onerror="alert(1)'});expect(unsafe).not.toContain('onerror');expect(unsafe).not.toContain('alert');
+  it('recolors any of the new characters while retaining bundled assets and safe attributes',()=>{
+    const u=fixture(),original=u.context.cwAvaImg({shape:'dot-block',color:'#4c7df0'}),rose=u.context.cwAvaImg({shape:'dot-block',color:'#e66ca9'});
+    expect(original).toContain('/characters/block.png');expect(original).not.toContain('hue-rotate');
+    expect(rose).toContain('/characters/block.png');expect(rose).toContain('hue-rotate(');
+    for (const shape of ['dot-orb','dot-block','dot-tip','dot-hexa','dot-nova','dot-dia','dot-penta','dot-luna','dot-plus','dot-pill']) { expect(u.context.cwAvaImg({shape,color:'#e66ca9'})).toContain('hue-rotate('); }
+    expect(u.context.cwEffectiveAvatar({id:'atlas',name:'Atlas',avatar:{shape:'dot-block',color:'#e66ca9'}})).toEqual({shape:'dot-block',color:'#e66ca9'});
+    expect(u.context.cwAvaImg({shape:'dot-block',color:'#000000'})).toContain('saturate(0.00) brightness(0.25)');
+    const unsafe=u.context.cwAvaImg({shape:'dot-block',color:'" onerror="alert(1)'});expect(unsafe).not.toContain('onerror');expect(unsafe).not.toContain('alert');
   });
   it('follows the selected teammate in DMs, team chats and profiles',()=>{
     const u=fixture();u.context.cwApplyCharacterTheme();
@@ -45,4 +47,4 @@ describe('Cowork character colors',()=>{
   });
 });
 
-it('uses the avatar colour for user messages with readable text for pale and dark colours',()=>{const u=fixture();for(const color of ['#ffffff','#000000','#5ba8ff','#757575','#ffff00']){const node=u.node();u.context.cwThemeElement(node,{avatar:{shape:'dot-blue',color}});const ink=node.style.setProperty.mock.calls.find(([key])=>key==='--cw-user-ink')![1],lum=u.context.cwColorLuminance(u.context.cwColorRgb(color)),text=u.context.cwColorLuminance(u.context.cwColorRgb(ink));expect((Math.max(lum,text)+.05)/(Math.min(lum,text)+.05)).toBeGreaterThanOrEqual(4.5);expect(node.style.setProperty).toHaveBeenCalledWith('--cw-message-color',color);}});
+it('uses the avatar colour for user messages with readable text for pale and dark colours',()=>{const u=fixture();for(const color of ['#ffffff','#000000','#5ba8ff','#757575','#ffff00']){const node=u.node();u.context.cwThemeElement(node,{avatar:{shape:'dot-block',color}});const ink=node.style.setProperty.mock.calls.find(([key])=>key==='--cw-user-ink')![1],lum=u.context.cwColorLuminance(u.context.cwColorRgb(color)),text=u.context.cwColorLuminance(u.context.cwColorRgb(ink));expect((Math.max(lum,text)+.05)/(Math.min(lum,text)+.05)).toBeGreaterThanOrEqual(4.5);expect(node.style.setProperty).toHaveBeenCalledWith('--cw-message-color',color);}});

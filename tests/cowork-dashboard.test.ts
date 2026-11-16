@@ -8,7 +8,7 @@ import { COWORK_PROFILE_JS } from '../src/server/ui-cowork-profile.js';
 import { UI_HTML } from '../src/server/ui.js';
 
 function fixture() {
-  const agent = { id: 'gitu', name: 'Gitu', tagline: '', description: '', systemPrompt: 'Help the user.', roles: [], skills: ['browser-workflow'], avatar: { shape: 'dot-blue' } };
+  const agent = { id: 'gitu', name: 'Gitu', tagline: '', description: '', systemPrompt: 'Help the user.', roles: [], skills: ['browser-workflow'], avatar: { shape: 'dot-block' } };
   const cw: any = { agents: [agent], convs: [{ id: 'dm', kind: 'dm', memberIds: ['gitu'] }], active: 'dm', selectedAgentId: 'gitu', skills: [{ name: 'browser-workflow', description: 'Browser tasks', scope: 'builtin' }], profileOpen: true, profileAgentId: 'gitu', profileSection: 'overview' };
   const elements: Record<string, any> = {};
   const buttons = ['personality', 'roles', 'skills', 'memory', 'connections'].map(section => ({ dataset: { profileSection: section }, focus: vi.fn() }));

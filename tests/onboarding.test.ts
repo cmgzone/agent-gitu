@@ -217,10 +217,10 @@ describe('setup wizard flow', () => {
     api.mockClear();
     context.openSetupWizard();
     context.setupState.agentChoiceMode = 'custom';
-    context.setupState.customDraft = { name: 'Kira', tagline: 'Catalog Lead', systemPrompt: 'Manage Pikpam catalog', shape: 'dot-mint' };
+    context.setupState.customDraft = { name: 'Kira', tagline: 'Catalog Lead', systemPrompt: 'Manage Pikpam catalog', shape: 'dot-hexa', color: '#e66ca9' };
     await context.finishSetup();
     const customCreate = api.mock.calls.find(([url, opts]) => url === '/api/cowork/agents' && opts?.method === 'POST');
     expect(customCreate).toBeDefined();
-    expect(JSON.parse(customCreate![1].body)).toMatchObject({ name: 'Kira', tagline: 'Catalog Lead', provider: 'pikrouter' });
+    expect(JSON.parse(customCreate![1].body)).toMatchObject({ name: 'Kira', tagline: 'Catalog Lead', provider: 'pikrouter', avatar: { shape: 'dot-hexa', color: '#e66ca9' } });
   });
 });

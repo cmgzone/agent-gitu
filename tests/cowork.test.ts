@@ -529,6 +529,30 @@ describe('cowork runner', () => {
     expect(result.messages.map((message) => message.agentName)).toEqual(['target-two']);
   });
 
+  it('does not treat an email address as a teammate mention', async () => {
+    const writer = store.saveAgent(makeAgentInput('mail-writer'));
+    const chief = store.saveAgent(makeAgentInput('mail-chief', { chiefOfStaff: true }));
+    const conv = store.saveConversation({ kind: 'group', memberIds: [writer.id, chief.id], chiefId: chief.id, title: 'email-mention-test' });
+    const trigger = store.appendMessage(conv.id, { role: 'user', text: 'Send the invoice to billing@mail-writer.com today.', via: 'web' });
+    const seen: string[] = [];
+    const result = await runConversationTurn({
+      conversation: conv,
+      history: store.messages(conv.id),
+      trigger,
+      deps: depsFor([], {
+        resolveLlm: (member) => ({
+          complete: async () => {
+            seen.push(member.name);
+            return member.id === chief.id ? 'I will handle the invoice.' : 'The writer should not have run.';
+          },
+        } as never),
+      }),
+      append: (message) => store.appendMessage(conv.id, message),
+    });
+    expect(result.messages.map((message) => message.agentName)).toEqual(['mail-chief']);
+    expect(seen).toEqual(['mail-chief']);
+  });
+
   it('routes a teammate permission card through the Chief of Staff without granting it', async () => {
     const worker = store.saveAgent(makeAgentInput('approval-worker'));
     const chief = store.saveAgent(makeAgentInput('approval-chief', { chiefOfStaff: true }));
@@ -1884,6 +1908,11 @@ describe('cowork server routes', () => {
   });
 
   it('keeps the spent envelope of a chat across a restart', async () => {
+    // Every instance in this suite shares one home. A restart means the old
+    // process is gone, so stop the live instances first: a still-running server
+    // keeps its own in-memory document and its background ticks write the whole
+    // file back, which can erase the mission this test has just spent.
+    for (const instance of servers.splice(0)) await instance.stop();
     let calls = 0;
     const llm: LlmClient = {
       name: 'restart-budget-mock',

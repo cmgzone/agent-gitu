@@ -40,6 +40,20 @@ describe('onboarding preferences', () => {
       expect(await fetch(base + '/api/onboarding').then(r => r.json())).toMatchObject({ completed: true, theme: 'light', mode: 'coding' });
     } finally { await server.stop(); }
   });
+
+  it('updates only the appearance theme through the HTTP API', async () => {
+    const root = isolatedHome();
+    saveOnboarding({ theme: 'dark', mode: 'coding', model: 'openai::test-model' });
+    const server = new HermesServer({ passwordRequired: false, cwd: root, port: 0, llm: new ScriptedMockLlm([]) });
+    const base = 'http://127.0.0.1:' + await server.start();
+    try {
+      const patch = (body: unknown) => fetch(base + '/api/onboarding', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      expect((await patch({ theme: 'light' })).status).toBe(200);
+      expect(await fetch(base + '/api/onboarding').then(r => r.json())).toEqual({ completed: true, theme: 'light', mode: 'coding', model: 'openai::test-model' });
+      expect((await patch({ theme: 'blue' })).status).toBe(400);
+      expect(readOnboarding()).toEqual({ completed: true, theme: 'light', mode: 'coding', model: 'openai::test-model' });
+    } finally { await server.stop(); }
+  });
 });
 
 function wizard() {
@@ -125,6 +139,19 @@ describe('setup wizard flow', () => {
     expect(u.context.openCowork).toHaveBeenCalledOnce();
     expect(u.elements.setupWizard.hidden).toBe(true);
     expect(u.elements.startupCover.hidden).toBe(true);
+  });
+
+  it('keeps an explicit local theme when an older profile lacks onboardingComplete', async () => {
+    const u = wizard();
+    u.context.S.themeLoaded = true;
+    u.api.mockResolvedValue({ completed: true, theme: 'dark', mode: 'cowork', model: 'openai::test-model' });
+    await u.context.initializeOnboarding();
+    expect(u.context.S.settings.theme).toBe('light');
+    expect(u.context.S.settings.onboardingComplete).toBe(true);
+    expect(u.context.S.settings.startMode).toBe('cowork');
+    expect(u.context.applyTheme).toHaveBeenCalled();
+    expect(u.context.persist).toHaveBeenCalled();
+    expect(u.context.openCowork).toHaveBeenCalledOnce();
   });
 
   it('shows a retry after a loading failure and clears the error state when retrying', async () => {

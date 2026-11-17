@@ -9,8 +9,9 @@ function themeFixture(theme = 'system', systemDark = false) {
   const toggle = { title: '', setAttribute: vi.fn() };
   const listeners: Record<string, (event?: unknown) => void> = {};
   const media = { matches: systemDark, addEventListener: (_name: string, listener: () => void) => { listeners.system = listener; } };
+  const api = vi.fn(async () => ({}));
   const context = createContext({
-    S: { settings: { theme, autoLearn: true } }, persist: vi.fn(),
+    S: { settings: { theme, autoLearn: true } }, persist: vi.fn(), api,
     window: { matchMedia: () => media },
     document: {
       documentElement: { setAttribute: (key: string, value: string) => attributes.set(key, value), getAttribute: (key: string) => attributes.get(key) },
@@ -19,7 +20,7 @@ function themeFixture(theme = 'system', systemDark = false) {
     },
   });
   new Script(UI_THEME_JS).runInContext(context);
-  return { context, choices, toggle, listeners, media, current: () => attributes.get('data-theme') };
+  return { context, choices, toggle, listeners, media, api, current: () => attributes.get('data-theme') };
 }
 
 describe('appearance preference', () => {
@@ -48,6 +49,15 @@ describe('appearance preference', () => {
     expect(u.current()).toBe('dark');
     expect(u.toggle.title).toBe('Switch to light mode');
     expect(u.context.persist).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the server preference in sync so a fresh profile reopens with the chosen theme', () => {
+    const u = themeFixture();
+    u.context.setTheme('light');
+    expect(u.api).toHaveBeenCalledWith('/api/onboarding', expect.objectContaining({
+      method: 'PATCH',
+      body: JSON.stringify({ theme: 'light' }),
+    }));
   });
 
   it.each(['light', 'dark', 'system', 'invalid'])('restores %s before the app renders', theme => {

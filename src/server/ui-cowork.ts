@@ -1778,7 +1778,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
         '</div>' +
         '<div class="cw-composer"><input type="file" id="cwFile" multiple hidden>' +
         '<button class="cw-attach" id="cwPlus" title="Files, mission, folder or schedule" aria-label="Add files, mission, folder or schedule" popovertarget="cwPlusMenu">' + cwIcon('plus') + '</button>' +
-        '<textarea id="cwInput" rows="1" placeholder="' + (conv.memberIds.length > 1 ? 'Message the whole team — @Name to target someone' : 'Message ' + esc(conv.title)) + (activeThread ? ' — ' + esc(activeThread.title) : '') + '"></textarea>' +
+        '<textarea id="cwInput" rows="1" placeholder="' + (conv.memberIds.length > 1 ? 'Message the team — @Name targets one teammate' : 'Message ' + esc(conv.title)) + (activeThread ? ' — ' + esc(activeThread.title) : '') + '"></textarea>' +
         '<button type="button" class="voice-phone" id="cwVoiceCall" aria-label="Call this teammate" title="Talk live" aria-pressed="false">' + cwIcon('phone') + '</button>' +
         '<button class="cw-stop-secondary" id="cwStop" title="Stop the team" aria-label="Stop the team" hidden>' + cwIcon('stop') + '</button>' +
         '<button class="cw-send" id="cwSend" title="Send (Enter)" aria-label="Send message">' + cwIcon('send') + '</button>' +
@@ -1909,7 +1909,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     var names = $('cwMemberNames');
     if (names) names.textContent = (activeThread ? conv.title + ' · ' : '') + members.map(function (m) { return '@' + m.name; }).join(' · ');
     var input = $('cwInput');
-    if (input && activeThread) input.placeholder = (conv.memberIds.length > 1 ? 'Message the whole team — @Name to target someone' : 'Message ' + conv.title) + ' — ' + activeThread.title;
+    if (input && activeThread) input.placeholder = (conv.memberIds.length > 1 ? 'Message the team — @Name targets one teammate' : 'Message ' + conv.title) + ' — ' + activeThread.title;
     var men = $('cwMentions');
     if (men) men.innerHTML = '';
     if (conv.memberIds.length > 1 && men) {
@@ -1920,11 +1920,15 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
         b.onclick = function () {
           var input = $('cwInput');
           if (!input) return;
-          var at = input.selectionStart || input.value.length;
-          input.value = input.value.slice(0, at) + '@' + m.name + ' ' + input.value.slice(at);
+          var at = typeof input.selectionStart === 'number' ? input.selectionStart : input.value.length;
+          var end = typeof input.selectionEnd === 'number' ? input.selectionEnd : at;
+          var inserted = '@' + m.name + ' ';
+          input.value = input.value.slice(0, at) + inserted + input.value.slice(end);
+          var caret = at + inserted.length;
           cwSaveDraft();
           cwRenderComposerAction();
           input.focus();
+          if (typeof input.setSelectionRange === 'function') input.setSelectionRange(caret, caret);
         };
         men.appendChild(b);
       });
@@ -4897,21 +4901,41 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
         '<label>Members (pick at least two)</label>' +
         '<div class="cw-skills" id="cwGmMembers">' + cw.agents.map(function (a) { var on = chosen.indexOf(a.id) >= 0; return '<button type="button" data-id="' + esc(a.id) + '" class="' + (on ? 'on' : '') + '" aria-pressed="' + on + '">' + esc(a.name) + '</button>'; }).join('') + '</div>' +
         '<label>Chief of staff (optional — coordinates who answers)</label>' +
-        '<select id="cwGmChief"><option value="">No chief — first mentioned agent answers</option>' + cw.agents.map(function (a) { return '<option value="' + esc(a.id) + '">' + esc(a.name) + '</option>'; }).join('') + '</select>' +
+        '<select id="cwGmChief"></select>' +
       '</div>' +
       '<div class="cw-foot"><span style="flex:1"></span><button class="btn dark" id="cwGmSave">Create group</button></div></div>';
     document.body.appendChild(modal);
+    var chiefSelect = modal.querySelector('#cwGmChief');
+    var chiefChoice = '';
+    var chiefTouched = false;
+    function suggestedChief() {
+      var candidate = cw.agents.filter(function (a) { return a.chiefOfStaff && chosen.indexOf(a.id) >= 0; })[0];
+      return candidate ? candidate.id : '';
+    }
+    function renderChiefChoices() {
+      if (!chiefTouched || (chiefChoice && chosen.indexOf(chiefChoice) < 0)) chiefChoice = suggestedChief();
+      if (chiefChoice && chosen.indexOf(chiefChoice) < 0) chiefChoice = '';
+      chiefSelect.innerHTML = '<option value="">No chief — default coordinator triages</option>' +
+        cw.agents.filter(function (a) { return chosen.indexOf(a.id) >= 0; }).map(function (a) { return '<option value="' + esc(a.id) + '">' + esc(a.name) + '</option>'; }).join('');
+      chiefSelect.value = chiefChoice;
+    }
     modal.querySelectorAll('[data-id]').forEach(function (b) {
       b.onclick = function () {
         var id = b.getAttribute('data-id');
         var i = chosen.indexOf(id);
         if (i >= 0) { chosen.splice(i, 1); b.classList.remove('on'); b.setAttribute('aria-pressed', 'false'); } else { chosen.push(id); b.classList.add('on'); b.setAttribute('aria-pressed', 'true'); }
+        renderChiefChoices();
       };
     });
+    chiefSelect.onchange = function () { chiefChoice = chiefSelect.value; chiefTouched = true; };
+    renderChiefChoices();
     modal.querySelector('#cwGmCancel').onclick = function () { modal.remove(); };
     modal.querySelector('#cwGmSave').onclick = function () {
       if (chosen.length < 2) { toast('Pick at least two members', true); return; }
-      api('/api/cowork/conversations', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'group', title: $('cwGmTitle').value, memberIds: chosen, chiefId: $('cwGmChief').value }) })
+      var saveBtn = modal.querySelector('#cwGmSave');
+      if (saveBtn.getAttribute('disabled')) return;
+      saveBtn.setAttribute('disabled', 'disabled');
+      api('/api/cowork/conversations', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'group', title: $('cwGmTitle').value, memberIds: chosen, chiefId: chiefSelect.value }) })
         .then(function (d) {
           modal.remove();
           cwEnsure().convs.push(d.conversation);
@@ -4919,7 +4943,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
           if (typeof S !== 'undefined' && S.active === 'cowork') { cwRenderRail(); cwOpenConv(d.conversation.id); }
           else if (typeof cwEnterWorkspace === 'function') { cwEnterWorkspace('conv', chosen[0], d.conversation.id); }
         })
-        .catch(function (e) { toast(e.message, true); });
+        .catch(function (e) { saveBtn.removeAttribute('disabled'); toast(e.message, true); });
     };
     setTimeout(function () { var t = modal.querySelector('#cwGmTitle'); if (t) t.focus(); }, 0);
   }

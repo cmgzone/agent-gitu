@@ -1,0 +1,1099 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Agent Gitu — Welcome Video</title>
+  <style>
+    @font-face {
+      font-family: 'Inter';
+      src: url('../assets/fonts/inter-latin-400-normal.woff2') format('woff2');
+      font-weight: 400;
+      font-style: normal;
+      font-display: block;
+    }
+    @font-face {
+      font-family: 'Inter';
+      src: url('../assets/fonts/inter-latin-500-normal.woff2') format('woff2');
+      font-weight: 500;
+      font-style: normal;
+      font-display: block;
+    }
+    @font-face {
+      font-family: 'Inter';
+      src: url('../assets/fonts/inter-latin-600-normal.woff2') format('woff2');
+      font-weight: 600;
+      font-style: normal;
+      font-display: block;
+    }
+    @font-face {
+      font-family: 'JetBrains Mono';
+      src: url('../assets/fonts/jetbrains-mono-latin-400-normal.woff2') format('woff2');
+      font-weight: 400;
+      font-style: normal;
+      font-display: block;
+    }
+    @font-face {
+      font-family: 'JetBrains Mono';
+      src: url('../assets/fonts/jetbrains-mono-latin-700-normal.woff2') format('woff2');
+      font-weight: 700;
+      font-style: normal;
+      font-display: block;
+    }
+
+    :root {
+      --bg: #111112;
+      --card: #1F1F22;
+      --card2: #161618;
+      --border: #2A2E2E;
+      --text: #DFE2E5;
+      --muted: #AAAFB5;
+      --accent: #3E9EFB;
+      --cyan: #19D8F4;
+      --ok: #0B991F;
+      --ok-bright: #46E68A;
+      --warn: #F59E0B;
+      --mono: 'JetBrains Mono', ui-monospace, monospace;
+      --sans: 'Inter', system-ui, -apple-system, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 1920px;
+      height: 1080px;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .stage {
+      position: relative;
+      width: 1920px;
+      height: 1080px;
+      overflow: hidden;
+      background:
+        radial-gradient(1200px 720px at 50% 42%, rgba(62, 158, 251, 0.12), transparent 68%),
+        radial-gradient(900px 600px at 78% 72%, rgba(156, 109, 242, 0.09), transparent 70%),
+        radial-gradient(800px 540px at 20% 78%, rgba(70, 230, 138, 0.06), transparent 72%),
+        #111112;
+    }
+
+    .grid-bg {
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(to right, rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+      background-size: 64px 64px;
+      mask-image: radial-gradient(circle at 50% 50%, rgba(0, 0, 0, 0.85), transparent 82%);
+    }
+
+    canvas#fx {
+      position: absolute;
+      inset: 0;
+      width: 1920px;
+      height: 1080px;
+      pointer-events: none;
+      z-index: 15;
+    }
+
+    .chrome-top {
+      position: absolute;
+      top: 44px;
+      left: 64px;
+      right: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      z-index: 20;
+    }
+
+    .brand-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 14px;
+      padding: 10px 18px 10px 12px;
+      border-radius: 9999px;
+      background: rgba(31, 31, 34, 0.84);
+      border: 1px solid var(--border);
+      backdrop-filter: blur(12px);
+      font-size: 20px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+
+    .brand-pill img {
+      width: 34px;
+      height: 34px;
+      border-radius: 9px;
+    }
+
+    .chapter-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 18px;
+      border-radius: 9999px;
+      background: rgba(31, 31, 34, 0.84);
+      border: 1px solid var(--border);
+      font-family: var(--mono);
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }
+
+    .chapter-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--ok-bright);
+      box-shadow: 0 0 12px rgba(70, 230, 138, 0.75);
+    }
+
+    .scene {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 110px 100px 80px;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    /* Scene 1: Hero Greeting */
+    .hero-emblems {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 42px;
+      margin-bottom: 42px;
+    }
+
+    .emblem-card {
+      position: relative;
+      width: 210px;
+      height: 210px;
+      border-radius: 44px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 32px 90px -24px rgba(0, 0, 0, 0.85), 0 0 0 1px rgba(255, 255, 255, 0.03);
+    }
+
+    .emblem-card.orb-card {
+      background: radial-gradient(circle at 50% 45%, rgba(255, 107, 87, 0.2), var(--card) 72%);
+      border-color: rgba(255, 107, 87, 0.4);
+    }
+
+    .emblem-card img {
+      width: 152px;
+      height: 152px;
+      object-fit: contain;
+    }
+
+    .link-bridge {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .link-bridge span {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--accent);
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 18px;
+      border-radius: 9999px;
+      background: rgba(62, 158, 251, 0.12);
+      border: 1px solid rgba(62, 158, 251, 0.34);
+      color: var(--accent);
+      font-family: var(--mono);
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 0.09em;
+      margin-bottom: 24px;
+    }
+
+    h1.hero-title {
+      margin: 0;
+      font-size: 86px;
+      font-weight: 600;
+      line-height: 1.06;
+      letter-spacing: -0.035em;
+      text-align: center;
+    }
+
+    .accent-grad {
+      background: linear-gradient(120deg, #3E9EFB 0%, #19D8F4 55%, #46E68A 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    p.hero-sub {
+      margin: 24px 0 0;
+      max-width: 980px;
+      font-size: 32px;
+      line-height: 1.4;
+      color: var(--muted);
+      text-align: center;
+      font-weight: 400;
+    }
+
+    /* Scene 2: Collaboration */
+    .section-head {
+      text-align: center;
+      margin-bottom: 42px;
+    }
+
+    .section-head h2 {
+      margin: 0;
+      font-size: 62px;
+      font-weight: 600;
+      letter-spacing: -0.03em;
+    }
+
+    .section-head p {
+      margin: 14px 0 0;
+      font-size: 27px;
+      color: var(--muted);
+    }
+
+    .team-stage-card {
+      width: 1460px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 28px;
+      padding: 40px 44px;
+      box-shadow: 0 36px 100px -30px rgba(0, 0, 0, 0.85);
+      display: grid;
+      gap: 32px;
+    }
+
+    .team-row {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 24px;
+    }
+
+    .agent-tile {
+      background: var(--card2);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 24px 22px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .agent-tile-head {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .agent-tile-ava {
+      width: 78px;
+      height: 78px;
+      border-radius: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex: none;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .agent-tile-ava img {
+      width: 62px;
+      height: 62px;
+      object-fit: contain;
+    }
+
+    .agent-tile-title {
+      min-width: 0;
+    }
+
+    .agent-tile-title strong {
+      display: block;
+      font-size: 26px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .agent-tile-title span {
+      display: block;
+      font-size: 16px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+
+    .agent-tile-task {
+      font-size: 18px;
+      line-height: 1.4;
+      color: var(--text);
+      min-height: 50px;
+    }
+
+    .status-line {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      font-size: 16px;
+      font-weight: 500;
+      color: var(--muted);
+    }
+
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--accent);
+      flex: none;
+    }
+
+    .status-dot.ok {
+      background: var(--ok-bright);
+      box-shadow: 0 0 10px rgba(70, 230, 138, 0.7);
+    }
+
+    .command-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 20px 26px;
+      border-radius: 16px;
+      background: var(--card2);
+      border: 1px solid var(--border);
+      font-size: 22px;
+    }
+
+    .command-prompt {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      font-family: var(--mono);
+      color: var(--text);
+    }
+
+    .command-prompt b {
+      color: var(--accent);
+    }
+
+    .command-result {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 20px;
+      font-weight: 600;
+      color: var(--ok-bright);
+    }
+
+    /* Scene 3: Connections */
+    .split-grid {
+      width: 1500px;
+      display: grid;
+      grid-template-columns: 1.02fr 1.18fr;
+      gap: 64px;
+      align-items: center;
+    }
+
+    .conn-copy h2 {
+      margin: 0;
+      font-size: 64px;
+      line-height: 1.08;
+      font-weight: 600;
+      letter-spacing: -0.03em;
+    }
+
+    .conn-copy p {
+      margin: 22px 0 34px;
+      font-size: 27px;
+      line-height: 1.48;
+      color: var(--muted);
+    }
+
+    .hub-duo {
+      display: inline-flex;
+      align-items: center;
+      gap: 18px;
+      padding: 16px 24px;
+      border-radius: 20px;
+      background: var(--card);
+      border: 1px solid var(--border);
+    }
+
+    .hub-duo img {
+      width: 58px;
+      height: 58px;
+      object-fit: contain;
+    }
+
+    .hub-duo-text strong {
+      display: block;
+      font-size: 21px;
+      font-weight: 600;
+    }
+
+    .hub-duo-text span {
+      display: block;
+      font-size: 16px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+
+    .conn-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      overflow: hidden;
+      box-shadow: 0 36px 96px -28px rgba(0, 0, 0, 0.85);
+    }
+
+    .conn-card-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 20px 28px;
+      border-bottom: 1px solid var(--border);
+      background: var(--card2);
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--muted);
+    }
+
+    .conn-row {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      padding: 24px 28px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .conn-row:last-child { border-bottom: 0; }
+
+    .conn-ico {
+      width: 56px;
+      height: 56px;
+      border-radius: 14px;
+      background: var(--card2);
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+      font-weight: 700;
+      color: var(--accent);
+      flex: none;
+    }
+
+    .conn-meta {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .conn-meta strong {
+      display: block;
+      font-size: 24px;
+      font-weight: 600;
+    }
+
+    .conn-meta span {
+      display: block;
+      font-size: 18px;
+      color: var(--muted);
+      margin-top: 3px;
+    }
+
+    .conn-state {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 18px;
+      font-weight: 600;
+      min-width: 146px;
+      justify-content: flex-end;
+    }
+
+    /* Scene 4: Full Squad Finale */
+    .squad-arc {
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      gap: 20px;
+      margin-bottom: 50px;
+      padding: 24px 36px;
+      border-radius: 28px;
+      background: rgba(31, 31, 34, 0.72);
+      border: 1px solid var(--border);
+      box-shadow: 0 28px 80px -24px rgba(0, 0, 0, 0.8);
+    }
+
+    .squad-member {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      width: 118px;
+    }
+
+    .squad-badge {
+      width: 96px;
+      height: 96px;
+      border-radius: 26px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .squad-badge img {
+      width: 78px;
+      height: 78px;
+      object-fit: contain;
+    }
+
+    .squad-member span {
+      font-family: var(--mono);
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      color: var(--text);
+    }
+
+    .finale-cta {
+      margin-top: 36px;
+      display: inline-flex;
+      align-items: center;
+      gap: 16px;
+      padding: 16px 30px;
+      border-radius: 9999px;
+      background: var(--card);
+      border: 1px solid rgba(62, 158, 251, 0.45);
+      font-size: 22px;
+      font-weight: 600;
+      box-shadow: 0 18px 50px -16px rgba(62, 158, 251, 0.45);
+    }
+
+    .finale-cta .repo {
+      font-family: var(--mono);
+      font-size: 18px;
+      font-weight: 400;
+      color: var(--muted);
+      padding-left: 14px;
+      border-left: 1px solid var(--border);
+    }
+
+    .progress-rail {
+      position: absolute;
+      left: 64px;
+      right: 64px;
+      bottom: 34px;
+      height: 4px;
+      border-radius: 9999px;
+      background: rgba(255, 255, 255, 0.08);
+      overflow: hidden;
+      z-index: 20;
+    }
+
+    .progress-fill {
+      height: 100%;
+      width: 0%;
+      border-radius: 9999px;
+      background: linear-gradient(90deg, #3E9EFB, #19D8F4, #46E68A);
+    }
+  </style>
+</head>
+<body>
+  <div class="stage" id="stage">
+    <div class="grid-bg"></div>
+    <canvas id="fx" width="1920" height="1080"></canvas>
+
+    <div class="chrome-top" id="chromeTop">
+      <div class="brand-pill">
+        <img src="../assets/agent-gitu-mark.svg" alt="">
+        <span>Agent Gitu</span>
+      </div>
+      <div class="chapter-pill">
+        <span class="chapter-dot"></span>
+        <span id="chapterLabel">WELCOME</span>
+      </div>
+    </div>
+
+    <!-- Scene 1: Hero Greeting -->
+    <section class="scene" id="scene1">
+      <div class="hero-emblems" id="s1Emblems">
+        <div class="emblem-card" id="s1Mark">
+          <img src="../assets/agent-gitu-mark.svg" alt="Agent Gitu">
+        </div>
+        <div class="link-bridge" id="s1Bridge">
+          <span></span><span></span><span></span>
+        </div>
+        <div class="emblem-card orb-card" id="s1Orb">
+          <img src="../assets/cowork-dots/orb.png" alt="Orb teammate">
+        </div>
+      </div>
+      <div class="eyebrow" id="s1Eyebrow">A LITTLE SPARK · A WORKING IDEA</div>
+      <h1 class="hero-title" id="s1Title">Welcome to <span class="accent-grad">Agent Gitu</span></h1>
+      <p class="hero-sub" id="s1Sub">Meet your AI teammate workspace — built to code, research, connect your tools, and ship real work together.</p>
+    </section>
+
+    <!-- Scene 2: Collaboration -->
+    <section class="scene" id="scene2">
+      <div class="section-head" id="s2Head">
+        <div class="eyebrow">COWORK TEAM</div>
+        <h2>One workspace. A full specialist team.</h2>
+        <p>Hand off complex tasks and watch your agents collaborate in real time.</p>
+      </div>
+      <div class="team-stage-card" id="s2Card">
+        <div class="team-row">
+          <div class="agent-tile" id="agentPA">
+            <div class="agent-tile-head">
+              <div class="agent-tile-ava" style="background:rgba(255,107,87,0.16);border-color:rgba(255,107,87,0.38)">
+                <img src="../assets/cowork-dots/orb.png" alt="P.A">
+              </div>
+              <div class="agent-tile-title">
+                <strong>P.A</strong>
+                <span>Coordinator</span>
+              </div>
+            </div>
+            <div class="agent-tile-task">Breaks down goals & delegates across specialists.</div>
+            <div class="status-line" id="stPA"><span class="status-dot"></span><span>Planning tasks</span></div>
+          </div>
+
+          <div class="agent-tile" id="agentForge">
+            <div class="agent-tile-head">
+              <div class="agent-tile-ava" style="background:rgba(63,214,143,0.16);border-color:rgba(63,214,143,0.38)">
+                <img src="../assets/cowork-dots/hexa.png" alt="Forge">
+              </div>
+              <div class="agent-tile-title">
+                <strong>Forge</strong>
+                <span>Full-Stack Dev</span>
+              </div>
+            </div>
+            <div class="agent-tile-task">Implements UI features, APIs & verified unit tests.</div>
+            <div class="status-line" id="stForge"><span class="status-dot"></span><span>Waiting</span></div>
+          </div>
+
+          <div class="agent-tile" id="agentScout">
+            <div class="agent-tile-head">
+              <div class="agent-tile-ava" style="background:rgba(234,179,8,0.16);border-color:rgba(234,179,8,0.38)">
+                <img src="../assets/cowork-dots/tip.png" alt="Scout">
+              </div>
+              <div class="agent-tile-title">
+                <strong>Scout</strong>
+                <span>Research Lead</span>
+              </div>
+            </div>
+            <div class="agent-tile-task">Gathers specs, benchmarks & cited web findings.</div>
+            <div class="status-line" id="stScout"><span class="status-dot"></span><span>Waiting</span></div>
+          </div>
+
+          <div class="agent-tile" id="agentNova">
+            <div class="agent-tile-head">
+              <div class="agent-tile-ava" style="background:rgba(156,109,242,0.16);border-color:rgba(156,109,242,0.38)">
+                <img src="../assets/cowork-dots/nova.png" alt="Nova">
+              </div>
+              <div class="agent-tile-title">
+                <strong>Nova</strong>
+                <span>Deploy Engineer</span>
+              </div>
+            </div>
+            <div class="agent-tile-task">Runs builds, syncs GitHub & ships live endpoints.</div>
+            <div class="status-line" id="stNova"><span class="status-dot"></span><span>Waiting</span></div>
+          </div>
+        </div>
+
+        <div class="command-bar" id="s2Cmd">
+          <div class="command-prompt">
+            <b>&gt;</b>
+            <span id="cmdTyped">@P.A Ship our new release and verify checks</span>
+          </div>
+          <div class="command-result" id="cmdDone">
+            <span class="status-dot ok"></span>
+            <span>Synced &amp; Verified</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Scene 3: Connections -->
+    <section class="scene" id="scene3">
+      <div class="split-grid">
+        <div class="conn-copy" id="s3Left">
+          <div class="eyebrow">CONNECTIONS</div>
+          <h2>Your tools.<br><span class="accent-grad">Ready in one click.</span></h2>
+          <p>Grant each teammate scoped access to apps, mailboxes, and custom APIs — staying safely in your control.</p>
+          <div class="hub-duo">
+            <img src="../assets/cowork-dots/block.png" alt="Atlas">
+            <div class="hub-duo-text">
+              <strong>Atlas · P.A · Clara</strong>
+              <span>Assign per-agent app permissions</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="conn-card" id="s3Right">
+          <div class="conn-card-top">
+            <span>Apps &amp; Custom APIs</span>
+            <span>Agent access</span>
+          </div>
+          <div class="conn-row" id="crow1">
+            <div class="conn-ico">GH</div>
+            <div class="conn-meta">
+              <strong>GitHub</strong>
+              <span>Repositories, branches &amp; pull requests</span>
+            </div>
+            <div class="conn-state" id="cstate1"><span class="status-dot"></span><span>Connecting</span></div>
+          </div>
+          <div class="conn-row" id="crow2">
+            <div class="conn-ico">GM</div>
+            <div class="conn-meta">
+              <strong>Gmail &amp; Calendar</strong>
+              <span>Inbox summaries &amp; meeting follow-ups</span>
+            </div>
+            <div class="conn-state" id="cstate2"><span class="status-dot"></span><span>Pending</span></div>
+          </div>
+          <div class="conn-row" id="crow3">
+            <div class="conn-ico">PK</div>
+            <div class="conn-meta">
+              <strong>Pikpam Cloud</strong>
+              <span>Containers, domains, SSL &amp; health checks</span>
+            </div>
+            <div class="conn-state" id="cstate3"><span class="status-dot"></span><span>Pending</span></div>
+          </div>
+          <div class="conn-row" id="crow4">
+            <div class="conn-ico">{}</div>
+            <div class="conn-meta">
+              <strong>Custom REST APIs</strong>
+              <span>Connect private OpenAPI or bearer services</span>
+            </div>
+            <div class="conn-state" id="cstate4"><span class="status-dot"></span><span>Pending</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Scene 4: Finale -->
+    <section class="scene" id="scene4">
+      <div class="squad-arc" id="s4Squad"></div>
+      <div class="eyebrow" id="s4Eyebrow">MEET YOUR TEAM</div>
+      <h1 class="hero-title" id="s4Title">Big ideas. <span class="accent-grad">Real work.</span></h1>
+      <p class="hero-sub" id="s4Sub">Give your agent a clear goal — keep your tools, your context, and your say.</p>
+      <div class="finale-cta" id="s4Cta">
+        <span class="status-dot ok"></span>
+        <span>Agent Gitu is ready</span>
+        <span class="repo">cmgzone/agent-gitu</span>
+      </div>
+    </section>
+
+    <div class="progress-rail">
+      <div class="progress-fill" id="progressFill"></div>
+    </div>
+  </div>
+
+  <script>
+    const DURATION = 14.0;
+    const MASCOTS = [
+      { name: 'Orb', role: 'P.A', file: 'orb.png', color: 'rgba(255,107,87,0.2)' },
+      { name: 'Block', role: 'Atlas', file: 'block.png', color: 'rgba(76,125,240,0.2)' },
+      { name: 'Tip', role: 'Scout', file: 'tip.png', color: 'rgba(234,179,8,0.2)' },
+      { name: 'Hexa', role: 'Forge', file: 'hexa.png', color: 'rgba(63,214,143,0.2)' },
+      { name: 'Nova', role: 'Nova', file: 'nova.png', color: 'rgba(156,109,242,0.2)' },
+      { name: 'Dia', role: 'Pulse', file: 'dia.png', color: 'rgba(41,183,173,0.2)' },
+      { name: 'Penta', role: 'Aegis', file: 'penta.png', color: 'rgba(243,155,82,0.2)' },
+      { name: 'Luna', role: 'Lyra', file: 'luna.png', color: 'rgba(79,99,150,0.24)' },
+      { name: 'Plus', role: 'Vault', file: 'plus.png', color: 'rgba(124,207,53,0.2)' },
+      { name: 'Pill', role: 'Clara', file: 'pill.png', color: 'rgba(236,72,153,0.2)' },
+    ];
+
+    const s4Squad = document.getElementById('s4Squad');
+    MASCOTS.forEach((m, idx) => {
+      const el = document.createElement('div');
+      el.className = 'squad-member';
+      el.id = 'squad-' + idx;
+      el.innerHTML = `<div class="squad-badge" style="background:${m.color}"><img src="../assets/cowork-dots/${m.file}" alt="${m.name}"></div><span>${m.role}</span>`;
+      s4Squad.appendChild(el);
+    });
+
+    const clamp = (v, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
+    const prog = (t, a, b) => clamp((t - a) / (b - a));
+    const easeOut = (x) => 1 - Math.pow(1 - clamp(x), 3);
+    const easeOutBack = (x) => {
+      const c1 = 1.70158, c3 = c1 + 1, u = clamp(x);
+      return 1 + c3 * Math.pow(u - 1, 3) + c1 * Math.pow(u - 1, 2);
+    };
+    const sceneAlpha = (t, inA, inB, outA, outB) => easeOut(prog(t, inA, inB)) * (1 - easeOut(prog(t, outA, outB)));
+
+    const canvas = document.getElementById('fx');
+    const ctx = canvas.getContext('2d');
+
+    // Deterministic ambient particle seeds
+    const PARTICLES = Array.from({ length: 42 }, (_, i) => ({
+      x: ((i * 397) % 1920),
+      y0: ((i * 211) % 1080),
+      r: 1.5 + (i % 4) * 0.9,
+      speed: 22 + (i % 5) * 10,
+      alpha: 0.12 + (i % 4) * 0.06,
+      hue: i % 3 === 0 ? '62,158,251' : i % 3 === 1 ? '70,230,138' : '156,109,242'
+    }));
+
+    function drawCanvasFx(t) {
+      ctx.clearRect(0, 0, 1920, 1080);
+
+      // Floating subtle ambient particles
+      for (const p of PARTICLES) {
+        const y = ((p.y0 - t * p.speed) % 1120 + 1120) % 1120 - 20;
+        const x = p.x + Math.sin(t * 1.1 + p.y0 * 0.02) * 14;
+        ctx.beginPath();
+        ctx.fillStyle = `rgba(${p.hue}, ${p.alpha})`;
+        ctx.arc(x, y, p.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Scene 1: concentric signal ring pulse centered cleanly on the Agent Gitu emblem
+      const a1 = sceneAlpha(t, 0.0, 0.4, 3.0, 3.5);
+      if (a1 > 0.01) {
+        const markRect = document.getElementById('s1Mark').getBoundingClientRect();
+        const cx = markRect.left + markRect.width * 0.5;
+        const cy = markRect.top + markRect.height * 0.5;
+        const pulse = (t * 0.75) % 1;
+        const rad = 108 + pulse * 115;
+        ctx.beginPath();
+        ctx.strokeStyle = `rgba(70, 230, 138, ${(1 - pulse) * 0.42 * a1})`;
+        ctx.lineWidth = 2.5;
+        ctx.arc(cx, cy, rad, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      // Scene 2: live data packets arching cleanly across the gaps above the 4 teammate cards
+      const a2 = sceneAlpha(t, 3.1, 3.6, 7.0, 7.5);
+      if (a2 > 0.01) {
+        const tilesRects = ['agentPA', 'agentForge', 'agentScout', 'agentNova'].map((id) =>
+          document.getElementById(id).getBoundingClientRect()
+        );
+        ctx.save();
+        ctx.globalAlpha = a2;
+        for (let i = 0; i < 3; i++) {
+          const beamOn = easeOut(prog(t, 3.8 + i * 0.55, 4.4 + i * 0.55));
+          if (beamOn <= 0) continue;
+          const r1 = tilesRects[i], r2 = tilesRects[i + 1];
+          const x1 = r1.left + r1.width * 0.72, y1 = r1.top + 4;
+          const x2 = r2.left + r2.width * 0.28, y2 = r2.top + 4;
+          const mx = (x1 + x2) * 0.5;
+          const my = Math.min(y1, y2) - 42;
+          ctx.beginPath();
+          ctx.strokeStyle = `rgba(62, 158, 251, ${0.65 * beamOn})`;
+          ctx.lineWidth = 3;
+          ctx.setLineDash([6, 6]);
+          ctx.lineDashOffset = -t * 64;
+          ctx.moveTo(x1, y1);
+          ctx.quadraticCurveTo(mx, my, x2, y2);
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          // Moving packet dot
+          const u = ((t * 1.3 + i * 0.28) % 1);
+          const bx = (1 - u) * (1 - u) * x1 + 2 * (1 - u) * u * mx + u * u * x2;
+          const by = (1 - u) * (1 - u) * y1 + 2 * (1 - u) * u * my + u * u * y2;
+          ctx.beginPath();
+          ctx.fillStyle = '#19D8F4';
+          ctx.shadowColor = '#19D8F4';
+          ctx.shadowBlur = 14;
+          ctx.arc(bx, by, 5.5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.shadowBlur = 0;
+        }
+        ctx.restore();
+      }
+    }
+
+    function setTileState(elId, t, readyAt, doneAt, activeLabel, doneLabel) {
+      const el = document.getElementById(elId);
+      const dot = el.querySelector('.status-dot');
+      const txt = el.querySelector('span:last-child');
+      if (t >= doneAt) {
+        dot.className = 'status-dot ok';
+        dot.style.background = '';
+        txt.textContent = doneLabel;
+        el.style.color = '#46E68A';
+      } else if (t >= readyAt) {
+        dot.className = 'status-dot';
+        dot.style.background = '#3E9EFB';
+        txt.textContent = activeLabel;
+        el.style.color = '#DFE2E5';
+      } else {
+        dot.className = 'status-dot';
+        dot.style.background = '#6E7681';
+        txt.textContent = 'Queued';
+        el.style.color = '#AAAFB5';
+      }
+    }
+
+    window.__setTime = function (t) {
+      // Chrome & progress
+      const top = document.getElementById('chromeTop');
+      top.style.opacity = easeOut(prog(t, 0.2, 0.7)) * (1 - easeOut(prog(t, 13.5, 14.0)));
+      document.getElementById('progressFill').style.width = `${clamp(t / DURATION) * 100}%`;
+
+      const ch = t < 3.25 ? '01 · WELCOME' : t < 7.25 ? '02 · TEAMWORK' : t < 10.75 ? '03 · CONNECTIONS' : '04 · READY';
+      document.getElementById('chapterLabel').textContent = ch;
+
+      // Scene 1
+      const s1 = document.getElementById('scene1');
+      const a1 = sceneAlpha(t, 0.0, 0.45, 3.0, 3.45);
+      s1.style.opacity = a1;
+      s1.style.transform = `scale(${0.97 + 0.03 * easeOut(prog(t, 0, 0.6))})`;
+
+      const markScale = easeOutBack(prog(t, 0.1, 0.75));
+      document.getElementById('s1Mark').style.transform = `scale(${markScale})`;
+
+      const orbScale = easeOutBack(prog(t, 0.35, 1.0));
+      const orbHop = Math.sin(t * 4.2) * 7;
+      document.getElementById('s1Orb').style.transform = `scale(${orbScale}) translateY(${orbHop}px)`;
+
+      const dots = document.getElementById('s1Bridge').children;
+      for (let i = 0; i < dots.length; i++) {
+        const pulse = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(t * 7 - i * 0.9));
+        dots[i].style.opacity = pulse;
+        dots[i].style.transform = `scale(${0.8 + 0.4 * pulse})`;
+      }
+
+      const t1 = easeOut(prog(t, 0.55, 1.2));
+      document.getElementById('s1Eyebrow').style.opacity = t1;
+      document.getElementById('s1Eyebrow').style.transform = `translateY(${(1 - t1) * 18}px)`;
+
+      const h1 = easeOut(prog(t, 0.75, 1.4));
+      document.getElementById('s1Title').style.opacity = h1;
+      document.getElementById('s1Title').style.transform = `translateY(${(1 - h1) * 26}px)`;
+
+      const p1 = easeOut(prog(t, 1.0, 1.65));
+      document.getElementById('s1Sub').style.opacity = p1;
+      document.getElementById('s1Sub').style.transform = `translateY(${(1 - p1) * 22}px)`;
+
+      // Scene 2
+      const s2 = document.getElementById('scene2');
+      const a2 = sceneAlpha(t, 3.15, 3.6, 7.05, 7.5);
+      s2.style.opacity = a2;
+
+      const s2h = easeOut(prog(t, 3.25, 3.85));
+      document.getElementById('s2Head').style.opacity = s2h;
+      document.getElementById('s2Head').style.transform = `translateY(${(1 - s2h) * 24}px)`;
+
+      const tiles = ['agentPA', 'agentForge', 'agentScout', 'agentNova'];
+      tiles.forEach((id, i) => {
+        const el = document.getElementById(id);
+        const enter = easeOutBack(prog(t, 3.45 + i * 0.14, 4.0 + i * 0.14));
+        const bob = Math.sin(t * 3.4 + i * 1.1) * 4;
+        el.style.opacity = clamp(enter);
+        el.style.transform = `translateY(${(1 - enter) * 24 + bob}px)`;
+      });
+
+      setTileState('stPA', t, 3.6, 6.2, 'Coordinating squad...', 'Done · 4 tasks complete');
+      setTileState('stForge', t, 4.3, 6.0, 'Writing UI & tests...', 'Tests passing');
+      setTileState('stScout', t, 4.85, 6.1, 'Checking Astryx specs...', 'Specs verified');
+      setTileState('stNova', t, 5.4, 6.45, 'Deploying build...', 'Shipped to main');
+
+      const cmdProg = easeOut(prog(t, 5.9, 6.5));
+      document.getElementById('cmdDone').style.opacity = cmdProg;
+      document.getElementById('cmdDone').style.transform = `translateX(${(1 - cmdProg) * 14}px)`;
+
+      // Scene 3
+      const s3 = document.getElementById('scene3');
+      const a3 = sceneAlpha(t, 7.15, 7.6, 10.55, 11.0);
+      s3.style.opacity = a3;
+
+      const s3l = easeOut(prog(t, 7.25, 7.9));
+      document.getElementById('s3Left').style.opacity = s3l;
+      document.getElementById('s3Left').style.transform = `translateX(${(1 - s3l) * -32}px)`;
+
+      const s3r = easeOut(prog(t, 7.4, 8.05));
+      document.getElementById('s3Right').style.opacity = s3r;
+      document.getElementById('s3Right').style.transform = `translateX(${(1 - s3r) * 32}px)`;
+
+      [1, 2, 3, 4].forEach((n, idx) => {
+        const row = document.getElementById('crow' + n);
+        const st = document.getElementById('cstate' + n);
+        const dot = st.querySelector('.status-dot');
+        const lbl = st.querySelector('span:last-child');
+        const enter = easeOut(prog(t, 7.5 + idx * 0.16, 8.0 + idx * 0.16));
+        row.style.opacity = enter;
+        row.style.transform = `translateY(${(1 - enter) * 12}px)`;
+
+        const connectAt = 8.15 + idx * 0.45;
+        if (t >= connectAt) {
+          dot.className = 'status-dot ok';
+          dot.style.background = '';
+          lbl.textContent = 'Connected';
+          st.style.color = '#46E68A';
+        } else if (t >= connectAt - 0.35) {
+          dot.className = 'status-dot';
+          dot.style.background = '#F59E0B';
+          lbl.textContent = 'Verifying...';
+          st.style.color = '#F59E0B';
+        } else {
+          dot.className = 'status-dot';
+          dot.style.background = '#6E7681';
+          lbl.textContent = 'Available';
+          st.style.color = '#AAAFB5';
+        }
+      });
+
+      // Scene 4
+      const s4 = document.getElementById('scene4');
+      const a4 = easeOut(prog(t, 10.65, 11.15)) * (1 - easeOut(prog(t, 13.55, 14.0)));
+      s4.style.opacity = a4;
+
+      MASCOTS.forEach((_, i) => {
+        const el = document.getElementById('squad-' + i);
+        const enter = easeOutBack(prog(t, 10.75 + i * 0.06, 11.3 + i * 0.06));
+        const wave = Math.sin(t * 4.4 - i * 0.55) * 9;
+        el.style.opacity = clamp(enter);
+        el.style.transform = `translateY(${(1 - enter) * 30 + wave}px) scale(${0.86 + 0.14 * clamp(enter)})`;
+      });
+
+      const f1 = easeOut(prog(t, 11.1, 11.7));
+      document.getElementById('s4Eyebrow').style.opacity = f1;
+      document.getElementById('s4Title').style.opacity = f1;
+      document.getElementById('s4Title').style.transform = `translateY(${(1 - f1) * 24}px)`;
+
+      const f2 = easeOut(prog(t, 11.35, 11.95));
+      document.getElementById('s4Sub').style.opacity = f2;
+      document.getElementById('s4Sub').style.transform = `translateY(${(1 - f2) * 20}px)`;
+
+      const f3 = easeOutBack(prog(t, 11.6, 12.2));
+      document.getElementById('s4Cta').style.opacity = clamp(f3);
+      document.getElementById('s4Cta').style.transform = `scale(${0.92 + 0.08 * f3})`;
+
+      drawCanvasFx(t);
+    };
+
+    // Auto-preview mode when opened directly in a normal browser
+    if (!window.__RENDER_CONTROLLED__) {
+      const start = performance.now();
+      function loop(now) {
+        const t = ((now - start) / 1000) % DURATION;
+        window.__setTime(t);
+        requestAnimationFrame(loop);
+      }
+      requestAnimationFrame(loop);
+    }
+  </script>
+</body>
+</html>

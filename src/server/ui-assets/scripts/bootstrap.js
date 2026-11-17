@@ -61,6 +61,9 @@
       if (!Array.isArray(S.settings.scope)) S.settings.scope = [];
       S.draft = saved.draft || '';
       S.codeWorkspace = saved.codeWorkspace;
+      // A stored theme is the user's explicit choice; server onboarding prefs
+      // must never replace it on reload.
+      S.themeLoaded = Boolean(saved.settings && ['light', 'dark', 'system'].indexOf(saved.settings.theme) >= 0);
     }
   } catch (e) {}
   // Old workflow preferences must never re-enable persistent planning.

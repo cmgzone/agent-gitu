@@ -30,3 +30,11 @@ export function saveOnboarding(body: Record<string, unknown>): OnboardingPrefere
   writeJson(path.join(ensureGituHome().settings, 'onboarding.json'), preferences);
   return preferences;
 }
+
+/** Theme changes are independent of setup, mode and model. Keep the rest. */
+export function saveOnboardingTheme(theme: unknown): OnboardingPreferences {
+  if (!['light', 'dark', 'system'].includes(String(theme))) throw new Error('Choose a valid theme.');
+  const preferences: OnboardingPreferences = { ...readOnboarding(), theme: theme as OnboardingPreferences['theme'] };
+  writeJson(path.join(ensureGituHome().settings, 'onboarding.json'), preferences);
+  return preferences;
+}

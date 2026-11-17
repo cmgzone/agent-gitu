@@ -798,13 +798,17 @@ export const ONBOARDING_JS = String.raw`
       startupStage = 'workspace';
       if (!prefs.completed) openSetupWizard();
       else {
+        var themeChanged = false;
+        // Seed the server theme only when this origin has never stored a
+        // choice. A stored light/dark choice wins over older server prefs.
+        if (!S.themeLoaded) { S.settings.theme = prefs.theme; themeChanged = true; }
         if (!S.settings.onboardingComplete) {
-          S.settings.theme = prefs.theme;
           S.settings.startMode = prefs.mode;
           if (prefs.model&&!S.savedSelectionAt) S.sel.model = prefs.model;
           S.settings.onboardingComplete = true;
-          applyTheme(); persist();
+          themeChanged = true;
         }
+        if (themeChanged) { applyTheme(); persist(); }
         var lastMode = null;
         try { lastMode = localStorage.getItem('hermes.cowork'); } catch (e) {}
         if (prefs.mode === 'coding' && lastMode === 'closed') openHome();

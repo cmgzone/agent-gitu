@@ -445,9 +445,10 @@ sidebar. Instead of task runs it gives you a messaging-style team surface:
   Instruction presets cover coordination, engineering, research and writing.
   Choose an animated orb or a voxel avatar; reduced-motion preferences are respected.
 - **DMs and group chats** — chat with one teammate directly, or assemble a
-  group. Unmentioned requests run workers in parallel batches, then the
-  **chief of staff** synthesizes their results. `@Name` targets teammates;
-  targeted handoff chains are bounded to prevent loops.
+  group. An unmentioned request goes to the **chief of staff** (or the first
+  available coordinator), who answers directly or brings in only the
+  specialists the work needs, then synthesizes their results. `@Name` targets
+  teammates; targeted handoff chains are bounded to prevent loops.
   Messages arriving while the team works are queued and answered in order.
 - **Optional computers** — new teammates default to **My computer**, using the
   Agent Gitu workspace and desktop browser without Docker. Existing profiles

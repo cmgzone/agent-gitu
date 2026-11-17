@@ -114,7 +114,7 @@ import { TelegramPoller, TelegramReplyStream, TelegramTypingIndicator, cleanTele
 import { coworkDocumentPreview } from '../cowork/document-preview.js';
 import { PDF_PREVIEW_CSP, PDF_PREVIEW_JS, pdfPreviewAsset } from '../cowork/pdf-preview.js';
 import { fetchWidgetSource, widgetAppDocument, WIDGET_APP_CSP, widgetState } from '../cowork/widget-app.js';
-import { readOnboarding, saveOnboarding } from './onboarding.js';
+import { readOnboarding, saveOnboarding, saveOnboardingTheme } from './onboarding.js';
 import { evaluateChiefAuthority, type ChiefAuthorityPolicy, type ChiefResolverContext } from '../cowork/chief-resolver.js';
 import type { ToolContext } from '../tools/tools.js';
 import { chatgptSubscriptionInfo, chatgptLoginPending, chatgptLogout, startChatgptLogin, type ChatgptLoginStart, type ChatgptSubscriptionInfo } from '../llm/pi-chatgpt.js';
@@ -7652,6 +7652,12 @@ export class GituServer {
     if (method === 'POST' && path === '/api/onboarding') {
       const body = await this.readBody(req);
       try { if(typeof body['timezone']==='string')this.proactivity().configure({timezone:body['timezone']});const preferences=saveOnboarding(body);this.preparePersonalAssistant();this.startCoworkLearning();this.sendJson(res,200,preferences); }
+      catch (err) { this.sendJson(res, 400, { error: (err as Error).message }); }
+      return;
+    }
+    if (method === 'PATCH' && path === '/api/onboarding') {
+      const body = await this.readBody(req);
+      try { this.sendJson(res, 200, saveOnboardingTheme(body['theme'])); }
       catch (err) { this.sendJson(res, 400, { error: (err as Error).message }); }
       return;
     }

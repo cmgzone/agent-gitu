@@ -268,7 +268,9 @@ export function mentionNames(text: string, members: CoworkAgent[]): CoworkAgent[
   const found: CoworkAgent[] = [];
   const ordered = [...members].sort((a, b) => b.name.length - a.name.length);
   for (const match of text.matchAll(/@/g)) {
-    const tail = text.slice(match.index! + 1).toLowerCase();
+    const at = match.index!;
+    if (at > 0 && /[\p{L}\p{N}._%+-]/u.test(text[at - 1]!)) continue;
+    const tail = text.slice(at + 1).toLowerCase();
     const agent = ordered.find((m) => tail.startsWith(m.name.toLowerCase()) && !/[\p{L}\p{N}_-]/u.test(tail[m.name.length] ?? ''));
     if (agent && !found.includes(agent)) found.push(agent);
   }

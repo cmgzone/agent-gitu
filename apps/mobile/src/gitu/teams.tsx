@@ -1,5 +1,5 @@
 import { ArrowUp, ChevronLeft, MessageCircle, Plus, RefreshCw, Square, Users } from 'lucide-react-native';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Image, KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { Button, Card, CheckRow, colors, ErrorNotice, Field, IconButton, s, Sheet } from '../ui';
 import type { GituApi } from './client';
@@ -13,22 +13,38 @@ export function Teams({ api, selected, select }: { api: GituApi; selected?: stri
   const [newGroup, setNewGroup] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  // A chat created here is opened immediately, before the 5s roster poll sees it.
+  const [created, setCreated] = useState<TeamConversation[]>([]);
+  useEffect(() => {
+    if (!roster) return;
+    setCreated((list) => {
+      const next = list.filter((chat) => !roster.conversations.some((known) => known.id === chat.id));
+      return next.length === list.length ? list : next;
+    });
+  }, [roster]);
+  const conversations = roster
+    ? [...roster.conversations, ...created.filter((chat) => !roster.conversations.some((known) => known.id === chat.id))]
+    : [];
+  const open = (chat: TeamConversation) => {
+    setCreated((list) => [...list.filter((item) => item.id !== chat.id), chat]);
+    select(chat.id);
+    refresh();
+  };
   const direct = async (agent: Teammate) => {
     if (busy) return;
     setBusy(true);
     setError('');
     try {
-      const existing = roster?.conversations.find((chat) => chat.kind === 'dm' && chat.memberIds.length === 1 && chat.memberIds[0] === agent.id);
+      const existing = conversations.find((chat) => chat.kind === 'dm' && chat.memberIds.length === 1 && chat.memberIds[0] === agent.id);
       const chat = existing || (await api.createTeamChat([agent.id])).conversation;
-      select(chat.id);
-      refresh();
+      open(chat);
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Could not open this conversation.');
     } finally {
       setBusy(false);
     }
   };
-  const conversation = roster?.conversations.find((chat) => chat.id === selected);
+  const conversation = conversations.find((chat) => chat.id === selected);
   return (
     <View style={{ flex: 1 }}>
       {!!(loadError || error) && (
@@ -92,8 +108,8 @@ export function Teams({ api, selected, select }: { api: GituApi; selected?: stri
             </Card>
           ))}
           <Text style={s.heading}>Conversations</Text>
-          {!roster.conversations.length && <Text style={s.muted}>Start a direct chat or assemble a group.</Text>}
-          {roster.conversations.map((chat) => (
+          {!conversations.length && <Text style={s.muted}>Start a direct chat or assemble a group.</Text>}
+          {conversations.map((chat) => (
             <Pressable key={chat.id} accessibilityRole="button" onPress={() => select(chat.id)} style={{ padding: 18, borderRadius: 18, backgroundColor: colors.sky, gap: 6 }}>
               <Text style={s.heading}>{chat.title}</Text>
               <Text style={s.small}>{chat.memberIds.map((id) => roster.agents.find((agent) => agent.id === id)?.name || 'Former teammate').join(' · ')}</Text>
@@ -120,8 +136,7 @@ export function Teams({ api, selected, select }: { api: GituApi; selected?: stri
           close={() => setNewGroup(false)}
           created={(chat) => {
             setNewGroup(false);
-            select(chat.id);
-            refresh();
+            open(chat);
           }}
         />
       )}
@@ -177,8 +192,16 @@ function NewGroup({ api, roster, close, created }: { api: GituApi; roster: TeamR
   const [title, setTitle] = useState('');
   const [members, setMembers] = useState<string[]>([]);
   const [chief, setChief] = useState('');
+  const [chiefPicked, setChiefPicked] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  useEffect(() => {
+    if (chiefPicked) {
+      if (chief && !members.includes(chief)) setChief('');
+      return;
+    }
+    setChief(roster.agents.find((agent) => agent.chiefOfStaff && members.includes(agent.id))?.id || '');
+  }, [members, chief, chiefPicked, roster.agents]);
   const create = async () => {
     if (busy) return;
     setBusy(true);
@@ -202,18 +225,17 @@ function NewGroup({ api, roster, close, created }: { api: GituApi; roster: TeamR
           onPress={() => {
             if (busy) return;
             setMembers((value) => (value.includes(agent.id) ? value.filter((id) => id !== agent.id) : [...value, agent.id]));
-            if (chief === agent.id) setChief('');
           }}
         />
       ))}
       {!!members.length && (
         <View style={{ gap: 6, marginVertical: 16 }}>
           <Text style={s.label}>Chief of staff</Text>
-          <CheckRow label="Everyone responds" checked={!chief} onPress={() => !busy && setChief('')} />
+          <CheckRow label="No chief — default coordinator triages" checked={!chief} onPress={() => { if (busy) return; setChiefPicked(true); setChief(''); }} />
           {roster.agents
             .filter((agent) => members.includes(agent.id))
             .map((agent) => (
-              <CheckRow key={agent.id} label={agent.name} checked={chief === agent.id} onPress={() => !busy && setChief(agent.id)} />
+              <CheckRow key={agent.id} label={agent.name} checked={chief === agent.id} onPress={() => { if (busy) return; setChiefPicked(true); setChief(agent.id); }} />
             ))}
         </View>
       )}

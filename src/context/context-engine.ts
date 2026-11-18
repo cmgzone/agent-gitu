@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, lstatSync, statSync } from 'node:fs';
 import path from 'node:path';
 import type { CodeIndex } from './code-index.js';
+import { isGeneratedIndexDirectory } from './generated-directory.js';
 import { recentChangeScores, recentChangeScoresAsync } from './change-signals.js';
 import type { ProjectGuard } from '../guard/project-guard.js';
 import type { ContextPack, FileRef, FileRole } from '../types.js';
@@ -163,7 +164,7 @@ export class ContextEngine {
           }
           if (st.isSymbolicLink()) continue;
           if (st.isDirectory()) {
-            if (name.startsWith('.') && name !== '.github') continue;
+            if (isGeneratedIndexDirectory(name) || (name.startsWith('.') && name !== '.github')) continue;
             walk(full, depth + 1);
           } else if (st.isFile()) {
             const rel = this.guard.toRelative(full);

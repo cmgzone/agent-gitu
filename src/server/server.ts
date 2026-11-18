@@ -86,7 +86,7 @@ import { appReviewDue, reviewConnectedApps } from '../cowork/proactive-apps.js';
 import { Proactivity, assistantBrief, localClock, inQuietHours, type AssistantFact } from '../cowork/proactivity.js';
 import { mainRepositories } from '../cowork/main-repositories.js';
 import { LspManager } from '../lsp/manager.js';
-import { CodeIndex } from '../context/code-index.js';
+import { CodeIndex, isGeneratedIndexDirectory } from '../context/code-index.js';
 import { SubAgentRunner } from '../agent/subagent.js';
 import { AgentStore } from '../agents/registry.js';
 import type { BrowserBridge, BrowserState } from '../browser/browser.js';
@@ -1519,24 +1519,26 @@ export class GituServer {
       });
     });
     this.server = server;
-    const root = this.projectRoot();
-    if (root) {
+    let startupLock: ProjectLock | undefined;
+    try {
+      startupLock = ProjectGuard.detect(this.config.cwd).lock;
+    } catch {
+      /* not a project yet */
+    }
+    const root = startupLock?.repoRoot;
+    if (startupLock && root) {
       this.cronStore = CronStore.forProject(root);
       this.scheduler = new CronScheduler(this.cronStore, (job) => this.startCronRun(root, job));
       this.scheduler.start();
-      try {
-        const lock = ProjectGuard.detect(root).lock;
-        this.sharedIndex(lock.repoRoot, lock.ignorePaths);
-      } catch {
-        /* not a project yet */
-      }
+      this.sharedIndex(startupLock.repoRoot, startupLock.ignorePaths);
     }
     await this.reconcileCompanyComputers();
     this.startCoworkLifecycle();
     // Historical tasks often share a project. Detect it once during recovery:
     // each detection runs synchronous Git commands and otherwise blocks health
     // checks for minutes on a large registry. Normal requests detect afresh.
-    const startupRoots = new Map<string, string | undefined>();
+    const startupRoots = new Map<string, string | undefined>([[this.config.cwd, root]]);
+    if (root) startupRoots.set(root, root);
     for (const entry of this.loadRegistry()) {
       const existing = this.sessions.get(entry.runId);
       if (existing) {
@@ -7637,7 +7639,7 @@ export class GituServer {
 
     if (method === 'GET' && path === '/api/project') {
       try {
-        const guard = ProjectGuard.detect(this.config.cwd);
+        const guard = await ProjectGuard.detectAsync(this.config.cwd);
         this.sendJson(res, 200, guard.lock);
       } catch (err) {
         this.sendJson(res, 200, { name: '(none)', repoRoot: this.config.cwd, error: (err as Error).message });
@@ -8715,35 +8717,38 @@ export class GituServer {
 
     if (method === 'GET' && path === '/api/files') {
       try {
-        const guard = ProjectGuard.detect(this.config.cwd);
-        const { readdirSync, lstatSync } = await import('node:fs');
+        const guard = await ProjectGuard.detectAsync(this.config.cwd);
+        const { readdir, lstat } = await import('node:fs/promises');
+        const MAX_LISTED_FILES = 5_000;
         const files: string[] = [];
-        const walk = (dir: string, depth: number): void => {
+        const walk = async (dir: string): Promise<void> => {
+          if (files.length >= MAX_LISTED_FILES) return;
           let entries: string[];
           try {
-            entries = readdirSync(dir);
+            entries = await readdir(dir);
           } catch {
             return;
           }
           for (const name of entries.sort()) {
-            if (guard.lock.ignorePaths.includes(name) || name.startsWith('.')) continue;
+            if (files.length >= MAX_LISTED_FILES) return;
+            if (guard.lock.ignorePaths.includes(name) || isGeneratedIndexDirectory(name) || name.startsWith('.')) continue;
             const full = nodePath.join(dir, name);
             let st;
             try {
-              st = lstatSync(full);
+              st = await lstat(full);
             } catch {
               continue;
             }
             const rel = guard.toRelative(full);
             if (st.isSymbolicLink()) continue;
             if (st.isDirectory()) {
-              walk(full, depth + 1);
+              await walk(full);
             } else {
               files.push(rel);
             }
           }
         };
-        walk(guard.lock.repoRoot, 0);
+        await walk(guard.lock.repoRoot);
         this.sendJson(res, 200, { files });
       } catch {
         this.sendJson(res, 200, { files: [] });

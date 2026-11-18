@@ -216,4 +216,30 @@ describe('CodeIndex', () => {
     expect(resolveLocalImport('src/main.ts', './local.js', files)).toBe('src/local.ts');
     expect(resolveLocalImport('src/main.ts', '../../secret', files)).toBeUndefined();
   });
+
+  it('tracks large and generated files without tokenizing bulk content and skips heavy dependency directories', () => {
+    const { repo, db } = tempRepo();
+    mkdirSync(path.join(repo, 'src'), { recursive: true });
+    for (const ignoredDir of ['venv', 'Pods', 'DerivedData']) {
+      mkdirSync(path.join(repo, ignoredDir), { recursive: true });
+      writeFileSync(path.join(repo, ignoredDir, 'ignored.ts'), 'export const ignoredDependencySymbol = 1;');
+    }
+    writeFileSync(path.join(repo, 'src', 'small.ts'), 'export const smallUniqueSymbol = 1;');
+    writeFileSync(path.join(repo, 'src', 'huge.ts'), `export const hugeUniqueSymbol = "${'a'.repeat(550 * 1024)}";`);
+    writeFileSync(path.join(repo, 'src', 'schema.gen.ts'), 'export const generatedUniqueSymbol = 1;');
+
+    const idx = new CodeIndex(repo, db);
+    const stats = idx.refresh(repo, []);
+    expect(stats.added).toBe(3);
+    const list = idx.fileList().map((f) => f.path);
+    expect(list).toContain('src/small.ts');
+    expect(list).toContain('src/huge.ts');
+    expect(list).toContain('src/schema.gen.ts');
+    expect(list.some((p) => p.includes('ignored.ts'))).toBe(false);
+
+    expect(idx.contentMatches(['smalluniquesymbol']).has('src/small.ts')).toBe(true);
+    expect(idx.contentMatches(['hugeuniquesymbol']).has('src/huge.ts')).toBe(false);
+    expect(idx.contentMatches(['generateduniquesymbol']).has('src/schema.gen.ts')).toBe(false);
+    idx.close();
+  });
 });

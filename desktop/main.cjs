@@ -831,7 +831,7 @@ function createMainWindow() {
   // watchdog above retries the load and surfaces an error page if it keeps
   // failing, so the user is never left staring at an unexplained void.
   setTimeout(() => {
-    if (!revealed) {
+    if (!revealed && (!startupWindow || loaded || failureShown)) {
       log('fallback timer (1500ms) revealing window');
       revealWindow();
     }
@@ -875,12 +875,13 @@ async function start() {
     startupStatus('Opening your workspace…');
     engine?.disconnect();
     const appRoot = path.join(__dirname, '..');
+    const browserModPromise = import(pathToFileURL(path.join(appRoot, 'dist', 'browser', 'browser.js')).href);
     const { connectEngine } = require('./engine-client.cjs');
     engineStartup = connectEngine({ appRoot, onStatus: text => startupStatus(text) });
     engine = await engineStartup;
     runtimeStopped = false;
     if (quitting) return;
-    const browserMod = await import(pathToFileURL(path.join(appRoot, 'dist', 'browser', 'browser.js')).href);
+    const browserMod = await browserModPromise;
     engine.attachBrowser(makeBrowserBridge(browserMod.normalizeUrl), {
       onDisconnect: () => {
         log('engine connection lost; agent work belongs to the independent engine');

@@ -16,12 +16,17 @@
  * ProjectGuard boundary and parameter validations.
  */
 import { statSync } from 'node:fs';
-import {
+import type {
   createReadToolDefinition,
   createGrepToolDefinition,
   createLsToolDefinition,
   createFindToolDefinition,
 } from '@earendil-works/pi-coding-agent';
+
+let piCodingAgentPromise: Promise<typeof import('@earendil-works/pi-coding-agent')> | undefined;
+function loadPiCodingAgent(): Promise<typeof import('@earendil-works/pi-coding-agent')> {
+  return (piCodingAgentPromise ??= import('@earendil-works/pi-coding-agent'));
+}
 import type { ToolContext } from '../tools.js';
 import type { ToolResult } from '../../types.js';
 import { errorSignature } from '../../util.js';
@@ -79,7 +84,7 @@ export async function piReadFile(
   const { offset, limit, maxChars } = readFileOptions(params);
 
   try {
-    const readDef = options?._readDef ?? createReadToolDefinition(ctx.guard.lock.repoRoot);
+    const readDef = options?._readDef ?? (await loadPiCodingAgent()).createReadToolDefinition(ctx.guard.lock.repoRoot);
     const effectiveSignal = signal ?? ctx.signal;
     const result = await readDef.execute(
       'pi-read-' + Date.now(),
@@ -170,6 +175,7 @@ export async function piListFiles(
 
   try {
     if (recursive) {
+      const { createFindToolDefinition } = await loadPiCodingAgent();
       const findDef = createFindToolDefinition(ctx.guard.lock.repoRoot, {
         operations: {
           exists: async () => true,
@@ -194,7 +200,7 @@ export async function piListFiles(
       const text = textBlock && 'text' in textBlock ? textBlock.text : '';
       return { ok: true, output: text || '(empty)' };
     } else {
-      const lsDef = options?._lsDef ?? createLsToolDefinition(ctx.guard.lock.repoRoot);
+      const lsDef = options?._lsDef ?? (await loadPiCodingAgent()).createLsToolDefinition(ctx.guard.lock.repoRoot);
       const result = await lsDef.execute(
         'pi-ls-' + Date.now(),
         {
@@ -240,7 +246,7 @@ export async function piSearchFiles(
   const effectiveSignal = signal ?? ctx.signal;
 
   try {
-    const grepDef = options?._grepDef ?? createGrepToolDefinition(ctx.guard.lock.repoRoot);
+    const grepDef = options?._grepDef ?? (await loadPiCodingAgent()).createGrepToolDefinition(ctx.guard.lock.repoRoot);
     const result = await grepDef.execute(
       'pi-grep-' + Date.now(),
       {

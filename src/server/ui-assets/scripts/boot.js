@@ -44,7 +44,6 @@
         if (typeof cwRenderContextMeter === 'function') cwRenderContextMeter();
       }
     }).catch(function () {});
-    api('/api/files').then(function (data) { S.files = data.files || []; }).catch(function () {});
     $('gearBtn').onclick = function () { toggleMobileNav(false); openSettings('overview'); };
     $('gearBtn').innerHTML = icon('gear');
     $('sbCowork').onclick = function () { toggleMobileNav(false); openCowork(); };
@@ -60,7 +59,6 @@
     $('mobileBackdrop').onclick = function () { toggleMobileNav(false); };
     $('toolPanelClose').onclick = closeToolPanel;
     updateProjChip();
-    renderSidebar();
     renderTopbar();
     applyLayout();
     // Always launch into unified Cowork; coding runs behind the scenes.

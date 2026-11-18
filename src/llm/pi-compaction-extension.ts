@@ -18,11 +18,11 @@
  * 2. We preserve file-history metadata (`details: { readFiles, modifiedFiles }` and XML
  *    blocks in the summary text) since extension-provided summaries manage their own details.
  */
-import {
-  compact,
-  type CompactionResult,
-  type SessionBeforeCompactEvent,
-  type SessionBeforeCompactResult,
+import type {
+  compact as CompactFn,
+  CompactionResult,
+  SessionBeforeCompactEvent,
+  SessionBeforeCompactResult,
 } from '@earendil-works/pi-coding-agent';
 import type { NativeRecord } from './native-task.js';
 import type { PiThinkingLevel } from './pi/sdk.js';
@@ -187,7 +187,7 @@ export interface PiCompactionExtensionOptions {
   /** Notification callback when a compaction cycle completes successfully. */
   onCompacted?: (result: { reason: string; tokensBefore: number; summary: string }) => void;
   /** Injected compactor function, e.g. for unit tests or custom models. */
-  compactFn?: typeof compact;
+  compactFn?: typeof CompactFn;
   /** Optional policy hook to cancel compaction early. */
   shouldCancel?: (event: { reason: string; willRetry: boolean }) => boolean;
 }
@@ -250,12 +250,12 @@ export function piCompactionExtension(options: PiCompactionExtensionOptions = {}
           : { apiKey: undefined, headers: undefined };
         const rawResult = await compactor(
           preparation,
-          ext.model as Parameters<typeof compact>[1],
+          ext.model as Parameters<typeof CompactFn>[1],
           auth.apiKey,
           auth.headers,
           customInstructions,
           event['signal'] as AbortSignal,
-          ext.thinkingLevel as Parameters<typeof compact>[6],
+          ext.thinkingLevel as Parameters<typeof CompactFn>[6],
         );
         const enriched = enrichResult(rawResult);
         options.onCompacted?.({
@@ -270,15 +270,18 @@ export function piCompactionExtension(options: PiCompactionExtensionOptions = {}
       // We invoke Pi's lower-level exported `compact()` summarization function (pure function).
       // We NEVER invoke `AgentSession.compact()` recursively.
       if (ext.model && ext.modelRegistry) {
-        const auth = await ext.modelRegistry.getApiKeyAndHeaders(ext.model).catch(() => ({ apiKey: undefined, headers: undefined }));
+        const [{ compact }, auth] = await Promise.all([
+          import('@earendil-works/pi-coding-agent'),
+          ext.modelRegistry.getApiKeyAndHeaders(ext.model).catch(() => ({ apiKey: undefined, headers: undefined })),
+        ]);
         const rawResult = await compact(
           preparation,
-          ext.model as Parameters<typeof compact>[1],
+          ext.model as Parameters<typeof CompactFn>[1],
           auth.apiKey,
           auth.headers,
           customInstructions,
           event['signal'] as AbortSignal,
-          ext.thinkingLevel as Parameters<typeof compact>[6],
+          ext.thinkingLevel as Parameters<typeof CompactFn>[6],
         );
         const enriched = enrichResult(rawResult);
         options.onCompacted?.({

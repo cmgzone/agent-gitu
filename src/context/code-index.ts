@@ -15,6 +15,7 @@ export { isGeneratedIndexDirectory } from './generated-directory.js';
 /** Bump when tokenize() changes shape so existing indexes rebuild once. */
 const TOKENIZER_VERSION = 3;
 const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.py', '.rs', '.go'];
+const MAX_INDEX_CONTENT_BYTES = 512 * 1024;
 
 // Serialize writers to the shared cache without waiting on SQLite locks on
 // the desktop thread. Each refresh itself runs entirely in a worker.
@@ -256,18 +257,20 @@ export class CodeIndex {
 
         const counts = new Map<string, number>();
         let content = '';
-        try {
-          content = readFileSync(path.join(root, f.rel), 'utf8');
-          for (const t of tokenize(content)) {
-            counts.set(t, (counts.get(t) ?? 0) + 1);
+        if (f.role !== 'generated' && f.size <= MAX_INDEX_CONTENT_BYTES) {
+          try {
+            content = readFileSync(path.join(root, f.rel), 'utf8');
+            for (const t of tokenize(content)) {
+              counts.set(t, (counts.get(t) ?? 0) + 1);
+            }
+          } catch {
+            /* unreadable file -> index as empty */
           }
-        } catch {
-          /* unreadable file -> index as empty */
         }
         deleteTerms.run(this.repo, f.rel);
         for (const [term, count] of counts) insertTerm.run(this.repo, term, f.rel, count);
         upsertFile.run(this.repo, f.rel, f.role, f.size, f.mtimeMs);
-        changedSources.set(f.rel, content);
+        if (content) changedSources.set(f.rel, content);
         if (prev) stats.updated += 1;
         else stats.added += 1;
       }
@@ -302,6 +305,13 @@ export class CodeIndex {
       this.db.exec('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)');
       this.db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run('tokenizer_version', String(TOKENIZER_VERSION));
       this.rebuildTerms = false;
+    }
+    if (stats.added + stats.updated + stats.removed > 0) {
+      try {
+        this.db.exec('PRAGMA wal_checkpoint(PASSIVE);');
+      } catch {
+        /* best-effort WAL maintenance */
+      }
     }
     return stats;
   }
@@ -411,7 +421,9 @@ export class CodeIndex {
       while (this.unidentifiedChange && !this.closed) {
         this.unidentifiedChange = false;
         const current = new Map<string, { size: number; mtimeMs: number }>();
+        let detectedChange = false;
         const walk = async (dir: string): Promise<void> => {
+          if (detectedChange || this.closed) return;
           let entries;
           try {
             entries = await readdir(dir, { withFileTypes: true });
@@ -419,6 +431,7 @@ export class CodeIndex {
             return;
           }
           for (const entry of entries) {
+            if (detectedChange || this.closed) return;
             const name = entry.name;
             if (
               this.ignores.has(name) ||
@@ -437,7 +450,14 @@ export class CodeIndex {
               if (role === 'artifact' || role === 'unknown') continue;
               try {
                 const info = await lstat(full);
-                if (info.isFile() && !info.isSymbolicLink()) current.set(relative, { size: info.size, mtimeMs: info.mtimeMs });
+                if (info.isFile() && !info.isSymbolicLink()) {
+                  const previous = this.watchedFiles.get(relative);
+                  if (!previous || previous.size !== info.size || previous.mtimeMs !== info.mtimeMs) {
+                    detectedChange = true;
+                    return;
+                  }
+                  current.set(relative, { size: info.size, mtimeMs: info.mtimeMs });
+                }
               } catch {
                 /* a disappearing source is detected by the map comparison */
               }
@@ -445,14 +465,9 @@ export class CodeIndex {
           }
         };
         await walk(this.root);
-        if (
-          current.size !== this.watchedFiles.size ||
-          [...current].some(([name, info]) => {
-            const previous = this.watchedFiles.get(name);
-            return !previous || previous.size !== info.size || previous.mtimeMs !== info.mtimeMs;
-          })
-        )
+        if (detectedChange || current.size !== this.watchedFiles.size) {
           this.watchVersion++;
+        }
       }
     })().finally(() => {
       this.pendingMetadataCheck = undefined;
@@ -643,7 +658,7 @@ export class CodeIndex {
     this.watching = true;
     if (ignores) this.ignores = new Set(ignores);
     const debounceMs = opts.debounceMs ?? 500;
-    const sweepMs = opts.sweepMs ?? 30_000;
+    const sweepMs = opts.sweepMs ?? 120_000;
 
     try {
       this.watcher = watch(this.root, { recursive: true }, (_event, filename) => {
@@ -701,11 +716,13 @@ export class CodeIndex {
     }
     void this.refreshAsync(this.root, this.ignores).catch(() => undefined);
     this.sweepTimer = setInterval(() => {
+      if (this.pendingRefresh || this.pendingMetadataCheck) return;
       if (this.watcher) {
         this.unidentifiedChange = true;
         void this.ensureFreshAsync(this.root, this.ignores).catch(() => undefined);
       } else void this.refreshAsync(this.root, this.ignores).catch(() => undefined);
     }, sweepMs);
+    this.sweepTimer.unref?.();
   }
 
   private scheduleRefresh(debounceMs: number): void {

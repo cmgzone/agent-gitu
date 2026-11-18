@@ -65,6 +65,17 @@ function accessModeIsFull(access?: ProjectGuardAccessOptions): boolean {
   }
 }
 
+function hasGitMarkerAtOrAbove(startDir: string): boolean {
+  if (process.env['GIT_DIR'] || process.env['GIT_WORK_TREE']) return true;
+  let dir = path.resolve(startDir);
+  for (;;) {
+    if (existsSync(path.join(dir, '.git'))) return true;
+    const parent = path.dirname(dir);
+    if (parent === dir) return false;
+    dir = parent;
+  }
+}
+
 /**
  * Worktrees have two meaningful roots: their writable checkout and the
  * common repository which owns the Git object database. Keeping both in the
@@ -73,7 +84,14 @@ function accessModeIsFull(access?: ProjectGuardAccessOptions): boolean {
  */
 function discoverWorkspaceAuthority(projectRoot: string): WorkspaceAuthority {
   const writableRoot = canonicalPath(projectRoot);
-  const worktreeRoot = canonicalPath(tryGit(writableRoot, ['rev-parse', '--show-toplevel']) || writableRoot);
+  if (!hasGitMarkerAtOrAbove(writableRoot)) {
+    return { repositoryRoot: writableRoot, worktreeRoot: writableRoot, writableRoot };
+  }
+  const top = tryGit(writableRoot, ['rev-parse', '--show-toplevel']);
+  if (!top) {
+    return { repositoryRoot: writableRoot, worktreeRoot: writableRoot, writableRoot };
+  }
+  const worktreeRoot = canonicalPath(top);
   const commonGitDir = tryGit(writableRoot, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
   let repositoryRoot = worktreeRoot;
   if (commonGitDir) {
@@ -237,10 +255,8 @@ export class ProjectGuard {
     const root = canonicalPath(located ? located.root : cwd);
     const workspace = discoverWorkspaceAuthority(root);
 
-    let branch = tryGit(root, ['rev-parse', '--abbrev-ref', 'HEAD']);
-    if (!branch && tryGit(root, ['rev-parse', '--is-inside-work-tree']) === 'true') {
-      branch = undefined;
-    }
+    const hasGit = hasGitMarkerAtOrAbove(root);
+    const branch = (hasGit ? tryGit(root, ['rev-parse', '--abbrev-ref', 'HEAD']) : undefined) || undefined;
 
     const guard = ProjectGuard.fromDetectedRoot(root, located?.marker, workspace, branch);
     if (access?.accessMode) guard.setAccessAuthority(access.accessMode);
@@ -254,19 +270,25 @@ export class ProjectGuard {
     const located = findRepoRoot(cwd);
     if (!located && !accessModeIsFull(access)) throw new ProjectGuardError(`No project marker found at or above ${cwd}. Agent Gitu refuses to act without a locked project scope.`);
     const root = canonicalPath(located ? located.root : cwd);
-    const git = async (args: string[]): Promise<string | undefined> => {
-      try { return (await execGit('git', args, { cwd: root, encoding: 'utf8', timeout: 3000, windowsHide: true })).stdout.trim(); }
-      catch { return undefined; }
-    };
-    const [top, commonDir, branch] = await Promise.all([
-      git(['rev-parse', '--show-toplevel']),
-      git(['rev-parse', '--path-format=absolute', '--git-common-dir']),
-      git(['rev-parse', '--abbrev-ref', 'HEAD']),
-    ]);
-    const worktreeRoot = canonicalPath(top || root);
-    const common = commonDir ? canonicalPath(commonDir) : undefined;
-    const repositoryRoot = common && path.basename(common).toLowerCase() === '.git' ? canonicalPath(path.dirname(common)) : worktreeRoot;
-    const guard = ProjectGuard.fromDetectedRoot(root, located?.marker, { repositoryRoot, worktreeRoot, writableRoot: root }, branch);
+    let workspace: WorkspaceAuthority = { repositoryRoot: root, worktreeRoot: root, writableRoot: root };
+    let branch: string | undefined;
+    if (hasGitMarkerAtOrAbove(root)) {
+      const git = async (args: string[]): Promise<string | undefined> => {
+        try { return (await execGit('git', args, { cwd: root, encoding: 'utf8', timeout: 3000, windowsHide: true })).stdout.trim(); }
+        catch { return undefined; }
+      };
+      const [top, commonDir, rawBranch] = await Promise.all([
+        git(['rev-parse', '--show-toplevel']),
+        git(['rev-parse', '--path-format=absolute', '--git-common-dir']),
+        git(['rev-parse', '--abbrev-ref', 'HEAD']),
+      ]);
+      const worktreeRoot = canonicalPath(top || root);
+      const common = commonDir ? canonicalPath(commonDir) : undefined;
+      const repositoryRoot = common && path.basename(common).toLowerCase() === '.git' ? canonicalPath(path.dirname(common)) : worktreeRoot;
+      workspace = { repositoryRoot, worktreeRoot, writableRoot: root };
+      branch = rawBranch || undefined;
+    }
+    const guard = ProjectGuard.fromDetectedRoot(root, located?.marker, workspace, branch);
     if (access?.accessMode) guard.setAccessAuthority(access.accessMode);
     return guard;
   }

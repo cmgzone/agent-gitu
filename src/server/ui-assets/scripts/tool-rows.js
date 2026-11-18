@@ -212,7 +212,19 @@
     var sess = S.sessions[runId];
     if (!sess || !typed) return;
     var row = findToolRow(sess, typed.path, true);
-    if (!row || !typed.diff || !typed.diff.length) return;
+    if (!row) return;
+    // Stamp the fact even when the frame carries no diff body. The collapsed
+    // stage summary aggregates these stamps into its live file/line badge, so
+    // the user does not have to open the disclosure to see what changed.
+    if (typed.path) row.dataset.filePath = String(typed.path);
+    // A frame without counts must not erase the ones the prose line already
+    // stamped; only a real number replaces them.
+    if (typeof typed.linesAdded === 'number' || typeof typed.linesRemoved === 'number') {
+      row.dataset.linesAdded = String(Math.max(0, Number(typed.linesAdded) || 0));
+      row.dataset.linesRemoved = String(Math.max(0, Number(typed.linesRemoved) || 0));
+    }
+    refreshToolActivityGroup(toolActivityGroupForRow(row));
+    if (!typed.diff || !typed.diff.length) return;
     if (row.querySelector('.diffview')) return;
     var wrap = document.createElement('div');
     wrap.className = 'diffview';

@@ -147,6 +147,21 @@
     return text || (working ? 'Preparing action' : 'Action completed');
   }
 
+  // Fold the file stamps on each row into the collapsed stage summary. A stage
+  // used to expose its changes only after opening the disclosure; the counts
+  // are facts the run already has, so they stay visible while it works.
+  function toolActivityChangeStats(rows) {
+    var seen = {}, files = 0, added = 0, removed = 0;
+    (rows || []).forEach(function (row) {
+      var path = row && row.dataset && row.dataset.filePath;
+      if (!path) return;
+      if (!seen[path]) { seen[path] = 1; files++; }
+      added += Math.max(0, Number(row.dataset.linesAdded) || 0);
+      removed += Math.max(0, Number(row.dataset.linesRemoved) || 0);
+    });
+    return { files: files, added: added, removed: removed };
+  }
+
   function refreshToolActivityGroup(groupEl) {
     if (!groupEl || !groupEl.isConnected) return;
     var rows = Array.prototype.slice.call(groupEl.querySelectorAll('.tool-call'));
@@ -161,6 +176,27 @@
     groupEl.dataset.toolGroupState = status;
     var count = groupEl.querySelector('.tool-group-count');
     if (count) count.textContent = rows.length + (rows.length === 1 ? ' activity' : ' activities');
+    var changes = toolActivityChangeStats(rows);
+    var changeTitle = changes.files
+      ? changes.files + (changes.files === 1 ? ' file edited' : ' files edited') +
+        ' \u00B7 ' + changes.added + ' lines added \u00B7 ' + changes.removed + ' lines removed'
+      : '';
+    var changeStat = groupEl.querySelector('.tool-change-stat');
+    if (changeStat) {
+      changeStat.hidden = !changes.files;
+      if (changes.files) {
+        changeStat.innerHTML =
+          '<span class="files">' + changes.files + (changes.files === 1 ? ' file' : ' files') + '</span>' +
+          (changes.added ? '<span class="added">+' + changes.added + '</span>' : '') +
+          (changes.removed ? '<span class="removed">\u2212' + changes.removed + '</span>' : '');
+        changeStat.title = changeTitle;
+        changeStat.setAttribute('aria-label', changeTitle);
+      } else {
+        changeStat.textContent = '';
+        changeStat.removeAttribute('title');
+        changeStat.removeAttribute('aria-label');
+      }
+    }
     current = current || rows[rows.length - 1];
     var title = groupEl.querySelector('.tool-group-title');
     var hint = groupEl.querySelector('.tool-group-hint');
@@ -172,8 +208,8 @@
     if (dot) dot.className = 'tl-dot ' + (status === 'working' ? 'dot-run' : status === 'attention' ? 'dot-bad' : 'dot-ok');
     var summary = groupEl.querySelector('.tool-group-details > summary');
     if (summary) {
-      summary.title = (title ? title.textContent : '') + (hint && hint.textContent ? '\n' + hint.textContent : '');
-      summary.setAttribute('aria-label', (title ? title.textContent + '. ' : '') + 'Show ' + rows.length + ' activities and outputs');
+      summary.title = (title ? title.textContent : '') + (hint && hint.textContent ? '\n' + hint.textContent : '') + (changeTitle ? '\n' + changeTitle : '');
+      summary.setAttribute('aria-label', (title ? title.textContent + '. ' : '') + (changeTitle ? changeTitle + '. ' : '') + 'Show ' + rows.length + ' activities and outputs');
     }
   }
 
@@ -197,6 +233,7 @@
           '<span class="tool-group-orbit" aria-hidden="true"></span>' +
           '<span class="tool-group-chevron" aria-hidden="true">›</span>' +
           '<span class="tool-group-copy"><span class="tool-group-title" aria-live="polite">Preparing action</span><span class="tool-group-hint"></span></span>' +
+          '<span class="tool-change-stat" hidden></span>' +
           '<span class="tool-group-count">0 activities</span>' +
           '<span class="tool-group-state"></span>' +
         '</summary>' +

@@ -163,6 +163,8 @@
   .tool-group-hint { color: var(--faint); font-size: 11.5px; line-height: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .tool-group-hint:empty { display: none; }
   .tool-group-count { color: var(--faint); font-size: 10.5px; white-space: nowrap; flex: none; }
+  /* The stage summary keeps the change totals visible while collapsed. */
+  .tool-group-details > summary .tool-change-stat .files { color: var(--muted); }
   .tool-group-state { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; color: var(--faint); font: 10px var(--mono); letter-spacing: .35px; white-space: nowrap; }
   .tl-tool-group[data-tool-group-state=working] .tool-group-state { color: var(--run); }
   .tl-tool-group[data-tool-group-state=attention] .tool-group-state { color: var(--err); }

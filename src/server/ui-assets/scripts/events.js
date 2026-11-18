@@ -252,9 +252,18 @@
       var counts = /\s+\+(\d+)(?:\s+-(\d+))?\s+lines.*$/i.exec(text);
       var lineHint = text.slice(6).replace(counts ? counts[0] : /\s+\+\d+\s+lines.*$/i, '').trim();
       var toolCard = findToolRow(sess, lineHint, true);
+      var addedTarget = counts ? parseInt(counts[1], 10) || 0 : 0;
+      var removedTarget = counts && counts[2] ? parseInt(counts[2], 10) || 0 : 0;
+      // The typed file_changed frame normally carries these counts, but legacy
+      // and replayed sessions only have this prose line. Stamping the row keeps
+      // the collapsed stage badge live on both paths.
+      if (toolCard) {
+        if (lineHint) toolCard.dataset.filePath = lineHint;
+        toolCard.dataset.linesAdded = String(addedTarget);
+        toolCard.dataset.linesRemoved = String(removedTarget);
+        refreshToolActivityGroup(toolActivityGroupForRow(toolCard));
+      }
       if (toolCard && !toolCard.querySelector('.lines')) {
-        var addedTarget = counts ? parseInt(counts[1], 10) || 0 : 0;
-        var removedTarget = counts && counts[2] ? parseInt(counts[2], 10) || 0 : 0;
         var badge = document.createElement('span');
         badge.className = 'lines';
         var plus = document.createElement('span');

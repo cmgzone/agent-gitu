@@ -199,8 +199,37 @@ function uiHarness() {
   context.findToolRow = () => toolRow;
   context.$ = () => stream;
   context.appendLive = (_stream: unknown, el: FakeNode) => stream.appendChild(el);
+  // The stage refresh lives in the activity bundle; this harness only loads the
+  // file-change renderer, so give it the two collaborators it calls.
+  context.refreshToolActivityGroup = () => {};
+  context.toolActivityGroupForRow = () => null;
   return { context, toolRow, stream };
 }
+
+describe('the collapsed stage reports file changes live', () => {
+  const STATS_JS = UI_HTML.slice(
+    UI_HTML.indexOf('  function toolActivityChangeStats('),
+    UI_HTML.indexOf('  function refreshToolActivityGroup('),
+  );
+
+  it('counts distinct files once and sums the additions and removals', () => {
+    const context = createContext({});
+    new Script(STATS_JS + '\nthis.__stageStats = toolActivityChangeStats;').runInContext(context);
+    const rows = [
+      { dataset: { filePath: 'src/a.ts', linesAdded: '4', linesRemoved: '1' } },
+      { dataset: { filePath: 'src/b.ts', linesAdded: '2', linesRemoved: '0' } },
+      // The same file edited twice is one file, but both changes count.
+      { dataset: { filePath: 'src/a.ts', linesAdded: '3', linesRemoved: '2' } },
+      { dataset: {} },
+    ];
+    expect(context.__stageStats(rows)).toEqual({ files: 2, added: 9, removed: 3 });
+  });
+
+  it('renders the badge inside the collapsed summary, not only the open body', () => {
+    expect(UI_HTML).toContain('<span class="tool-change-stat" hidden></span>');
+    expect(STATS_JS.length).toBeGreaterThan(0);
+  });
+});
 
 /**
  * The UIs are static strings inside template literals, so TypeScript only proves
@@ -212,6 +241,7 @@ function uiHarness() {
 describe('the browser bundles still parse', () => {
   const JS_REGIONS: [string, string, string, string][] = [
     ['main: the change counts handler', UI_HTML, "if (text.indexOf('lines ') === 0) {", '// Token telemetry arrives once per run'],
+    ['main: the collapsed stage change stats', UI_HTML, 'function toolActivityChangeStats(', 'function sealToolActivityGroup('],
     ['cowork: the diff-aware code block', COWORK_JS, 'function cwCodeHtml(code) {', 'function cwVideoEmbed('],
   ];
 

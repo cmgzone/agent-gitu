@@ -120,6 +120,18 @@ describe('Live call lifecycle', () => {
     expect(u.api.mock.calls.map(call => call[0])).toEqual(['/api/voice/config', '/api/voice/prepare', '/api/voice/worker']);
   });
 
+  it('does not show an idle caption prompt in the visualizer', async () => {
+    const u = voiceUi();
+    u.elements.voiceStageCaption = { textContent: 'stale', hidden: false };
+    await u.context.startGituVoice({ kind: 'cowork', conversationId: 'atlas' });
+    expect(u.elements.voicePhase.textContent).toBe('Listening');
+    expect(u.elements.voiceStageCaption.textContent).toBe('');
+    expect(u.elements.voiceStageCaption.hidden).toBe(true);
+    u.handlers.ParticipantAttributesChanged!({ 'lk.agent.state': 'thinking' }, { isAgent: true, attributes: { 'lk.agent.state': 'thinking' } });
+    expect(u.elements.voiceStageCaption.textContent).toBe('Thinking…');
+    expect(u.elements.voiceStageCaption.hidden).toBe(false);
+  });
+
   it('opens the live visualizer stage showing the agent talking, supports minimize/expand, and syncs Main Home runId', async () => {
     const u = voiceUi();
     u.context.S = { active: 'home', cw: { active: 'atlas' } };
@@ -135,7 +147,13 @@ describe('Live call lifecycle', () => {
     expect(u.elements.gituVoiceBar.hidden).toBe(true);
     expect(u.elements.gituVoiceStage.innerHTML).toContain('voice-stage-avatar');
     expect(u.elements.gituVoiceStage.innerHTML).toContain('voice-stage-aura');
-    expect(u.elements.gituVoiceStage.innerHTML).toContain('voice-stage-wave');
+    expect(u.elements.gituVoiceStage.innerHTML).toContain('voiceStageCaption');
+    // One visual status language per layout: the aura carries the stage, the
+    // phase text carries the compact bar. No waveforms, pills, or title.
+    expect(u.elements.gituVoiceStage.innerHTML).not.toContain('voice-stage-wave');
+    expect(u.elements.gituVoiceStage.innerHTML).not.toContain('voice-stage-pill');
+    expect(u.elements.gituVoiceStage.innerHTML).not.toContain('voice-stage-title');
+    expect(u.elements.gituVoiceBar.innerHTML).not.toContain('voice-bars');
 
     // Minimize collapses back to bar; Open Stage expands visualizer again
     u.context.voiceState.stageMinimized = true;

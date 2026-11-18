@@ -219,11 +219,6 @@ export const VOICE_CSS = String.raw`
   .voice-bar button { width:32px; height:32px; display:grid; place-items:center; border:0; background:transparent; color:var(--muted); border-radius:50%; cursor:pointer; }
   .voice-bar button:hover { background:var(--hover); }
   .voice-bar .voice-end,.voice-stage .voice-stage-end { color:var(--bad,#c84646); }
-  .voice-bars { display:flex; gap:3px; align-items:center; height:23px; color:var(--accent); }
-  .voice-bars i { width:3px; height:8px; background:currentColor; border-radius:3px; transition:height .12s ease; }
-  .voice-bar[data-phase="speaking"] .voice-bars i { animation:voice-wave .7s ease-in-out infinite alternate; }
-  .voice-bars i:nth-child(2) { animation-delay:-.2s; } .voice-bars i:nth-child(3) { animation-delay:-.4s; }
-  @keyframes voice-wave { to { height:22px; } }
   .voice-stage {
     position:fixed; inset:0; z-index:160; display:flex; align-items:center; justify-content:center; padding:24px;
     background:radial-gradient(circle at 50% 35%, color-mix(in srgb,var(--accent) 18%,transparent), transparent 62%), color-mix(in srgb,var(--bg) 82%,transparent);
@@ -234,19 +229,7 @@ export const VOICE_CSS = String.raw`
     background:color-mix(in srgb,var(--card) 90%,transparent); box-shadow:0 24px 64px -24px rgba(0,0,0,.45);
     padding:24px 24px 22px; display:flex; flex-direction:column; align-items:center; text-align:center; gap:16px;
   }
-  .voice-stage-top { width:100%; display:flex; align-items:center; justify-content:space-between; gap:10px; }
-  .voice-stage-title { font-size:15px; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .voice-stage-pill {
-    display:inline-flex; align-items:center; gap:6px; padding:4px 11px; border-radius:999px;
-    font-size:11.5px; font-weight:600; background:var(--card2); border:1px solid var(--border); color:var(--muted);
-  }
-  .voice-stage-pill::before { content:''; width:7px; height:7px; border-radius:50%; background:var(--muted); }
-  .voice-stage[data-phase="listening"] .voice-stage-pill { color:#0f766e; background:rgba(20,184,166,.12); border-color:rgba(20,184,166,.35); }
-  .voice-stage[data-phase="listening"] .voice-stage-pill::before { background:#14b8a6; }
-  .voice-stage[data-phase="thinking"] .voice-stage-pill { color:var(--accent); background:var(--accent-soft); border-color:var(--border-strong); }
-  .voice-stage[data-phase="thinking"] .voice-stage-pill::before { background:var(--accent); animation:voice-stage-pulse 1s ease-in-out infinite; }
-  .voice-stage[data-phase="speaking"] .voice-stage-pill { color:var(--accent); background:var(--accent-soft); border-color:var(--accent); }
-  .voice-stage[data-phase="speaking"] .voice-stage-pill::before { background:var(--accent); animation:voice-stage-pulse .65s ease-in-out infinite; }
+  .voice-stage-top { width:100%; display:flex; align-items:center; justify-content:flex-end; gap:10px; }
   .voice-stage-orb-wrap {
     position:relative; width:168px; height:168px; display:grid; place-items:center; margin:6px 0 2px;
     --voice-amp:0;
@@ -270,18 +253,6 @@ export const VOICE_CSS = String.raw`
     transform:scale(calc(1 + var(--voice-amp) * 0.08)); transition:transform .08s ease-out;
   }
   .voice-stage-plush { width:38px; height:38px; }
-  .voice-stage-wave {
-    display:flex; align-items:center; justify-content:center; gap:5px; height:36px; width:100%; max-width:280px;
-  }
-  .voice-stage-wave i {
-    display:block; width:4px; height:8px; border-radius:999px; background:var(--accent); opacity:.42;
-    transition:height .09s ease-out, opacity .15s ease;
-  }
-  .voice-stage[data-phase="speaking"] .voice-stage-wave i,
-  .voice-stage[data-phase="listening"] .voice-stage-wave i { opacity:.92; }
-  .voice-stage[data-phase="speaking"] .voice-stage-wave i { animation:voice-stage-bar .72s ease-in-out infinite alternate; }
-  .voice-stage[data-phase="listening"] .voice-stage-wave i { height:12px; opacity:.62; }
-  .voice-stage[data-phase="thinking"] .voice-stage-wave i { height:6px; opacity:.35; }
   .voice-stage-caption {
     width:100%; min-height:44px; max-height:110px; overflow-y:auto; padding:10px 14px; border-radius:14px;
     background:var(--bg); border:1px solid var(--border); font-size:13px; line-height:1.5; color:var(--text);
@@ -294,9 +265,7 @@ export const VOICE_CSS = String.raw`
   .voice-stage-btn:hover { background:var(--hover); }
   .voice-stage-btn[aria-pressed="true"] { background:var(--accent-soft); color:var(--accent); border-color:var(--border-strong); }
   .voice-stage-end { background:rgba(200,70,70,.12); border-color:rgba(200,70,70,.35); }
-  @keyframes voice-stage-pulse { 0%,100% { opacity:1; transform:scale(1); } 50% { opacity:.45; transform:scale(.82); } }
   @keyframes voice-talk-bob { 0% { transform:translateY(0) scale(1); } 100% { transform:translateY(-3px) scale(1.03); } }
-  @keyframes voice-stage-bar { 0% { height:8px; } 100% { height:30px; } }
   .voice-setup { width:min(440px,calc(100vw - 32px)); max-height:85dvh; overflow:auto; border:1px solid var(--border); border-radius:20px; padding:24px; color:var(--text); background:var(--card); }
   .voice-setup::backdrop { background:#0004; backdrop-filter:blur(4px); }
   .voice-setup h2 { font-size:20px; margin:8px 0; } .voice-setup p { color:var(--muted); font-size:13px; line-height:1.6; }
@@ -312,7 +281,7 @@ export const VOICE_CSS = String.raw`
     .voice-stage-card { padding:20px 16px; border-radius:22px; }
     .voice-stage-aura { inset:-14px; width:calc(100% + 28px); height:calc(100% + 28px); }
   }
-  @media (prefers-reduced-motion:reduce) { .voice-bars i,.voice-stage * { animation:none!important; transition:none!important; } .voice-phone,.voice-bar button { transition:none; } }
+  @media (prefers-reduced-motion:reduce) { .voice-stage * { animation:none!important; transition:none!important; } .voice-phone,.voice-bar button { transition:none; } }
 `;
 
 export const VOICE_JS = String.raw`
@@ -366,7 +335,7 @@ export const VOICE_JS = String.raw`
     var data=typeof Uint8Array==='function'?new Uint8Array(32):null;
     function tick() {
       if(!voiceState.callId&&!voiceState.starting){voiceState.meterRaf=0;return;}
-      var wrap=$('voiceStageOrbWrap'),wave=$('voiceStageWave');
+      var wrap=$('voiceStageOrbWrap');
       var an=voiceState.phase==='speaking'?(voiceState.agentAnalyser||voiceState.micAnalyser):(voiceState.micAnalyser||voiceState.agentAnalyser);
       var level=0;
       if(an&&data){
@@ -378,13 +347,6 @@ export const VOICE_JS = String.raw`
       }
       if(wrap&&wrap.style&&typeof wrap.style.setProperty==='function')wrap.style.setProperty('--voice-amp',level.toFixed(3));
       voiceAuraVolume(level);
-      if(wave&&wave.children&&wave.children.length&&an&&data){
-        for(var b=0;b<wave.children.length;b++){
-          var v=(data[b%16]||0)/255;
-          var h=Math.max(6,Math.round(6+v*28));
-          wave.children[b].style.height=h+'px';
-        }
-      }
       voiceState.meterRaf=requestAnimationFrame(tick);
     }
     voiceState.meterRaf=requestAnimationFrame(tick);
@@ -564,7 +526,9 @@ export const VOICE_JS = String.raw`
   function voiceSetCaption(text) {
     voiceState.caption=String(text||'');
     if($('voiceCaption'))$('voiceCaption').textContent=voiceState.caption;
-    if($('voiceStageCaption'))$('voiceStageCaption').textContent=voiceState.caption||(voiceState.phase==='thinking'?'Thinking…':voiceState.phase==='speaking'?'Speaking…':'Speak naturally—I’m listening.');
+    var stageText=voiceState.caption||(voiceState.phase==='thinking'?'Thinking…':voiceState.phase==='speaking'?'Speaking…':'');
+    var stageCaption=$('voiceStageCaption');
+    if(stageCaption){stageCaption.textContent=stageText;stageCaption.hidden=!stageText;}
   }
   function voiceSyncMuteUi() {
     var label=voiceState.muted?'Unmute microphone':'Mute microphone';
@@ -578,7 +542,7 @@ export const VOICE_JS = String.raw`
     var bar=$('gituVoiceBar');
     if(!bar){
       bar=document.createElement('div');bar.className='voice-bar';bar.id='gituVoiceBar';bar.setAttribute('aria-label','Live agent call');
-      bar.innerHTML='<span class="voice-bars" aria-hidden="true"><i></i><i></i><i></i></span><div class="voice-bar-info"><div class="voice-bar-name" id="voiceName"></div><div class="voice-bar-state" id="voicePhase" role="status" aria-live="polite"></div><div class="voice-caption" id="voiceCaption"></div></div><button type="button" id="voiceOpenStage" title="Open voice visualizer" aria-label="Open voice visualizer">'+VOICE_EXPAND+'</button><button type="button" id="voiceEnableAudio" title="Enable audio" aria-label="Enable audio" hidden>'+VOICE_PHONE+'</button><button type="button" id="voiceMute" title="Mute microphone" aria-label="Mute microphone" aria-pressed="false">'+VOICE_MIC+'</button><button type="button" class="voice-end" id="voiceEnd" title="End call — work continues" aria-label="End call">'+VOICE_END+'</button>';
+      bar.innerHTML='<div class="voice-bar-info"><div class="voice-bar-name" id="voiceName"></div><div class="voice-bar-state" id="voicePhase" role="status" aria-live="polite"></div><div class="voice-caption" id="voiceCaption"></div></div><button type="button" id="voiceOpenStage" title="Open voice visualizer" aria-label="Open voice visualizer">'+VOICE_EXPAND+'</button><button type="button" id="voiceEnableAudio" title="Enable audio" aria-label="Enable audio" hidden>'+VOICE_PHONE+'</button><button type="button" id="voiceMute" title="Mute microphone" aria-label="Mute microphone" aria-pressed="false">'+VOICE_MIC+'</button><button type="button" class="voice-end" id="voiceEnd" title="End call — work continues" aria-label="End call">'+VOICE_END+'</button>';
       document.body.appendChild(bar);
       var endCall=function(){voiceEnd();};
       var enableAudio=function(){if(voiceState.room)voiceState.room.startAudio().then(function(){if($('voiceEnableAudio'))$('voiceEnableAudio').hidden=true;if($('voiceStageAudio'))$('voiceStageAudio').hidden=true;}).catch(function(){toast('Audio is blocked. Allow sound for this page and try again.',true);});};
@@ -591,8 +555,7 @@ export const VOICE_JS = String.raw`
     var stage=$('gituVoiceStage');
     if(!stage){
       stage=document.createElement('section');stage.className='voice-stage';stage.id='gituVoiceStage';stage.setAttribute('role','dialog');stage.setAttribute('aria-label','Live voice visualizer');
-      var waveBars='';for(var wi=0;wi<14;wi++)waveBars+='<i></i>';
-      stage.innerHTML='<div class="voice-stage-card"><div class="voice-stage-top"><span class="voice-stage-title" id="voiceStageName"></span><span class="voice-stage-pill" id="voiceStagePhase"></span><button type="button" id="voiceStageMin" class="voice-stage-btn" title="Minimize to bar" aria-label="Minimize visualizer">'+VOICE_MINIMIZE+'</button></div><div class="voice-stage-orb-wrap" id="voiceStageOrbWrap"><canvas class="voice-stage-aura" id="voiceStageAura" aria-hidden="true"></canvas><div class="voice-stage-avatar" id="voiceStageAvatar"></div></div><div class="voice-stage-wave" id="voiceStageWave" aria-hidden="true">'+waveBars+'</div><div class="voice-stage-caption" id="voiceStageCaption" aria-live="polite"></div><div class="voice-stage-actions"><button type="button" id="voiceStageAudio" class="voice-stage-btn" title="Enable audio" aria-label="Enable audio" hidden>'+VOICE_PHONE+'</button><button type="button" id="voiceStageMute" class="voice-stage-btn" title="Mute microphone" aria-label="Mute microphone" aria-pressed="false">'+VOICE_MIC+'</button><button type="button" id="voiceStageEnd" class="voice-stage-btn voice-stage-end" title="End call — work continues" aria-label="End call">'+VOICE_END+'</button></div></div>';
+      stage.innerHTML='<div class="voice-stage-card"><div class="voice-stage-top"><button type="button" id="voiceStageMin" class="voice-stage-btn" title="Minimize to bar" aria-label="Minimize visualizer">'+VOICE_MINIMIZE+'</button></div><div class="voice-stage-orb-wrap" id="voiceStageOrbWrap"><canvas class="voice-stage-aura" id="voiceStageAura" aria-hidden="true"></canvas><div class="voice-stage-avatar" id="voiceStageAvatar"></div></div><div class="voice-stage-caption" id="voiceStageCaption" aria-live="polite"></div><div class="voice-stage-actions"><button type="button" id="voiceStageAudio" class="voice-stage-btn" title="Enable audio" aria-label="Enable audio" hidden>'+VOICE_PHONE+'</button><button type="button" id="voiceStageMute" class="voice-stage-btn" title="Mute microphone" aria-label="Mute microphone" aria-pressed="false">'+VOICE_MIC+'</button><button type="button" id="voiceStageEnd" class="voice-stage-btn voice-stage-end" title="End call — work continues" aria-label="End call">'+VOICE_END+'</button></div></div>';
       document.body.appendChild(stage);
       voiceAuraStart();
       if($('voiceStageMin'))$('voiceStageMin').onclick=function(){voiceState.stageMinimized=true;voiceSyncStageVisibility();};
@@ -601,7 +564,6 @@ export const VOICE_JS = String.raw`
       if($('voiceStageMute')&&$('voiceMute'))$('voiceStageMute').onclick=$('voiceMute').onclick;
     }
     $('voiceName').textContent=name;$('voiceMute').hidden=false;
-    if($('voiceStageName'))$('voiceStageName').textContent=name;
     if($('voiceStageAvatar'))$('voiceStageAvatar').innerHTML=voiceAvatarMarkup(voiceState.target);
     voiceSetPhase(phase);
     voiceSetCaption(voiceState.caption);
@@ -615,7 +577,6 @@ export const VOICE_JS = String.raw`
     if(bar){if(bar.dataset)bar.dataset.phase=phase;$('voicePhase').textContent=label;$('voicePhase').title=label;}
     var stage=$('gituVoiceStage');
     if(stage&&stage.dataset)stage.dataset.phase=phase;
-    if($('voiceStagePhase'))$('voiceStagePhase').textContent=label;
     if(!voiceState.caption&&$('voiceStageCaption'))voiceSetCaption('');
     voiceSyncStageVisibility();
   }

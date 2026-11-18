@@ -11,7 +11,7 @@ function source(name: string) {
 }
 
 it('does not claim private execution left source unchanged when host file arrays are unavailable',()=>{
-  const context=createContext({});new Script(source('reportStatusLine')+';result=reportStatusLine("complete",[],0,0,0,true);').runInContext(context);
+  const context=createContext({});new Script(source('reportStatusLine')+';result=reportStatusLine([],0,0,0,true);').runInContext(context);
   expect(context.result).toContain('see execution report');expect(context.result).not.toContain('No source code was modified');
 });
 
@@ -36,6 +36,7 @@ function proseRenderer() {
     'responseEscape', 'responseLink', 'responseVideoEmbed', 'responseInline', 'responseEmbeds', 'responseListItem', 'responseFence',
     'responseBlockStart', 'renderResponseText', 'stripJsonLeak', 'finalizeNarration',
     'parseOutcome', 'readableSummary', 'reportStatusLine', 'reportMessageText', 'reportReplyHtml', 'reportSideCard', 'reportChangedFilesHtml', 'reportRepeatsReply', 'appendSummary',
+    'browserHighlight', 'qualityMetricsHtml', 'telemetryGridHtml', 'checkRow', 'verificationSection',
   ].map(source).join('\n') + '\nvar esc = responseEscape;\n' + COWORK_JS).runInContext(context);
   return { context, emitted };
 }
@@ -60,7 +61,7 @@ describe('UI — narration structuring & technical disclosures', () => {
   it('keeps new limitations, findings and failure outcomes visible', () => {
     const { context, emitted } = proseRenderer();
     context.S.sessions.run.lastPublicReply = 'Two.';
-    for (const extra of [{ remainingRisks: ['The deployment is unverified.'] }, { findings: [{ claim: 'A separate bug was found.' }] }, { status: 'blocked' }, { status: 'blocked', responseKind: 'discussion', remainingRisks: ['A new limitation remains.'] }]) {
+    for (const extra of [{ remainingRisks: ['The deployment is unverified.'] }, { findings: [{ claim: 'A separate bug was found.', status: 'confirmed' }] }, { status: 'blocked' }, { status: 'blocked', responseKind: 'discussion', remainingRisks: ['A new limitation remains.'] }]) {
       context.appendSummary('run', { report: { status: 'complete', summary: 'Two.', ...extra }, status: 'complete' });
     }
     expect(emitted).toHaveLength(4);
@@ -213,9 +214,13 @@ describe('UI — narration structuring & technical disclosures', () => {
 
   it('distinguishes reported updates from verified changed-file paths', () => {
     const { context, emitted } = proseRenderer();
-    expect(context.reportStatusLine('complete', [], 0, 0, 13)).toContain('13 updates reported');
-    expect(context.reportStatusLine('complete', [], 0, 0, 13)).not.toContain('files changed');
-    expect(context.reportStatusLine('blocked', [{ passed: false }, { passed: true }], 1, 1, 0)).toContain('1 passed · 1 failed verification attempt');
+    expect(context.reportStatusLine([], 0, 0, 13, false)).toContain('13 updates reported');
+    expect(context.reportStatusLine([], 0, 0, 13, false)).not.toContain('files changed');
+    expect(context.reportStatusLine([{ passed: false }, { passed: true }], 1, 1, 0, false)).toContain('1 passed · 1 failed verification attempt');
+    // The header owns the status and the Files & details button owns the file
+    // count; the strip repeats neither.
+    expect(context.reportStatusLine([], 0, 3, 0, false)).toBe('');
+    expect(context.reportStatusLine([], 0, 3, 0, false)).not.toContain('Completed');
     const changes = ['First update', 'Second update', 'Third update', 'Fourth update', 'Fifth update'];
     context.appendSummary('run', {
       report: { summary: 'Updated the project.', status: 'complete', changes, remainingRisks: [], followUps: [] },
@@ -235,11 +240,59 @@ describe('UI — narration structuring & technical disclosures', () => {
     expect(UI_HTML).toContain("section('Findings', findings)");
   });
 
-  it('hides all technical evidence behind one collapsed disclosure', () => {
+  it('does not surface unverified findings as report facts', () => {
+    const { context } = proseRenderer();
+    const html = context.reportReplyHtml({
+      status: 'complete', summary: 'Done.', changes: [], verification: [],
+      findings: [
+        { claim: 'A confirmed defect.', status: 'confirmed' },
+        { claim: 'An unverified observation.', status: 'unverified' },
+        { claim: 'A false alarm.', status: 'false-positive' },
+      ],
+    }, null, '');
+    expect(html).toContain('A confirmed defect.');
+    expect(html).not.toContain('An unverified observation.');
+    expect(html).not.toContain('A false alarm.');
+  });
+
+  it('keeps technical evidence behind one disclosure and gates instrumentation', () => {
     expect(UI_HTML).toContain('<b>Technical evidence</b>');
     expect(UI_HTML).toContain('telemetryGridHtml(');
     expect(UI_HTML).toContain('qualityMetricsHtml(');
     expect(UI_HTML).toContain('tokens / verified criterion');
+
+    const { context } = proseRenderer();
+    const report = {
+      status: 'complete', summary: 'Done.', filesChanged: ['src/a.ts'], changes: [],
+      browserActivity: { total: 3, successful: 3, screenshots: 2 },
+      qualityMetrics: { score: 91, criteria: { total: 3, satisfied: 3 }, verification: { authoritative: 2, passing: 2 }, tokensPerVerifiedCriterion: 1200, wastedCallRate: 0.1 },
+      tokenTelemetry: { calls: 4, toolCalls: 9, compactions: 0, planningCalls: 1, executionCalls: 3, screenshots: 2, wastedCalls: 0, inputTokens: 100, cachedTokens: 0, outputTokens: 50 },
+    };
+    const normal = context.reportReplyHtml(report, null, '');
+    expect(normal).not.toContain('Outcome quality');
+    expect(normal).not.toContain('browser actions succeeded');
+    expect(normal).not.toContain('Token telemetry');
+    context.devMode = () => true;
+    const dev = context.reportReplyHtml(report, null, '');
+    expect(dev).toContain('Outcome quality');
+    expect(dev).toContain('browser actions succeeded');
+    expect(dev).toContain('Token telemetry');
+  });
+
+  it('keeps verification taxonomy and historical attempts in developer mode', () => {
+    const { context } = proseRenderer();
+    const checks = [
+      { passed: true, kind: 'shell', label: 'Project test suite', details: '', authority: 'latest' },
+      { passed: false, kind: 'evidence', label: 'Old failing check', details: '', authority: 'historical' },
+    ];
+    const normal = context.verificationSection(checks);
+    expect(normal).toContain('Project test suite');
+    expect(normal).not.toContain('verify-kind');
+    expect(normal).not.toContain('Historical evidence');
+    context.devMode = () => true;
+    const dev = context.verificationSection(checks);
+    expect(dev).toContain('verify-kind');
+    expect(dev).toContain('Historical evidence');
   });
 
   it('rephrases machine counters in the progress header', () => {

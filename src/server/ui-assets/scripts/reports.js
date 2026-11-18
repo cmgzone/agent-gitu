@@ -33,23 +33,21 @@
     }
     return out;
   }
-  // One status strip answering: did it work, was it verified, what moved.
-  function reportStatusLine(status, checks, passed, fileCount, updateCount, executionReportOnly) {
+  // The header owns the run status and the Files & details button owns the
+  // changed-file count. This strip only answers whether verification passed and
+  // whether anything in the source actually changed.
+  function reportStatusLine(checks, passed, fileCount, updateCount, executionReportOnly) {
     var bits = [];
-    bits.push(status === 'complete' ? '<span>🟢 <b>Completed</b></span>'
-      : status === 'blocked' ? '<span>⚠️ <b>Blocked</b></span>'
-      : status === 'paused' ? '<span>⏸️ <b>Paused</b></span>'
-      : status === 'aborted' ? '<span>⏹️ <b>Stopped</b></span>' : '<span>❌ <b>Failed</b></span>');
     if (checks.length) {
       bits.push(passed === checks.length
         ? '<span>✅ All ' + checks.length + ' verification checks passed</span>'
         : '<span>' + (passed ? '⚠️' : '❌') + ' ' + passed + ' passed · ' + (checks.length - passed) + ' failed verification attempt' + (checks.length - passed === 1 ? '' : 's') + '</span>');
     }
-    bits.push(executionReportOnly ? '<span>File changes and checks: see execution report</span>' : fileCount
-      ? '<span>🛠️ ' + fileCount + ' file' + (fileCount === 1 ? '' : 's') + ' changed</span>'
-      : updateCount ? '<span>🛠️ ' + updateCount + ' update' + (updateCount === 1 ? '' : 's') + ' reported</span>'
+    if (executionReportOnly) bits.push('<span>File changes and checks: see execution report</span>');
+    else if (!fileCount) bits.push(updateCount
+      ? '<span>🛠️ ' + updateCount + ' update' + (updateCount === 1 ? '' : 's') + ' reported</span>'
       : '<span>🔒 No source code was modified</span>');
-    return '<div class="r-status">' + bits.join('') + '</div>';
+    return bits.length ? '<div class="r-status">' + bits.join('') + '</div>' : '';
   }
   function telemetryGridHtml(t) {
     var rows = [['Calls', t.calls], ['Tool calls', t.toolCalls], ['Compactions', t.compactions],
@@ -105,9 +103,11 @@
     var details = check.details
       ? '<details><summary>Show command and output</summary><pre>' + esc(check.details) + '</pre></details>'
       : '';
+    // The kind is a machine label ("shell", "evidence"); the reader needs the
+    // check and its result. Keep the raw taxonomy for developer mode only.
+    var kind = devMode() ? '<span class="verify-kind">' + esc(check.kind) + '</span>' : '';
     return '<div class="verify-row"><span class="chip ' + (check.passed ? 'ok' : 'bad') + '">' + (check.passed ? 'PASS' : 'FAIL') + '</span>' +
-      '<span class="verify-kind">' + esc(check.kind) + '</span><span class="verify-label">' + esc(check.label) + '</span>' +
-      (check.authority === 'historical' ? '<span class="verify-kind">historical</span>' : '') + details + '</div>';
+      kind + '<span class="verify-label">' + esc(check.label) + '</span>' + details + '</div>';
   }
 
   function verificationSection(checks) {
@@ -115,12 +115,13 @@
     var latest = checks.filter(function (check) { return check.authority !== 'historical'; });
     var historical = checks.filter(function (check) { return check.authority === 'historical'; });
     var shown = latest.slice(0, 6);
-    var html = '<div class="sec"><h4>Latest / authoritative verification</h4><div class="verify-list">' +
+    var html = '<div class="sec"><h4>' + (devMode() ? 'Latest / authoritative verification' : 'Verification') + '</h4><div class="verify-list">' +
       (shown.length ? shown.map(checkRow).join('') : '<div class="empty">No verification ran against the final workspace state.</div>') + '</div>';
     if (latest.length > shown.length) {
       html += '<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;color:var(--muted)">Show ' + (latest.length - shown.length) + ' more current checks</summary><div class="verify-list" style="margin-top:7px">' + latest.slice(shown.length).map(checkRow).join('') + '</div></details>';
     }
-    if (historical.length) {
+    // Historical attempts are audit data, not the outcome the report is for.
+    if (historical.length && devMode()) {
       html += '<details style="margin-top:10px"><summary style="cursor:pointer;font-size:12px;color:var(--muted)">Historical evidence (' + historical.length + ')</summary><div class="verify-list" style="margin-top:7px">' + historical.map(checkRow).join('') + '</div></details>';
     }
     return html + '</div>';
@@ -138,7 +139,13 @@
   function reportMessageText(report) {
     var parsed = parseOutcome(report.summary);
     var parts = [parsed.lede || readableSummary(report.summary)];
-    var findings = (report.findings || []).map(function (item) { return item.claim; }).filter(Boolean);
+    // The finding model itself says a claim is not user-facing until an
+    // independent verifier confirms it; unverified/false-positive claims are
+    // observations, not results.
+    var findings = (report.findings || [])
+      .filter(function (item) { return item && item.status === 'confirmed'; })
+      .map(function (item) { return item.claim; })
+      .filter(Boolean);
     var changes = (report.changes || []).length ? report.changes : parsed.changes.map(function (item) { return (CHANGE_VERBS[item.action] || 'Changed') + ' ' + item.path; });
     function section(title, items) {
       if (items && items.length) parts.push('### ' + title + '\n' + items.map(function (item) { return '- ' + String(item); }).join('\n'));
@@ -157,10 +164,15 @@
     var files = reportFiles(report);
     var body = renderResponseText(cwVisibleReply(reportMessageText(report)));
     if(runId)body+='<button type="button" class="agent-report-files" data-report-files="'+esc(runId)+'">'+icon('file')+'Files &amp; details'+(files.length?' · '+files.length+' changed':'')+'</button>';
-    var evidence = verificationSection(checks) + browserHighlight(report.browserActivity) + qualityMetricsHtml(report.qualityMetrics);
-    if (report.tokenTelemetry && devMode()) evidence += telemetryGridHtml(report.tokenTelemetry);
+    var evidence = verificationSection(checks);
+    // Quality scores, browser-action ratios and token telemetry are benchmark
+    // instrumentation, not a coding result. They stay in developer mode.
+    if (devMode()) {
+      evidence += browserHighlight(report.browserActivity) + qualityMetricsHtml(report.qualityMetrics);
+      if (report.tokenTelemetry) evidence += telemetryGridHtml(report.tokenTelemetry);
+    }
     if (evidence) body += '<details class="exec-details" style="margin-top:12px"><summary><b>Technical evidence</b><span class="chev">\u25B8</span></summary>' +
-      reportStatusLine(displayStatus, currentChecks, currentChecks.filter(function (check) { return check.passed; }).length, files.length, (report.changes || []).length, report.executionReportOnly) + evidence + '</details>';
+      reportStatusLine(currentChecks, currentChecks.filter(function (check) { return check.passed; }).length, files.length, (report.changes || []).length, report.executionReportOnly) + evidence + '</details>';
     var status = { complete: 'Completed', blocked: 'Blocked', aborted: 'Stopped', failed: 'Failed', paused: 'Paused' }[displayStatus] || displayStatus;
     if (report.phase && report.phase.kind === 'follow_up') status += ' · Follow-up';
     return '<article class="agent-report" aria-label="Agent Gitu report"><header class="agent-report-heading"><b>Agent Gitu</b><span class="agent-report-status" data-status="'+esc(displayStatus)+'">'+esc(status)+'</span>'+(actions||'')+'</header><div class="agent-report-body">'+body+'</div></article>';

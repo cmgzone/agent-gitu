@@ -603,6 +603,31 @@ describe('Composio connections', () => {
     }
   });
 
+  it('surfaces the Pikpam reason for a rejection instead of a bare status', async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url);
+      if (url.pathname === '/api/integrations/accounts') {
+        return new Response(JSON.stringify({ items: [{ id: 'acc-pik-1', app: 'googledrive', status: 'ACTIVE' }] }), { status: 200 });
+      }
+      if (url.pathname === '/api/integrations/execute') {
+        // The API's real failure shape; the message is already customer-safe.
+        return new Response(JSON.stringify({ error: 'That action is not part of the selected app.' }), { status: 400 });
+      }
+      return new Response('{}', { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const apps = new ComposioConnections(() => 'owner-uuid', new MemoryKeys(), undefined, () => ({ token: 'pik-token', baseUrl: 'https://pikpam.com' }));
+      const error = await apps.execute('googledrive', 'GOOGLEDRIVE_SEARCH_FILES', {}, 'acc-pik-1').catch((caught: Error) => caught);
+      // Previously this read "failed (400)." only, which looks like an outage.
+      expect((error as Error).message).toContain('(400)');
+      expect((error as Error).message).toContain('That action is not part of the selected app.');
+      expect((error as { status?: number }).status).toBe(400);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('reports an unreadable Pikpam body instead of returning an empty result', async () => {
     const fetchMock = vi.fn(async (input: string | URL | Request) => {
       const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url);

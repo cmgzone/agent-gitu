@@ -210,7 +210,17 @@ export class ComposioConnections {
     });
     const text = await response.text();
     if (!response.ok) {
-      const error = new Error(`Pikpam connected apps request failed (${response.status}).`) as Error & { status?: number };
+      // The Pikpam API answers failures with { error: "<customer-safe reason>" }.
+      // Discarding it reduced every diagnosable rejection to a bare status code,
+      // which reads like an opaque outage instead of "this action is not part of
+      // the selected app". The server already sanitizes the text (provider names
+      // and key prefixes are stripped), so it is safe to carry through.
+      let detail = '';
+      try {
+        const parsed = JSON.parse(text) as Record<string, unknown>;
+        if (typeof parsed['error'] === 'string' && parsed['error'].trim()) detail = ' ' + parsed['error'].trim().slice(0, 500);
+      } catch { /* non-JSON error page; the status alone must suffice */ }
+      const error = new Error(`Pikpam connected apps request failed (${response.status}).${detail}`) as Error & { status?: number };
       error.status = response.status;
       throw error;
     }

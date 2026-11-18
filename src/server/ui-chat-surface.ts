@@ -137,15 +137,23 @@ export const CHAT_SURFACE_JS = String.raw`
     if(content&&typeof content.animate==='function')content.animate([{opacity:0,translate:'0 14px',filter:'blur(4px)'},{opacity:1,translate:'0 0',filter:'blur(0px)'}],{duration:360,easing:'cubic-bezier(.16,1,.3,1)'});
   }
   function bindMainChatShell() {
-    $('cwHomeBtn').onclick=openHome;
-    $('cwCurrentChat').onclick=function(){$('follow').focus({preventScroll:true});};
-    $('cwInfoBtn').onclick=function(){var agent=cwProfileAgent()||cwEnsure().agents[0];cwEnterWorkspace(agent?'profile':'new',agent&&agent.id);};
-    $('mainChatHistory').onclick=function(){wsOpen('main');};
-    $('mainChatDetails').onclick=function(){openToolPanel('state');};
+    // Code mode renders its own shell and has NO #cwHomeBtn / #cwCurrentChat /
+    // #cwInfoBtn — those live in the Cowork chat markup. Assigning through a
+    // missing node threw a TypeError here, which aborted the rest of this
+    // function BEFORE the composer was measured, leaving --main-composer-height
+    // at a stale default so stream content slid under the floating composer.
+    function on(id, handler) { var node = $(id); if (node) node.onclick = handler; }
+    on('cwHomeBtn', function () { openHome(); });
+    on('cwCurrentChat', function () { $('follow').focus({ preventScroll: true }); });
+    on('cwInfoBtn', function () { var agent = cwProfileAgent() || cwEnsure().agents[0]; cwEnterWorkspace(agent ? 'profile' : 'new', agent && agent.id); });
+    on('mainChatHistory', function () { wsOpen('main'); });
+    on('mainChatDetails', function () { openToolPanel('state'); });
     var details=$('mainWorkDetails'),panel=$('approachPanel');
-    details.onclick=function(){panel.open=!panel.open;};
-    panel.addEventListener('toggle',function(){details.setAttribute('aria-expanded',String(panel.open));});
-    details.setAttribute('aria-expanded',String(panel.open));
+    if (details && panel) {
+      details.onclick=function(){panel.open=!panel.open;};
+      panel.addEventListener('toggle',function(){details.setAttribute('aria-expanded',String(panel.open));});
+      details.setAttribute('aria-expanded',String(panel.open));
+    }
     if(mainComposerObserver){mainComposerObserver.disconnect();mainComposerObserver=null;}
     var root=document.querySelector('.run-chat'),composer=document.querySelector('.run-chat .bottom-composer'),messages=$('stream'),lastHeight=0;
     function measure() {
@@ -155,6 +163,6 @@ export const CHAT_SURFACE_JS = String.raw`
       if(atBottom)stickScroll(messages,true);
     }
     measure();
-    if(typeof ResizeObserver==='function'){mainComposerObserver=new ResizeObserver(measure);mainComposerObserver.observe(composer);}
+    if(typeof ResizeObserver==='function'&&composer){mainComposerObserver=new ResizeObserver(measure);mainComposerObserver.observe(composer);}
   }
 `;

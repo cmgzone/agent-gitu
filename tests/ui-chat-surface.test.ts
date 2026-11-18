@@ -87,6 +87,18 @@ describe('Shared main-agent chat and Home motion', () => {
     expect(f.context.api).not.toHaveBeenCalled();
   });
 
+  it('measures the composer in Code mode, where the Cowork-only controls are absent', () => {
+    // `openRun` renders .run-chat markup with no #cwHomeBtn / #cwCurrentChat /
+    // #cwInfoBtn. Binding those unconditionally threw a TypeError that aborted
+    // this function before the composer was measured, so --main-composer-height
+    // kept a stale default and stream text slid under the floating composer.
+    const f = fixture();
+    for (const id of ['cwHomeBtn', 'cwCurrentChat', 'cwInfoBtn']) delete f.elements[id];
+    f.context.bindMainChatShell();
+    expect(f.root.style.setProperty).toHaveBeenLastCalledWith('--main-composer-height', '128px');
+    expect(f.observe).toHaveBeenCalledOnce();
+  });
+
   it('reserves the growing composer height and preserves a user reading earlier messages', () => {
     const f = fixture(); f.context.bindMainChatShell();
     expect(f.root.style.setProperty).toHaveBeenLastCalledWith('--main-composer-height', '128px');

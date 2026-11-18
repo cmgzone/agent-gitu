@@ -1581,6 +1581,10 @@ export const CONNECTION_CATALOG: CatalogProvider[] = [
         path: '/api/cloud/domains/search',
         risk: 'read',
         memoryPolicy: { promotable: false, stability: 'volatile' },
+        // Verified live: { query, suggestions: [{ domain, tld, isAvailable,
+        // costPriceUsd, retailPriceUsd, registrationYears, currency, premium,
+        // badge }] }, unauthenticated. Trust isAvailable for availability;
+        // never infer it from costPriceUsd being present.
       },
       {
         id: 'pikpam-domains-tld-pricing',

@@ -208,7 +208,7 @@ Write with \`connection_operation\`, which is individually approved:
 
 ## Domains: search versus purchase
 
-- **Searching is free and needs no approval.** Use \`domains/search\` with \`q\`. Report the exact availability and price the API returned; never estimate a price or claim a name is taken from memory.
+- **Searching is free and needs no approval.** Use \`domains/search\` with \`q\`. It returns \`{ query, suggestions: [{ domain, tld, isAvailable, costPriceUsd, retailPriceUsd, registrationYears, currency, premium, badge }] }\` and requires no credential. Read \`isAvailable\` for availability — never infer it from a price being present, and never estimate a price or claim a name is taken from memory. \`tld-pricing\` returns \`{ configured, marginPercent, tlds: [...] }\`.
 - **You cannot buy a domain or a VPS.** \`POST /api/cloud/domains/order\` and \`POST /api/cloud/vps/order\` create a pending invoice and return a Paystack \`authorizationUrl\`. A human must open that link and pay; only then does \`verify-order\` confirm and register. So: prepare the order if asked, hand the user the checkout link, and stop. Never state that a domain is registered, a VPS exists, or money moved until the user confirms payment and a follow-up read shows the resource.
 - Ordering a domain requires an existing VPS owned by the caller to attach it to.
 - Do not retry an order after an ambiguous failure — it can create a second invoice.

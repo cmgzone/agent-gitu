@@ -35,7 +35,13 @@ export const CHAT_SURFACE_CSS = String.raw`
   :is(#cw,.home-sky,.run-chat) .cw-top-nav button:active { transform:scale(.96); }
   :is(.home-sky,.run-chat) .composer { border-radius:var(--radius-chat,28px); background:var(--card2); border:1.5px solid var(--border2); box-shadow:var(--chat-composer-shadow); }
   body:has(.home-sky) .mobile-nav-btn,body:has(.run-chat) :is(.mobile-nav-btn,.topbar,.vresize,#mascotWrap) { display:none!important; }
-  .run.run-chat { background:var(--cw-chat-surface); width:100%; } .run.run-chat > :not(.cw-page-nav):not(.chat-shell-button):not(.bottom-composer):not(.approach-panel):not(.jump-latest) { position:relative; z-index:1; }
+  .run.run-chat { background:var(--cw-chat-surface); width:100%; }
+  /* Raise only the content wrapper above the decorative card. Matching every
+     direct child also rewrote .home-sidebar's position:fixed to relative, which
+     put the 256px sidebar back into flow AFTER the run's 256px padding. The
+     sidebar then sat at x=256 and .run-main started at x=512, leaving a 256px
+     black band on the left and squeezing the conversation. */
+  .run.run-chat > .run-main { position:relative; z-index:1; }
   /* Keep wheel, touch and keyboard scrolling without a visible track. */
   :is(#cw,.run-chat,.setup-wizard) { scrollbar-width:none; }
   #cw :is(.cw-msgs,.cw-photo-strip,.cw-widget-tray),.run-chat .stream { scrollbar-width:none; }
@@ -46,7 +52,7 @@ export const CHAT_SURFACE_CSS = String.raw`
   .run-chat .chat-shell-button svg { width:19px; height:19px; }
   .run-chat #mainChatHistory { left:12px; }
   .run-chat #mainChatDetails { right:12px; }
-  .run-chat .stream { padding:calc(88px + env(safe-area-inset-top, 0px)) max(24px,calc((100% - var(--code-measure))/2)) calc(var(--main-composer-height,148px) + 24px + env(safe-area-inset-bottom, 0px)); scroll-padding:calc(88px + env(safe-area-inset-top, 0px)) 0 calc(var(--main-composer-height,148px) + 24px + env(safe-area-inset-bottom, 0px)); }
+  .run-chat .stream { padding:calc(88px + env(safe-area-inset-top, 0px)) max(24px,calc((100% - var(--code-measure))/2)) calc(var(--main-composer-height,200px) + 24px + env(safe-area-inset-bottom, 0px)); scroll-padding:calc(88px + env(safe-area-inset-top, 0px)) 0 calc(var(--main-composer-height,200px) + 24px + env(safe-area-inset-bottom, 0px)); }
   .run-chat .stream::before { display:none; }
   .run-chat .stream > * { margin-block:0 24px; }
   .run-chat :is(.abubble,.agent-report,.tl-note-row) { max-width:none; padding:10px 4px; border:0; border-radius:var(--radius-card,16px); background:var(--chat-assistant-surface); box-shadow:none; font-size:14px; line-height:1.58; }
@@ -92,7 +98,7 @@ export const CHAT_SURFACE_CSS = String.raw`
     .run-chat .chat-shell-button { width:34px; height:34px; top:calc(10px + env(safe-area-inset-top, 0px)); }
     .run-chat #mainChatHistory { left:8px; }
     .run-chat #mainChatDetails { right:8px; }
-    .run-chat .stream { padding:calc(82px + env(safe-area-inset-top, 0px)) 16px calc(var(--main-composer-height,128px) + 18px + env(safe-area-inset-bottom, 0px)); scroll-padding:calc(82px + env(safe-area-inset-top, 0px)) 0 calc(var(--main-composer-height,128px) + 18px + env(safe-area-inset-bottom, 0px)); }
+    .run-chat .stream { padding:calc(82px + env(safe-area-inset-top, 0px)) 16px calc(var(--main-composer-height,216px) + 18px + env(safe-area-inset-bottom, 0px)); scroll-padding:calc(82px + env(safe-area-inset-top, 0px)) 0 calc(var(--main-composer-height,216px) + 18px + env(safe-area-inset-bottom, 0px)); }
     .run-chat .stream > * { margin-bottom:20px; }
     .run-chat .bottom-composer { padding:8px 12px calc(12px + env(safe-area-inset-bottom, 0px)); }
     .run-chat .usermsg .ub { max-width:92%; }

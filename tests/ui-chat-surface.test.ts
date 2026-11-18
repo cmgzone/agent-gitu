@@ -100,6 +100,17 @@ describe('Shared main-agent chat and Home motion', () => {
     for (const rule of [...streamRules, ...composerRules]) expect(rule).not.toContain('760px');
   });
 
+  it('raises only the content wrapper above the Code-mode card', () => {
+    // .run.run-chat.code-workspace reserves 256px for .home-sidebar, which is
+    // position:fixed. A rule that set position:relative on EVERY direct child
+    // also matched the sidebar, putting it back into flow after that 256px
+    // padding: the sidebar rendered at x=256 and .run-main started at x=512,
+    // leaving a 256px black band at the left and pushing the chat column right.
+    const directChildPositionRules = [...CHAT_SURFACE_CSS.matchAll(/\.run\.run-chat\s*>([^{]+)\{([^}]*)\}/g)]
+      .filter((match) => /position\s*:\s*relative/.test(match[2] ?? ''));
+    expect(directChildPositionRules.map((match) => (match[1] ?? '').trim())).toEqual(['.run-main']);
+  });
+
   it('measures the composer in Code mode, where the Cowork-only controls are absent', () => {
     // `openRun` renders .run-chat markup with no #cwHomeBtn / #cwCurrentChat /
     // #cwInfoBtn. Binding those unconditionally threw a TypeError that aborted

@@ -1735,8 +1735,8 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       '<div class="cw-chat-head">' +
         '<button class="cw-info-toggle" id="cwBack" aria-label="Search agents and tools" title="Search">' + cwIcon('search') + '</button>' +
         '<nav class="cw-top-nav" aria-label="App modes">' +
-          '<button type="button" id="cwHomeBtn" aria-label="Code mode" title="Code mode">' + cwIcon('home') + '<span>Code</span></button>' +
           '<button type="button" id="cwCurrentChat" aria-label="Cowork mode" title="Cowork mode" aria-pressed="true"><span class="cw-chat-face" id="cwChatAvatar" aria-hidden="true">' + headAva + '</span><span>Cowork</span></button>' +
+          '<button type="button" id="cwHomeBtn" aria-label="Code mode" title="Code mode">' + cwIcon('home') + '<span>Code</span></button>' +
           (cw.enableCompanies === true ? '<button type="button" data-company-nav aria-label="Companies" title="Cowork company workspaces">' + cwIcon('users') + '<span>Companies</span></button>' : '') +
         '</nav>' +
         '<div class="cw-team-strip" id="cwTeamStrip" hidden aria-live="polite" aria-label="Team collaboration"></div>' +

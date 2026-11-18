@@ -111,6 +111,21 @@ describe('Shared main-agent chat and Home motion', () => {
     expect(directChildPositionRules.map((match) => (match[1] ?? '').trim())).toEqual(['.run-main']);
   });
 
+  it('orders the app switcher Cowork then Code and keeps Code reachable in Cowork', () => {
+    // Cowork is the primary mode; Code stays one click away as the second pill.
+    // The Cowork shell also used to hide #cwHomeBtn with CSS, which removed the
+    // only path back to Code from the top bar.
+    const navBlocks = [...UI_HTML.matchAll(/<nav class="cw-top-nav" aria-label="App modes">([\s\S]*?)<\/nav>/g)]
+      .map((match) => match[1] ?? '');
+    expect(navBlocks.length).toBeGreaterThanOrEqual(3);
+    for (const block of navBlocks) {
+      expect(block).toContain('id="cwCurrentChat"');
+      expect(block).toContain('id="cwHomeBtn"');
+      expect(block.indexOf('id="cwCurrentChat"')).toBeLessThan(block.indexOf('id="cwHomeBtn"'));
+    }
+    expect(UI_HTML).not.toContain('.cw .cw-top-nav #cwHomeBtn { display:none');
+  });
+
   it('measures the composer in Code mode, where the Cowork-only controls are absent', () => {
     // `openRun` renders .run-chat markup with no #cwHomeBtn / #cwCurrentChat /
     // #cwInfoBtn. Binding those unconditionally threw a TypeError that aborted

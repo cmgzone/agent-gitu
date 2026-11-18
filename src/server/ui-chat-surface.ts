@@ -2,6 +2,10 @@
 export const CHAT_SURFACE_CSS = String.raw`
   :root {
     --chat-column-width:620px;
+    /* Readable measure for the Code-mode conversation. The old 760px cap left
+       ~165px of dead margin on each side of a wide pane; the min() padding in
+       .stream/.bottom-composer still keeps 24px on narrow screens. */
+    --code-measure:1120px;
     --chat-assistant-surface:transparent;
     --chat-user-surface:var(--selected);
     --chat-user-shadow:none;
@@ -42,7 +46,7 @@ export const CHAT_SURFACE_CSS = String.raw`
   .run-chat .chat-shell-button svg { width:19px; height:19px; }
   .run-chat #mainChatHistory { left:12px; }
   .run-chat #mainChatDetails { right:12px; }
-  .run-chat .stream { padding:calc(88px + env(safe-area-inset-top, 0px)) max(24px,calc((100% - 760px)/2)) calc(var(--main-composer-height,148px) + 24px + env(safe-area-inset-bottom, 0px)); scroll-padding:calc(88px + env(safe-area-inset-top, 0px)) 0 calc(var(--main-composer-height,148px) + 24px + env(safe-area-inset-bottom, 0px)); }
+  .run-chat .stream { padding:calc(88px + env(safe-area-inset-top, 0px)) max(24px,calc((100% - var(--code-measure))/2)) calc(var(--main-composer-height,148px) + 24px + env(safe-area-inset-bottom, 0px)); scroll-padding:calc(88px + env(safe-area-inset-top, 0px)) 0 calc(var(--main-composer-height,148px) + 24px + env(safe-area-inset-bottom, 0px)); }
   .run-chat .stream::before { display:none; }
   .run-chat .stream > * { margin-block:0 24px; }
   .run-chat :is(.abubble,.agent-report,.tl-note-row) { max-width:none; padding:10px 4px; border:0; border-radius:var(--radius-card,16px); background:var(--chat-assistant-surface); box-shadow:none; font-size:14px; line-height:1.58; }
@@ -59,7 +63,7 @@ export const CHAT_SURFACE_CSS = String.raw`
   .run-chat .tl-tool-group > .tl-body { width:100%; }
   .run-chat .tool-group-details { padding:8px 14px; border:1px solid var(--border); border-radius:var(--radius-card,16px); background:var(--card); box-shadow:var(--shadow); }
   .run-chat .tool-group-details[open] { background:var(--card); border-color:var(--border2); }
-  .run-chat .bottom-composer { position:absolute; inset:auto 0 0; z-index:3; padding:12px max(24px,calc((100% - 760px)/2)) calc(16px + env(safe-area-inset-bottom, 0px)); max-height:60%; overflow:visible; background:transparent; pointer-events:none; }
+  .run-chat .bottom-composer { position:absolute; inset:auto 0 0; z-index:3; padding:12px max(24px,calc((100% - var(--code-measure))/2)) calc(16px + env(safe-area-inset-bottom, 0px)); max-height:60%; overflow:visible; background:transparent; pointer-events:none; }
   .run-chat .bottom-composer > * { pointer-events:auto; }
   .run-chat .composer { width:100%; padding:10px 12px; }
   .run-chat .composer textarea { font-size:14px; padding:8px 4px; }
@@ -69,7 +73,7 @@ export const CHAT_SURFACE_CSS = String.raw`
   .run-chat .composer-topline .context-trigger { flex-shrink:0; margin-left:0; }
   .run-chat .main-work-details { flex-shrink:0; margin-left:auto; font-size:11px; color:var(--muted); padding:4px 8px; border-radius:6px; white-space:nowrap; }
   .run-chat .approach-panel { display:none; }
-  .run-chat .approach-panel[open] { display:block; position:absolute; top:calc(68px + env(safe-area-inset-top, 0px)); left:50%; transform:translateX(-50%); z-index:12; width:min(760px,calc(100% - 32px)); max-height:50%; overflow:auto; margin:0; border:1px solid var(--border); border-radius:var(--radius-card,16px); background:var(--card); box-shadow:var(--shadow-float); }
+  .run-chat .approach-panel[open] { display:block; position:absolute; top:calc(68px + env(safe-area-inset-top, 0px)); left:50%; transform:translateX(-50%); z-index:12; width:min(var(--code-measure),calc(100% - 32px)); max-height:50%; overflow:auto; margin:0; border:1px solid var(--border); border-radius:var(--radius-card,16px); background:var(--card); box-shadow:var(--shadow-float); }
   .run-chat .jump-latest { display:none; }
   .run-chat .progress { display:none!important; }
   body:has(.run-chat) .sb { position:fixed; inset:0 auto 0 0; z-index:80; width:min(320px,88vw)!important; transform:translateX(-105%); transition:transform .24s cubic-bezier(.16,1,.3,1); background:var(--card); border-right:1px solid var(--border); box-shadow:var(--shadow-float); }

@@ -1,6 +1,6 @@
 import { createContext, Script } from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
-import { CHAT_BUBBLE_MOTION_JS, CHAT_SURFACE_JS } from '../src/server/ui-chat-surface.js';
+import { CHAT_BUBBLE_MOTION_JS, CHAT_SURFACE_CSS, CHAT_SURFACE_JS } from '../src/server/ui-chat-surface.js';
 import { UI_HTML } from '../src/server/ui.js';
 
 function fixture(reduced = false) {
@@ -85,6 +85,19 @@ describe('Shared main-agent chat and Home motion', () => {
     expect(f.context.toggleMobileNav).not.toHaveBeenCalled();
     expect(f.context.openToolPanel).toHaveBeenCalledWith('state');
     expect(f.context.api).not.toHaveBeenCalled();
+  });
+
+  it('uses one shared wide measure for the Code-mode stream and composer', () => {
+    // Both surfaces must agree, or the composer drifts out of alignment with
+    // the message column. The measure is a token so it cannot diverge again.
+    expect(CHAT_SURFACE_CSS).toContain('--code-measure:1120px');
+    // Match every occurrence; the base rule is the one carrying the measure.
+    const streamRules = [...CHAT_SURFACE_CSS.matchAll(/\.run-chat \.stream \{[^}]*\}/g)].map((m) => m[0]);
+    const composerRules = [...CHAT_SURFACE_CSS.matchAll(/\.run-chat \.bottom-composer \{[^}]*\}/g)].map((m) => m[0]);
+    expect(streamRules.some((rule) => rule.includes('var(--code-measure)'))).toBe(true);
+    expect(composerRules.some((rule) => rule.includes('var(--code-measure)'))).toBe(true);
+    // The old narrow cap must not linger on either surface.
+    for (const rule of [...streamRules, ...composerRules]) expect(rule).not.toContain('760px');
   });
 
   it('measures the composer in Code mode, where the Cowork-only controls are absent', () => {

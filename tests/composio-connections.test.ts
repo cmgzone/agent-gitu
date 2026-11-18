@@ -576,4 +576,55 @@ describe('Composio connections', () => {
       vi.unstubAllGlobals();
     }
   });
+
+  it('reports a Pikpam in-body rejection as a definitive failure, not an uncertain write', async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url);
+      if (url.pathname === '/api/integrations/accounts') {
+        return new Response(JSON.stringify({ items: [{ id: 'acc-pik-1', app: 'gmail', status: 'ACTIVE' }] }), { status: 200 });
+      }
+      if (url.pathname === '/api/integrations/execute') {
+        // HTTP 200 carries the rejection; the provider answered definitively.
+        return new Response(JSON.stringify({ successful: false, error: 'Insufficient permission: gmail.readonly missing' }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const apps = new ComposioConnections(() => 'owner-uuid', new MemoryKeys(), undefined, () => ({ token: 'pik-token', baseUrl: 'https://pikpam.com' }));
+      const error = await apps.execute('gmail', 'GMAIL_LIST_MESSAGES', {}, 'acc-pik-1').catch((caught: Error) => caught);
+      expect(error).toBeInstanceOf(Error);
+      // Reporting this from inside the transport catch turned it into
+      // "may already have run", which hid why no data came back.
+      expect((error as Error).message).not.toMatch(/did not confirm completion/);
+      expect((error as Error).message).toContain('gmail.readonly missing');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('reports an unreadable Pikpam body instead of returning an empty result', async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url);
+      if (url.pathname === '/api/integrations/accounts') {
+        return new Response(JSON.stringify({ items: [{ id: 'acc-pik-1', app: 'gmail', status: 'ACTIVE' }] }), { status: 200 });
+      }
+      if (url.pathname === '/api/integrations/execute') {
+        return new Response('<html>gateway</html>', { status: 200, headers: { 'content-type': 'text/html' } });
+      }
+      return new Response('{}', { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const apps = new ComposioConnections(() => 'owner-uuid', new MemoryKeys(), undefined, () => ({ token: 'pik-token', baseUrl: 'https://pikpam.com' }));
+      // Previously this silently returned {} — the agent reported "no results"
+      // for a broken transport. A 200 whose body cannot be read may have run,
+      // so it must surface as an error rather than an empty success.
+      const error = await apps.execute('gmail', 'GMAIL_LIST_MESSAGES', {}, 'acc-pik-1').catch((caught: Error) => caught);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).not.toBe('');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });

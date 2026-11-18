@@ -208,13 +208,21 @@ export class ComposioConnections {
       signal: AbortSignal.timeout(timeoutMs),
       headers: { Authorization: `Bearer ${credentials.token}`, 'content-type': 'application/json', ...(init.headers || {}) },
     });
-    const data = await response.json().catch(() => ({})) as Record<string, unknown>;
+    const text = await response.text();
     if (!response.ok) {
       const error = new Error(`Pikpam connected apps request failed (${response.status}).`) as Error & { status?: number };
       error.status = response.status;
       throw error;
     }
-    return data as T;
+    try {
+      return (text ? JSON.parse(text) : {}) as T;
+    } catch {
+      // A gateway/proxy page or truncated body is not an empty result set.
+      // Returning {} here let a retrieval failure masquerade as "no data".
+      throw new Error(
+        'Pikpam returned an unreadable response (not JSON). The request may have been truncated or intercepted by a gateway; retry once, then check the Pikpam service status.',
+      );
+    }
   }
   get configured(): boolean {
     return Boolean(this.pikpam()) || this.keys.configured;
@@ -562,17 +570,25 @@ export class ComposioConnections {
     if (this.pikpam()) {
       const account = (await this.accounts()).find((item) => item.id === accountId && item.toolkit === slug && item.status === 'ACTIVE' && !item.disabled);
       if (!account) throw new Error('This service is disconnected or needs to be reconnected.');
+      let result: Record<string, unknown>;
       try {
-        const result = await this.pikpamRequest<Record<string, unknown>>('execute', {
+        result = await this.pikpamRequest<Record<string, unknown>>('execute', {
           method: 'POST', body: JSON.stringify({ toolkitSlug: slug, toolSlug: tool, connectedAccountId: accountId, arguments: args }),
         }, 65000);
-        if (result.successful === false || result.error) throw new Error('The connected service rejected this action.');
-        return redactConnectionData(result);
       } catch (error) {
         const status = Number(error && typeof error === 'object' ? (error as { status?: unknown }).status : 0);
         if (status >= 400 && status < 500 && status !== 408) throw error;
         throw new ComposioExecutionUncertainError();
       }
+      // The provider ANSWERED, so a rejection in that answer is a definitive
+      // result, not an uncertain one. Reporting it from inside the catch above
+      // dropped its (status-less) error into the "may already have run" branch,
+      // which hid the real reason it returned no data.
+      if (result.successful === false || result.error) {
+        const reason = result.error === undefined ? '' : ': ' + String(result.error).slice(0, 300);
+        throw new Error(`The connected service rejected this action${reason}. Nothing was changed; correct the request and try again.`);
+      }
+      return redactConnectionData(result);
     }
     const owner = this.owner(), sdk = this.client(), generation = this.generation;
     const account = (await this.accounts()).find((item) => item.id === accountId && item.toolkit === slug && item.status === 'ACTIVE' && !item.disabled);

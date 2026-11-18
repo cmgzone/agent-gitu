@@ -1565,6 +1565,7 @@ export const COWORK_WORKBENCH_JS = String.raw`
       if (typeof api === 'function') {
         api('/api/runs/' + encodeURIComponent(current.runId) + '/message', {
           method: 'POST',
+          headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ text: instr, delivery: 'steer' })
         }).then(function () {
           if (typeof toast === 'function') toast('Steering message sent to coding agent');
@@ -1709,6 +1710,7 @@ export const COWORK_WORKBENCH_JS = String.raw`
           if (typeof api === 'function') {
             api('/api/runs/' + encodeURIComponent(current.runId) + '/message', {
               method: 'POST',
+              headers: { 'content-type': 'application/json' },
               body: JSON.stringify({ text: steerText, delivery: 'steer' })
             }).then(function () {
               if (askInput) askInput.value = '';
@@ -2067,6 +2069,7 @@ export const COWORK_WORKBENCH_JS = String.raw`
     if (!skipSave && typeof api === 'function') {
       api('/api/model-selection', {
         method: 'POST',
+        headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ projectPath: resolvedPath })
       }).catch(function () {});
     }

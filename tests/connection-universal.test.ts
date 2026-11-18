@@ -268,6 +268,27 @@ describe('Milestone 2 & 3 — Universal Registry & ProviderReadCache', () => {
     expect(hitAfterWrite).toBeUndefined();
   });
 
+  it('a connection-wide epoch advance invalidates resource-scoped reads', () => {
+    const cache = new ProviderReadCache();
+    const connId = 'conn-coolify';
+
+    // A read that named a resource is stamped and read under `conn:*:app-1`.
+    cache.record({
+      connectionId: connId,
+      capability: 'applications.env.read',
+      operationId: 'get-app-envs',
+      data: { envs: [{ key: 'NODE_ENV', value: 'production' }] },
+      resourceId: 'app-1',
+    });
+    expect(cache.get(connId, 'applications.env.read', 'app-1')).toBeDefined();
+
+    // `connection_operation` writes advance with a bare connectionId (gitu.ts,
+    // native-codex-supervisor.ts). The pre-write read must stop being served.
+    cache.advanceStateEpoch(connId);
+
+    expect(cache.get(connId, 'applications.env.read', 'app-1')).toBeUndefined();
+  });
+
   it('UniversalCapabilityRegistry classifies MCP tools and enforces approval gates', () => {
     expect(classifyCapabilityRisk('get_weather')).toBe('read');
     expect(classifyCapabilityRisk('search_repositories')).toBe('read');

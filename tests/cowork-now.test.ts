@@ -188,6 +188,7 @@ describe('In-Cowork project & behind-the-scenes inspector', () => {
     expect(u.elements.cwProjectMenu.innerHTML).toContain('demo-app');
     expect(u.api).toHaveBeenCalledWith('/api/model-selection', {
       method: 'POST',
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ projectPath: '/workspace/demo-app' }),
     });
   });
@@ -208,6 +209,7 @@ describe('In-Cowork project & behind-the-scenes inspector', () => {
     await Promise.resolve();
     expect(u.api).toHaveBeenCalledWith('/api/runs/run-42/message', {
       method: 'POST',
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ text: 'Focus on unit tests next', delivery: 'steer' }),
     });
   });

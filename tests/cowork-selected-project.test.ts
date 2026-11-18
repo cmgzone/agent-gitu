@@ -459,6 +459,60 @@ describe('Cowork selected project awareness', () => {
     );
   });
 
+  it('persists the Cowork project pill selection with a JSON content-type the server accepts', async () => {
+    const cwState: Record<string, any> = { active: 'chat', convs: [], msgs: [], workbench: undefined, activeProjectPath: '' };
+    const S: Record<string, any> = { active: 'cowork', settings: { projectPath: '' }, cw: cwState };
+    const elements: Record<string, any> = {
+      cwProjectBtn: { title: '', innerHTML: '' },
+      cwProjectMenu: { innerHTML: '', querySelectorAll: () => [], hidePopover: vi.fn() },
+    };
+    const api = vi.fn(async () => ({ ok: true }));
+    const context = createContext({
+      S,
+      cwEnsure: () => cwState,
+      cwActiveConv: () => ({ id: 'chat', kind: 'dm', memberIds: ['gitu'], title: 'Gitu' }),
+      $: (id: string) => elements[id] || null,
+      esc: (v: unknown) => String(v ?? ''),
+      cwIcon: (name: string) => `[${name}]`,
+      toast: vi.fn(),
+      persist: vi.fn(),
+      updateProjChip: vi.fn(),
+      api,
+    });
+    new Script(COWORK_WORKBENCH_JS).runInContext(context);
+
+    context.cwSyncActiveProject('/workspace/picked-folder', 'picked-folder');
+    await Promise.resolve();
+
+    // A body sent without this header is labelled text/plain by fetch, which
+    // /api/model-selection rejects — the UI pill moved but the agent kept
+    // reading the previously selected project.
+    expect(api).toHaveBeenCalledWith(
+      '/api/model-selection',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({ 'content-type': 'application/json' }),
+        body: JSON.stringify({ projectPath: '/workspace/picked-folder' }),
+      }),
+    );
+  });
+
+  it('rejects a project selection body sent without the JSON content-type', async () => {
+    const home = makeDir('cowork-ctype-home-');
+    process.env.AGENT_GITU_HOME = home;
+    const server = new GituServer({ cwd: home, port: 0, passwordRequired: false, llm: new ScriptedMockLlm([]) });
+    servers.push(server);
+    const origin = 'http://127.0.0.1:' + (await server.start());
+
+    const response = await fetch(origin + '/api/model-selection', {
+      method: 'POST',
+      body: JSON.stringify({ projectPath: home }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as any).error).toContain('Content-Type must be application/json');
+  });
+
   it('wires #browseClear in folder-picker.js to switch back to Default workspace only in project selection mode', async () => {
     const folderPickerSource = readFileSync(
       path.join(process.cwd(), 'src', 'server', 'ui-assets', 'scripts', 'folder-picker.js'),

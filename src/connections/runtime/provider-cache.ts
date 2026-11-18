@@ -70,7 +70,24 @@ export class ProviderReadCache {
       const connKey = this.epochKey(connectionId, '*', '*');
       this.remoteStateEpochs.set(connKey, (this.remoteStateEpochs.get(connKey) ?? 1) + 1);
     }
+    if (!resourceId) {
+      // A write that names no resource (a `connection_operation` carries only a
+      // connectionId) must still invalidate resource-scoped reads. Those
+      // entries are stamped and read under `conn:*:{resourceId}`, which nothing
+      // above touches, so without this the pre-write data stays fresh forever.
+      this.bumpResourceEpochs(connectionId);
+    }
     return next;
+  }
+
+  /** Bump every per-resource read epoch for a connection (wildcard-resource key). */
+  private bumpResourceEpochs(connectionId: string): void {
+    const prefix = connectionId.toLowerCase() + ':*:';
+    for (const [key, epoch] of this.remoteStateEpochs.entries()) {
+      if (key.startsWith(prefix) && key !== prefix + '*') {
+        this.remoteStateEpochs.set(key, epoch + 1);
+      }
+    }
   }
 
   /**
@@ -147,6 +164,12 @@ export class ProviderReadCache {
     const paramsDigest = params.params ? sha256(canonicalJson(params.params)) : 'none';
     const resultDigest = sha256(canonicalJson(params.data));
     const stateEpoch = this.getStateEpoch(params.connectionId, undefined, params.resourceId);
+    // Materialize the read epoch this evidence is stamped with. A connection-
+    // wide write bumps existing per-resource keys (see bumpResourceEpochs);
+    // an absent key would stay at the default forever and keep serving data
+    // observed before that write.
+    const epochKey = this.epochKey(params.connectionId, undefined, params.resourceId);
+    if (!this.remoteStateEpochs.has(epochKey)) this.remoteStateEpochs.set(epochKey, stateEpoch);
 
     const record: ProviderEvidence = {
       id: evidenceId,
@@ -216,6 +239,8 @@ export class ProviderReadCache {
       for (const ev of data.evidence) {
         const key = this.cacheKey(ev.connectionId, ev.capability, ev.resourceId, ev.paramsDigest);
         this.evidence.set(key, ev);
+        const epochKey = this.epochKey(ev.connectionId, undefined, ev.resourceId);
+        if (!this.remoteStateEpochs.has(epochKey)) this.remoteStateEpochs.set(epochKey, ev.stateEpoch);
       }
     }
     if (data.epochs && typeof data.epochs === 'object') {

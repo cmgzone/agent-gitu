@@ -146,20 +146,36 @@ export const BROWSER_WORKFLOW_SKILL: ResolvedBuiltinSkill = def({
 7. Save durable workflow steps with agent_memory and record document URLs and remaining steps in todo notes. For local finished files call share_file. Do not claim an export succeeded unless a real output file or download was verified.`,
 });
 
-/** Pikpam operations for the primary assistant and VPS agents. */
+/**
+ * Pikpam operations for the primary assistant and VPS agents.
+ *
+ * The procedures below depend on `/data/bin/gitu-cloud`, which is provisioned
+ * inside a Pikpam customer VPS and is NOT part of the Gitu app. Gitu itself
+ * has no Pikpam project, domain, or VPS API client. The instructions must be
+ * read as conditional for that reason: an agent that assumes the CLI exists on
+ * an ordinary workstation or cloud desktop will promise work it cannot finish.
+ */
 export const PIKPAM_ECOSYSTEM_SKILL: ResolvedBuiltinSkill = def({
   name: 'pikpam-ecosystem',
-  description: 'Use Pikpam Cloud APIs and Gitu VPS tools to create projects, connect GitHub repositories, deploy and manage apps, configure domains, environment variables, storage, PostgreSQL, Redis, and VPS services.',
+  description: 'Procedures for Pikpam customer projects, GitHub deployments, apps, domains, storage, databases, and VPS services. The /data/bin/gitu-cloud CLI and Pikpam VPS bridge are provisioned only inside a Pikpam customer VPS; verify they exist before relying on this skill.',
   keywords: ['pikpam', 'gitu cloud', 'vps', 'github deployment', 'domain', 'storage', 'postgres', 'redis', 'deploy'],
   instructions: `# Pikpam ecosystem operations
 
 Use this skill whenever work touches a Pikpam project, GitHub deployment, app, domain, storage volume, database, or dedicated VPS. Keep every app and service associated with the correct customer project and VPS.
 
+## Establish the capability boundary first
+
+Gitu itself provides no Pikpam project, domain, or VPS management API. Every command below depends on \`/data/bin/gitu-cloud\`, which is installed inside a Pikpam customer VPS — not in the Gitu app, and not on a general-purpose host or private cloud desktop.
+
+Before planning or promising any Pikpam work, run \`/data/bin/gitu-cloud context\` and check that it resolves. Then:
+- If it runs, continue with the procedures below.
+- If it is missing (command not found, or \`/data/bin\` absent), you have NO Pikpam platform capability. Say so plainly and stop: do not invent output, do not simulate a deploy, and do not describe a domain or VPS change as done. Report the concrete limitation, state that the operation must be performed in the Pikpam portal or from a Pikpam VPS, and offer the work you CAN do (repository changes, Dockerfiles, Compose files, Caddy config, deployment scripts) so the user can apply them.
+- A saved SSH connection is generic remote shell, not Pikpam access. Use ssh_exec only when the user explicitly points you at that server; it cannot create a VPS, provision a Pikpam project, or register a Pikpam domain. Read \`PIKPAM_POSTGRES_URL\`, \`PIKPAM_REDIS_URL\`, and any host bridge as available only when they are actually present in that session.
+
 ## Start with the customer project
 
-1. Run \`/data/bin/gitu-cloud context\` and \`/data/bin/gitu-cloud projects\` to inspect the user's account, VPS, domains, existing projects, and deployed apps.
-2. Reuse the selected project when one exists. If none exists, create one through the Pikpam portal or configured Pikpam projects API with the current VPS ID, a project name, and a supported category.
-3. Never attach a project or app to a VPS that does not belong to the authenticated customer. A VPS agent may only manage its own VPS.
+1. Reuse the selected project when one exists. If none exists, create one through the Pikpam portal or the configured Pikpam projects API with the current VPS ID, a project name, and a supported category.
+2. Never attach a project or app to a VPS that does not belong to the authenticated customer. A VPS agent may only manage its own VPS.
 
 ## GitHub repository deployment
 
@@ -178,7 +194,7 @@ Use this skill whenever work touches a Pikpam project, GitHub deployment, app, d
 
 ## Databases and storage
 
-- Prefer \`PIKPAM_POSTGRES_URL\` and \`PIKPAM_REDIS_URL\` for databases provisioned on the customer's VPS. Never publish database ports to the public internet.
+- Prefer \`PIKPAM_POSTGRES_URL\` and \`PIKPAM_REDIS_URL\` when they are present for databases provisioned on the customer's VPS. Never publish database ports to the public internet.
 - Use Pikpam storage APIs and the customer's assigned storage volume. Keep object paths and app credentials scoped to that customer/project. Never expose provider credentials in logs or repositories.
 - Do not claim an app, database, storage volume, DNS record, or SSL certificate is ready until the service and endpoint have been verified.
 

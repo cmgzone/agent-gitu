@@ -36,6 +36,26 @@ it('provides one proactive P.A, adopts an existing assistant and preserves later
   f.store.deleteAgent(assistant.id);
   expect(f.ledger.ensureAssistant(f.store)).toBeUndefined();
 });
+it('refreshes a stale Pikpam capability note instead of preserving it', () => {
+  const f = fixture();
+  // An assistant saved by an older build that claimed platform access.
+  const stale = f.store.saveAgent({
+    name: 'P.A',
+    systemPrompt: 'Remember my existing responsibilities.\n\nPIKPAM_SKILL_ROUTING: Access a customer VPS through the authorized Pikpam VPS bridge for the selected customer.',
+    allowShell: false,
+  });
+  expect(f.ledger.ensureAssistant(f.store)?.id).toBe(stale.id);
+  const refreshed = f.store.getAgent(stale.id)!;
+  // The old claim must not survive: a plain `includes` check treated any prior
+  // text as current and left the misleading promise in the prompt forever.
+  expect(refreshed.systemPrompt).not.toContain('Access a customer VPS through the authorized Pikpam VPS bridge for the selected customer.');
+  expect(refreshed.systemPrompt).toContain('Gitu ships no Pikpam project, domain, or VPS API client');
+  expect(refreshed.systemPrompt).toContain('Remember my existing responsibilities.');
+  // Re-running is idempotent rather than appending a second copy.
+  f.ledger.ensureAssistant(f.store);
+  expect(f.store.getAgent(stale.id)!.systemPrompt.match(/PIKPAM_SKILL_ROUTING/g)).toHaveLength(1);
+});
+
 it('new installations get a helpful chief without shell access or external account grants', () => {
   const f = fixture(),
     assistant = f.ledger.ensureAssistant(f.store)!;

@@ -34,7 +34,18 @@ export interface BackgroundJob {
   error?: string;
 }
 export interface CodingReview {runId:string;completedAt:string;root:string;needsUi:boolean;createdAt:number;status:'queued'|'passed'|'issues'|'blocked';summary?:string;evidence?:string[];reviewedAt?:string;repairRunId?:string;}
-const PIKPAM_SKILL_ROUTING = '\n\nPIKPAM_SKILL_ROUTING: For any Pikpam platform, customer project, GitHub deployment, app, domain, storage, database, or VPS task, activate the assigned pikpam-ecosystem skill with use_skill before taking action. P.A has its own private computer for agent-side work; it is not a customer VPS. Access a customer VPS only through the authorized Pikpam VPS bridge for the selected customer. P.A coordinates the platform workflow and customer ownership boundaries. Delegate repository code implementation to Main Agent Gitu when needed; retain deployment coordination and report only verified outcomes.';
+const PIKPAM_SKILL_ROUTING = '\n\nPIKPAM_SKILL_ROUTING: For any Pikpam platform, customer project, GitHub deployment, app, domain, storage, database, or VPS task, activate the assigned pikpam-ecosystem skill with use_skill before taking action. P.A has its own private computer for agent-side work; it is not a customer VPS. Gitu ships no Pikpam project, domain, or VPS API client: the /data/bin/gitu-cloud CLI and the Pikpam VPS bridge exist only inside a Pikpam customer VPS. Verify they are present before promising platform work; when they are absent, state that limitation plainly and deliver the repository, Dockerfile, Compose or Caddy work you can verify instead. A saved SSH connection is generic remote shell, not Pikpam platform access. P.A coordinates the platform workflow and customer ownership boundaries. Delegate repository code implementation to Main Agent Gitu when needed; retain deployment coordination and report only verified outcomes.';
+/**
+ * Apply the current routing note to an agent prompt. An agent saved with an
+ * older revision must be REFRESHED, not skipped: a plain `includes(...)` check
+ * treats any prior text as current and leaves a stale capability claim in the
+ * prompt forever.
+ */
+function withPikpamRouting(systemPrompt: string): string {
+  const trimmed = systemPrompt.trim();
+  const marker = trimmed.indexOf('PIKPAM_SKILL_ROUTING');
+  return (marker < 0 ? trimmed : trimmed.slice(0, marker).trimEnd()) + PIKPAM_SKILL_ROUTING;
+}
 interface ProactivityData {
   settings?: Partial<ProactivitySettings>;
   assistantId?: string;
@@ -148,7 +159,7 @@ export class Proactivity {
       const assigned=store.getAgent(data.assistantId);
       if(assigned){
         const skills=[...new Set(['browser-workflow','pikpam-ecosystem',...assigned.skills])];
-        const systemPrompt=assigned.systemPrompt.includes('PIKPAM_SKILL_ROUTING')?assigned.systemPrompt:assigned.systemPrompt.trim()+PIKPAM_SKILL_ROUTING;
+        const systemPrompt=withPikpamRouting(assigned.systemPrompt);
         const changed=skills.length!==assigned.skills.length||skills.some((skill,index)=>skill!==assigned.skills[index])||systemPrompt!==assigned.systemPrompt||!assigned.chiefOfStaff||assigned.useHostComputer||!assigned.allowShell||assigned.cloudConnectionId!==undefined;
         const agent=changed?store.saveAgent({...assigned,skills,systemPrompt,chiefOfStaff:true,allowShell:true,useHostComputer:false,cloudConnectionId:''}):assigned;
         if(data.reviewSince===undefined){data.reviewSince=this.now()-86400000;writeJson(this.file,data);}
@@ -179,7 +190,7 @@ export class Proactivity {
       },
     });
     const skills=[...new Set(['browser-workflow','pikpam-ecosystem',...agent.skills])];
-    const systemPrompt=agent.systemPrompt.includes('PIKPAM_SKILL_ROUTING')?agent.systemPrompt:agent.systemPrompt.trim()+PIKPAM_SKILL_ROUTING;
+    const systemPrompt=withPikpamRouting(agent.systemPrompt);
     if(skills.length!==agent.skills.length||skills.some((skill,index)=>skill!==agent.skills[index])||systemPrompt!==agent.systemPrompt)agent=store.saveAgent({...agent,skills,systemPrompt});
     const conversation =
       store.listConversations().find((conv) => conv.kind === 'dm' && conv.memberIds.length === 1 && conv.memberIds[0] === agent.id) ??

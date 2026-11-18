@@ -121,6 +121,23 @@ describe('frontend quality bar as a skill', () => {
   });
 });
 
+describe('pikpam-ecosystem skill states its real capability boundary', () => {
+  it('does not promise a Pikpam platform CLI that ships with Gitu', () => {
+    const skill = builtinSkillByName('pikpam-ecosystem')!;
+    expect(skill).toBeTruthy();
+    // The /data/bin/gitu-cloud CLI is provisioned inside a Pikpam customer VPS.
+    // Gitu has no Pikpam project/domain/VPS API client, so the instructions must
+    // tell the agent to verify it and to report the limitation rather than
+    // promising a domain or VPS change it cannot perform.
+    expect(skill.instructions).toContain('Establish the capability boundary first');
+    expect(skill.instructions).toContain('you have NO Pikpam platform capability');
+    expect(skill.instructions).toContain('do not simulate a deploy');
+    expect(skill.description).toContain('only inside a Pikpam customer VPS');
+    // A saved SSH connection is generic shell, not Pikpam platform access.
+    expect(skill.instructions).toContain('generic remote shell, not Pikpam access');
+  });
+});
+
 describe('browser workflow as a capability-gated skill', () => {
   it('loads only when the host provides the browser capability', () => {
     const store = SkillStore.forProject(makeProject());

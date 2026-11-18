@@ -33,3 +33,7 @@ release*/
 
 .qa/
 .release/
+
+.commandcode/
+__pycache__/
+*.pyc

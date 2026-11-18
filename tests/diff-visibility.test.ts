@@ -307,6 +307,26 @@ describe('the main agent shows the change and the thinking', () => {
     expect(stream.querySelector('pre')?.textContent).toContain('Then the tests.');
   });
 
+  it('seals a finished turn so the next turn starts its own trace', () => {
+    const { context, stream } = uiHarness();
+    context.applyReasoning('run1', { type: 'reasoning', text: 'Turn one thought.' });
+    const first = stream.querySelector('.thinkbox');
+    expect(first.open).toBe(true);
+
+    // A finished turn collapses and detaches its trace.
+    context.sealReasoning('run1');
+    expect(first.open).toBe(false);
+    expect(stream.querySelectorAll('.thinkbox')).toHaveLength(1);
+
+    // The next turn appends a NEW block instead of rewriting the sealed one,
+    // so a trace always sits next to the work it explains.
+    context.applyReasoning('run1', { type: 'reasoning', text: 'Turn two thought.' });
+    expect(stream.querySelectorAll('.thinkbox')).toHaveLength(2);
+    const pres = stream.querySelectorAll('pre');
+    expect(pres[0]?.textContent).toBe('Turn one thought.');
+    expect(pres[1]?.textContent).toBe('Turn two thought.');
+  });
+
   it('ignores an empty trace rather than showing an empty panel', () => {
     const { context, stream } = uiHarness();
     context.applyReasoning('run1', { type: 'reasoning', text: '' });

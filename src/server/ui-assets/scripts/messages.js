@@ -145,6 +145,12 @@
     sess.typedQuestions = null;
     sess.settledGates = {};
     sess.pendingUserMessages = [];
+    // The reasoning trace belongs to one turn. Reusing the node across turns
+    // stranded it at the session's first thought while newer messages rendered
+    // below it, so only the reasoning keys are reset here — the rest of
+    // sess.nodes holds live element references (open bubble, tool rows,
+    // subagent orbs) that must survive a re-render.
+    if (sess.nodes) { sess.nodes.think = null; sess.nodes.thinkOpen = false; }
   }
   // A report belongs to the run that just ended.  Once a user starts another
   // task in the same session, leaving that final card at the bottom makes it

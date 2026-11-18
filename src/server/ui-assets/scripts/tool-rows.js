@@ -265,8 +265,24 @@
     }
     var body = box.querySelector('pre');
     if (body) body.textContent = typed.text;
-    // Open while it is still arriving, and leave it open: the trace is the point.
+    // Open while it is still arriving; sealReasoning collapses it when the turn ends.
     if (sess.nodes.thinkOpen) box.open = true;
+  }
+  /**
+   * Close out the reasoning trace for a finished turn. Reusing one node across
+   * turns left a single block stranded where the session's FIRST thought
+   * appeared, silently rewritten with the newest text while later messages
+   * rendered below it — so it read as stale output from a turn it no longer
+   * belonged to. Detaching the node lets the next turn create its own block at
+   * its own position; the sealed one stays collapsed and inspectable.
+   */
+  function sealReasoning(runId) {
+    var sess = S.sessions[runId];
+    var box = sess && sess.nodes && sess.nodes.think;
+    if (!box || !sess.nodes) return;
+    box.open = false;
+    sess.nodes.thinkOpen = false;
+    sess.nodes.think = null;
   }
 
   // Refused actions, rendered from the typed frames the executor emits at the

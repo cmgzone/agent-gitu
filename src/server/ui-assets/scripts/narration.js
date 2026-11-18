@@ -311,6 +311,9 @@
       if (S.workingTimer) { clearInterval(S.workingTimer); S.workingTimer = null; }
       S.workingSince = null; S.lastWorkingText = null;
       var e0 = $('workingElapsed'); if (e0) e0.textContent = '';
+      // The turn is over: seal this turn's reasoning trace so it cannot be
+      // rewritten in place by the next turn (see sealReasoning).
+      if (typeof sealReasoning === 'function') sealReasoning(S.active);
       return;
     }
     if (ico) {

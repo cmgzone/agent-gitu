@@ -122,19 +122,27 @@ describe('frontend quality bar as a skill', () => {
 });
 
 describe('pikpam-ecosystem skill states its real capability boundary', () => {
-  it('does not promise a Pikpam platform CLI that ships with Gitu', () => {
+  it('points agents at the real Pikpam Cloud HTTP API, not just an absent CLI', () => {
     const skill = builtinSkillByName('pikpam-ecosystem')!;
     expect(skill).toBeTruthy();
-    // The /data/bin/gitu-cloud CLI is provisioned inside a Pikpam customer VPS.
-    // Gitu has no Pikpam project/domain/VPS API client, so the instructions must
-    // tell the agent to verify it and to report the limitation rather than
-    // promising a domain or VPS change it cannot perform.
-    expect(skill.instructions).toContain('Establish the capability boundary first');
-    expect(skill.instructions).toContain('you have NO Pikpam platform capability');
-    expect(skill.instructions).toContain('do not simulate a deploy');
+    // The CLI exists only inside a Pikpam customer VPS, so the skill must name
+    // the HTTP surface agents can actually reach through a saved connection.
+    expect(skill.instructions).toContain('/api/cloud/vps/my-instances');
+    expect(skill.instructions).toContain('/api/cloud/domains/search');
+    expect(skill.instructions).toContain('connection_read');
+    expect(skill.instructions).toContain('connection_operation');
     expect(skill.description).toContain('only inside a Pikpam customer VPS');
     // A saved SSH connection is generic shell, not Pikpam platform access.
-    expect(skill.instructions).toContain('generic remote shell, not Pikpam access');
+    expect(skill.instructions).toContain('generic remote shell, not Pikpam platform access');
+  });
+
+  it('forbids claiming a purchase completed, because checkout needs a human', () => {
+    const skill = builtinSkillByName('pikpam-ecosystem')!;
+    expect(skill.instructions).toContain('You cannot buy a domain or a VPS');
+    expect(skill.instructions).toContain('Paystack');
+    expect(skill.instructions).toContain('Never state that a domain is registered');
+    // An ambiguous order can create a second invoice.
+    expect(skill.instructions).toContain('Do not retry an order');
   });
 });
 

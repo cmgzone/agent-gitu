@@ -49,7 +49,7 @@ it('refreshes a stale Pikpam capability note instead of preserving it', () => {
   // The old claim must not survive: a plain `includes` check treated any prior
   // text as current and left the misleading promise in the prompt forever.
   expect(refreshed.systemPrompt).not.toContain('Access a customer VPS through the authorized Pikpam VPS bridge for the selected customer.');
-  expect(refreshed.systemPrompt).toContain('Gitu ships no Pikpam project, domain, or VPS API client');
+  expect(refreshed.systemPrompt).toContain('Buying a VPS or domain only returns a Paystack checkout link');
   expect(refreshed.systemPrompt).toContain('Remember my existing responsibilities.');
   // Re-running is idempotent rather than appending a second copy.
   f.ledger.ensureAssistant(f.store);

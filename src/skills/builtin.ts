@@ -149,59 +149,79 @@ export const BROWSER_WORKFLOW_SKILL: ResolvedBuiltinSkill = def({
 /**
  * Pikpam operations for the primary assistant and VPS agents.
  *
- * The procedures below depend on `/data/bin/gitu-cloud`, which is provisioned
- * inside a Pikpam customer VPS and is NOT part of the Gitu app. Gitu itself
- * has no Pikpam project, domain, or VPS API client. The instructions must be
- * read as conditional for that reason: an agent that assumes the CLI exists on
- * an ordinary workstation or cloud desktop will promise work it cannot finish.
+ * Two distinct surfaces, and confusing them is what made earlier revisions
+ * misleading:
+ *   1. The Pikpam Cloud HTTP API (`/api/cloud/*`) — real, reachable through a
+ *      saved `pikpam` connection with `connection_read`/`connection_operation`.
+ *   2. `/data/bin/gitu-cloud` — a CLI provisioned only INSIDE a Pikpam customer
+ *      VPS. It is not part of Gitu and is absent on an ordinary host.
+ *
+ * Purchases are never automatable: ordering returns a Paystack checkout URL
+ * that a human must open and pay.
  */
 export const PIKPAM_ECOSYSTEM_SKILL: ResolvedBuiltinSkill = def({
   name: 'pikpam-ecosystem',
-  description: 'Procedures for Pikpam customer projects, GitHub deployments, apps, domains, storage, databases, and VPS services. The /data/bin/gitu-cloud CLI and Pikpam VPS bridge are provisioned only inside a Pikpam customer VPS; verify they exist before relying on this skill.',
+  description: 'Operate Pikpam Cloud through its HTTP API: list VPS instances, read VPS telemetry and env, search domain availability and price, manage DNS records, connect domains to a VPS app, and manage projects. Buying a VPS or domain returns a Paystack checkout link the user must pay; never claim a purchase completed. A /data/bin/gitu-cloud CLI exists only inside a Pikpam customer VPS.',
   keywords: ['pikpam', 'gitu cloud', 'vps', 'github deployment', 'domain', 'storage', 'postgres', 'redis', 'deploy'],
   instructions: `# Pikpam ecosystem operations
 
 Use this skill whenever work touches a Pikpam project, GitHub deployment, app, domain, storage volume, database, or dedicated VPS. Keep every app and service associated with the correct customer project and VPS.
 
-## Establish the capability boundary first
+## Which surface you are on
 
-Gitu itself provides no Pikpam project, domain, or VPS management API. Every command below depends on \`/data/bin/gitu-cloud\`, which is installed inside a Pikpam customer VPS — not in the Gitu app, and not on a general-purpose host or private cloud desktop.
+There are two separate surfaces. Identify yours before promising anything.
 
-Before planning or promising any Pikpam work, run \`/data/bin/gitu-cloud context\` and check that it resolves. Then:
-- If it runs, continue with the procedures below.
-- If it is missing (command not found, or \`/data/bin\` absent), you have NO Pikpam platform capability. Say so plainly and stop: do not invent output, do not simulate a deploy, and do not describe a domain or VPS change as done. Report the concrete limitation, state that the operation must be performed in the Pikpam portal or from a Pikpam VPS, and offer the work you CAN do (repository changes, Dockerfiles, Compose files, Caddy config, deployment scripts) so the user can apply them.
-- A saved SSH connection is generic remote shell, not Pikpam access. Use ssh_exec only when the user explicitly points you at that server; it cannot create a VPS, provision a Pikpam project, or register a Pikpam domain. Read \`PIKPAM_POSTGRES_URL\`, \`PIKPAM_REDIS_URL\`, and any host bridge as available only when they are actually present in that session.
+**A. Pikpam Cloud HTTP API — available from any Gitu host.** A saved connection with provider \`pikpam\` (base \`https://pikpam.com\`, bearer JWT or \`sk-live-*\` account key) exposes the catalogued operations. Use \`list_connections\` to find it, then \`connection_read\` for GETs and \`connection_operation\` for writes (which require approval). This is the normal path and covers everything below.
 
-## Start with the customer project
+**B. \`/data/bin/gitu-cloud\` CLI — only inside a Pikpam customer VPS.** It is not bundled with Gitu. If \`/data/bin/gitu-cloud context\` does not resolve, you have no CLI capability: say so and use surface A instead (or report the limitation). Never invent its output.
 
-1. Reuse the selected project when one exists. If none exists, create one through the Pikpam portal or the configured Pikpam projects API with the current VPS ID, a project name, and a supported category.
-2. Never attach a project or app to a VPS that does not belong to the authenticated customer. A VPS agent may only manage its own VPS.
+A saved SSH connection is generic remote shell, not Pikpam platform access.
 
-## GitHub repository deployment
+## What the API actually offers
 
-- Public repositories need no token. For a private repository, use Pikpam's connected-repository flow and a repository-scoped, read-only token. Never ask the customer to paste a token into chat, shell commands, Git remotes, logs, or app configuration.
-- Run \`/data/bin/gitu-cloud project-clone <project-id>\` to securely clone or update a linked repository. Do not print or persist fetched credentials.
-- Inspect the README and manifests before installing. Use the repository's declared runtime; prefer its Compose/Docker setup when provided. Ask only if the runtime, entrypoint, port, or required configuration is ambiguous.
-- Keep project files under \`/data/projects/<project-slug>\`. Use \`/data/bin/gitu-cloud host "<command>"\` for host-level work on this customer's dedicated VPS. Never expose the host bridge to app containers.
-- Preserve existing Compose files and unrelated services. Publish only the app port needed by Caddy and attach the Pikpam data-services network only when the app needs VPS PostgreSQL or Redis.
+Read with \`connection_read\` (use the \`query\` object for parameters, never a query string in the path):
+- \`/api/cloud/vps/my-instances\` — the user's VPS instances. Always start here; every later step needs an instance id the user owns.
+- \`/api/cloud/vps/instances/{id}/services\` — services running on that VPS.
+- \`/api/cloud/vps/{id}/telemetry\` and \`/api/cloud/vps/{id}/env\` — health and configuration.
+- \`/api/cloud/vps/{id}/logs\` — recent logs.
+- \`/api/cloud/domains/search?q=<name>\` — availability and live price. Pass \`q\` through \`query\`.
+- \`/api/cloud/domains/tld-pricing\` — prices by TLD.
+- \`/api/cloud/domains/my-domains\` — registered domains.
+- \`/api/cloud/domains/{domain}/records\` — DNS records.
+- \`/api/cloud/projects\` and \`/api/cloud/apps\` — cloud projects and deployed apps.
 
-## Configure and deploy
+Write with \`connection_operation\`, which is individually approved:
+- \`POST /api/cloud/vps/instances/{id}/action\` — start, stop, restart.
+- \`POST /api/cloud/vps/{id}/env\` — set an environment variable.
+- \`POST /api/cloud/projects\` and \`POST /api/cloud/apps\` — create a project or register an app.
+- \`POST /api/cloud/apps/{id}/env\` — set an app environment variable.
+- \`POST /api/cloud/domains/connect\` — attach an existing external domain.
+- \`PUT /api/cloud/domains/{id}/configure\` — route a domain to a VPS app.
+- \`POST /api/cloud/domains/{domain}/records\` — create a DNS record; updates and deletes exist too.
 
-1. Ask only for configuration that is genuinely missing. Have the customer add secrets in the app's Pikpam Env controls; never request production secrets in chat.
-2. Register the running app with \`/data/bin/gitu-cloud deploy "<App Name>" <port> [domain] "<Framework>" <project-id>\`.
-3. Run \`/data/bin/gitu-cloud app-env <app-id>\` to install the dashboard-managed environment file, then restart only that app using its own process manager or Compose project.
-4. Verify the app on its local port and Pikpam HTTPS domain. Report the repository, branch, runtime, project, domain, and any remaining customer action.
+## Configuring a VPS
+
+1. List instances and confirm the exact id with the user; never substitute a different VPS.
+2. Inspect services, telemetry and env before changing anything.
+3. Apply one change per approved operation, then re-read to verify the new state.
+4. Report the instance name, the change, and the verified resulting state. A successful mutation is not proof the app is healthy — read telemetry or logs.
+
+## Domains: search versus purchase
+
+- **Searching is free and needs no approval.** Use \`domains/search\` with \`q\`. Report the exact availability and price the API returned; never estimate a price or claim a name is taken from memory.
+- **You cannot buy a domain or a VPS.** \`POST /api/cloud/domains/order\` and \`POST /api/cloud/vps/order\` create a pending invoice and return a Paystack \`authorizationUrl\`. A human must open that link and pay; only then does \`verify-order\` confirm and register. So: prepare the order if asked, hand the user the checkout link, and stop. Never state that a domain is registered, a VPS exists, or money moved until the user confirms payment and a follow-up read shows the resource.
+- Ordering a domain requires an existing VPS owned by the caller to attach it to.
+- Do not retry an order after an ambiguous failure — it can create a second invoice.
 
 ## Databases and storage
 
 - Prefer \`PIKPAM_POSTGRES_URL\` and \`PIKPAM_REDIS_URL\` when they are present for databases provisioned on the customer's VPS. Never publish database ports to the public internet.
-- Use Pikpam storage APIs and the customer's assigned storage volume. Keep object paths and app credentials scoped to that customer/project. Never expose provider credentials in logs or repositories.
+- Keep object paths and app credentials scoped to that customer/project. Never expose provider credentials in logs or repositories.
 - Do not claim an app, database, storage volume, DNS record, or SSL certificate is ready until the service and endpoint have been verified.
 
 ## Update and troubleshoot
 
-- To update from GitHub, run \`project-clone\` again, inspect the changes, rebuild/restart only the affected app, and verify its health.
-- Use the host bridge for targeted VPS diagnostics and preserve existing customer workloads.
+- To update from GitHub, run \`project-clone\` again (surface B) or redeploy through the API, inspect the changes, rebuild/restart only the affected app, and verify its health.
 - If a required Pikpam command or API is unavailable, report that limitation clearly instead of simulating success.`,
 });
 

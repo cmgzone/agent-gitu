@@ -58,24 +58,24 @@ describe('browser resumable uploads', () => {
   it('submits client checksums and resumes at the server offset after a lost chunk response', async () => {
     const fixture = uploaderFixture(), blob = Object.assign(new Blob([Buffer.alloc(6 * 1024 * 1024, 7)]), { name: 'result.any', lastModified: 1 });
     fixture.interrupt();
-    await expect(fixture.context['uploadBinary'](blob, 'company', 'fixture')).rejects.toThrow('Network interrupted');
+    await expect(fixture.context['uploadBinary'](blob, 'coding')).rejects.toThrow('Network interrupted');
     expect(fixture.remote().offset).toBe(5 * 1024 * 1024);
-    const result = await fixture.context['uploadBinary'](blob, 'company', 'fixture');
+    const result = await fixture.context['uploadBinary'](blob, 'coding');
     expect(result).toMatchObject({ artifactId: 'file-fixture', name: 'result.any' }); expect(fixture.creates()).toBe(1);
     expect(fixture.calls.filter(c => c.method === 'PATCH').map(c => c.length)).toEqual([5 * 1024 * 1024, 1024 * 1024]); expect(fixture.local.size).toBe(0);
   });
   it('finds the original upload by checksum after browser state is lost', async () => {
     const fixture = uploaderFixture(), blob = Object.assign(new Blob(['original']), { name: 'result', lastModified: 1 });
-    fixture.interrupt(); await expect(fixture.context['uploadBinary'](blob, 'company', 'fixture')).rejects.toThrow('Network interrupted');
+    fixture.interrupt(); await expect(fixture.context['uploadBinary'](blob, 'coding')).rejects.toThrow('Network interrupted');
     fixture.local.clear();
-    expect((await fixture.context['uploadBinary'](blob, 'company', 'fixture')).artifactId).toBe('file-fixture'); expect(fixture.creates()).toBe(1);
+    expect((await fixture.context['uploadBinary'](blob, 'coding')).artifactId).toBe('file-fixture'); expect(fixture.creates()).toBe(1);
   });
   it('preserves saved state on status errors and rejects a different file with identical metadata', async () => {
     const fixture = uploaderFixture(), original = Object.assign(new Blob(['original']), { name: 'result', lastModified: 1 });
-    fixture.interrupt(); await expect(fixture.context['uploadBinary'](original, 'company', 'fixture')).rejects.toThrow('Network interrupted');
+    fixture.interrupt(); await expect(fixture.context['uploadBinary'](original, 'coding')).rejects.toThrow('Network interrupted');
     const changed = Object.assign(new Blob(['different'.slice(0, 8)]), { name: 'result', lastModified: 1 });
-    await expect(fixture.context['uploadBinary'](changed, 'company', 'fixture')).rejects.toThrow('original file');
-    fixture.unavailable(); await expect(fixture.context['uploadBinary'](original, 'company', 'fixture')).rejects.toThrow('saved upload');
+    await expect(fixture.context['uploadBinary'](changed, 'coding')).rejects.toThrow('original file');
+    fixture.unavailable(); await expect(fixture.context['uploadBinary'](original, 'coding')).rejects.toThrow('saved upload');
     expect(fixture.creates()).toBe(1); expect(fixture.local.size).toBe(1);
   });
 });

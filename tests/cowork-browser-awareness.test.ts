@@ -76,16 +76,13 @@ it('explains the private-browser mismatch when a host teammate requests a deskto
   expect(f.resolve).not.toHaveBeenCalled();
 });
 
-it('distinguishes an assigned remote desktop and keeps owner Chrome metadata out of company contexts', () => {
+it('distinguishes an assigned remote desktop', () => {
   const f = fixture();
   const remote = { ...f.agent, useHostComputer: false, cloudConnectionId: 'vps-agent' };
   const personal = f.service.coworkComputerContext(remote);
   expect(personal).toContain('remote-linux-desktop');
   expect(personal).toContain('"platform":"linux"');
   expect(personal).toContain('desktop_screenshot/desktop_input');
-  const company = f.service.coworkComputerContext({ ...remote, companyId: 'company-fixture' });
-  expect(company).not.toContain('Signed-in VPS Chrome');
-  expect(company).not.toContain('"ownerChrome"');
   expect(f.resolve).not.toHaveBeenCalled();
 });
 
@@ -153,11 +150,9 @@ it('uses local commands and an explicit saved SSH server in one task without cha
   expect(f.store.getAgent(f.agent.id)?.useHostComputer).toBe(true);
   expect(f.store.getAgent(f.agent.id)?.cloudConnectionId).toBeUndefined();
   expect((await executeCoworkTool(ctx, 'ssh_exec', { connectionId: target.id, command: 'hostname' }, { ...perms, allowShell: false }, scope)).ok).toBe(false);
-  expect((await executeCoworkTool(ctx, 'ssh_exec', { connectionId: target.id, command: 'hostname' }, perms, { ...scope, agent: { ...f.agent, companyId: 'company-fixture' } })).ok).toBe(false);
   expect((await executeCoworkTool(ctx, 'ssh_exec', { connectionId: 'unknown-server', command: 'hostname' }, perms, scope)).ok).toBe(false);
   expect((await executeCoworkTool(ctx, 'ssh_exec', { connectionId: target.id, command: 'npm test' }, perms, { ...scope, delegation: {} as never })).output).toContain('Main Agent Gitu owns repository coding');
   expect(execute).toHaveBeenCalledOnce();
-  expect(f.service.coworkComputerContext({ ...f.agent, companyId: 'company-fixture' })).not.toContain('School VPS');
   expect(f.service.coworkComputerContext({ ...f.agent, allowShell: false })).not.toContain('School VPS');
 });
 

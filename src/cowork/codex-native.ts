@@ -15,6 +15,14 @@ function record(value: unknown): NativeRecord {
 }
 const active = new Set<string>();
 
+function isTaskStateMessage(message: LlmMessage): boolean {
+  return (
+    message.role === 'user' &&
+    typeof message.content === 'string' &&
+    message.content.startsWith('TASK STATE (Cowork conversation context):')
+  );
+}
+
 /** Same native agent loop for chats, missions and temporary workers. */
 export async function runNativeCoworkTurn(input: {
   client: LlmClient;
@@ -61,7 +69,7 @@ export async function runNativeCoworkTurn(input: {
     session = undefined;
   }
   const savedSession = session;
-  const history = input.messages.filter((message) => message.role !== 'system');
+  const history = input.messages.filter((message) => message.role !== 'system' && !isTaskStateMessage(message));
   const keys = history.map((message) => sha256(canonicalJson(message)));
   const isAppend = session && session.historyKeys.length <= keys.length && session.historyKeys.every((hash, index) => keys[index] === hash);
   const delta = isAppend ? history.slice(session!.historyKeys.length) : history;
@@ -145,7 +153,7 @@ export async function runNativeCoworkTurn(input: {
   });
   const instructions =
     input.messages
-      .filter((message) => message.role === 'system')
+      .filter((message) => message.role === 'system' || isTaskStateMessage(message))
       .map((message) => (typeof message.content === 'string' ? message.content.replace(/^COMPLETION STATE:.*(?:\r?\n|$)/gm, '') : ''))
       .join('\n\n') +
     '\n\nGITU SUPERVISED EXECUTION: You own the agent loop. Call the provided functions directly through code mode. Use gitu_cowork({tool:"name",params:{...}}) when a newly permitted tool is absent from the saved native catalog. Currently permitted functions: ' +

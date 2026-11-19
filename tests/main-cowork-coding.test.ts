@@ -86,7 +86,7 @@ const report: CompletionReport = {
   generatedAt: new Date().toISOString(),
 };
 
-it('streams coding status to an idle P.A chat and excludes other conversations and companies', async () => {
+it('streams coding status to an idle P.A chat and excludes other conversations', async () => {
   const f = await fixture(false);
   f.internals.dispatchAgentWake = () => false;
   let finish: ((result: { ok: boolean; output: string }) => void) | undefined;
@@ -97,12 +97,10 @@ it('streams coding status to an idle P.A chat and excludes other conversations a
     await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
     const task = [...f.internals.sessions.values()][0] as any;
     const ownId = task.runId;
-    f.internals.sessions.set('foreign-company', { ...task, runId: 'foreign-company', coworkTask: { ...task.coworkTask, companyId: 'other-company' } });
     f.internals.sessions.set('foreign-chat', { ...task, runId: 'foreign-chat', coworkTask: { ...task.coworkTask, conversationId: 'other-chat' } });
     const view = (await f.call('/api/cowork/conversations/' + f.conv.id + '/messages')).data;
     expect(view.busy).toBe(false);
     expect(view.codingTasks.map((entry: any) => entry.runId)).toEqual([ownId]);
-    f.internals.sessions.delete('foreign-company');
     f.internals.sessions.delete('foreign-chat');
     const address = f.internals.server.address();
     const response = await fetch('http://127.0.0.1:' + address.port + '/api/cowork/conversations/' + f.conv.id + '/stream', { signal: controller.signal });
@@ -124,7 +122,6 @@ it('streams coding status to an idle P.A chat and excludes other conversations a
     await vi.waitFor(() => expect(seen.at(-1)?.codingTasks[0]?.status).toBe('completed'));
     expect(seen.at(-1).busy).toBe(false);
   } finally {
-    f.internals.sessions.delete('foreign-company');
     f.internals.sessions.delete('foreign-chat');
     finish?.({ ok: false, output: 'Fixture cleanup' });
     await work;
@@ -362,36 +359,6 @@ it('requires main-agent handoff for code edits and developer commands while allo
   expect(document.ok).toBe(true);
 });
 
-it('keeps company host handoffs inside the company tool and connection scope', async () => {
-  const f = await fixture();
-  const company = (await f.call('/api/companies', { name: 'Scoped company', purpose: 'Implement a project', monthlyBudgetUsd: null, maxFileBytes: null })).data.company;
-  const agent = (await f.call('/api/companies/' + company.id + '/lead', { name: 'Company lead' })).data.agent;
-  const companies = f.internals.companies();
-  const run = vi.fn(async () => ({ ok: true, output: 'Verified scoped company coding result.' }));
-  const unrestricted = vi.spyOn(f.internals, 'createDelegatedSession');
-  const work = f.internals.companyScope.run({ id: company.id, version: company.directionVersion }, async () => {
-    const store = f.internals.cowork();
-    store.saveAgent({ ...store.getAgent(agent.id), useHostComputer: true });
-    const current = store.getAgent(agent.id);
-    const conversation = store.listConversations()[0];
-    return f.internals.delegation().run({ agent: current, store, conversationId: conversation.id, subAgents: { run } }, { goal: 'Implement company code' });
-  });
-  expect((await work).ok).toBe(true);
-  expect(run).toHaveBeenCalledOnce();
-  expect(unrestricted).not.toHaveBeenCalled();
-  const task = (await f.call('/api/runs')).data[0];
-  expect(task.coworkTask.companyId).toBe(company.id);
-  expect(task.projectPath.startsWith(companies.workspace(company.id))).toBe(true);
-  vi.spyOn(f.internals,'ensureCompanyCoordinator').mockImplementation(()=>{});
-  expect((await f.call('/api/runs/'+task.runId+'/message',{text:'Continue the company implementation'})).status).toBe(400);
-  companies.transition(company.id,'running');
-  vi.spyOn(f.internals,'codingWorkerBridge').mockReturnValue({run:async()=>({ok:true,output:'Verified direct continuation.'})});
-  const follow=await f.call('/api/runs/'+task.runId+'/message',{id:'company-code-follow',text:'Continue the company implementation'});
-  expect(follow.status).toBe(202);
-  expect(follow.data.directToCoding).toBe(true);
-  expect(f.scope.store.listConversations().flatMap((conv:any)=>f.scope.store.messages(conv.id)).some((message:any)=>message.id==='company-code-follow')).toBe(false);
-});
-
 it('delivers direct coding follow-ups with attachments while keeping the teammate informed and deduplicating retries',async()=>{
   const f=await fixture();
   f.internals.gituRuntime=new GituSessionRuntime({createEngine:()=>({run:async()=>({ledger:{data:{taskId:report.taskId}},report}),stop(){},queueMessage(){}})as unknown as Gitu});
@@ -441,8 +408,4 @@ it('lets a chief manage safe app settings and queue internal messages without gr
   expect(removed.ok, removed.output).toBe(true);
   expect(f.scope.store.getAgent(f.agent.id)).toBeUndefined();
   expect((await executeCoworkTool(context, 'app_manage', { action: 'delete_agent', agentId: chief.id }, perms, scope)).ok).toBe(false);
-  const company = (await f.call('/api/companies', { name: 'Disposable company', purpose: 'Deletion test', monthlyBudgetUsd: null, maxFileBytes: null })).data.company;
-  const deleted = await executeCoworkTool(context, 'app_manage', { action: 'delete_company', companyId: company.id }, perms, scope);
-  expect(deleted.ok, deleted.output).toBe(true);
-  expect(f.internals.companies().get(company.id)).toBeUndefined();
 });

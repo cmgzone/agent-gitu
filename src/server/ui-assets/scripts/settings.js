@@ -317,14 +317,12 @@
         '<textarea id="cwSetPrefs" rows="3" placeholder="Working preferences — tone, hours, tools to prefer or avoid…" style="background:var(--card2);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:8px 12px;font:inherit;font-size:13px;resize:vertical"></textarea>' +
         '<div style="display:flex;justify-content:flex-end"><button class="btn dark" id="cwSetProfileSave">Save context</button></div></div></div>' +
         '<div class="setcard"><div class="setrow"><div class="grow"><div class="t">Learning mode</div><div class="d">Choose how your team learns from its conversations.</div></div><select id="cwLearningMode" aria-label="Cowork learning mode"><option value="off">Off</option><option value="reactive">When asked</option><option value="proactive">Proactive</option></select></div><div class="setrow"><div class="grow"><div class="t">Require approval for skill changes</div><div class="d">Teammates stage skill updates here for your review first.</div></div><input type="checkbox" id="cwSkillApproval" style="width:18px;height:18px;flex:none"></div>' +
-        '<div class="setrow"><div class="grow"><div class="t">Enable company workspaces (Experimental)</div><div class="d">Activate company workspaces, teams, and background coordination.</div></div><input type="checkbox" id="cwEnableCompanies" style="width:18px;height:18px;flex:none"></div>' +
         '<div id="cwPendingBody"></div></div></div>';
       api('/api/cowork/profile').then(function (d) {
         if (S.setSection !== 'cowork' || !$('cwSetName')) return;
         $('cwSetName').value = (d.profile && d.profile.name) || '';
         $('cwSetAbout').value = (d.profile && d.profile.about) || '';
         $('cwSetPrefs').value = (d.profile && d.profile.preferences) || '';
-        if ($('cwEnableCompanies')) $('cwEnableCompanies').checked = d.enableCompanies === true;
       }).catch(function () {});
       // Skill-write approval: a review panel that lists staged teammate skill
       // changes, plus the toggle that turns staging on.
@@ -339,22 +337,6 @@
           .then(function () { toast($('cwSkillApproval').checked ? 'Skill changes now need your approval' : 'Skill changes apply directly'); renderSettings(); })
           .catch(function (e) { toast(e.message, true); });
       };
-      if ($('cwEnableCompanies')) {
-        $('cwEnableCompanies').onchange = function () {
-          var checked = this.checked;
-          api('/api/cowork/companies/toggle', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled: checked }) })
-            .then(function () {
-              cwEnsure().enableCompanies = checked;
-              try { localStorage.setItem('hermes.cowork.enableCompanies', checked ? '1' : '0'); } catch (e) {}
-              var companyNavBtn = document.querySelector('[data-company-nav]');
-              if (!checked && companyNavBtn) companyNavBtn.remove();
-              else if (checked && !companyNavBtn && typeof cwRenderChat === 'function' && S.active === 'cowork') cwRenderChat();
-              toast(checked ? 'Company workspaces enabled' : 'Company workspaces switched off');
-              renderSettings();
-            })
-            .catch(function (e) { toast(e.message, true); });
-        };
-      }
       var pendingBody = $('cwPendingBody');
       api('/api/cowork/skills/pending').then(function (d) {
         if (S.setSection !== 'cowork' || !$('cwPendingBody')) return;
@@ -802,10 +784,27 @@
         '<div class="setrow"><div class="grow"><div class="t">Plan review</div><div class="d">Wait for your approval in Plan mode before building changes.</div></div><button class="toggle ' + (S.settings.review ? 'on' : '') + '" id="pReview"></button></div>' +
         '<div class="setrow"><div class="grow"><div class="t">Full coding access</div><div class="d">Run edits without per-file prompts (Gitu credentials and task state stay protected).</div></div><button class="toggle ' + (S.settings.autoApprove ? 'on' : '') + '" id="pAuto" aria-label="Full coding access"></button></div>' +
         '<div class="setrow"><div class="grow"><div class="t">Built-in safeguards</div><div class="d">Loop prevention and evidence checks stay active automatically.</div></div><span class="chip ok">Always on</span></div>' +
+        '<div class="setrow"><div class="grow"><div class="t">Chief of Staff authority <span class="chip" id="pChiefSummary" style="margin-left:6px">Balanced</span></div><div class="d">Choose preset (Conservative / Balanced / Autonomous), saved rules, and decision log.</div></div><button type="button" class="btn ghost" id="pChiefConfig">Configure…</button></div>' +
         '</div>' +
         '<div class="set-links-foot"><button type="button" class="btn ghost" id="permOpenFiles">Files &amp; upload limits</button><button type="button" class="btn ghost" id="permOpenDev">Agent diagnostics</button></div>';
       $('permOpenFiles').onclick = function () { openSettings('files'); };
       $('permOpenDev').onclick = function () { openSettings('developer'); };
+      $('pChiefConfig').onclick = function () {
+        if (typeof window.cwChiefModal === 'function') {
+          closeSettings();
+          window.cwChiefModal();
+        } else {
+          toast('Chief of Staff settings modal is unavailable.', true);
+        }
+      };
+      api('/api/chief/settings').then(function (data) {
+        var chip = $('pChiefSummary');
+        if (!chip || !data || !data.settings) return;
+        var st = data.settings;
+        var label = st.preset === 'conservative' ? 'Conservative' : st.preset === 'autonomous' ? 'Autonomous' : 'Balanced';
+        var ruleCount = (st.standingAnswers ? st.standingAnswers.length : 0) + (st.standingCommands ? st.standingCommands.length : 0);
+        chip.textContent = label + (ruleCount > 0 ? ' · ' + ruleCount + ' rule' + (ruleCount === 1 ? '' : 's') : '');
+      }).catch(function () {});
       $('pLearn').onclick = function () { S.settings.autoLearn = !S.settings.autoLearn; persist(); renderSettings(); };
       $('pReview').onclick = function () { S.settings.review = !S.settings.review; persist(); renderSettings(); };
       $('pAuto').onclick = function () { var button = this, next = !S.settings.autoApprove; button.disabled = true; api('/api/coding-permissions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ access: next ? 'full' : 'ask' }) }).then(function (saved) { S.settings.autoApprove = saved.access === 'full'; persist(); renderSettings(); }).catch(function (error) { toast(error.message, true); button.disabled = false; }); };

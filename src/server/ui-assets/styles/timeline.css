@@ -281,16 +281,28 @@
   .md-plan li .ver { display: block; color: var(--muted); font-size: 11.5px; }
   .md-plan ul { margin: 0 0 12px; padding-left: 20px; font-size: 12.5px; }
 
-  .qcard { border: 1px solid var(--run-border); background: var(--run-dim); border-radius: var(--radius-card, 16px); padding: 14px 16px; margin: 12px 0; }
-  .qcard h3 { margin: 0 0 10px; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: var(--run); }
-  .qcard .q { margin-bottom: 12px; }
-  .qcard .q .qt { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
-  .qcard .opts { display: flex; gap: 6px; flex-wrap: wrap; }
-  .qcard .opt { border: 1px solid var(--border2); background: var(--card2); color: var(--text); border-radius: 999px; padding: 4px 12px; font-size: 12px; cursor: pointer; }
-  .qcard .opt.sel { border-color: var(--run); color: var(--run); background: var(--run-dim); }
-  .qcard .opt { max-width: 100%; overflow-wrap: anywhere; white-space: normal; text-align: left; }
-  .qcard .qt { overflow-wrap: anywhere; }
-  .qcard .custom { width: 100%; margin-top: 6px; border: 1px solid var(--border2); border-radius: 8px; padding: 6px 9px; font-size: 12px; background: var(--card2); color: var(--text); }
+  .qcard { position: relative; overflow: hidden; border: 1px solid var(--border); background: var(--card); border-radius: var(--radius-card, 16px); padding: 18px 20px 18px 22px; margin: 14px 0; box-shadow: 0 2px 12px color-mix(in srgb, var(--text) 5%, transparent); }
+  .qcard::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--run, var(--accent)); }
+  .qcard-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+  .qcard-badge { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 650; letter-spacing: .02em; color: var(--run, var(--accent)); background: color-mix(in srgb, var(--run, var(--accent)) 12%, transparent); padding: 3px 9px; border-radius: 999px; }
+  .qcard-count { font-size: 11px; font-weight: 550; color: var(--muted); background: var(--card2); border: 1px solid var(--border); padding: 2px 9px; border-radius: 999px; }
+  .qcard h3 { margin: 0 0 12px; font-size: 15px; font-weight: 650; letter-spacing: -.01em; color: var(--text); }
+  .qcard .q { padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: color-mix(in srgb, var(--card2) 55%, var(--card)); margin-bottom: 10px; }
+  .qcard .q-tag { display: inline-block; font-size: 10px; font-weight: 650; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 2px 7px; margin-bottom: 6px; }
+  .qcard .q .qt { font-size: 13.5px; font-weight: 600; line-height: 1.45; margin-bottom: 6px; color: var(--text); overflow-wrap: anywhere; }
+  .qcard .q-detail { font-size: 12.5px; line-height: 1.55; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 0 10px; }
+  .qcard .opts { display: flex; gap: 7px; flex-wrap: wrap; margin-bottom: 8px; }
+  .qcard .opt { border: 1px solid var(--border2); background: var(--card); color: var(--text); border-radius: 10px; padding: 7px 12px; font-size: 12.5px; font-weight: 500; cursor: pointer; max-width: 100%; overflow-wrap: anywhere; white-space: normal; text-align: left; display: inline-flex; align-items: center; gap: 6px; transition: border-color .14s ease, background .14s ease, box-shadow .14s ease; }
+  .qcard .opt:hover { border-color: color-mix(in srgb, var(--run, var(--accent)) 60%, var(--border2)); background: color-mix(in srgb, var(--run, var(--accent)) 7%, var(--card)); }
+  .qcard .opt.sel { border-color: var(--run, var(--accent)); color: var(--text); background: color-mix(in srgb, var(--run, var(--accent)) 12%, var(--card)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--run, var(--accent)) 40%, transparent); }
+  .qcard .opt.sel::before { content: ''; width: 5px; height: 9px; border-right: 2px solid var(--run, var(--accent)); border-bottom: 2px solid var(--run, var(--accent)); transform: rotate(40deg) translate(-1px, -1px); flex: none; }
+  .qcard .custom { width: 100%; margin-top: 2px; border: 1px solid var(--border2); border-radius: 9px; padding: 8px 11px; font-size: 12.5px; background: var(--card); color: var(--text); }
+  .qcard .custom:focus { border-color: var(--run, var(--accent)); outline: none; }
+  .qcard .chat-question-remember { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 500; color: var(--muted); cursor: pointer; margin: 0; }
+  .qcard .chat-question-remember input { width: auto; margin: 0; accent-color: var(--accent); }
+  .qcard-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; }
+  .qcard-hint { font-size: 11px; color: var(--muted); }
+  .qcard .qcard-error { margin-top: 8px; }
 
   .summary-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-card, 16px); padding: 18px 20px; margin: 16px 0; box-shadow: var(--shadow); }
   .summary-card .summary-head { display: flex; gap: 9px; align-items: center; justify-content: space-between; }

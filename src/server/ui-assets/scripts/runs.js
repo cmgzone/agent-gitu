@@ -117,7 +117,7 @@
       cwInspectCodingTask(id);
       return;
     }
-    api('/api/runs/' + id).then(function (task) { if(typeof closeCompanies==='function')closeCompanies(); openRun(id, { projectPath: task.projectPath, mode: task.mode }); }).catch(function (error) { toast(error.message, true); });
+    api('/api/runs/' + id).then(function (task) { openRun(id, { projectPath: task.projectPath, mode: task.mode }); }).catch(function (error) { toast(error.message, true); });
   });
 
   function renderCoworkCodingSource(session) {
@@ -128,8 +128,7 @@
     var signature=JSON.stringify(source);if(card.dataset.source===signature)return;card.dataset.source=signature;
     card.innerHTML='<span>Main Agent Gitu · requested by '+esc(source.agentName)+' · '+(source.execution==='private'?'Private computer':'Project workspace')+'</span> <button type="button" class="btn ghost">Message '+esc(source.agentName)+'</button>';
     card.querySelector('button').onclick=function(){
-      if(source.companyId&&typeof companyOpen==='function'){companyShow();companyOpen(source.companyId).then(function(){Companies.tab='Chat';companyRender();}).catch(function(error){toast(error.message,true);});}
-      else{openCowork();cwOpenConv(source.conversationId);}
+      openCowork(); cwOpenConv(source.conversationId);
     };
     if($('follow'))$('follow').placeholder='Message the coding agent · '+source.agentName+' stays informed';
   }

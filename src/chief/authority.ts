@@ -113,6 +113,132 @@ export function resolveAuthorityPolicy(patch: AuthorityPolicyPatch | undefined):
   };
 }
 
+/** Named authority levels that balance autonomy against human confirmation. */
+export type ChiefAuthorityPreset = 'conservative' | 'balanced' | 'autonomous';
+
+/** Metadata and policy patch for a named authority preset. */
+export interface AuthorityPresetSpec {
+  id: ChiefAuthorityPreset;
+  label: string;
+  description: string;
+  patch: AuthorityPolicyPatch;
+}
+
+/** Built-in Chief of Staff authority presets. High-impact vetoes remain enforced in all presets. */
+export const AUTHORITY_PRESETS: Record<ChiefAuthorityPreset, AuthorityPresetSpec> = {
+  conservative: {
+    id: 'conservative',
+    label: 'Conservative',
+    description: 'Ask before running commands or approving plans; use only standing answers you explicitly save.',
+    patch: {
+      approvals: {
+        routineCommands: [],
+        neverAutoApproveTools: [],
+      },
+      planReviews: {
+        autoReview: false,
+        requireVerification: true,
+        maxSteps: 12,
+      },
+      questions: { answers: [] },
+      spendFloorUsd: 1.0,
+    },
+  },
+  balanced: {
+    id: 'balanced',
+    label: 'Balanced',
+    description: 'Auto-approve routine checks and read-only git inspection; review verified plans up to 12 steps.',
+    patch: {
+      approvals: {
+        routineCommands: [...DEFAULT_AUTHORITY_POLICY.approvals.routineCommands],
+        neverAutoApproveTools: [...DEFAULT_AUTHORITY_POLICY.approvals.neverAutoApproveTools],
+      },
+      planReviews: { ...DEFAULT_AUTHORITY_POLICY.planReviews },
+      questions: { answers: [] },
+      spendFloorUsd: DEFAULT_AUTHORITY_POLICY.spendFloorUsd,
+    },
+  },
+  autonomous: {
+    id: 'autonomous',
+    label: 'Autonomous',
+    description: 'Approve broader workspace dev/install/git-prep commands and larger verified plans; still escalate high-impact actions.',
+    patch: {
+      approvals: {
+        routineCommands: [
+          ...DEFAULT_AUTHORITY_POLICY.approvals.routineCommands,
+          /^\s*(npm|pnpm|yarn|bun)\s+(ci|install|i|run\s+(?:dev|start|preview|verify|docs))\b/,
+          /^\s*(pip|pip3|uv|poetry|cargo|go|dotnet)\s+(install|sync|run|fmt|vet|clippy|doc)\b/,
+          /^\s*git\s+(fetch|pull|add|stage|switch|checkout\s+-b|stash\s+(?:list|show))\b/,
+          /^\s*(mkdir|cp|mv|touch|head|tail|wc|sort|which|where|Get-ChildItem|Get-Content)\b/,
+        ],
+        neverAutoApproveTools: [...DEFAULT_AUTHORITY_POLICY.approvals.neverAutoApproveTools],
+      },
+      planReviews: {
+        autoReview: true,
+        requireVerification: true,
+        maxSteps: 25,
+      },
+      questions: { answers: [] },
+      spendFloorUsd: 0.05,
+    },
+  },
+};
+
+/** Resolve a named preset plus optional overrides into a complete `AuthorityPolicy`. */
+export function presetAuthorityPolicy(
+  preset: ChiefAuthorityPreset = 'balanced',
+  override?: AuthorityPolicyPatch,
+): AuthorityPolicy {
+  const base = AUTHORITY_PRESETS[preset]?.patch ?? AUTHORITY_PRESETS.balanced.patch;
+  return resolveAuthorityPolicy({
+    approvals: { ...base.approvals, ...override?.approvals },
+    planReviews: { ...base.planReviews, ...override?.planReviews },
+    questions: { ...base.questions, ...override?.questions },
+    spendFloorUsd: override?.spendFloorUsd ?? base.spendFloorUsd,
+  });
+}
+
+/** Escape regex metacharacters in literal user text. */
+export function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Compile a persisted standing answer pattern into a RegExp.
+ *
+ * Accepts either literal `/body/flags` regex syntax or plain text (matched
+ * case-insensitively with normalized whitespace). Empty patterns fail closed.
+ */
+export function compileStandingPattern(pattern: string): RegExp {
+  const trimmed = pattern.trim();
+  if (!trimmed) return /(?!)/;
+  const slashMatch = /^\/([\s\S]+)\/([dgimsuvy]*)$/.exec(trimmed);
+  const body = slashMatch?.[1];
+  if (body) {
+    try {
+      const safeFlags = (slashMatch?.[2] ?? '').replace(/[gy]/g, '');
+      return new RegExp(body, safeFlags);
+    } catch {
+      /* fall through to literal escaped match */
+    }
+  }
+  const normalized = trimmed.split(/\s+/).map(escapeRegExp).join('\\s+');
+  return new RegExp(normalized, 'i');
+}
+
+/**
+ * Compile a persisted routine-command prefix into a boundary-safe RegExp.
+ *
+ * Matches optional leading whitespace followed by the escaped command prefix and a
+ * token boundary (end-of-string or whitespace). Empty prefixes fail closed.
+ */
+export function compileCommandPrefix(prefix: string): RegExp {
+  const trimmed = prefix.trim();
+  if (!trimmed) return /(?!)/;
+  const normalized = trimmed.split(/\s+/).map(escapeRegExp).join('\\s+');
+  return new RegExp(`^\\s*${normalized}(?=$|\\s)`);
+}
+
 /**
  * The policy in prose, for a prompt or a transcript.
  *
@@ -160,7 +286,7 @@ const HIGH_IMPACT_SIGNALS: { re: RegExp; why: string }[] = [
   { re: /\b(shutdown|reboot|halt|poweroff)\b/i, why: 'system power control' },
   { re: /\b(npm|pnpm|yarn)\s+(publish|unpublish)\b/i, why: 'package publication' },
   { re: /--no-verify\b/i, why: 'bypasses verification hooks' },
-  { re: /\b(credentials?|password|passwd|secrets?|api[_-]?key|access[_-]?token|private[_-]?key|id_rsa|keychain|ssh[_-]?key)\b/i, why: 'credential material' },
+  { re: /\b(credentials?|password|passwd|secrets?|api[\s_-]?key|access[\s_-]?token|private[\s_-]?key|id_rsa|keychain|ssh[\s_-]?key)\b/i, why: 'credential material' },
   // Dotfiles are matched separately: `\b` cannot precede a leading dot (`cat .env`
   // has no word boundary between the space and the `.`), and a credential file read
   // is exactly the case this signal exists for.

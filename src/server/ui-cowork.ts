@@ -939,12 +939,9 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
   }
 
   function cwEnsure() {
-    if (!S.cw) S.cw = { agents: [], convs: [], skills: [], active: null, selectedAgentId: cwLoadSelectedAgentId(), msgs: [], lastSeq: 0, lastChange: 0, busy: false, working: null, progress: null, progresses: [], timer: null, computerStream: null, infoOpen: true, missions: [], artifacts: [], todos: [], requests: [], pendingFiles: [], threads: [], folders: [], widgets: [], threadId: null, learn: null, searchQuery: '', searchHits: [], enableCompanies: (function(){ try { return localStorage.getItem('hermes.cowork.enableCompanies') === '1'; } catch(e){ return false; } })() };
+    if (!S.cw) S.cw = { agents: [], convs: [], skills: [], active: null, selectedAgentId: cwLoadSelectedAgentId(), msgs: [], lastSeq: 0, lastChange: 0, busy: false, working: null, progress: null, progresses: [], timer: null, computerStream: null, infoOpen: true, missions: [], artifacts: [], todos: [], requests: [], pendingFiles: [], threads: [], folders: [], widgets: [], threadId: null, learn: null, searchQuery: '', searchHits: [] };
     var cw = S.cw;
     if (cw.selectedAgentId === undefined) cw.selectedAgentId = cwLoadSelectedAgentId();
-    if (cw.enableCompanies === undefined) {
-      try { cw.enableCompanies = localStorage.getItem('hermes.cowork.enableCompanies') === '1'; } catch(e) { cw.enableCompanies = false; }
-    }
     if (!cw.lastChange) cw.lastChange = 0;
     if (!cw.outbox) cw.outbox = Object.create(null);
     if (!cw.messageLocks) cw.messageLocks = Object.create(null);
@@ -965,7 +962,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
   }
   function cwPersistOfflineRoster() {
     var cw = cwEnsure();
-    try { localStorage.setItem(CW_OFFLINE_ROSTER_KEY, JSON.stringify({ agents: cw.agents || [], conversations: cw.convs || [], active: cw.active || null, enableCompanies: cw.enableCompanies === true })); } catch (error) {}
+    try { localStorage.setItem(CW_OFFLINE_ROSTER_KEY, JSON.stringify({ agents: cw.agents || [], conversations: cw.convs || [], active: cw.active || null })); } catch (error) {}
   }
   function cwPersistOfflineChat() {
     var cw = cwEnsure();
@@ -1371,17 +1368,9 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       if ((cw.computerRevision || 0) === computerRevision) cw.computers = (d.computers || []).filter(Boolean);
       cw.cloudServers = d.cloudServers || [];
       cw.profile = d.profile || {};
-      cw.enableCompanies = d.enableCompanies === true;
-      try { localStorage.setItem('hermes.cowork.enableCompanies', cw.enableCompanies ? '1' : '0'); } catch (e) {}
       cw.convs = results[1].conversations || [];
       cwPersistOfflineRoster();
       cwRenderRail();
-      var companyBtn = typeof document.querySelector === 'function' ? document.querySelector('[data-company-nav]') : null;
-      if (!cw.enableCompanies && companyBtn) {
-        companyBtn.remove();
-      } else if (cw.enableCompanies && !companyBtn && typeof cwRenderChat === 'function' && cw.active) {
-        cwRenderChat();
-      }
       if (openFirst && cw.convs.length > 0 && !cwActiveConv()) cwOpenConv(cw.convs[cw.convs.length - 1].id);
       else if (!cw.active) cwRenderChat();
       else { cwRenderMembers(); cwRenderTyping(); cwRenderInfo(); }
@@ -1404,7 +1393,6 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
         var cached = JSON.parse(localStorage.getItem(CW_OFFLINE_ROSTER_KEY) || 'null');
         if (cached && Array.isArray(cached.agents) && Array.isArray(cached.conversations) && S.active === 'cowork' && cw.loadRevision === revision) {
           cw.agents = cached.agents; cw.convs = cached.conversations;
-          if (typeof cached.enableCompanies === 'boolean') cw.enableCompanies = cached.enableCompanies;
           var active = cached.active && cw.convs.some(function (conversation) { return conversation.id === cached.active; })
             ? cached.active : cw.convs.length ? cw.convs[cw.convs.length - 1].id : null;
           cwRenderRail();
@@ -1737,7 +1725,6 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
         '<nav class="cw-top-nav" aria-label="App modes">' +
           '<button type="button" id="cwCurrentChat" aria-label="Cowork mode" title="Cowork mode" aria-pressed="true"><span class="cw-chat-face" id="cwChatAvatar" aria-hidden="true">' + headAva + '</span><span>Cowork</span></button>' +
           '<button type="button" id="cwHomeBtn" aria-label="Code mode" title="Code mode">' + cwIcon('home') + '<span>Code</span></button>' +
-          (cw.enableCompanies === true ? '<button type="button" data-company-nav aria-label="Companies" title="Cowork company workspaces">' + cwIcon('users') + '<span>Companies</span></button>' : '') +
         '</nav>' +
         '<div class="cw-team-strip" id="cwTeamStrip" hidden aria-live="polite" aria-label="Team collaboration"></div>' +
         '<div class="cw-visually-hidden"><span id="cwChatTitle">' + esc(activeThread ? activeThread.title : conv.title) + '</span>' +
@@ -1753,6 +1740,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
           '<button type="button" class="cw-tool-item" id="cwInfoBtn" aria-label="Agent profile" title="Agent profile" aria-controls="cwChat" aria-pressed="false">' + cwIcon('user') + '<span>Profile</span></button>' +
           '<button type="button" class="cw-tool-item" id="cwConnectionsMenuBtn" aria-label="Connections" title="Connections">' + cwIcon('link') + '<span>Connections</span></button>' +
           '<button type="button" class="cw-tool-item" id="cwAssistantSettings" data-pa-settings aria-label="Personal assistant preferences" title="Personal assistant">' + cwIcon('crown') + '<span>Personal assistant</span></button>' +
+          '<button type="button" class="cw-tool-item" id="cwChiefMenuBtn" aria-label="Chief of Staff authority and decision log" title="Chief of Staff">' + cwIcon('sliders') + '<span>Chief of Staff</span><span class="cw-tool-count" id="cwChiefRuleCount" hidden style="margin-left:auto;font-size:11px;font-weight:600;padding:1px 7px;border-radius:999px;background:var(--card2);border:1px solid var(--border);color:var(--muted)"></span></button>' +
           cwSessionNavHtml() +
           '<button type="button" class="cw-tool-item cw-computer-toggle" id="cwComputerBtn" aria-label="Computer activity" title="Computer activity" aria-controls="cwInlineComputer" hidden>' + cwIcon('monitor') + '<span>Computer</span><span class="cw-tool-dot" id="cwComputerDot" aria-hidden="true"></span></button>' +
           '<button type="button" class="cw-tool-item cw-gallery-toggle" id="cwMediaBtn" aria-label="Media and files" title="Media and files">' + cwIcon('image') + '<span>Media &amp; files</span></button>' +
@@ -1819,6 +1807,22 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     var groupsMenuBtn = $('cwGroupsMenuBtn'); if (groupsMenuBtn) groupsMenuBtn.onclick = function () { if (typeof wsOpen === 'function') wsOpen('cowork', 'Groups'); };
     var infoBtn = $('cwInfoBtn'); if (infoBtn) infoBtn.onclick = function () { cwOpenProfile(); };
     var connMenuBtn = $('cwConnectionsMenuBtn'); if (connMenuBtn) connMenuBtn.onclick = function () { cwOpenConnections(); };
+    var chiefMenuBtn = $('cwChiefMenuBtn');
+    if (chiefMenuBtn) {
+      chiefMenuBtn.onclick = function () {
+        var tm = $('cwToolsMenu');
+        if (tm && typeof tm.hidePopover === 'function') try { tm.hidePopover(); } catch (e) {}
+        if (typeof cwChiefModal === 'function') cwChiefModal();
+      };
+      api('/api/chief/settings').then(function (data) {
+        var badge = $('cwChiefRuleCount');
+        if (!badge || !data || !data.settings) return;
+        var st = data.settings;
+        var count = (st.standingAnswers ? st.standingAnswers.length : 0) + (st.standingCommands ? st.standingCommands.length : 0);
+        if (count > 0) { badge.textContent = String(count); badge.hidden = false; }
+        else { badge.textContent = ''; badge.hidden = true; }
+      }).catch(function () {});
+    }
     cwBindTopNav();
     cwRenderTeammateSwitcher();
     $('cwVoiceCall').onclick=function(){if(typeof startGituVoice==='function')startGituVoice({kind:'cowork',conversationId:cw.active,threadId:cw.threadId||undefined,agentId:cw.selectedAgentId||(conv.kind==='dm'?conv.memberIds[0]:conv.chiefId||conv.memberIds[0])});};
@@ -2267,8 +2271,16 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     var cw = cwEnsure();
     if (typeof cwBindCardRemoval === 'function') cwBindCardRemoval(el);
     var questionConversation=cw.active;
-    chatBindQuestions(el,cw,'cowork:'+questionConversation,async function(id,response){
-      var data=await api('/api/cowork/requests/'+encodeURIComponent(id),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'answer',response:response})});
+    chatBindQuestions(el,cw,'cowork:'+questionConversation,async function(id,response,opts){
+      var payload={action:'answer',response:response};
+      if(opts&&opts.rememberForChief){
+        payload.rememberForChief=true;
+        if(opts.chiefPattern)payload.chiefPattern=opts.chiefPattern;
+        if(opts.chiefScope)payload.chiefScope=opts.chiefScope;
+      }
+      var data=await api('/api/cowork/requests/'+encodeURIComponent(id),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)});
+      if(data&&data.rememberError)toast(data.rememberError,true);
+      else if(data&&data.rememberedRule)toast('Saved standing answer for Chief of Staff');
       if(cw.active!==questionConversation)return;
       cw.requests=(cw.requests||[]).map(function(request){return request.id===id?data.request:request;});
       if(data.agent)cw.agents=cw.agents.map(function(agent){return agent.id===data.agent.id?data.agent:agent;});
@@ -2514,7 +2526,6 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     if (m.role === 'system') {
       var codingTask=/\[View task\]\(#run=([a-zA-Z0-9_-]+)\)/.exec(m.text);
       if(codingTask)return '<div class="cw-sys">'+esc(m.text.slice(0,codingTask.index))+' <button type="button" class="btn ghost" data-main-coding-task="'+codingTask[1]+'">View coding task</button></div>';
-      if(m.companyLink&&typeof companyChatCardHtml==='function')return companyChatCardHtml(m.companyLink);
       var event = cwSystemEventHtml(m);
       if (event !== null) return event;
       return m.text.length > 240 ? '<details class="cw-sys"><summary>' + esc(m.text.slice(0, 110)) + '…</summary><div class="cw-sys-detail">' + esc(m.text) + '</div>' + cwFilesHtml(m.artifactIds) + '</details>' : '<div class="cw-sys">' + esc(m.text) + cwFilesHtml(m.artifactIds) + '</div>';
@@ -4707,7 +4718,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
         '<div class="cw-2col"><div><label>Model provider (PikRouter)</label><select id="cwAmProv"><option value="">Server default</option>' + (function () { var list = (S.models || []).filter(function (p) { return p && p.id === 'pikrouter'; }); return (list.length ? list : (S.models || [])).map(function (p) { return '<option value="' + esc(p.id) + '"' + (p.id === d.provider ? ' selected' : '') + '>' + esc(p.label || p.id) + '</option>'; }).join(''); })() + '</select></div>' +
         '<div><label for="cwAmModel">Model</label><input type="text" id="cwAmModelSearch" placeholder="Search models…" aria-label="Search models for the selected provider" aria-controls="cwAmModel" autocomplete="off" spellcheck="false" style="margin-bottom:6px"><select id="cwAmModel" aria-describedby="cwAmModelCount"><option value="">Provider default</option></select><div id="cwAmModelCount" class="meta" role="status" aria-live="polite"></div></div></div>' +
         '<div class="cw-2col"><div><label>Effort</label><select id="cwAmEffort"><option value="">default</option><option value="low"' + (d.effort === 'low' ? ' selected' : '') + '>low</option><option value="medium"' + (d.effort === 'medium' ? ' selected' : '') + '>medium</option><option value="high"' + (d.effort === 'high' ? ' selected' : '') + '>high</option><option value="max"' + (d.effort === 'max' ? ' selected' : '') + '>max</option></select></div>' +
-        '<div><label>Chief of staff</label><div class="cw-check" style="margin-top:8px"><input type="checkbox" id="cwAmChief"' + (d.chiefOfStaff ? ' checked' : '') + '> <span>Preselect as chief in new groups</span></div></div></div>' +
+        '<div><label>Chief of staff</label><div class="cw-check" style="margin-top:8px"><input type="checkbox" id="cwAmChief"' + (d.chiefOfStaff ? ' checked' : '') + '> <span>Preselect as chief in new groups</span></div><button type="button" class="btn ghost" id="cwAmChiefConfig" style="margin-top:6px;font-size:11.5px;padding:4px 8px">Authority &amp; decision log…</button></div></div>' +
         '<label>Skills (loaded from the shared skill library)</label><div class="cw-skills" id="cwAmSkills">' +
           (cw.skills.length ? cw.skills.map(function (s) { return '<button data-skill="' + esc(s.name) + '"' + (d.skills.indexOf(s.name) >= 0 ? ' class="on"' : '') + '>' + esc(s.name) + '</button>'; }).join('') : '<span style="font-size:11.5px;color:var(--faint)">No skills defined yet — create them in Settings or by asking Gitu in a task.</span>') + '</div>' +
         '</section><section class="cw-editor-section"><h2>Permissions &amp; computer</h2><p class="cw-note">Choose the access this teammate needs for its work.</p>' +
@@ -4738,6 +4749,8 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     renderCloudServers(d.cloudConnectionId);
     updateComputerChoice();
     modal.querySelector('#cwAmCloudAdd').onclick = function () { cwCloudServerModal(function (server) { renderCloudServers(server.id); }); };
+    var chiefCfgBtn = modal.querySelector('#cwAmChiefConfig');
+    if (chiefCfgBtn) chiefCfgBtn.onclick = function () { if (typeof cwChiefModal === 'function') cwChiefModal(); };
     if (dmGw) dmGw.bind();
     var customColorPicked = Boolean(isEdit && agent && agent.avatar && /^#[0-9a-f]{6}$/i.test(agent.avatar.color || '') && agent.avatar.color.toLowerCase() !== CW_DOT_COLORS[d.avatar.shape]);
     function refreshPreview() {
@@ -4947,4 +4960,226 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     };
     setTimeout(function () { var t = modal.querySelector('#cwGmTitle'); if (t) t.focus(); }, 0);
   }
+
+  function cwChiefModal() {
+    var existing = document.getElementById('cwChiefModalRoot');
+    if (existing) existing.remove();
+    var modal = document.createElement('div');
+    modal.id = 'cwChiefModalRoot';
+    modal.className = 'modal cw-modal';
+    modal.innerHTML =
+      '<div class="box" style="width:min(760px,94vw)">' +
+        '<div class="bar"><span style="font-weight:600;font-size:13.5px">Chief of Staff · Authority &amp; Decision Log</span><span style="flex:1"></span><button type="button" class="btn ghost" id="cwChClose">Close</button></div>' +
+        '<div style="display:flex;gap:6px;padding:10px 16px;border-bottom:1px solid var(--border);background:var(--card2)">' +
+          '<button type="button" class="btn dark" data-chtab="authority">Authority</button>' +
+          '<button type="button" class="btn ghost" data-chtab="rules">Standing rules <span id="cwChRuleTabCount"></span></button>' +
+          '<button type="button" class="btn ghost" data-chtab="decisions">Decision log <span id="cwChDecTabCount"></span></button>' +
+        '</div>' +
+        '<div class="cw-body" id="cwChBody"><div class="cw-note">Loading Chief of Staff settings…</div></div>' +
+        '<div class="cw-foot"><span class="cw-note" style="margin:0;flex:1">High-impact actions (deploy, destructive commands, secrets, MCP/provider writes) always escalate.</span><button type="button" class="btn ghost" id="cwChRefresh">Refresh</button></div>' +
+      '</div>';
+    document.body.appendChild(modal);
+    modal.querySelector('#cwChClose').onclick = function () { modal.remove(); };
+    var activeTab = 'authority';
+    var state = { settings: null, presets: [], decisions: [] };
+
+    function updateBadge() {
+      var badge = document.getElementById('cwChiefRuleCount');
+      if (!badge || !state.settings) return;
+      var count = (state.settings.standingAnswers ? state.settings.standingAnswers.length : 0) + (state.settings.standingCommands ? state.settings.standingCommands.length : 0);
+      if (count > 0) { badge.textContent = String(count); badge.hidden = false; }
+      else { badge.textContent = ''; badge.hidden = true; }
+    }
+
+    function syncTabButtons() {
+      modal.querySelectorAll('[data-chtab]').forEach(function (btn) {
+        var on = btn.getAttribute('data-chtab') === activeTab;
+        btn.className = 'btn ' + (on ? 'dark' : 'ghost');
+      });
+      var rc = modal.querySelector('#cwChRuleTabCount');
+      var dc = modal.querySelector('#cwChDecTabCount');
+      if (rc && state.settings) {
+        var n = (state.settings.standingAnswers || []).length + (state.settings.standingCommands || []).length;
+        rc.textContent = n > 0 ? '(' + n + ')' : '';
+      }
+      if (dc && state.decisions) {
+        dc.textContent = state.decisions.length > 0 ? '(' + state.decisions.length + ')' : '';
+      }
+    }
+
+    function renderTab() {
+      syncTabButtons();
+      var body = modal.querySelector('#cwChBody');
+      if (!body || !state.settings) return;
+      var st = state.settings;
+      if (activeTab === 'authority') {
+        var presets = state.presets.length ? state.presets : [
+          { id: 'conservative', label: 'Conservative', description: 'Ask before running commands or approving plans.' },
+          { id: 'balanced', label: 'Balanced', description: 'Auto-approve routine checks and verified short plans.' },
+          { id: 'autonomous', label: 'Autonomous', description: 'Broader routine dev approvals; high-impact vetoes still escalate.' }
+        ];
+        var autoRevChecked = st.autoReviewPlans === false ? '' : ' checked';
+        body.innerHTML =
+          '<section class="cw-editor-section" style="margin-top:0"><h2>Authority preset</h2>' +
+          '<div style="display:grid;gap:8px;margin-top:8px">' +
+          presets.map(function (p) {
+            var active = st.preset === p.id;
+            return '<label style="display:flex;align-items:flex-start;gap:10px;margin:0;padding:10px 12px;border:1px solid ' + (active ? 'var(--accent)' : 'var(--border)') + ';border-radius:10px;background:var(--card2);text-transform:none;letter-spacing:0;font-weight:400;cursor:pointer">' +
+              '<input type="radio" name="cwChPreset" value="' + esc(p.id) + '"' + (active ? ' checked' : '') + ' style="width:auto;margin:2px 0 0">' +
+              '<span><strong style="display:block;font-size:13px;color:var(--text)">' + esc(p.label) + '</strong><span style="display:block;font-size:12px;color:var(--muted);margin-top:2px">' + esc(p.description) + '</span></span>' +
+            '</label>';
+          }).join('') +
+          '</div></section>' +
+          '<section class="cw-editor-section"><h2>Advisor &amp; Plan Limits</h2>' +
+          '<div class="cw-perm">' +
+            '<label><input type="checkbox" id="cwChAdvCoding"' + (st.advisorEnabled ? ' checked' : '') + '> Allow model advisor to answer delegated Coding questions when no rule applies</label>' +
+            '<label><input type="checkbox" id="cwChAdvCowork"' + (st.coworkQuestionAdvisor ? ' checked' : '') + '> Allow model advisor to answer open Cowork question cards automatically</label>' +
+            '<label><input type="checkbox" id="cwChAutoPlan"' + autoRevChecked + '> Automatically review verified plans (respecting step cap)</label>' +
+          '</div>' +
+          '<div class="cw-2col" style="margin-top:10px">' +
+            '<div><label for="cwChMaxSteps">Max auto-reviewed plan steps</label><input type="text" id="cwChMaxSteps" value="' + esc(st.maxPlanSteps !== undefined ? String(st.maxPlanSteps) : '') + '" placeholder="Preset default (12 or 25)"></div>' +
+            '<div><label for="cwChSpendFloor">Spend guard floor (USD)</label><input type="text" id="cwChSpendFloor" value="' + esc(st.spendFloorUsd !== undefined ? String(st.spendFloorUsd) : '') + '" placeholder="Preset default (e.g. 0.25)"></div>' +
+          '</div>' +
+          '<div style="display:flex;justify-content:flex-end;margin-top:14px"><button type="button" class="btn dark" id="cwChSaveSettings">Save authority settings</button></div>' +
+          '</section>';
+        modal.querySelector('#cwChSaveSettings').onclick = function () {
+          var sel = modal.querySelector('input[name="cwChPreset"]:checked');
+          var stepsVal = modal.querySelector('#cwChMaxSteps').value.trim();
+          var floorVal = modal.querySelector('#cwChSpendFloor').value.trim();
+          var payload = {
+            preset: sel ? sel.value : st.preset,
+            advisorEnabled: Boolean(modal.querySelector('#cwChAdvCoding').checked),
+            coworkQuestionAdvisor: Boolean(modal.querySelector('#cwChAdvCowork').checked),
+            autoReviewPlans: Boolean(modal.querySelector('#cwChAutoPlan').checked),
+            maxPlanSteps: stepsVal === '' ? null : Number(stepsVal),
+            spendFloorUsd: floorVal === '' ? null : Number(floorVal)
+          };
+          api('/api/chief/settings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
+            .then(function (r) { state.settings = r.settings; updateBadge(); toast('Chief of Staff settings saved'); renderTab(); })
+            .catch(function (e) { toast(e.message, true); });
+        };
+        return;
+      }
+
+      if (activeTab === 'rules') {
+        var ansRules = st.standingAnswers || [];
+        var cmdRules = st.standingCommands || [];
+        body.innerHTML =
+          '<section class="cw-editor-section" style="margin-top:0"><h2>Standing question answers</h2>' +
+          '<p class="cw-note" style="margin-top:2px">When a question matches one of these patterns, Chief of Staff answers automatically with your saved response.</p>' +
+          (ansRules.length ? '<div style="display:grid;gap:6px;margin:10px 0">' + ansRules.map(function (r) {
+            return '<div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--card2)">' +
+              '<div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:600;color:var(--text);overflow-wrap:anywhere">' + esc(r.pattern) + '</div><div style="font-size:12px;color:var(--muted);overflow-wrap:anywhere">' + esc(r.answer) + '</div></div>' +
+              '<button type="button" class="btn ghost" data-chdelans="' + esc(r.id) + '" style="font-size:11.5px;padding:4px 8px">Delete</button>' +
+            '</div>';
+          }).join('') + '</div>' : '<div class="cw-note" style="margin:8px 0">No standing answers saved yet. Check "Remember this answer for Chief of Staff" on any question card or add one below.</div>') +
+          '<div class="cw-2col" style="margin-top:8px">' +
+            '<div><label for="cwChAnsPat">Question pattern (text or /regex/)</label><input type="text" id="cwChAnsPat" placeholder="e.g. package manager"></div>' +
+            '<div><label for="cwChAnsVal">Standing answer</label><input type="text" id="cwChAnsVal" placeholder="e.g. Use pnpm"></div>' +
+          '</div>' +
+          '<div style="display:flex;justify-content:flex-end;margin-top:8px"><button type="button" class="btn dark" id="cwChAddAns">Add answer rule</button></div>' +
+          '</section>' +
+          '<section class="cw-editor-section"><h2>Standing routine commands</h2>' +
+          '<p class="cw-note" style="margin-top:2px">Prefix-matched commands auto-approved during delegated runs. High-impact commands are blocked by safety vetoes.</p>' +
+          (cmdRules.length ? '<div style="display:grid;gap:6px;margin:10px 0">' + cmdRules.map(function (r) {
+            return '<div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--card2)">' +
+              '<div style="flex:1;min-width:0;font-family:var(--mono);font-size:12px;color:var(--text);overflow-wrap:anywhere">' + esc(r.prefix) + '</div>' +
+              '<button type="button" class="btn ghost" data-chdelcmd="' + esc(r.id) + '" style="font-size:11.5px;padding:4px 8px">Delete</button>' +
+            '</div>';
+          }).join('') + '</div>' : '<div class="cw-note" style="margin:8px 0">No custom command prefixes saved yet.</div>') +
+          '<div style="display:flex;gap:8px;align-items:flex-end;margin-top:8px">' +
+            '<div style="flex:1"><label for="cwChCmdPrefix">Command prefix</label><input type="text" id="cwChCmdPrefix" placeholder="e.g. npm run verify"></div>' +
+            '<button type="button" class="btn dark" id="cwChAddCmd">Add command rule</button>' +
+          '</div>' +
+          '</section>';
+        body.querySelectorAll('[data-chdelans]').forEach(function (b) {
+          b.onclick = function () {
+            api('/api/chief/rules/answers/' + encodeURIComponent(b.getAttribute('data-chdelans')), { method: 'DELETE' })
+              .then(function (r) { state.settings = r.settings; updateBadge(); toast('Answer rule removed'); renderTab(); })
+              .catch(function (e) { toast(e.message, true); });
+          };
+        });
+        body.querySelectorAll('[data-chdelcmd]').forEach(function (b) {
+          b.onclick = function () {
+            api('/api/chief/rules/commands/' + encodeURIComponent(b.getAttribute('data-chdelcmd')), { method: 'DELETE' })
+              .then(function (r) { state.settings = r.settings; updateBadge(); toast('Command rule removed'); renderTab(); })
+              .catch(function (e) { toast(e.message, true); });
+          };
+        });
+        modal.querySelector('#cwChAddAns').onclick = function () {
+          var pattern = modal.querySelector('#cwChAnsPat').value.trim();
+          var answer = modal.querySelector('#cwChAnsVal').value.trim();
+          api('/api/chief/rules/answers', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pattern: pattern, answer: answer }) })
+            .then(function (r) { state.settings = r.settings; updateBadge(); toast('Standing answer saved'); renderTab(); })
+            .catch(function (e) { toast(e.message, true); });
+        };
+        modal.querySelector('#cwChAddCmd').onclick = function () {
+          var prefix = modal.querySelector('#cwChCmdPrefix').value.trim();
+          api('/api/chief/rules/commands', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prefix: prefix }) })
+            .then(function (r) { state.settings = r.settings; updateBadge(); toast('Standing command rule saved'); renderTab(); })
+            .catch(function (e) { toast(e.message, true); });
+        };
+        return;
+      }
+
+      var decs = state.decisions || [];
+      body.innerHTML =
+        '<section class="cw-editor-section" style="margin-top:0"><h2>Recent Chief of Staff decisions</h2>' +
+        (decs.length ? '<div style="display:grid;gap:8px;margin-top:10px">' + decs.map(function (d) {
+          var action = d.decision && d.decision.action ? d.decision.action : 'unknown';
+          var detail = d.decision && (d.decision.answer || d.decision.reason || d.decision.note) ? (d.decision.answer || d.decision.reason || d.decision.note) : '';
+          var revoked = Boolean(d.revokedAt);
+          return '<div style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--card2)' + (revoked ? ';opacity:.65' : '') + '">' +
+            '<div style="flex:1;min-width:0">' +
+              '<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:11px;color:var(--muted)">' +
+                '<span class="chip">' + esc(d.surface) + '</span>' +
+                '<span class="chip">' + esc(d.source) + '</span>' +
+                '<span class="chip">' + esc(action) + '</span>' +
+                (revoked ? '<span class="chip" style="color:var(--err,#c0392b)">Revoked</span>' : '') +
+                '<span>' + esc(d.at ? d.at.replace('T', ' ').slice(0, 19) : '') + '</span>' +
+              '</div>' +
+              '<div style="font-size:12.5px;font-weight:600;color:var(--text);margin-top:5px;overflow-wrap:anywhere">' + esc(d.summary) + '</div>' +
+              (detail ? '<div style="font-size:12px;color:var(--muted);margin-top:3px;overflow-wrap:anywhere">' + esc(detail) + '</div>' : '') +
+            '</div>' +
+            (!revoked ? '<button type="button" class="btn ghost" data-chrevoke="' + esc(d.id) + '" style="font-size:11.5px;padding:4px 8px">Revoke</button>' : '') +
+          '</div>';
+        }).join('') + '</div>' : '<div class="cw-note" style="margin-top:10px">No Chief of Staff decisions recorded yet.</div>') +
+        '</section>';
+      body.querySelectorAll('[data-chrevoke]').forEach(function (b) {
+        b.onclick = function () {
+          api('/api/chief/decisions/' + encodeURIComponent(b.getAttribute('data-chrevoke')) + '/revoke', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason: 'Revoked by user' }) })
+            .then(function (r) {
+              if (r.settings) state.settings = r.settings;
+              state.decisions = state.decisions.map(function (item) { return item.id === r.decision.id ? r.decision : item; });
+              updateBadge();
+              toast('Decision revoked');
+              renderTab();
+            })
+            .catch(function (e) { toast(e.message, true); });
+        };
+      });
+    }
+
+    function loadAll() {
+      Promise.all([api('/api/chief/settings'), api('/api/chief/decisions?limit=50')])
+        .then(function (res) {
+          state.settings = res[0].settings;
+          state.presets = res[0].presets || [];
+          state.decisions = res[1].decisions || [];
+          updateBadge();
+          renderTab();
+        })
+        .catch(function (e) {
+          var body = modal.querySelector('#cwChBody');
+          if (body) body.innerHTML = '<div class="cw-note">' + esc(e.message || 'Could not load Chief of Staff state.') + '</div>';
+        });
+    }
+
+    modal.querySelectorAll('[data-chtab]').forEach(function (btn) {
+      btn.onclick = function () { activeTab = btn.getAttribute('data-chtab'); renderTab(); };
+    });
+    modal.querySelector('#cwChRefresh').onclick = loadAll;
+    loadAll();
+  }
+  window.cwChiefModal = cwChiefModal;
 `;

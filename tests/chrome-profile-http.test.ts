@@ -116,7 +116,7 @@ it('protects owner Chrome HTTP/streams, supports hosted transport, and revokes t
     expect((await executeCoworkTool(ctx, 'computer_status', {}, perms, scope)).output).toContain('owner-shared-chrome');
     expect((await executeCoworkTool(ctx, 'desktop_screenshot', {}, perms, scope)).ok).toBe(true);
     expect(computer.execute).toHaveBeenCalledOnce();
-    for (const blockedScope of [{ ...scope, conversationId: otherChat.id }, { ...scope, isSubAgent: true }, { ...scope, agent: { ...agent, companyId: 'company-fixture' } }]) {
+    for (const blockedScope of [{ ...scope, conversationId: otherChat.id }, { ...scope, isSubAgent: true }]) {
       expect((await executeCoworkTool(ctx, 'desktop_screenshot', {}, perms, blockedScope)).ok).toBe(false);
     }
     expect((await executeCoworkTool(ctx, 'desktop_screenshot', {}, { ...perms, browser: false }, scope)).ok).toBe(false);

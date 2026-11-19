@@ -65,4 +65,72 @@ describe('question choices', () => {
     ui.submit.onclick?.();
     expect(ui.api).toHaveBeenCalledWith('/api/answers/style-request', expect.objectContaining({ body: JSON.stringify({ answer: 'Which style? — Compact' }) }));
   });
+
+  it('refuses blank submission on coding question cards and sends clean per-question chiefEntries when remembering', () => {
+    const submit = { disabled: false, onclick: undefined as undefined | (() => void) };
+    const rememberCb = { checked: true, disabled: false, onchange: undefined as undefined | (() => void) };
+    const rememberOpts = { hidden: true };
+    const scopeSelect = { value: 'workspace', disabled: false };
+    const errNode = { textContent: '' };
+    const custom0 = { value: 'Vitest' };
+    const custom1 = { value: 'pnpm' };
+    const div = {
+      className: '',
+      innerHTML: '',
+      onclick: undefined as undefined | ((event: unknown) => void),
+      querySelectorAll: () => [],
+      querySelector: (sel: string) =>
+        sel === '.custom[data-q="0"]' ? custom0
+          : sel === '.custom[data-q="1"]' ? custom1
+            : sel === '.qcard-error' ? errNode
+              : { value: '' },
+    };
+    const stream = { querySelectorAll: () => [], appendChild: vi.fn() };
+    const api = vi.fn(async () => ({}));
+    const context = createContext({
+      S: { sessions: { run: {} } },
+      $: (id: string) => ({ stream, qSend: submit, qRememberChief: rememberCb, qRememberOpts: rememberOpts, qRememberScope: scopeSelect } as Record<string, unknown>)[id],
+      document: { createElement: () => div },
+      pendingQuestionsFor: () => ({
+        id: 'multi-req',
+        questions: [
+          { question: 'Which test runner?', options: ['Vitest', 'Jest'] },
+          { question: 'Which package manager?', options: ['pnpm', 'npm'] },
+        ],
+      }),
+      stickScroll: vi.fn(),
+      api,
+      toast: vi.fn(),
+      esc: (value: string) => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;'),
+    });
+    const placement = UI_HTML.slice(UI_HTML.indexOf('  function placeDecisionCards('), UI_HTML.indexOf('  function renderApprovals('));
+    new Script(CHAT_QUESTION_JS + placement + UI_HTML.slice(UI_HTML.indexOf('  function renderQuestions('), UI_HTML.indexOf('  function renderPlanReview('))).runInContext(context);
+    context.renderQuestions('run', {});
+
+    // Blank submission is blocked with an inline error.
+    custom0.value = '';
+    custom1.value = '';
+    submit.onclick?.();
+    expect(api).not.toHaveBeenCalled();
+    expect(errNode.textContent).toContain('Choose an option or write an answer');
+
+    // Filled multi-question submission sends clean per-question chiefEntries.
+    custom0.value = 'Vitest';
+    custom1.value = 'pnpm';
+    submit.onclick?.();
+    expect(api).toHaveBeenCalledWith(
+      '/api/answers/multi-req',
+      expect.objectContaining({
+        body: JSON.stringify({
+          answer: 'Which test runner? — Vitest\nWhich package manager? — pnpm',
+          rememberForChief: true,
+          chiefScope: 'workspace',
+          chiefEntries: [
+            { question: 'Which test runner?', answer: 'Vitest' },
+            { question: 'Which package manager?', answer: 'pnpm' },
+          ],
+        }),
+      }),
+    );
+  });
 });

@@ -20,19 +20,12 @@
  *    (`PolicyEngine` + `ProjectGuard` for coding, the tool's own validation for
  *    Cowork). A shared catalog is not a shared authorization.
  *
- * `profiles` are deliberately unequal. Coding is not offered Cowork's company,
+ * `profiles` are deliberately unequal. Coding is not offered Cowork's
  * computer, conversation, or teammate management tools; Cowork is not offered
  * shell-adjacent coding tools unless its own grants enable the gate.
  */
 
-/**
- * Who the turn is running as. 'company' is not a third seat: a company agent is
- * a Cowork agent with a company assignment, so it shares the Cowork rules and
- * additionally satisfies the `company` requirements below.
- */
-import { companiesEnabled } from '../workspace/home.js';
-
-export type ToolProfile = 'coding' | 'cowork' | 'company';
+export type ToolProfile = 'coding' | 'cowork';
 
 /** The existing layer that performs the effect. No new dispatcher may be added
  *  without also wiring an execution path — this list is closed on purpose. */
@@ -53,12 +46,6 @@ export interface ToolRoute {
   dispatcher: ToolDispatcher;
   /** Cowork only: the agent grant this capability needs. Absent means ungated. */
   gate?: ToolGate;
-  /**
-   * Cowork only. 'required' withholds the tool unless the agent has a company
-   * assignment; 'bypassGate' offers it to company agents even when its gate is
-   * closed (mission management is owned by the company, not by the chief grant).
-   */
-  company?: 'required' | 'bypassGate';
   /** Cowork only: the MCP call path needs config + shell + writes, not one grant. */
   mcpWritePath?: boolean;
   /**
@@ -317,15 +304,7 @@ const TOOLS: ToolDescriptor[] = [
   // ── Cowork only ──────────────────────────────────────────────────────────
   { id: 'app_manage', routes: { cowork: cowork('chief') } },
   { id: 'team_manage', routes: { cowork: cowork('chief') } },
-  { id: 'mission_manage', routes: { cowork: { ...cowork('chief'), company: 'bypassGate' } } },
-  { id: 'company_manage', routes: { cowork: cowork() } },
-  { id: 'company_files', routes: { cowork: cowork() } },
-  { id: 'company_workflow', routes: { cowork: { ...cowork(), company: 'required' } } },
-  { id: 'company_handbook', routes: { cowork: { ...cowork(), company: 'required' } } },
-  { id: 'company_onboarding', routes: { cowork: { ...cowork(), company: 'required' } } },
-  { id: 'company_organization', routes: { cowork: { ...cowork(), company: 'required' } } },
-  { id: 'company_boardroom', routes: { cowork: { ...cowork(), company: 'required' } } },
-  { id: 'storage', routes: { cowork: cowork() } },
+  { id: 'mission_manage', routes: { cowork: cowork('chief') } },
   { id: 'connection_execute', routes: { cowork: cowork('writes') } },
   { id: 'connection_test', routes: { cowork: cowork() } },
   { id: 'mcp_call', routes: { cowork: { ...cowork(), mcpWritePath: true } } },
@@ -384,10 +363,7 @@ export function codingServiceToolIds(): string[] {
     .map((tool) => tool.id);
 }
 
-export interface CoworkAccessInput extends Partial<ToolGrants> {
-  /** The agent belongs to a company, so company-scoped tools apply. */
-  company?: boolean;
-}
+export interface CoworkAccessInput extends Partial<ToolGrants> {}
 
 function gateOpen(gate: ToolGate | undefined, grants: CoworkAccessInput): boolean {
   switch (gate) {
@@ -414,16 +390,9 @@ function gateOpen(gate: ToolGate | undefined, grants: CoworkAccessInput): boolea
 export function coworkDenial(id: string, grants: CoworkAccessInput): string | undefined {
   const route = TOOL_CATALOG.get(id)?.routes.cowork;
   if (!route) return `${id} is not a Cowork capability.`;
-  if ((route.company === 'required' || id === 'company_manage' || id === 'company_files') && !companiesEnabled())
-    return `${id} is unavailable because company workspaces are disabled.`;
-  if (route.company === 'required' && !grants.company)
-    return `${id} is only available to an agent with a company assignment.`;
   if (route.mcpWritePath && !(grants.allowConfig && grants.allowShell && grants.allowWrites))
     return `${id} needs configuration, shell and write permission together.`;
-  // A company-owned capability bypasses its gate only for an agent that
-  // actually has the assignment; without one the gate still applies.
-  const bypassesGate = route.company === 'bypassGate' && Boolean(grants.company);
-  if (!bypassesGate && !gateOpen(route.gate, grants))
+  if (!gateOpen(route.gate, grants))
     return `${id} is disabled for this agent. The user can enable it in the agent profile.`;
   return undefined;
 }
@@ -435,7 +404,7 @@ export function coworkToolIds(grants: CoworkAccessInput): string[] {
     .map((tool) => tool.id);
 }
 
-/** True when the gate alone is open, ignoring company and MCP-path requirements. */
+/** True when the gate alone is open, ignoring MCP-path requirements. */
 export function coworkGateOpen(id: string, grants: CoworkAccessInput): boolean {
   const route = TOOL_CATALOG.get(id)?.routes.cowork;
   return route ? gateOpen(route.gate, grants) : false;
@@ -469,9 +438,7 @@ export function decideToolAccess(request: ToolAccessRequest): ToolAccessDecision
   const descriptor = TOOL_CATALOG.get(request.tool);
   if (!descriptor)
     return { allowed: false, reason: `${request.tool} is not in the Gitu tool catalog; nothing ran.` };
-  const route =
-    descriptor.routes[request.profile] ??
-    (request.profile === 'company' ? descriptor.routes.cowork : undefined);
+  const route = descriptor.routes[request.profile];
   if (!route)
     return {
       allowed: false,
@@ -480,10 +447,7 @@ export function decideToolAccess(request: ToolAccessRequest): ToolAccessDecision
     };
   if (request.profile === 'coding')
     return { allowed: true, id: descriptor.id, dispatcher: route.dispatcher };
-  const reason = coworkDenial(descriptor.id, {
-    ...(request.grants ?? {}),
-    ...(request.profile === 'company' ? { company: true } : {}),
-  });
+  const reason = coworkDenial(descriptor.id, request.grants ?? {});
   return reason
     ? { allowed: false, id: descriptor.id, reason }
     : { allowed: true, id: descriptor.id, dispatcher: route.dispatcher };
@@ -494,7 +458,7 @@ export function profileToolIds(
   grants: CoworkAccessInput = {},
 ): string[] {
   if (profile === 'coding') return codingServiceToolIds();
-  return coworkToolIds({ ...grants, ...(profile === 'company' ? { company: true } : {}) });
+  return coworkToolIds(grants);
 }
 
 export function toolSchema(id: string): CanonicalToolSchema | undefined {

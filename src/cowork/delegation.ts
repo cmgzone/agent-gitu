@@ -131,7 +131,7 @@ export interface CoworkDelegationDeps {
    * id, which is what the resolution hook is keyed by — never "whatever gate is
    * pending now".
    */
-  openRequest: (input: { scope: DelegationScope; title: string; detail: string; options: string[] }) => { id: string };
+  openRequest: (input: { scope: DelegationScope; title: string; detail: string; options: string[]; delegatedGate?: 'approval' | 'plan_review' | 'questions' }) => { id: string };
   /** Closes a card whose runtime gate ended before anyone answered it. */
   closeRequest?: (requestId: string, resolution?: DelegationResolution) => void;
   /** Release per-session host resources (MCP clients, …) once a run settles. */
@@ -361,8 +361,8 @@ export class CoworkDelegation {
     // Registered as each card is minted, not after the session exists: a gate can
     // be raised the moment the engine starts moving, and a card whose id is not
     // yet mapped would be unanswerable.
-    const surface = (title: string, detail: string, options: string[]): string => {
-      const card = this.deps.openRequest({ scope, title, detail, options });
+    const surface = (title: string, detail: string, options: string[], delegatedGate?: 'approval' | 'plan_review' | 'questions'): string => {
+      const card = this.deps.openRequest({ scope, title, detail, options, ...(delegatedGate ? { delegatedGate } : {}) });
       if (session) this.gates.set(card.id, session.id);
       return card.id;
     };
@@ -387,20 +387,20 @@ export class CoworkDelegation {
         },
         onApprovalRequired: (approval) => {
           const detail = [approval.why, approval.summary].filter(Boolean).join('\n\n');
-          gates.set(surface(`Approve ${approval.tool || 'a gated action'} for @${scope.agent.name}?`, detail, ['Approve', 'Deny']), {
+          gates.set(surface(`Approve ${approval.tool || 'a gated action'} for @${scope.agent.name}?`, detail, ['Approve', 'Deny'], 'approval'), {
             kind: 'approval',
             requestId: approval.id,
           });
         },
         onPlanReviewRequested: (review) => {
-          gates.set(surface(`Review @${scope.agent.name}'s plan before implementation`, planReviewDetail(review), ['Approve', 'Request changes', 'Reject']), {
+          gates.set(surface(`Review @${scope.agent.name}'s plan before implementation`, planReviewDetail(review), ['Approve', 'Request changes', 'Reject'], 'plan_review'), {
             kind: 'plan_review',
             requestId: review.id,
           });
         },
         onQuestionsRequested: (questions) => {
           const first = questions.questions[0];
-          gates.set(surface(first ? first.question : `@${scope.agent.name} needs a decision`, questionsDetail(questions), first?.options ?? []), {
+          gates.set(surface(first ? first.question : `@${scope.agent.name} needs a decision`, questionsDetail(questions), first?.options ?? [], 'questions'), {
             kind: 'questions',
             requestId: questions.id,
           });
@@ -466,6 +466,13 @@ export class CoworkDelegation {
    * the host run this before its own request handling: every other card keeps
    * its existing behaviour untouched.
    */
+  /** Return the live runtime gate kind backing `requestId`, if any. */
+  gateKind(requestId: string): 'approval' | 'plan_review' | 'questions' | undefined {
+    const sessionId = this.gates.get(requestId);
+    if (!sessionId) return undefined;
+    return this.runs.get(sessionId)?.gates.get(requestId)?.kind;
+  }
+
   resolve(requestId: string, action: string, response: string): { ok: true; resolution: DelegationResolution } | { ok: false; error: string } | undefined {
     const sessionId = this.gates.get(requestId);
     if (!sessionId) return undefined;

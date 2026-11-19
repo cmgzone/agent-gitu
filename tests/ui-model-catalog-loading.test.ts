@@ -2,7 +2,6 @@ import { runInNewContext } from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
 import { UI_HTML } from '../src/server/ui.js';
 import { UI_MODEL_CATALOG_JS } from '../src/server/ui-model-catalog.js';
-import { COMPANY_JS } from '../src/server/ui-companies.js';
 
 const provider = (ids: string[]) => ({
   id: 'test-provider', label: 'Test', usable: true, defaultModel: 'configured-default',
@@ -99,13 +98,5 @@ describe('model catalog loading and provider filtering', () => {
     expect(UI_HTML).toContain("catalogSelectOptions(undefined, sel)");
     expect(UI_HTML).toContain('catalogSelectOptions(pid, d.model, query)');
     expect(() => new Function(UI_HTML.split('<script>')[1]!.split('</script>')[0]!)).not.toThrow();
-  });
-
-  it('reuses Cowork profiles for Company leads without a second provider and model picker', () => {
-    expect(COMPANY_JS).toContain("api('/api/cowork/agents')");
-    expect(COMPANY_JS).toContain('Choose your Cowork lead');
-    expect(COMPANY_JS).not.toContain('function companyLeadPicker(');
-    expect(COMPANY_JS).not.toContain('id="companyLeadProvider"');
-    expect(COMPANY_JS).not.toContain('id="companyLeadModel"');
   });
 });

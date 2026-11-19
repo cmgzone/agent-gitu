@@ -90,8 +90,8 @@ function outStagePrompt(button){
   var source=button,overlay=button.closest('.out-ov');
   if(overlay)source=overlay._outCard;
   if(!source||!source.isConnected){if(typeof toast==='function')toast('Open the original chat to use this action.',true);return false;}
-  var root=source.closest('.company-chat')||source.closest('#cw')||source.closest('.run-chat'),input=null;
-  if(root)input=root.querySelector(root.classList.contains('company-chat')?'#companyChatText':root.id==='cw'?'#cwInput':'#follow');
+  var root=source.closest('#cw')||source.closest('.run-chat'),input=null;
+  if(root)input=root.querySelector(root.id==='cw'?'#cwInput':'#follow');
   if(!input||input.disabled||input.readOnly){if(typeof toast==='function')toast('Open this result in its chat to prepare the request.',true);return false;}
   if(input.value.trim()!==prompt.trim()&&!input.value.endsWith('\n\n'+prompt))input.value=(input.value.trim()?input.value+'\n\n':'')+prompt;
   if(overlay&&typeof outClosePanel==='function')outClosePanel();

@@ -41,6 +41,7 @@ export interface ChiefDecisionRecord {
   /** The request in one line, as the transcript or a log would name it. */
   summary: string;
   decision: ChiefDecision;
+  scope?: Record<string, string>;
 }
 
 /**
@@ -77,6 +78,8 @@ export interface ChiefOfStaffOptions {
   historyLimit?: number;
   /** Injectable clock, so a record's timestamp is testable. */
   now?: () => string;
+  /** Optional observer invoked after every recorded decision (never throws). */
+  onDecision?: (record: ChiefDecisionRecord) => void;
 }
 
 const DEFAULT_HISTORY_LIMIT = 50;
@@ -87,6 +90,7 @@ export class ChiefOfStaff implements ChiefResolver {
   private readonly scope?: Record<string, string>;
   private readonly historyLimit: number;
   private readonly now: () => string;
+  private readonly onDecision?: (record: ChiefDecisionRecord) => void;
   private readonly records: ChiefDecisionRecord[] = [];
 
   constructor(options: ChiefOfStaffOptions = {}) {
@@ -95,6 +99,7 @@ export class ChiefOfStaff implements ChiefResolver {
     if (options.scope) this.scope = { ...options.scope };
     this.historyLimit = Math.max(1, options.historyLimit ?? DEFAULT_HISTORY_LIMIT);
     this.now = options.now ?? (() => new Date().toISOString());
+    this.onDecision = options.onDecision;
   }
 
   /** The authority this chief was granted, as it resolved it. */
@@ -170,7 +175,7 @@ export class ChiefOfStaff implements ChiefResolver {
   }
 
   private record(input: ChiefInput, decision: ChiefDecision, source: ChiefDecisionSource): ChiefDecision {
-    this.records.push({
+    const entry: ChiefDecisionRecord = {
       at: this.now(),
       source,
       requestKind: input.request.kind,
@@ -178,8 +183,15 @@ export class ChiefOfStaff implements ChiefResolver {
       signature: requestSignature(input.request),
       summary: describeChiefRequest(input.request),
       decision,
-    });
+      ...(input.context.scope ? { scope: { ...input.context.scope } } : {}),
+    };
+    this.records.push(entry);
     while (this.records.length > this.historyLimit) this.records.shift();
+    try {
+      this.onDecision?.({ ...entry, decision: { ...entry.decision }, ...(entry.scope ? { scope: { ...entry.scope } } : {}) });
+    } catch {
+      /* an audit observer failure never affects the runtime's decision */
+    }
     return decision;
   }
 }

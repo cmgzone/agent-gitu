@@ -155,11 +155,19 @@ export function buildModelContext(input: ModelContextInput): ModelContextResult 
   // two recent messages plus the digest still preserve the immediate exchange.
   const recentHistoryFloor = MIN_RECENT_HISTORY_MESSAGES;
 
-  // Deduplicate consecutive identical messages in history
+  // Deduplicate retry duplicates in history. Tool results with identical text
+  // are NOT duplicates: collapsing them leaves an assistant tool call with no
+  // matching result, which providers reject. Identity is part of the key.
   const dedupedHistory: LlmMessage[] = [];
   for (const m of history) {
     const prev = dedupedHistory[dedupedHistory.length - 1];
-    if (prev && prev.role === m.role && JSON.stringify(prev.content) === JSON.stringify(m.content)) {
+    if (
+      prev &&
+      prev.role === m.role &&
+      JSON.stringify(prev.content) === JSON.stringify(m.content) &&
+      (prev.toolCallId ?? null) === (m.toolCallId ?? null) &&
+      JSON.stringify(prev.toolCalls ?? null) === JSON.stringify(m.toolCalls ?? null)
+    ) {
       continue;
     }
     dedupedHistory.push(m);
@@ -203,11 +211,13 @@ export function buildModelContext(input: ModelContextInput): ModelContextResult 
       input.onTrim?.({ section: 'memory', charsRemoved: before });
       continue;
     }
-    // Keep the normal 12-message tail when it fits. Under pressure, keep
-    // digesting down to two messages instead of stopping above the budget.
-    if (history.length > recentHistoryFloor || (charsOf() > maxChars && history.length > 1)) {
-      const targetFloor = charsOf() > maxChars ? 1 : recentHistoryFloor;
-      const oldCount = Math.max(0, history.length - targetFloor);
+    // Keep the normal 12-message tail while it fits. Only after reaching that
+    // floor do we digest further, down to two messages, to meet a tighter
+    // budget instead of leaving the prompt oversized. (Using a floor of 1
+    // erased the immediate exchange and contradicted the documented floor.)
+    const targetFloor = history.length > recentHistoryFloor ? recentHistoryFloor : 2;
+    if (history.length > targetFloor) {
+      const oldCount = history.length - targetFloor;
       const dropCount = Math.max(1, Math.ceil(oldCount / 2));
       const dropped = history.splice(0, dropCount);
       let droppedChars = 0;
@@ -238,9 +248,13 @@ export function buildModelContext(input: ModelContextInput): ModelContextResult 
       const target = Math.max(500, before - (charsOf() - maxChars));
       if (compactRecentMessage(latest, target)) {
         const removed = before - messageTextChars(latest);
-        trims.push({ section: 'conversation', charsRemoved: removed });
-        input.onTrim?.({ section: 'conversation', charsRemoved: removed });
-        continue;
+        // A no-progress "true" used to re-enter this branch forever, adding a
+        // trim record every iteration until the worker ran out of memory.
+        if (removed > 0) {
+          trims.push({ section: 'conversation', charsRemoved: removed });
+          input.onTrim?.({ section: 'conversation', charsRemoved: removed });
+          continue;
+        }
       }
     }
     break; // continuity floor reached — the budget is advisory at this point

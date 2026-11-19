@@ -109,13 +109,13 @@ describe('universal visual results', () => {
 });
 
 describe('contextual result actions', () => {
-  it.each(['cowork', 'company', 'main'])('stages a request in the %s composer and preserves the draft', scope => {
+  it.each(['cowork', 'main'])('stages a request in the %s composer and preserves the draft', scope => {
     const { context, api, cwSend, sendFollow } = load();
     const input = { value: 'Existing draft', disabled: false, readOnly: false, dispatchEvent: vi.fn(), focus: vi.fn() };
-    const root = { id: scope === 'cowork' ? 'cw' : '', classList: { contains: () => scope === 'company' }, querySelector: vi.fn(() => input) };
-    const button = { isConnected: true, getAttribute: () => 'Draft a reply to Amina about the launch.', closest: (selector: string) => selector === (scope === 'company' ? '.company-chat' : scope === 'cowork' ? '#cw' : '.run-chat') ? root : null };
+    const root = { id: scope === 'cowork' ? 'cw' : '', classList: { contains: () => false }, querySelector: vi.fn(() => input) };
+    const button = { isConnected: true, getAttribute: () => 'Draft a reply to Amina about the launch.', closest: (selector: string) => selector === (scope === 'cowork' ? '#cw' : '.run-chat') ? root : null };
     expect(context.outStagePrompt(button)).toBe(true);
-    expect(root.querySelector).toHaveBeenCalledWith(scope === 'company' ? '#companyChatText' : scope === 'cowork' ? '#cwInput' : '#follow');
+    expect(root.querySelector).toHaveBeenCalledWith(scope === 'cowork' ? '#cwInput' : '#follow');
     expect(input.value).toBe('Existing draft\n\nDraft a reply to Amina about the launch.');
     expect(input.dispatchEvent.mock.calls[0][0].type).toBe('input');
     expect(input.focus).toHaveBeenCalledOnce();

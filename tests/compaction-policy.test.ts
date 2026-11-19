@@ -3,8 +3,9 @@ import {
   COMPACT_CHAR_BUDGET,
   COMPACT_KEEP_RECENT,
   COMPACT_TRIGGER,
-  compactionPolicyForWindow,
   compactHistory,
+  compactRecentMessage,
+  compactionPolicyForWindow,
   type LlmMessage,
 } from '../src/agent/compaction.js';
 import type { LlmMessage as LlmMessageType } from '../src/llm/llm.js';
@@ -84,6 +85,31 @@ describe('compactHistory honors a derived policy', () => {
     for (const result of messages.filter(message => message.role === 'tool')) {
       expect(messages.some(message => message.toolCalls?.some(call => call.id === result.toolCallId))).toBe(true);
     }
+  });
+
+  it('never reports progress for a trim that cannot shrink the message', () => {
+    const head = 'h'.repeat(200);
+    const tail = 't'.repeat(200);
+    const marker = (count: number) =>
+      `\n[... ${count} characters trimmed from recent history; re-read the file or rerun the command for the complete result ...]\n`;
+    const message: LlmMessageType = { role: 'user', content: head + marker(117) + tail };
+    const before = message.content.length;
+    expect(compactRecentMessage(message, 500)).toBe(false);
+    expect(message.content.length).toBe(before);
+  });
+
+  it('shrinks a large message and eventually reports no progress', () => {
+    const message: LlmMessageType = { role: 'user', content: 'x'.repeat(2_000) };
+    const before = message.content.length;
+    let calls = 0;
+    // Each call must make real progress; the rebuild can change the marker's
+    // digit count once, so allow a second pass but require termination.
+    while (compactRecentMessage(message, 500)) {
+      calls += 1;
+      expect(calls).toBeLessThan(5);
+    }
+    expect(calls).toBeGreaterThan(0);
+    expect(message.content.length).toBeLessThan(before);
   });
 
   it('compacts a history that exceeds a small model’s derived budget', () => {

@@ -25,7 +25,7 @@ const app = path.join(stage, 'app');
 mkdirSync(app, { recursive: true });
 if (resume && existsSync(path.join(app, 'package-lock.json')) && !readFileSync(path.join(app, 'package-lock.json')).equals(readFileSync(path.join(root, 'package-lock.json'))))
   throw new Error('Dependency lock changed. Package in a fresh checkout.');
-for (const file of ['dist', 'assets', 'package.json', 'package-lock.json', 'voice-worker', 'deploy', 'docs/company-mode.md'])
+for (const file of ['dist', 'assets', 'package.json', 'package-lock.json', 'voice-worker', 'deploy'])
   if (existsSync(path.join(root, file))) cpSync(path.join(root, file), path.join(app, file), { recursive: true });
 const npmCli = process.env.npm_execpath;
 if (!npmCli || !existsSync(npmCli)) throw new Error('Run packaging with npm run package:cli.');

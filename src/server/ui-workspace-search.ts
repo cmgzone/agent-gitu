@@ -153,7 +153,7 @@ export const WORKSPACE_SEARCH_CSS = String.raw`
   .project-chip { min-height:38px; border-radius:var(--radius-el,12px); border-color:var(--border); background:var(--card); }
   .sb .newbtn:focus-visible,.sb .navitem:focus-visible,.sb .proj:focus-visible,.sb .chat:focus-visible { outline-offset:1px; }
   /* Pikpam Cloud Console tokens & layout for all non-Cowork-chat surfaces (Cowork chat #cw:not(.page-open) stays untouched). */
-  :root:not([data-theme="light"]) :is(.settings,.workspace-search,.home.home-sky,.code-workspace,.run.run-chat,.sb,.cw.page-open,.company-workspace-shell) {
+  :root:not([data-theme="light"]) :is(.settings,.workspace-search,.home.home-sky,.code-workspace,.run.run-chat,.sb,.cw.page-open) {
     --bg:#09090b;
     --sidebar:#0b0c10;
     --card:#111318;

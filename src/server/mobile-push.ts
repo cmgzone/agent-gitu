@@ -12,7 +12,6 @@ export interface PushNotice {
   kind: 'completed' | 'failed' | 'attention' | 'reply' | 'test';
   target: 'run' | 'cowork' | 'home';
   targetId: string;
-  companyId?: string;
   threadId?: string;
   title?: string;
   body?: string;
@@ -98,7 +97,6 @@ export class FcmPushSender implements PushSender {
       workspaceId: workspace,
       target: notice.target,
       targetId: notice.targetId,
-      ...(notice.companyId ? { companyId: notice.companyId } : {}),
       ...(notice.threadId ? { threadId: notice.threadId } : {}),
     };
     await getMessaging(this.app).send({

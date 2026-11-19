@@ -785,7 +785,7 @@ export class ConnectionRegistry {
 
   async webSearch(id: string, query: string, count = 8, signal?: AbortSignal) {
     const profile = this.get(id);
-    if (!profile) throw new Error('Search connection is not available in this workspace or company.');
+    if (!profile) throw new Error('Search connection is not available in this workspace.');
     const token = loadStoredKeys()[keyRef(profile.id)] ?? '';
     let result: Awaited<ReturnType<typeof searchApi>>;
     try {

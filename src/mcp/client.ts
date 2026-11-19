@@ -277,13 +277,11 @@ export class McpManager {
     private readonly configFile: string,
     /** Optional workspace-level layer merged under the project config (project wins on name clashes). */
     private readonly globalFile?: string,
-    private readonly companyScoped=false,
   ) {}
 
   static forProject(repoRoot: string): McpManager {
     return new McpManager(path.join(repoRoot, '.hermes', 'mcp.json'), McpManager.globalConfigFile());
   }
-  static forCompany(repoRoot:string):McpManager{return new McpManager(path.join(repoRoot,'.hermes','mcp.json'),undefined,true);}
 
   /** Workspace-wide MCP layer shared by every project. */
   static globalConfigFile(): string {
@@ -395,7 +393,7 @@ export class McpManager {
       // Project servers run with the project as cwd; global servers run from
       // the workspace home so relative paths stay stable across projects.
       const baseFile = entry.global && this.globalFile ? this.globalFile : this.configFile;
-      client = new McpClient({...entry.config,...(this.companyScoped?{isolatedEnvironment:true}:{})}, path.dirname(path.dirname(baseFile)));
+      client = new McpClient(entry.config, path.dirname(path.dirname(baseFile)));
       this.clients.set(name, client);
       this.clientConfigs.set(name, fingerprint!);
     }

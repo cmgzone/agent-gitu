@@ -182,4 +182,19 @@ describe('teammate app connections', () => {
     context.cwSetAppConnectionState(f.agent.id, { accounts: [] });
     expect(context.cwAppConnectionHtml(request)).toContain('data-cwconnectrequest');
   });
+
+  it('defaults omitted args to {} for zero-argument connected_apps execute calls while rejecting non-object args', async () => {
+    const f = fixture();
+    f.store.assignAppAccount(f.agent.id, 'gmail', 'gmail-own');
+    const review = await f.run({ action: 'execute', service: 'gmail', accountId: 'gmail-own', tool: 'GMAIL_GET_PROFILE' });
+    expect(review.ok).toBe(true);
+    expect(review.output).toContain('Review ');
+    const card = f.store.requests(f.conv.id)[0]!;
+    expect(card.appAction).toEqual({ service: 'gmail', accountId: 'gmail-own', tool: 'GMAIL_GET_PROFILE', args: {} });
+    f.store.resolveRequest(card.id, 'accepted', 'Accepted');
+    const executed = await f.run({ action: 'execute', service: 'gmail', accountId: 'gmail-own', tool: 'GMAIL_GET_PROFILE', approvalId: card.id });
+    expect(executed.ok).toBe(true);
+    expect(f.apps.execute).toHaveBeenCalledWith('gmail', 'GMAIL_GET_PROFILE', {}, 'gmail-own');
+    expect((await f.run({ action: 'execute', service: 'gmail', accountId: 'gmail-own', tool: 'GMAIL_GET_PROFILE', args: ['bad'] })).ok).toBe(false);
+  });
 });

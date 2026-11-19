@@ -22,10 +22,9 @@ function grantMatrix(): CoworkAccessInput[] {
     for (const allowWrites of [false, true])
       for (const allowConfig of [false, true])
         for (const chief of [false, true])
-          for (const browser of [false, true])
-            for (const company of [false, true]) {
-              out.push({ allowShell, allowWrites, allowConfig, chief, browser, company });
-            }
+          for (const browser of [false, true]) {
+            out.push({ allowShell, allowWrites, allowConfig, chief, browser });
+          }
   return out;
 }
 
@@ -82,12 +81,8 @@ function legacyAvailable(input: CoworkAccessInput): string[] {
   };
   return COWORK_TOOLS.filter(
     (t) =>
-      (HISTORICAL_GATES[t.name] === undefined ||
-        gated(HISTORICAL_GATES[t.name]) ||
-        (t.name === 'mission_manage' && Boolean(input.company))) &&
-      (t.name !== 'mcp_call' || (input.allowConfig && input.allowShell && input.allowWrites)) &&
-      (!['company_organization', 'company_boardroom', 'company_handbook', 'company_onboarding', 'company_workflow'].includes(t.name) ||
-        Boolean(input.company)),
+      (HISTORICAL_GATES[t.name] === undefined || gated(HISTORICAL_GATES[t.name])) &&
+      (t.name !== 'mcp_call' || (input.allowConfig && input.allowShell && input.allowWrites)),
   )
     .map((t) => t.name)
     .sort();
@@ -153,7 +148,7 @@ describe('the one tool catalog', () => {
 });
 
 describe('one access decision, two profiles', () => {
-  /** Every grant open, no company assignment. */
+  /** Every grant open. */
   const all: CoworkAccessInput = {
     allowShell: true,
     allowWrites: true,
@@ -175,15 +170,6 @@ describe('one access decision, two profiles', () => {
     });
   });
 
-  it('lets a company own mission management without the chief grant', () => {
-    expect(decideToolAccess({ tool: 'mission_manage', profile: 'cowork', grants: { ...all, chief: false, company: false } })).toMatchObject({
-      allowed: false,
-    });
-    expect(decideToolAccess({ tool: 'mission_manage', profile: 'cowork', grants: { ...all, chief: false, company: true } })).toMatchObject({
-      allowed: true,
-    });
-  });
-
   it('requires the whole MCP write path for mcp_call', () => {
     for (const missing of ['allowConfig', 'allowShell', 'allowWrites'] as const) {
       expect(
@@ -192,11 +178,6 @@ describe('one access decision, two profiles', () => {
       ).toMatchObject({ allowed: false });
     }
     expect(decideToolAccess({ tool: 'mcp_call', profile: 'cowork', grants: all })).toMatchObject({ allowed: true });
-  });
-
-  it('withholds company capabilities from a team without a company', () => {
-    expect(decideToolAccess({ tool: 'company_workflow', profile: 'cowork', grants: all })).toMatchObject({ allowed: false });
-    expect(decideToolAccess({ tool: 'company_workflow', profile: 'company', grants: all })).toMatchObject({ allowed: true });
   });
 
   it('never widens a profile by sharing the id', () => {
@@ -209,7 +190,7 @@ describe('one access decision, two profiles', () => {
       allowed: false,
     });
     // Cowork-only capabilities are not reachable from coding.
-    for (const tool of ['ask_user', 'mission_manage', 'company_boardroom', 'computer_process']) {
+    for (const tool of ['ask_user', 'mission_manage', 'computer_process']) {
       expect(decideToolAccess({ tool, profile: 'coding' }), tool).toMatchObject({ allowed: false });
     }
     // Coding-only capabilities are not reachable from Cowork.

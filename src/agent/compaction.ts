@@ -152,7 +152,12 @@ export function compactRecentMessage(message: LlmMessage, maxChars = COMPACT_REC
           const text = part.text;
           const headBudget = Math.floor(maxChars * 0.4);
           const tailBudget = Math.floor(maxChars * 0.35);
-          part.text = `${text.slice(0, headBudget)}\n[... ${text.length - headBudget - tailBudget} characters trimmed from recent history; re-read file or rerun command for full output ...]\n${text.slice(-tailBudget)}`;
+          const next = `${text.slice(0, headBudget)}\n[... ${text.length - headBudget - tailBudget} characters trimmed from recent history; re-read file or rerun command for full output ...]\n${text.slice(-tailBudget)}`;
+          // A second trim with the same budgets reproduces the same string.
+          // Reporting progress for a non-shrinking rewrite made callers that
+          // retry on `true` loop forever.
+          if (next.length >= text.length) continue;
+          part.text = next;
           modified = true;
         }
       }
@@ -164,7 +169,7 @@ export function compactRecentMessage(message: LlmMessage, maxChars = COMPACT_REC
   const text = message.content;
   if (text.startsWith('COMPACTED HISTORY')) {
     const compressed = compressDigest(text, maxChars);
-    if (compressed === text) return false;
+    if (compressed.length >= text.length) return false;
     message.content = compressed;
     return true;
   }
@@ -172,11 +177,13 @@ export function compactRecentMessage(message: LlmMessage, maxChars = COMPACT_REC
   const tailBudget = Math.floor(maxChars * 0.35);
   const diagnostic = /RESULT \[error\]|\b(error|failed|exception|assertion)\b/i.test(text) ? extractFailureDigest(text, Math.floor(maxChars * 0.25)) : '';
   const availableTail = Math.max(200, tailBudget - diagnostic.length);
-  message.content =
+  const next =
     `${text.slice(0, headBudget)}\n` +
     `[... ${text.length - headBudget - availableTail} characters trimmed from recent history; re-read the file or rerun the command for the complete result ...]\n` +
     (diagnostic ? `DIAGNOSTIC CORE:\n${diagnostic}\n` : '') +
     text.slice(-availableTail);
+  if (next.length >= text.length) return false;
+  message.content = next;
   return true;
 }
 

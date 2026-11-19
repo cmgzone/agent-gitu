@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { runNativeCoworkTurn } from '../src/cowork/codex-native.js';
+import { buildCoworkMessages } from '../src/cowork/runner.js';
 import { CoworkMemory } from '../src/cowork/memory.js';
 import { coworkNativeTools } from '../src/cowork/tools.js';
 import { CoworkStore } from '../src/cowork/store.js';
@@ -85,7 +86,7 @@ describe('native Cowork execution', () => {
       await input.onEvent('item/agentMessage/delta', { itemId: 'answer', delta: 'The result is ' });
       await input.onEvent('item/completed', { item: { id: 'commentary', type: 'agentMessage', phase: 'commentary', text: 'Checking now.' } });
       await input.onEvent('item/completed', { item: { id: 'answer', type: 'agentMessage', phase: 'final_answer', text: 'The result is ready.' } });
-      expect(updates).toEqual(['Checking now.', 'The result is', 'The result is ready.']);
+      expect(updates).toEqual(['Checking now.', 'The result is ', 'The result is ready.']);
     }, text => updates.push(text));
     expect((await f.run()).text).toBe('The result is ready.');
   });
@@ -201,6 +202,28 @@ describe('native Cowork execution', () => {
     expect(input.text).toContain('Follow-up request.');
     expect(input.text).not.toContain('First request.');
     expect(f.runTurn).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not treat dynamic TASK STATE updates on normal follow-ups as message edits', async () => {
+    const f = fixture((input) => finish(input));
+    const first = f.store.appendMessage(f.conversation.id, { role: 'user', text: 'First request.', via: 'web' });
+    await f.run(buildCoworkMessages(f.agent, f.conversation, [f.agent], f.store.messages(f.conversation.id)));
+
+    f.store.appendMessage(f.conversation.id, { role: 'agent', agentId: f.agent.id, agentName: f.agent.name, text: 'Done.', via: 'web' });
+    f.store.appendMessage(f.conversation.id, { role: 'user', text: 'Follow-up request.', via: 'web' });
+    await f.run(buildCoworkMessages(f.agent, f.conversation, [f.agent], f.store.messages(f.conversation.id)));
+
+    const secondTurn = f.runTurn.mock.calls[1]![0];
+    expect(secondTurn.threadId).toBe('native-thread');
+    expect(secondTurn.text).toContain('Follow-up request.');
+    expect(secondTurn.text).not.toContain('First request.');
+    expect(secondTurn.text).not.toContain('Updated conversation context (earlier messages were edited');
+    expect(secondTurn.instructions).toContain('TASK STATE (Cowork conversation context):');
+
+    f.store.reviseMessage(f.conversation.id, first.id, { text: 'Revised first request.' });
+    await f.run(buildCoworkMessages(f.agent, f.conversation, [f.agent], f.store.messages(f.conversation.id)));
+    const thirdTurn = f.runTurn.mock.calls[2]![0];
+    expect(thirdTurn.text).toContain('Updated conversation context (earlier messages were edited; do not replay completed tools):');
   });
 
   it('rejects a function outside the agent grant and all direct OS expansions', async () => {

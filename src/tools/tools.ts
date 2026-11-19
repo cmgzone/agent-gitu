@@ -25,23 +25,12 @@ import { getVault } from '../vault/vault.js';
 
 export interface ToolContext {
   appManagement?: (params: Record<string, unknown>, actor: { agentId: string; conversationId?: string }) => Promise<ToolResult>;
-  /** Trusted owner grant, checked live before Company work uses the runtime host. */
-  companyHostComputer?: () => boolean;
   onComputerLocation?: (location: 'host' | 'private') => void;
   connectionResponseScope?: string;
   authorizeTool?: (tool: string, params: Record<string, unknown>) => Promise<ToolResult | undefined>;
   toolDidExecute?: (tool: string, params: Record<string, unknown>, result: ToolResult) => void;
   externalHeaders?: (tool: string, params: Record<string, unknown>) => Record<string, string>;
   externalArguments?: (tool: string, params: Record<string, unknown>) => Record<string, unknown>;
-  storage?: (params: Record<string, unknown>, scope: { conversationId: string; agentId: string }) => Promise<ToolResult & { artifactId?: string }>;
-  companyFiles?: (params: Record<string, unknown>, scope: { conversationId: string; agentId: string }) => Promise<ToolResult & { artifactId?: string }>;
-  companyManagement?: (params: Record<string, unknown>, scope: { conversationId: string; agentId: string; threadId?: string }) => Promise<ToolResult>;
-  companyOrganization?: (params: Record<string, unknown>, scope: { agentId: string }) => Promise<ToolResult>;
-  companyBoardroom?: (params: Record<string, unknown>, scope: { agentId: string }) => Promise<ToolResult>;
-  companyOrganizationContext?: () => string;
-  companyHandbook?: (params: Record<string, unknown>, scope: { agentId: string }) => Promise<ToolResult>;
-  companyWorkflow?: (params: Record<string, unknown>, scope: { agentId: string;conversationId?:string;threadId?:string }) => Promise<ToolResult>;
-  companyOnboarding?: (params: Record<string, unknown>, scope: { agentId: string }) => Promise<ToolResult>;
   missionSessionLimit?: () => number;
   signal?: AbortSignal;
   guard: ProjectGuard;

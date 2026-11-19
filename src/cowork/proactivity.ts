@@ -168,7 +168,7 @@ export class Proactivity {
       delete data.assistantId;
       delete data.assistantConversationId;
     }
-    const existing = store.listAgents().find((agent) => !agent.companyId && /^p[.\s]*a[.\s]*$/i.test(agent.name));
+    const existing = store.listAgents().find((agent) => /^p[.\s]*a[.\s]*$/i.test(agent.name));
     let agent = store.saveAgent({
       ...existing,
       name: existing?.name ?? 'P.A',

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ChiefOfStaff } from '../src/chief/chief.js';
-import { modelChiefAdvisor, parseChiefAdvisorReply } from '../src/chief/advisor.js';
+import { chiefAdvisorPrompt, modelChiefAdvisor, parseChiefAdvisorReply } from '../src/chief/advisor.js';
 import { DEFAULT_AUTHORITY_POLICY, resolveAuthorityPolicy } from '../src/chief/authority.js';
 import { createBudgetAccount } from '../src/coding/budget.js';
 import type { ChiefAdvisorRequest, ChiefInput } from '../src/coding/chief.js';
@@ -273,5 +273,44 @@ describe('model chief advisor — a hung provider is not allowed to hold the gat
     await decide(advisorRequest(question('q'.repeat(9_000))));
     const prompt = String(llm.calls[0]![1]!.content);
     expect(prompt.length).toBeLessThan(7_000);
+  });
+});
+
+describe('model chief advisor — project and memory context', () => {
+  it('omits extra context sections when absent and includes them when provided', () => {
+    const withoutExtra = String(chiefAdvisorPrompt(question(), [], DEFAULT_AUTHORITY_POLICY)![1]!.content);
+    expect(withoutExtra).not.toContain('PROJECT CONTEXT');
+    expect(withoutExtra).not.toContain('TEAM & WORKSPACE MEMORY');
+
+    const withExtra = String(
+      chiefAdvisorPrompt(question(), [], DEFAULT_AUTHORITY_POLICY, {
+        project: 'Stack: TypeScript\nTest command: npm test',
+        memory: '- Prefer additive Postgres migrations',
+      })![1]!.content,
+    );
+    expect(withExtra).toContain('PROJECT CONTEXT');
+    expect(withExtra).toContain('Test command: npm test');
+    expect(withExtra).toContain('TEAM & WORKSPACE MEMORY');
+    expect(withExtra).toContain('Prefer additive Postgres migrations');
+  });
+
+  it('forwards lazy project/memory providers and tolerates failing context callbacks', async () => {
+    const llm = new RecordingLlm({ reply: '{"answer":"Use npm test cleanly."}' });
+    const decide = modelChiefAdvisor({
+      llm,
+      providerId: 'test-provider',
+      model: 'test-model',
+      priceOf,
+      policy: DEFAULT_AUTHORITY_POLICY,
+      projectContext: () => 'Project: AgentGitu\nStack: Node, TypeScript',
+      memoryContext: () => {
+        throw new Error('memory offline');
+      },
+    });
+    await expect(decide(advisorRequest(question()))).resolves.toEqual({ action: 'answer', answer: 'Use npm test cleanly.' });
+    const prompt = String(llm.calls[0]![1]!.content);
+    expect(prompt).toContain('PROJECT CONTEXT');
+    expect(prompt).toContain('Project: AgentGitu');
+    expect(prompt).not.toContain('TEAM & WORKSPACE MEMORY');
   });
 });

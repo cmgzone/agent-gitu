@@ -6,7 +6,6 @@ import type { MailConnections } from '../src/connections/mail.js';
 import type { InboxArrival } from '../src/connections/mail-inbox-monitor.js';
 import { GituServer } from '../src/server/server.js';
 import type { CoworkStore } from '../src/cowork/store.js';
-import type { CompanyStore } from '../src/company/store.js';
 
 const prior = process.env['AGENT_GITU_HOME'];
 const servers: GituServer[] = [];
@@ -19,12 +18,9 @@ function fixture() {
   const server = new GituServer({ cwd: process.env['AGENT_GITU_HOME']!, port: 0, passwordRequired: false, mailConnections: mail as unknown as MailConnections, mailInboxWatching: false, llm: { name: 'fixture', async complete() { return 'Here is the new email summary.'; } }, coworkCompletionProtocol: 'legacy' });
   servers.push(server);
   const internal = server as unknown as {
-    cowork(): CoworkStore; companies(): CompanyStore;
+    cowork(): CoworkStore;
     coworkRuns: Map<string, { busy: boolean }>;
-    companyScope: { run<T>(scope: { id: string; version: number }, run: () => T): T };
     deliverInboxArrival(event: InboxArrival, current: () => boolean): Promise<boolean>;
-    executeCompanyJob(job: unknown): Promise<void>;
-    ensureCompanyCoordinator(): void;
     dispatchAgentWake(conversationId: string, agentId: string, text: string, via: string, options: { triggerId: string }): boolean;
   };
   const store = internal.cowork();
@@ -72,29 +68,5 @@ describe('new-email agent wake delivery', () => {
     expect(await f.internal.deliverInboxArrival(event, () => true)).toBe(true);
     expect(f.store.listConversations()).toEqual([]);
     expect(await f.internal.deliverInboxArrival(event, () => false)).toBe(false);
-  });
-
-  it('durably queues company mail with its account and rechecks grants before waking', async () => {
-    const f = fixture();
-    f.store.unassignAppAccount(f.agent.id, f.account.id);
-    const company = f.internal.companies().create({ name: 'Mail team' });
-    f.internal.companies().update(company.id, { accountIds: [f.account.id] });
-    let companyAgentId = '';
-    f.internal.companyScope.run({ id: company.id, version: company.directionVersion }, () => {
-      const scoped = f.internal.cowork(), agent = scoped.saveAgent({ name: 'Company assistant', systemPrompt: 'Summarize mail' });
-      companyAgentId = agent.id; scoped.assignAppAccount(agent.id, 'mail', f.account.id);
-    });
-    f.internal.companies().update(company.id, { purpose: 'Watch the inbox', leadId: companyAgentId, monthlyBudgetUsd: 1, fileLimitChosen: true });
-    f.internal.companies().transition(company.id, 'running');
-    vi.spyOn(f.internal, 'ensureCompanyCoordinator').mockImplementation(() => {});
-    expect(await f.internal.deliverInboxArrival(event, () => true)).toBe(true);
-    expect(await f.internal.deliverInboxArrival(event, () => true)).toBe(true);
-    const jobs = f.internal.companies().jobs(company.id);
-    expect(jobs).toHaveLength(1);
-    expect(jobs[0]?.payload).toMatchObject({ agentId: companyAgentId, mailAccountId: f.account.id, inboxEventId: event.id + '-' + companyAgentId });
-    f.internal.companyScope.run({ id: company.id, version: company.directionVersion }, () => f.internal.cowork().unassignAppAccount(companyAgentId, f.account.id));
-    const dispatch = vi.spyOn(f.internal, 'dispatchAgentWake');
-    await f.internal.executeCompanyJob(jobs[0]);
-    expect(dispatch).not.toHaveBeenCalled();
   });
 });

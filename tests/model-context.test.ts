@@ -108,7 +108,7 @@ describe('buildModelContext — unified context authority', () => {
     expect(result.messages.filter((m) => String(m.content).startsWith('recent '))).toHaveLength(MIN_RECENT_HISTORY_MESSAGES);
   });
 
-  it('drops OLDEST history first but preserves the v0.2.1-style 12-message recent tail', () => {
+  it('drops OLDEST history first but preserves the 12-message recent tail when it fits', () => {
     const longHistory: LlmMessage[] = Array.from({ length: 20 }, (_x, i) => ({
       role: i % 2 ? 'assistant' : 'user',
       content: `turn ${i} ${'h'.repeat(800)}`,
@@ -116,16 +116,36 @@ describe('buildModelContext — unified context authority', () => {
     const result = buildModelContext({
       system: SYSTEM,
       conversationHistory: longHistory,
-      budget: { maxChars: 3000 },
+      budget: { maxChars: 13_000 },
     });
     expect(result.trims.filter((t) => t.section === 'conversation').length).toBeGreaterThan(0);
     const retained = result.messages.filter((m) => String(m.content).startsWith('turn '));
-    expect(retained).toHaveLength(MIN_RECENT_HISTORY_MESSAGES);
-    expect(String(retained[0]!.content)).toContain('turn 8');
+    expect(retained.length).toBeGreaterThanOrEqual(MIN_RECENT_HISTORY_MESSAGES);
+    expect(String(retained[0]!.content)).toContain(`turn ${20 - retained.length} `);
     expect(String(retained.at(-1)!.content)).toContain('turn 19');
   });
 
-  it('never trims below the continuity floor even when the budget is impossible', () => {
+  it('keeps distinct tool results that share identical text', () => {
+    const result = buildModelContext({
+      system: SYSTEM,
+      conversationHistory: [
+        {
+          role: 'assistant',
+          content: '',
+          toolCalls: [
+            { id: 'call-a', name: 'read_file', arguments: { path: 'a.ts' } },
+            { id: 'call-b', name: 'read_file', arguments: { path: 'b.ts' } },
+          ],
+        },
+        { role: 'tool', toolCallId: 'call-a', content: 'same output' },
+        { role: 'tool', toolCallId: 'call-b', content: 'same output' },
+      ],
+    });
+    const toolMessages = result.messages.filter((m) => m.role === 'tool');
+    expect(toolMessages.map((m) => m.toolCallId)).toEqual(['call-a', 'call-b']);
+  });
+
+  it('keeps a two-message floor when the budget is impossible', () => {
     const result = buildModelContext({
       system: SYSTEM,
       strategy: STRATEGY,
@@ -135,7 +155,11 @@ describe('buildModelContext — unified context authority', () => {
     });
     expect(result.totalChars).toBeGreaterThan(100); // advisory, not destructive
     expect(result.messages[0]!.content).toBe(SYSTEM);
-    expect(result.messages.filter((m) => String(m.content).startsWith('turn '))).toHaveLength(HISTORY.length);
+    // The immediate exchange survives; everything older is in the digest.
+    const retained = result.messages.filter((m) => String(m.content).startsWith('turn '));
+    expect(retained).toHaveLength(2);
+    expect(String(retained.at(-1)!.content)).toContain('turn 5');
+    expect(result.messages.some((m) => String(m.content).startsWith('COMPACTED HISTORY'))).toBe(true);
   });
 
   it('defaults to the documented budget constant', () => {
@@ -182,7 +206,7 @@ describe('digest-before-trim invariant (never lose uncompacted history)', () => 
     })) as LlmMessage[];
     const result = buildModelContext({ system: SYSTEM, conversationHistory: history, budget: { maxChars: 1500 } });
     expect(result.messages.some((m) => String(m.content).startsWith('COMPACTED HISTORY'))).toBe(true);
-    expect(result.messages.filter((m) => String(m.content).startsWith('turn '))).toHaveLength(MIN_RECENT_HISTORY_MESSAGES);
+    expect(result.messages.filter((m) => String(m.content).startsWith('turn '))).toHaveLength(2);
   });
 });
 

@@ -148,7 +148,6 @@ export interface GituHostBridge {
     profileAgentId?: string;
     profileSection?: string;
     learn?: {mode?: string};
-    enableCompanies?: boolean;
   };
   api<T = unknown>(url: string, opts?: RequestInit): Promise<T>;
   toast(message: string, isError?: boolean): void;

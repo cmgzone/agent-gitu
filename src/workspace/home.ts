@@ -164,8 +164,8 @@ export interface WorkspaceSettings {
    *  skillApproval stages every cowork skill write for user review instead of
    *  applying it directly. */
   coworkLearning?: { mode?: 'reactive' | 'proactive' | 'off'; consolidate?: boolean; review?: boolean; reviewEvery?: string; skillApproval?: boolean };
-  /** Toggle company workspaces (experimental). Defaults to on; off hides the company UI and pauses company schedulers. */
-  enableCompanies?: boolean;
+  /** Maximum attachment/upload size in bytes, or null for Unlimited. */
+  maxFileBytes?: number | null;
 }
 
 export interface CustomProviderProfile {
@@ -263,7 +263,12 @@ export function loadWorkspaceSettings(): WorkspaceSettings {
   const customProviders = sanitizeCustomProviders(data['customProviders']);
   const coworkLearning = sanitizeCoworkLearning(data['coworkLearning']);
   const autonomy = sanitizeAutonomy(data['autonomy']);
-  const enableCompanies = typeof data['enableCompanies'] === 'boolean' ? data['enableCompanies'] : undefined;
+  const maxFileBytes =
+    data['maxFileBytes'] === null
+      ? null
+      : typeof data['maxFileBytes'] === 'number' && Number.isSafeInteger(data['maxFileBytes']) && data['maxFileBytes'] >= 1
+        ? data['maxFileBytes']
+        : undefined;
   return {
     projectsPath,
     ...(data['codingAccess'] === 'ask' || data['codingAccess'] === 'full' ? { codingAccess: data['codingAccess'] } : {}),
@@ -271,7 +276,7 @@ export function loadWorkspaceSettings(): WorkspaceSettings {
     ...(customProviders ? { customProviders } : {}),
     ...(coworkLearning ? { coworkLearning } : {}),
     ...(autonomy ? { autonomy } : {}),
-    ...(enableCompanies !== undefined ? { enableCompanies } : {}),
+    ...(maxFileBytes !== undefined ? { maxFileBytes } : {}),
   };
 }
 
@@ -302,9 +307,9 @@ export function updateWorkspaceSettings(patch: Partial<WorkspaceSettings>): Work
     if (autonomy) merged.autonomy = autonomy;
     else delete merged.autonomy;
   }
-  if ('enableCompanies' in patch) {
-    if (typeof patch.enableCompanies === 'boolean') merged.enableCompanies = patch.enableCompanies;
-    else delete merged.enableCompanies;
+  if ('maxFileBytes' in patch) {
+    if (patch.maxFileBytes === undefined) delete merged.maxFileBytes;
+    else merged.maxFileBytes = fileLimit(patch.maxFileBytes);
   }
   saveWorkspaceSettings(merged);
   return merged;
@@ -314,11 +319,22 @@ export function saveWorkspaceSettings(settings: WorkspaceSettings): void {
   writeJson(settingsFile(), settings);
 }
 
-export function companiesEnabled(): boolean {
-  const env = process.env['AGENT_GITU_ENABLE_COMPANIES'];
-  if (env === '0' || env === 'false' || env === 'off') return false;
-  if (env === '1' || env === 'true' || env === 'on') return true;
-  return loadWorkspaceSettings().enableCompanies !== false;
+export function fileLimit(value: unknown): number | null {
+  if (value === null) return null;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
+    throw new Error('Choose Unlimited or a positive file size in bytes.');
+  }
+  return value;
+}
+
+export function workspaceFileLimit(): number | null {
+  return loadWorkspaceSettings().maxFileBytes ?? null;
+}
+
+export function setWorkspaceFileLimit(value: unknown): number | null {
+  const limit = fileLimit(value);
+  updateWorkspaceSettings({ maxFileBytes: limit });
+  return limit;
 }
 
 export function isDriveRoot(p: string): boolean {

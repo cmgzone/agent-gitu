@@ -94,9 +94,6 @@
   function refocusEl(el) { if (el && el.isConnected && el.focus) { try { el.focus(); } catch (e) {} } }
   /* GITU_BINDING_COWORK_JS */
   /* GITU_BINDING_FILE_UPLOAD_JS */
-  /* GITU_BINDING_COMPANY_JS */
-  /* GITU_BINDING_COMPANY_CONNECTIONS_JS */
-  /* GITU_BINDING_COMPANY_WALLETS_JS */
   /* GITU_BINDING_VOICE_JS */
   /* GITU_BINDING_COWORK_GALLERY_JS */
   /* GITU_BINDING_COWORK_PROFILE_JS */
@@ -111,7 +108,6 @@
   window.gituOpenPushTarget = async function (target) {
     if (!target || !['run','cowork','home'].includes(target.target)) throw new Error('Invalid notification destination.');
     if (target.target !== 'home' && !/^[\w-]{1,150}$/.test(target.targetId || '')) throw new Error('Invalid notification destination.');
-    if (target.companyId && !/^[\w-]{1,150}$/.test(target.companyId)) throw new Error('Invalid company destination.');
     if (target.threadId && !/^[\w-]{1,150}$/.test(target.threadId)) throw new Error('Invalid thread destination.');
     closeSettings();
     if (typeof toggleMobileNav === 'function') toggleMobileNav(false);
@@ -121,7 +117,6 @@
       if (cancel && cancel.onclick) cancel.click(); else modal.remove();
     }
     if (target.target === 'run') { openRun(target.targetId); return; }
-    if (target.target === 'cowork' && target.companyId) { await companyOpen(target.companyId); Companies.tab = 'Chat'; companyRender(); return; }
     if (target.target === 'cowork') {
       if (typeof cwClosePanels === 'function') cwClosePanels();
       if (S.active !== 'cowork' || !$('cw')) openCowork();

@@ -45,7 +45,7 @@ describe('Cowork selected project awareness', () => {
     expect(existsSync(path.join(unmarked, 'package.json'))).toBe(false);
   });
 
-  it('roots personal host agents in the selected project across prompt, tools, and dynamic switches while keeping company agents isolated', async () => {
+  it('roots personal host agents in the selected project across prompt, tools, and dynamic switches', async () => {
     const home = makeDir('cowork-selected-home-');
     process.env.AGENT_GITU_HOME = home;
     const defaultWorkspace = path.join(home, 'Workspace');
@@ -106,27 +106,7 @@ describe('Cowork selected project awareness', () => {
       allowShell: true,
     });
 
-    const company = internal.companies().create({ name: 'Isolated Corp' });
-
     expect((await api('/api/model-selection', { projectPath: projA })).status).toBe(200);
-
-    const { companyAgent, companyMeta, companyCtx } = internal.companyScope.run(
-      { id: company.id, version: company.directionVersion },
-      () => {
-        const saved = internal.cowork().saveAgent({
-          name: 'Corp Worker',
-          systemPrompt: 'Work on company tasks.',
-          useHostComputer: true,
-          allowWrites: true,
-          allowShell: true,
-        });
-        return {
-          companyAgent: saved,
-          companyMeta: internal.coworkComputerContext(saved, 'conv-co'),
-          companyCtx: internal.coworkToolContext(saved),
-        };
-      },
-    );
 
     const hostCtx = internal.coworkToolContext(hostAgent);
     expect(hostCtx.cwd).toBe(realpathSync(projA));
@@ -151,12 +131,6 @@ describe('Cowork selected project awareness', () => {
     const sandboxMeta = internal.coworkComputerContext(sandboxAgent, 'conv-sandbox');
     expect(sandboxMeta).toContain(JSON.stringify(projA));
     expect(sandboxMeta).toContain('"isActiveWorkspace":false');
-
-    expect(companyAgent.companyId).toBe(company.id);
-    expect(companyMeta).not.toContain(projA);
-    expect(companyMeta).not.toContain(JSON.stringify(projA));
-    expect(companyMeta).not.toContain('selectedProject');
-    expect(companyCtx.cwd).not.toBe(realpathSync(projA));
 
     // Send a live Cowork chat turn and inspect the system prompt built by runner.ts
     const convRes = await api('/api/cowork/conversations', { kind: 'dm', memberIds: [hostAgent.id] });

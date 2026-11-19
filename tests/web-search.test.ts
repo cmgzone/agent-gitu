@@ -6,8 +6,6 @@ import { ConnectionRegistry } from '../src/connections/connections.js';
 import { toolWebSearch, validateToolParams } from '../src/tools/tools.js';
 import { executeCoworkTool, coworkNativeTools } from '../src/cowork/tools.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
-import { CompanyStore } from '../src/company/store.js';
-import { companyPolicy } from '../src/company/policy.js';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -76,7 +74,7 @@ describe('API-first public research', () => {
     await expect(f.registry.invokeRead(f.profile.id, 'validate')).rejects.toThrow('Use web_search');
     expect(f.registry.get(f.profile.id)?.authState?.status).toBe('valid');
   });
-  it('enforces company grants and revocation, and never silently selects between multiple accounts', async () => {
+  it('enforces scoped grants and revocation, and never silently selects between multiple accounts', async () => {
     const f = setup();
     let allowed = true;
     const scoped = f.registry.scoped(() => allowed),
@@ -120,36 +118,6 @@ describe('API-first public research', () => {
     expect(result.ok).toBe(false);
     expect(fetch).not.toHaveBeenCalled();
     expect(validateToolParams('web_search', { query: 'x', count: 100 }).valid).toBe(false);
-  });
-  it('runs Company research with browser and shell disabled and no private computer', async () => {
-    const f = setup(),
-      store = new CompanyStore(f.root);
-    try {
-      const company = store.create({ purpose: 'Research', monthlyBudgetUsd: null, maxFileBytes: null });
-      store.update(company.id, { leadId: 'lead', connectionIds: [f.profile.id] });
-      store.transition(company.id, 'running');
-      const policy = companyPolicy(store, company.id, 'lead', 0),
-        computerFor = vi.fn(() => {
-          throw Error('Computer should not be provisioned for API research');
-        });
-      vi.stubGlobal(
-        'fetch',
-        vi.fn(async () => new Response(JSON.stringify({ web: { results: [] } }), { headers: { 'content-type': 'application/json' } })),
-      );
-      const scope = { agent: { id: 'lead', companyId: company.id }, computerFor } as never;
-      const result = await executeCoworkTool(
-        { ...f.ctx, connections: f.registry.scoped((id) => store.get(company.id)?.connectionIds.includes(id) ?? false), authorizeTool: policy.authorize },
-        'web_search',
-        { query: 'Research' },
-        { allowShell: false, allowWrites: false, allowConfig: false, browser: false, chief: false },
-        scope,
-      );
-      expect(result.ok).toBe(true);
-      expect(computerFor).not.toHaveBeenCalled();
-      expect((await policy.authorize('web_search', { connectionId: 'another-company' }))?.output).toContain('not granted');
-      expect(coworkNativeTools({ allowShell: false, allowWrites: false, allowConfig: false, chiefOfStaff: false }, false).some((tool) => tool.name === 'web_search')).toBe(true);
-    } finally {
-      store.close();
-    }
+    expect(coworkNativeTools({ allowShell: false, allowWrites: false, allowConfig: false, chiefOfStaff: false }, false).some((tool) => tool.name === 'web_search')).toBe(true);
   });
 });

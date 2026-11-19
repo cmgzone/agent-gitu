@@ -457,7 +457,7 @@ export const CONNECTED_APPS_JS = String.raw`
       + '<label for="cwMailUsername">Username (only if it differs from the address)</label><input id="cwMailUsername" type="text" autocomplete="username">'
       + '</details><label class="cw-mail-check"><input id="cwMailWatch" type="checkbox" checked> React when new email arrives</label><button class="btn dark" type="submit">Connect mailbox</button><p id="cwMailError" role="alert" class="cw-services-error" hidden></p></form>';
     var saved = available.length ? '<h3 class="cw-mail-subhead">Saved mailboxes</h3><div class="cw-service-grid">' + available.map(function (account) { return row(account, false); }).join('') + '</div>' : '';
-    return '<section class="cw-service-section cw-mail-section" aria-label="Email"><h2>Email</h2><p>' + (scope ? 'Connect a company mailbox over IMAP/SMTP. Choose team access above; existing permission rules still apply.' : 'Connect any mailbox over IMAP/SMTP - hosted or self-hosted. Only the selected teammate can use it.') + '</p>'
+    return '<section class="cw-service-section cw-mail-section" aria-label="Email"><h2>Email</h2><p>Connect any mailbox over IMAP/SMTP - hosted or self-hosted. Only the selected teammate can use it.</p>'
       + (assigned.length ? '<div class="cw-service-grid">' + assigned.map(function (account) { return row(account, true); }).join('') + '</div>' : '') + saved
       + '<div class="cw-mail-actions"><button class="btn dark" type="button" id="cwMailAdd">' + (assigned.length || available.length ? 'Connect another mailbox' : 'Connect a mailbox') + '</button></div>' + form + '</section>';
   }
@@ -591,7 +591,7 @@ export const CONNECTED_APPS_JS = String.raw`
       try {
         var result = await request('/api/connected-apps/mail', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
         if (password) password.value = '';
-        toast(result && result.warning ? result.warning : scope ? 'Mailbox connected to this company.' : 'Mailbox connected. This teammate can read and send mail.');
+        toast(result && result.warning ? result.warning : 'Mailbox connected. This teammate can read and send mail.');
         reload();
       } catch (e) {
         if (error) { error.textContent = cwMailErrorText(e, 'Could not connect this mailbox. Check the server settings and the password.'); error.hidden = false; }

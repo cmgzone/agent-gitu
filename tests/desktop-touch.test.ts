@@ -33,7 +33,7 @@ describe('desktop phone touch controls',()=>{
     f.nodes['touch-zoom']!.onclick!();expect(f.rfb).toEqual({scaleViewport:true,clipViewport:false,dragViewport:false});
     expect(f.fetch).not.toHaveBeenCalled();f.controls!.close();
   });
-  it.each(['/api/cowork/agents/test/computer','/api/companies/company/cowork/agents/test/computer','/api/chrome-profile'])('takes private control before sending phone IME text through %s',async endpoint=>{
+  it.each(['/api/cowork/agents/test/computer','/api/chrome-profile'])('takes private control before sending phone IME text through %s',async endpoint=>{
     const f=fixture({endpoint});f.controls!.connected();expect(f.fetch).not.toHaveBeenCalled();
     f.nodes['touch-toggle']!.onclick!();await vi.waitFor(()=>expect(f.nodes['touch-send']!.disabled).toBe(false));
     expect(JSON.parse(f.fetch.mock.calls[0]![1].body)).toEqual({action:'take-control'});

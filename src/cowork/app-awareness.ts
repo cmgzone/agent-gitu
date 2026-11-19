@@ -16,8 +16,7 @@ const refreshes = new WeakMap<ConnectedAppsProvider, Promise<{ at: number; accou
 
 export async function appAwareness(apps: ConnectedAppsProvider | undefined, store: CoworkStore, agentId: string, waitMs = 1200): Promise<AppAwareness> {
   const assigned = store.appConnections(agentId);
-  const companyScoped=Boolean(apps?.companyId&&apps.companyId===store.getAgent(agentId)?.companyId);
-  if (!assigned.length&&!companyScoped) return { accounts: [], verified: true, context: 'APP ACCESS: No app accounts are assigned to you. You cannot access accounts assigned to another teammate. Offer a Connect card when the task needs an app.' };
+  if (!assigned.length) return { accounts: [], verified: true, context: 'APP ACCESS: No app accounts are assigned to you. You cannot access accounts assigned to another teammate. Offer a Connect card when the task needs an app.' };
   let current = apps && cache.get(apps), verified = Boolean(current && Date.now() - current.at < 30_000 && assigned.every(connection => current!.accounts.some(account => account.id === connection.accountId)));
   if (apps?.configured && !verified) {
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -37,7 +36,7 @@ export async function appAwareness(apps: ConnectedAppsProvider | undefined, stor
     } catch { /* Report uncertainty instead of inventing a disconnection. */ }
     finally { if (timer) clearTimeout(timer); }
   }
-  const accounts = verified && current ? current.accounts.filter(account => companyScoped||store.appAccountAssigned(agentId, account.toolkit, account.id)) : assigned.map(account => ({ id: account.accountId, toolkit: account.service, status: 'UNKNOWN', disabled: false }));
+  const accounts = verified && current ? current.accounts.filter(account => store.appAccountAssigned(agentId, account.toolkit, account.id)) : assigned.map(account => ({ id: account.accountId, toolkit: account.service, status: 'UNKNOWN', disabled: false }));
   if (verified && current?.incomplete) for (const connection of assigned) {
     if (connection.service !== 'mail' && !accounts.some(account => account.id === connection.accountId)) accounts.push({ id: connection.accountId, toolkit: connection.service, status: 'UNKNOWN', disabled: false });
   }

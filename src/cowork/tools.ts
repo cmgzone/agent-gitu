@@ -152,13 +152,7 @@ const COMPUTER_ROUTED_TOOLS = [
  * dispatch as well, by depth. The child prompt omits these from its docs.
  */
 export const SUBAGENT_BLOCKED_TOOLS = [
-  'company_manage',
   'app_manage',
-  'company_organization',
-  'company_boardroom',
-  'company_handbook',
-  'company_onboarding',
-  'company_workflow',
   'spawn_sub_agent',
   'gitu_task',
   'computer_handoff',
@@ -198,31 +192,14 @@ export interface CoworkToolDoc {
 }
 
 export const COWORK_TOOLS: CoworkToolDoc[] = [
-  {name:'app_manage',doc:'Manage Gitu app settings and internal work as chief of staff. actions: read_settings; set_model {provider,model} saves the user-selected default used by Main Agent Gitu; set_project {projectPath}; set_settings {input:{theme,mode,autonomy,fallbackModels,coworkLearning}}; list_models; list_tasks; get_task {runId}; stop_task {runId}; send_task {runId,text}; delete_task {runId}; list_checkpoints {runId}; rollback_task {runId,checkpointId}; list_conversations; send_message {conversationId,agentId,text}; delete_conversation {conversationId}; list_agents; delete_agent {agentId}; set_agent_model {agentId,provider,model}; list_companies; delete_company {companyId}. Use exact IDs from list results. Delete only the items the user requests. Company deletion saves a recovery snapshot and retains project files. Changes persist; future coding tasks use the saved selection. Internal messages queue for the intended teammate. Company chiefs remain inside their company. Credentials, security grants and action approvals use their existing secure controls.'},
-  {name:'company_workflow',doc:'Create durable Company workflows with action=propose (alias create), available to active permanent employees without designer authority. Pass input={id?,revision?,title,inputs:typed schema,parallelism,steps:[{id,name,type:mission|approval,agentId?,goal,criteria,dependsOn,bindings:{field:{source:input|step,stepId?,field?}},inputSchema,outputSchema,tools,skills,connectionIds,accountIds,maxSessions:1..10,maxAttempts:1..3,timeoutMinutes:1..1440}]}. Use company_organization read for actual agent IDs. Proposals appear in Overview and Workflows for director review and cannot execute until approved. Authorized designers may save revisions. list/read id; validate/simulate id+version with input and samples by step ID; simulation never executes work. Authorized leaders start approved id+version+input; run id reads live missions and handoffs. Never claim simulation as live completion or enlarge grants.'},
-  { name: 'company_handbook', doc: 'Company handbook: action=list for approved versions and pending proposal IDs; read with id returns approved guidance only. Propose input={id?,revision?,title?,kind:guideline|suggestion,content,approve?:boolean}. The director (or the Chief of Staff who created the company) reviews versions with action=approve|review (id,version?,revision?,approved?,retraining?) or archives with action=archive. Guidance and suggestions never grant tools, accounts, budgets or policy authority.' },
-  { name: 'company_onboarding', doc: 'Company onboarding: list/read with agentId; your own record is readable. Authorized reporting leaders may orient with revision and input={tools:[],connectionIds:[],accountIds:[],skills:[]}; schedule an onboarding meeting; check tools after a completed meeting with an employee contribution; assess input={goal,criteria,maxTurns?:positive session count}; review input={approved,notes,evidenceMessageIds} using saved assessment messages. Pass current revision at each change. The director (or the Chief of Staff who created the company) may activate after reviewed evidence, or run action=train with agentId and input={jobTitle?,responsibilities?,rules?,training?,requirements?,activate?} to train an employee on the company mission, responsibilities, and handbook rules and complete onboarding. Onboarding never expands resource grants.' },
-  { name: 'company_organization', doc: 'Read company roles, departments, reporting relationships and your authority. action=read; authorized leaders may save_department with department={name,purpose,id?}, or update_member with agentId, member={jobTitle,responsibilities,departmentId,managerId}, revision from read. Only the director changes roles, grants or activation. Never infer authority from a job title.' },
-  { name: 'company_boardroom', doc: 'Company meetings: active employees request a meeting themselves with action=request input={title,reason,type?,participants?:[{agentId}],agenda?:[text]}; this saves a visible request in Overview and Boardroom without starting a meeting. requests lists your requests (CEO sees all). CEO/director reviews using review_request input={requestId,revision,approved,reason?}. Authorized organizers create directly using input={title,type,participants:[{agentId}],agenda:[text],startAt?,durationMinutes?,maxTurns?,budgetUsd?}; due meetings run participant discussions automatically. list/read with meetingId returns actual discussions. Chair starts/grants/moderates/finishes. Employees raise_hand with input={agendaId,reason,priority?,evidence?,objectionTo?}; contribute only with input={turnId,text,evidence?,objectionTo?} matching the current speaking lease. Chair may moderate input={requestId,response:defer|reject|written,reason}; employee written input={requestId,text}. Propose input={agendaId,title,rationale,requiresDirector?,actionId?}; chair decide input={decisionId,approved}, subject to director approval. Read actual IDs first. Meetings preserve work and cannot grant tools, budgets or external action approval.' },
-  {
-    name: 'company_manage',
-    doc: 'Companies are Cowork workspaces using the same permanent teammates. action=create name/purpose with optional leadId (defaults to you) and memberIds from action=agents; no cloned agent is created. action=list/status(id) reads work; add_agent/remove_agent with id=company-id and agentId links/unlinks an existing Cowork teammate. A Chief of Staff who created a company can onboard and train teammates on the company and its rules using action=onboard_agent or action=train_agent with id, agentId, and input={jobTitle?,responsibilities?,rules?:[{title,content}|string],training?,requirements?,activate?} (or via add_agent with input, or action=onboarding with input={action:"train",...}, or action=handbook to define/approve company rules). Creation and membership changes require configuration and write permission; the owner reviews grants and Start. All permanent Cowork agents can remember with id,text or recall with id,query to share company knowledge. inspect with id,section=overview|team|tasks|meetings|workflows|runs|handbook|activity|spending|knowledge,resourceId?,offset?,limit? returns real saved details; search with id,query finds evidence with record IDs. Transcripts retain company membership and attendance rules. boardroom/workflow/organization/onboarding/handbook/task with id and input={action,...native tool arguments} operate from Cowork using your target company membership and existing permissions. Call help with query=boardroom|workflow|organization|onboarding|handbook|task to see exact native schemas and examples before constructing unfamiliar operations. task input uses mission_manage actions; workflow input uses company_workflow actions. Owner approvals, budgets, resources and company Start remain owner controls. Never claim a tool action succeeded without its saved result. No resource authority is granted by membership or memory. Temporary helpers cannot manage companies.',
-  },
+  {name:'app_manage',doc:'Manage Gitu app settings and internal work as chief of staff. actions: read_settings; set_model {provider,model} saves the user-selected default used by Main Agent Gitu; set_project {projectPath}; set_settings {input:{theme,mode,autonomy,fallbackModels,coworkLearning}}; list_models; list_tasks; get_task {runId}; stop_task {runId}; send_task {runId,text}; delete_task {runId}; list_checkpoints {runId}; rollback_task {runId,checkpointId}; list_conversations; send_message {conversationId,agentId,text}; delete_conversation {conversationId}; list_agents; delete_agent {agentId}; set_agent_model {agentId,provider,model}. Use exact IDs from list results. Delete only the items the user requests. Changes persist; future coding tasks use the saved selection. Internal messages queue for the intended teammate. Credentials, security grants and action approvals use their existing secure controls.'},
   {
     name: 'mission_manage',
-    doc: 'Lead company work through bounded missions. params: {"action":"list"} | {"action":"create","goal":"concrete objective","criteria":["verifiable outcome"],"agentId":"optional permanent teammate","maxTurns":12} | {"action":"pause|resume|cancel","id":"mission-id"}. Mission session limits are assigned by the owner. Verify results and wait after scheduling useful work.',
-  },
-  {
-    name: 'company_files',
-    doc: 'List owner-provided company knowledge files, or attach one to this conversation for receive_file. params: {"action":"list"} | {"action":"attach","artifactId":"company-file-id"}. Bytes are transferred outside the model context.',
-  },
-  {
-    name: 'storage',
-    doc: 'Use granted company storage. Discover resources with {"action":"connections"}; omit connectionId to use the chosen default output location. params: {"action":"list","connectionId":"storage-id"} | {"action":"download","connectionId":"storage-id","id":"provider-file-id"} | {"action":"upload","connectionId":"storage-id","artifactId":"attached-artifact-id","name":"optional output name"} | {"action":"mkdir","connectionId":"storage-id","name":"folder"} | {"action":"move","connectionId":"storage-id","id":"file-id","name":"new name"} | {"action":"delete","connectionId":"storage-id","id":"file-id"} | {"action":"link","connectionId":"storage-id","id":"file-id"}. File bytes transfer outside model context. External writes follow company approval rules.',
+    doc: 'Lead team work through bounded missions. params: {"action":"list"} | {"action":"create","goal":"concrete objective","criteria":["verifiable outcome"],"agentId":"optional teammate","maxTurns":12} | {"action":"pause|resume|cancel","id":"mission-id"}. Mission session limits are assigned by the owner. Verify results and wait after scheduling useful work.',
   },
   {
     name: 'connection_execute',
-    doc: 'Invoke an owner-granted, registered API operation. params: {"connectionId":"saved-id","operationId":"registered-operation","body":{},"query":{}}. Includes wallet actions when the granted API exposes them. Personal deployments run here rather than through gitu_task. External writes follow the owner’s saved access setting and company policy.',
+    doc: 'Invoke an owner-granted, registered API operation. params: {"connectionId":"saved-id","operationId":"registered-operation","body":{},"query":{}}. Includes wallet actions when the granted API exposes them. Personal deployments run here rather than through gitu_task. External writes follow the owner’s saved access setting.',
   },
   { name: 'computer_status', doc: 'Identify your assigned host/private/cloud computer and browser. A connected host browser does not prove access to a VPS or the owner’s separate Chrome login. params: {}' },
   { name: 'request_browser_auth', doc: 'Ask the user to sign in, sign up or enter a verification code securely in chat, using your own persistent private browser. First browse to the actual HTTPS form. params: {"mode":"signin"|"signup"|"verify","reason":"why this website is needed"}. The host reads the visible website form and posts a card with its icon, destination and secure fields. Never include credentials, field values or selectors. Signup requires write access. Stop and wait for the card; after submission verify the result with browse. Use computer_handoff only for a CAPTCHA or another step this secure form cannot complete.' },
@@ -370,7 +347,7 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
 
 /** The grants one access decision reads, in the catalog's shape. */
 function accessInput(
-  agent: Pick<CoworkAgent, 'allowShell' | 'allowWrites' | 'allowConfig' | 'chiefOfStaff' | 'companyId'>,
+  agent: Pick<CoworkAgent, 'allowShell' | 'allowWrites' | 'allowConfig' | 'chiefOfStaff'>,
   browser: boolean,
 ): CoworkAccessInput {
   return {
@@ -379,7 +356,6 @@ function accessInput(
     allowConfig: agent.allowConfig,
     chief: agent.chiefOfStaff,
     browser,
-    company: Boolean(agent.companyId),
   };
 }
 
@@ -389,7 +365,7 @@ function offeredToolNames(agent: Parameters<typeof accessInput>[0], browser: boo
   return new Set(coworkToolIds(accessInput(agent, browser)));
 }
 
-export function coworkToolDocs(agent: Pick<CoworkAgent, 'allowShell' | 'allowWrites' | 'allowConfig' | 'chiefOfStaff' | 'companyId'>, browser: boolean): string {
+export function coworkToolDocs(agent: Pick<CoworkAgent, 'allowShell' | 'allowWrites' | 'allowConfig' | 'chiefOfStaff'>, browser: boolean): string {
   const offered = offeredToolNames(agent, browser);
   return COWORK_TOOLS.filter((t) => offered.has(t.name))
     .map((t) => `- ${t.name} — ${t.doc}`)
@@ -398,7 +374,7 @@ export function coworkToolDocs(agent: Pick<CoworkAgent, 'allowShell' | 'allowWri
 
 /** Native entry point for the same permission-gated tools documented in the
  * prompt. Execution still passes through executeCoworkTool's validation. */
-export function coworkNativeTool(agent: Pick<CoworkAgent, 'allowShell' | 'allowWrites' | 'allowConfig' | 'chiefOfStaff' | 'companyId'>, browser: boolean): LlmToolDefinition {
+export function coworkNativeTool(agent: Pick<CoworkAgent, 'allowShell' | 'allowWrites' | 'allowConfig' | 'chiefOfStaff'>, browser: boolean): LlmToolDefinition {
   const offered = offeredToolNames(agent, browser);
   const names = COWORK_TOOLS.filter((t) => offered.has(t.name)).map((t) => t.name);
   return {
@@ -418,7 +394,7 @@ export function coworkNativeTool(agent: Pick<CoworkAgent, 'allowShell' | 'allowW
 }
 
 /** Each tool carries its own parameters; the legacy wrapper remains readable. */
-export function coworkNativeTools(agent: Pick<CoworkAgent, 'allowShell' | 'allowWrites' | 'allowConfig' | 'chiefOfStaff' | 'companyId'>, browser: boolean): LlmToolDefinition[] {
+export function coworkNativeTools(agent: Pick<CoworkAgent, 'allowShell' | 'allowWrites' | 'allowConfig' | 'chiefOfStaff'>, browser: boolean): LlmToolDefinition[] {
   const offered = offeredToolNames(agent, browser);
   return COWORK_TOOLS.filter((tool) => offered.has(tool.name)).map((tool) => ({
     name: tool.name,
@@ -540,16 +516,13 @@ async function executeAuthorizedCoworkTool(ctx: ToolContext, tool: string, param
     if (!definition) return unknownTool(tool, perms, Boolean(scope?.isSubAgent));
     // A status poll reads the host's command registry and executes no shell, so it
     // is not gated on the shell permission. Everything else is decided by the
-    // catalog, including the company-owned capabilities that bypass their gate.
+    // catalog.
     const statusRead = tool === 'run_command' && String(params['action'] ?? 'run') === 'status';
     if (!statusRead) {
-      // The company flag follows the assignment, matching the listing filters.
-      // The concrete handler below still requires its own callback, so an agent
-      // that has no company organization cannot reach company-owned work.
       const decision = decideToolAccess({
         tool,
         profile: 'cowork',
-        grants: { ...perms, company: Boolean(scope?.agent.companyId) },
+        grants: perms,
       });
       if (!decision.allowed) return { ok: false, output: decision.reason };
     }
@@ -599,12 +572,10 @@ async function executeAuthorizedCoworkTool(ctx: ToolContext, tool: string, param
     if (tool === 'run_command' && (String(params['action'] ?? 'run') === 'status' || String(params['action'] ?? 'run') === 'stop')) {
       return await dispatchHost();
     }
-    if (scope && !scope.isSubAgent && !scope.agent.companyId && ['computer_status', 'desktop_screenshot', 'desktop_input'].includes(tool)) {
+    if (scope && !scope.isSubAgent && ['computer_status', 'desktop_screenshot', 'desktop_input'].includes(tool)) {
       const shared = await ctx.sharedBrowserTool?.(tool, params, scope.signal, scope.conversationId);
       if (shared) return shared;
     }
-    if (scope?.agent.companyId && scope.agent.useHostComputer && ctx.companyHostComputer?.() !== true && COMPUTER_ROUTED_TOOLS.includes(tool))
-      return { ok: false, output: 'Use my computer is not granted to this company. Enable it in Company Resources or use the private computer.' };
     if (scope?.agent.useHostComputer && tool === 'computer_status') {
       return {
         ok: true,
@@ -632,13 +603,11 @@ async function executeAuthorizedCoworkTool(ctx: ToolContext, tool: string, param
       });
       const computerOnly = COMPUTER_ONLY_TOOLS.includes(tool);
       if (result.ok) ctx.onComputerLocation?.('private');
-      const companyHostGranted = Boolean(scope.agent.companyId && ctx.companyHostComputer?.() === true);
       if (
         result.ok ||
         Boolean(scope.privateWorkingDirectory) ||
         computerOnly ||
-        (scope.agent.companyId && !companyHostGranted) ||
-        (scope.agent.cloudConnectionId && !companyHostGranted) ||
+        Boolean(scope.agent.cloudConnectionId) ||
         computer.status().state !== 'unavailable'
       )
         return result;
@@ -651,8 +620,6 @@ async function executeAuthorizedCoworkTool(ctx: ToolContext, tool: string, param
       const host = await dispatchHost();
       return first ? { ...host, output: HOST_FALLBACK_NOTICE + host.output } : host;
     }
-    if (scope?.agent.companyId && COMPUTER_ROUTED_TOOLS.includes(tool) && ctx.companyHostComputer?.() !== true)
-      return { ok: false, output: 'A private computer is required. Use my computer is not granted to this company.' };
     return await dispatchHost();
   } catch (err) {
     return { ok: false, output: `${tool} crashed: ${(err as Error).message}` };
@@ -666,38 +633,13 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
       case 'app_manage':
         if(!scope||scope.isSubAgent||!scope.agent.chiefOfStaff||!ctx.appManagement)return blocked(tool);
         return await ctx.appManagement(params,{agentId:scope.agent.id,conversationId:scope.conversationId});
-      case 'company_handbook':
-      case 'company_onboarding': {
-        const callback = tool === 'company_handbook' ? ctx.companyHandbook : ctx.companyOnboarding;
-        if (!scope?.agent.companyId || scope.isSubAgent || !callback) return blocked(tool);
-        if (!['list','read'].includes(String(params['action'] ?? 'list')) && !perms.allowWrites) return blocked(tool);
-        return await callback(params, { agentId: scope.agent.id });
-      }
-      case 'company_workflow':{
-        if(!scope?.agent.companyId||scope.isSubAgent||!ctx.companyWorkflow)return blocked(tool);
-        if(!['list','read','validate','run','propose','create'].includes(String(params['action']))&&!perms.allowWrites)return blocked(tool);
-        return await ctx.companyWorkflow(params,{agentId:scope.agent.id,conversationId:scope.conversationId,threadId:scope.threadId});
-      }
-      case 'company_organization': {
-        if (!scope?.agent.companyId || scope.isSubAgent || !ctx.companyOrganization) return blocked(tool);
-        if (params['action'] && params['action'] !== 'read' && !perms.allowWrites) return blocked(tool);
-        return await ctx.companyOrganization(params, { agentId: scope.agent.id });
-      }
-      case 'company_boardroom': {
-        if (!scope?.agent.companyId || scope.isSubAgent || !ctx.companyBoardroom) return blocked(tool);
-        return await ctx.companyBoardroom(params, { agentId: scope.agent.id });
-      }
-      case 'company_manage': {
-        if (!scope?.conversationId || scope.isSubAgent || !ctx.companyManagement) return blocked(tool);
-        return await ctx.companyManagement(params, { conversationId: scope.conversationId, agentId: scope.agent.id, threadId: scope.threadId });
-      }
       case 'mission_manage': {
-        if (!scope?.agent.companyId || (!scope.agent.chiefOfStaff && !ctx.companyOrganization) || !scope.conversationId) return blocked(tool);
+        if (!scope?.agent.chiefOfStaff || !scope.conversationId) return blocked(tool);
         const action = String(params['action'] ?? 'list');
         if (action === 'list') return { ok: true, output: JSON.stringify(scope.store.missions()) };
         if (action === 'create') {
           const target = scope.store.getAgent(String(params['agentId'] ?? scope.agent.id));
-          if (!target) throw new Error('Choose a permanent teammate from this company.');
+          if (!target) throw new Error('Choose a teammate from this workspace.');
           const goal = String(params['goal'] ?? '').trim();
           const existing = scope.store.missions().find((m) => m.agentId === target.id && m.goal === goal && ['running', 'blocked'].includes(m.status));
           if (existing) return { ok: true, output: JSON.stringify(existing) };
@@ -714,7 +656,7 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
           return { ok: true, output: JSON.stringify(mission) };
         }
         const mission = scope.store.getMission(String(params['id']));
-        if (!mission) throw new Error('Company mission not found.');
+        if (!mission) throw new Error('Mission not found.');
         if (!['pause', 'resume', 'cancel'].includes(action)) throw new Error('Choose list, create, pause, resume or cancel.');
         if (['done', 'cancelled'].includes(mission.status)) throw new Error('This mission is already ' + mission.status + '. Create a new task instead.');
         scope.store.updateMission(mission.id, {
@@ -723,24 +665,12 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
         });
         return { ok: true, output: 'Mission ' + action + ' completed.' };
       }
-      case 'company_files': {
-        if (!ctx.companyFiles || !scope?.conversationId) return { ok: false, output: 'Company knowledge files are unavailable.' };
-        const result = await ctx.companyFiles(params, { conversationId: scope.conversationId, agentId: scope.agent.id });
-        if (result.artifactId) (scope.artifactIds ??= []).push(result.artifactId);
-        return result;
-      }
-      case 'storage': {
-        if (!ctx.storage || !scope?.conversationId) return { ok: false, output: 'Company storage is unavailable in this session.' };
-        const result = await ctx.storage(params, { conversationId: scope.conversationId, agentId: scope.agent.id });
-        if (result.artifactId) (scope.artifactIds ??= []).push(result.artifactId);
-        return result;
-      }
       case 'connection_execute': {
         if (!scope || !ctx.connections) return blocked('connection_execute');
         const profile = ctx.connections.get(String(params['connectionId'] ?? ''));
         const operation = profile?.operations.find(op => op.id === params['operationId']);
         if (!operation) return { ok: false, output: 'Use list_connections to select a saved operation, or update_connection to remember its documented definition first.' };
-        if (!scope.agent.companyId && operation.risk !== 'read' && !codingAutoApprove()) {
+        if (operation.risk !== 'read' && !codingAutoApprove()) {
           const signature = createHash('sha256').update(JSON.stringify({ agent: scope.agent.id, conversation: scope.conversationId, thread: scope.threadId, operation, connectionId: profile!.id, baseUrl: profile!.baseUrl, body: params['body'], query: params['query'] })).digest('hex');
           let approvals = connectionApprovals.get(scope.store);
           if (!approvals) { approvals = new Map(); connectionApprovals.set(scope.store, approvals); }
@@ -862,7 +792,6 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
         if (!perms.browser) return blocked(tool);
         return await toolBrowse(ctx, params);
       case 'web_search':
-        if (scope?.agent.companyId && !ctx.connections) return { ok: false, output: 'Grant a search API to this company in Resources before researching.' };
         return await toolWebSearch({ ...ctx, signal: scope?.signal ?? ctx.signal }, params);
       case 'web_fetch':
         return await toolWebFetch(ctx, params);
@@ -901,7 +830,7 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
         if (!perms.allowConfig) return blocked(tool);
         return toolConfigureMcp(ctx, params);
       case 'list_connections':
-        return { ok: true, output: toolListConnections(ctx).output + (scope?.agent.companyId ? '' : `\n${new SshConnectionRegistry().renderForAgent()}`) };
+        return { ok: true, output: `${toolListConnections(ctx).output}\n${new SshConnectionRegistry().renderForAgent()}` };
       case 'connection_test': {
         const registry = ctx.connections ?? new ConnectionRegistry();
         const profile = registry.resolveConnectionProfile(String(params['connectionId'] ?? ''));
@@ -925,7 +854,6 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
         return await connectedAppTool(ctx.connectedApps, params, perms, scope);
       case 'ssh_exec': {
         if (!perms.allowShell) return blocked(tool);
-        if (scope?.agent.companyId) return { ok: false, output: 'Personal SSH connections are not assigned to this company. Use its assigned private computer or company connections.' };
         try {
           const registry = new SshConnectionRegistry(), connectionId = String(params['connectionId'] ?? ''), target = registry.list().find(server => server.id === connectionId && server.hasCredential);
           if (!target) return { ok: false, output: 'Choose a saved SSH connection with a credential from computer_status or list_connections. No command was run.' };
@@ -1377,7 +1305,7 @@ function nextTeammateAvatar(roster: CoworkAgent[]): CoworkAvatar {
   return { shape, color };
 }
 
-// Company account providers are scoped proxies that can be recreated between turns.
+// Account providers can be recreated between turns.
 // Keep approvals with the owning conversation store so a valid review survives that.
 const appApprovals = new WeakMap<CoworkStore, Map<string, { signature: string; expires: number }>>();
 const connectionApprovals = new WeakMap<CoworkStore, Map<string, string>>();
@@ -1390,7 +1318,7 @@ function connectedAppOutput(value: unknown): string {
   return JSON.stringify(responses.inspect({ responseId }));
 }
 async function connectedAppTool(apps: ConnectedAppsProvider | undefined, params: Record<string, unknown>, perms: CoworkToolPerms, scope?: CoworkToolScope): Promise<ToolResult> {
-  if (!scope || (scope.isSubAgent && !scope.agent.companyId)) return blocked('connected_apps');
+  if (!scope || scope.isSubAgent) return blocked('connected_apps');
   if (!apps?.configured) return { ok: false, output: 'Set up the connection provider in Cowork → Connections. The user then connects apps specifically for you.' };
   try {
     if (params['action'] === 'discover') {
@@ -1416,7 +1344,7 @@ async function connectedAppTool(apps: ConnectedAppsProvider | undefined, params:
         output: `Connection recommendation ${card.id} shown in chat. Only the user can connect or assign this app for you. Continue independent work; do not claim it is connected until it appears in your list.`,
       };
     }
-    const assigned = (await apps.accounts()).filter((account) => scope.agent.companyId || scope.store.appAccountAssigned(scope.agent.id, account.toolkit, account.id));
+    const assigned = (await apps.accounts()).filter((account) => scope.store.appAccountAssigned(scope.agent.id, account.toolkit, account.id));
     if (params['action'] === 'list') return { ok: true, output: JSON.stringify(assigned) };
     if (params['action'] === 'tools') {
       if (!assigned.some((account) => account.toolkit === service && account.status === 'ACTIVE' && !account.disabled))
@@ -1442,10 +1370,10 @@ async function connectedAppTool(apps: ConnectedAppsProvider | undefined, params:
     if (
       (!mailboxRead && (!perms.allowWrites || (!perms.allowConfig && !isNativeMailTool(service, tool)))) ||
       !scope?.conversationId ||
-      (scope.isSubAgent && !scope.agent.companyId)
+      scope.isSubAgent
     )
       return blocked('connected_apps execution');
-    const args = params['args'];
+    const args = params['args'] === undefined ? {} : params['args'];
     if (!tool || !args || typeof args !== 'object' || Array.isArray(args)) return { ok: false, output: 'Provide the exact tool slug and an args object.' };
     const accounts = assigned.filter((account) => account.toolkit === service && account.status === 'ACTIVE' && !account.disabled);
     const accountId = String(params['accountId'] ?? (accounts.length === 1 ? accounts[0]!.id : ''));
@@ -1453,7 +1381,7 @@ async function connectedAppTool(apps: ConnectedAppsProvider | undefined, params:
       return { ok: false, output: 'This account is not assigned to you or is inactive. Recommend the app, or choose an active accountId from your connected_apps list.' };
     const detail = JSON.stringify({ service, accountId, tool, args }, (_key, value: unknown) => value && typeof value === 'object' && !Array.isArray(value)
       ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))) : value);
-    if (!params['approvalId'] && !requiresMessageReview(service, tool) && (scope.agent.companyId || scope.store.appActionAllowed(scope.agent.id, { service, accountId, tool }))) {
+    if (!params['approvalId'] && !requiresMessageReview(service, tool) && scope.store.appActionAllowed(scope.agent.id, { service, accountId, tool })) {
       return { ok: true, output: connectedAppOutput(await apps.execute(service, tool, args as Record<string, unknown>, accountId)) };
     }
     const signature = createHash('sha256')

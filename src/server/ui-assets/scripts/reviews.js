@@ -146,10 +146,12 @@
       div.className = 'approval';
       div.setAttribute('data-aid', a.id);
       var presentation=cardActionPresentation(a.tool,a.why,a.summary);
+      var canRemember = a.tool === 'run_command';
       div.innerHTML =
         '<h3>' + esc(presentation.title) + '</h3>' +
         '<div class="meta-line">' + esc(presentation.detail) + '</div>' +
         cardTechnicalDetails([a.why,a.summary].filter(Boolean).join('\n\n'),a.id) +
+        (canRemember ? '<label class="meta-line" style="display:flex;align-items:center;gap:6px;margin:8px 0 4px;cursor:pointer"><input type="checkbox" class="appr-remember-cb" style="width:auto;margin:0"> Always allow this command via Chief of Staff</label>' : '') +
         '<div class="actions"><button class="btn dark" data-appr="' + esc(a.id) + '" data-ok="1">Approve</button>' +
         '<button class="btn red" data-appr="' + esc(a.id) + '" data-ok="0">Deny</button></div>';
       var working = $('working');
@@ -167,8 +169,16 @@
         // Lock the card's buttons immediately: a double-click used to POST
         // the decision twice (second one 404s as "already resolved").
         var card = e.target.closest ? e.target.closest('.approval') : null;
-        if (card) card.querySelectorAll('button').forEach(function (b) { b.disabled = true; });
-        api('/api/approvals/' + id, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ approved: e.target.getAttribute('data-ok') === '1' }) })
+        var approved = e.target.getAttribute('data-ok') === '1';
+        var rememberCb = card ? card.querySelector('.appr-remember-cb') : null;
+        var payload = { approved: approved };
+        if (approved && rememberCb && rememberCb.checked) payload.rememberForChief = true;
+        if (card) card.querySelectorAll('button,input').forEach(function (b) { b.disabled = true; });
+        api('/api/approvals/' + id, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
+          .then(function (r) {
+            if (r && r.rememberError) toast(r.rememberError, true);
+            else if (r && r.rememberedRule) toast('Saved standing command rule for Chief of Staff');
+          })
           .catch(function (er) { toast(er.message, true); });
         return;
       }
@@ -203,40 +213,150 @@
     });
     var div = document.createElement('div');
     div.className = 'qcard';
-    var html = '<h3>Agent Gitu needs your input</h3>';
+    var qCountLabel = questions.length === 1 ? '1 question' : questions.length + ' questions';
+    var canRememberAny = questions.some(function (qq) { return qq.kind !== 'workspace'; });
+    var qIcon = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 5 0c0 2-2.5 2-2.5 4m0 3h.01"/></svg>';
+    var html =
+      '<div class="qcard-head">' +
+        '<span class="qcard-badge">' + qIcon + 'Input needed</span>' +
+        '<span class="qcard-count">' + esc(qCountLabel) + '</span>' +
+      '</div>' +
+      '<h3>Agent Gitu needs your input</h3>';
     questions.forEach(function (qq, qi) {
-      var title=cardPlainText(qq.question,'The agent needs your decision.',160),detail=cardPlainText(qq.detail,'Open the technical details for more information.');
-      html += '<div class="q"><div class="qt">' + esc(qq.header ? qq.header + ' — ' : '') + esc(title) + '</div>' + (qq.detail ? '<div class="meta" style="margin:6px 0;overflow-wrap:anywhere">' + esc(detail) + '</div>' : '') + cardTechnicalDetails(title!==qq.question||qq.detail&&detail!==qq.detail?[qq.question,qq.detail].filter(Boolean).join('\n\n'):'',q.id+'-'+qi) + (qq.kind === 'workspace' ? '<button class="btn ghost" data-workspace-controls="1">Open folder access controls</button>' : '') + '<div class="opts">';
-      qq.options.forEach(function (op, oi) {
-        html += '<button class="opt" data-q="' + qi + '" data-o="' + oi + '">' + esc(op) + '</button>';
-      });
-      html += '</div><input class="custom" data-q="' + qi + '" placeholder="or type your own answer…"></div>';
+      var title = cardPlainText(qq.question, 'The agent needs your decision.', 180);
+      var qBody = typeof cardQuestionDetail === 'function' ? cardQuestionDetail(qq.detail) : { detail: cardPlainText(qq.detail, 'Open the technical details for more information.'), technical: '' };
+      var tech = title !== qq.question ? [qq.question, qq.detail].filter(Boolean).join('\n\n') : qBody.technical;
+      html +=
+        '<div class="q">' +
+          (qq.header ? '<span class="q-tag">' + esc(qq.header) + '</span>' : '') +
+          '<div class="qt">' + esc(title) + '</div>' +
+          (qBody.detail ? '<div class="q-detail">' + esc(qBody.detail) + '</div>' : '') +
+          cardTechnicalDetails(tech, q.id + '-' + qi) +
+          (qq.kind === 'workspace' ? '<div style="margin:6px 0 8px"><button type="button" class="btn ghost" data-workspace-controls="1">Open folder access controls</button></div>' : '') +
+          (qq.options.length ? '<div class="opts" role="group" aria-label="Suggested answers">' + qq.options.map(function (op, oi) {
+            return '<button type="button" class="opt" data-q="' + qi + '" data-o="' + oi + '" aria-pressed="false">' + esc(op) + '</button>';
+          }).join('') + '</div>' : '') +
+          '<input class="custom" data-q="' + qi + '" placeholder="' + (qq.options.length ? 'Add a note or write a different answer (optional)…' : 'Type your answer…') + '">' +
+        '</div>';
     });
-    html += '<div class="actions"><button class="btn dark" id="qSend">Send answers</button></div>';
+    if (canRememberAny) {
+      var defaultPattern = questions.length === 1 ? String(questions[0].question || '') : '';
+      html +=
+        '<div class="chat-question-remember-box">' +
+          '<label class="chat-question-remember"><input type="checkbox" id="qRememberChief"> Remember ' + (questions.length > 1 ? 'these answers' : 'this answer') + ' for Chief of Staff</label>' +
+          '<div class="chat-question-remember-opts" id="qRememberOpts" hidden>' +
+            (questions.length === 1
+              ? '<div class="chat-question-remember-field"><span>Match phrase</span><input type="text" id="qRememberPattern" value="' + esc(defaultPattern) + '" placeholder="Question text or /regex/"></div>'
+              : '<div class="chat-question-remember-field"><span>Matching</span><div class="meta-line" style="margin:4px 0 0">Saves one standing rule per answered question.</div></div>') +
+            '<div class="chat-question-remember-field"><span>Scope</span><select id="qRememberScope"><option value="workspace" selected>This workspace</option><option value="global">Global</option></select></div>' +
+          '</div>' +
+        '</div>';
+    }
+    html +=
+      '<div class="qcard-footer">' +
+        '<span class="qcard-hint">Ctrl / ⌘ + Enter to send</span>' +
+        '<button type="button" class="btn dark" id="qSend">' + (questions.length > 1 ? 'Send answers' : 'Send answer') + '</button>' +
+      '</div>' +
+      '<p class="chat-question-error qcard-error" role="alert"></p>';
     div.innerHTML = html;
     var working = $('working');
     if (working) stream.insertBefore(div, working); else stream.appendChild(div);
     stickScroll(stream, true);
+    var rememberCbInit = $('qRememberChief');
+    var rememberOptsEl = $('qRememberOpts');
+    if (rememberCbInit && rememberOptsEl) {
+      rememberCbInit.onchange = function () { rememberOptsEl.hidden = !rememberCbInit.checked; };
+    }
+    var customInputs = div.querySelectorAll ? div.querySelectorAll('.custom') : [];
+    for (var ci = 0; ci < customInputs.length; ci++) {
+      (function (inp) {
+        inp.oninput = function () {
+          var errNode = div.querySelector('.qcard-error');
+          if (errNode && errNode.textContent) errNode.textContent = '';
+        };
+        inp.onkeydown = function (ev) {
+          if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey) && !ev.isComposing) {
+            ev.preventDefault();
+            var sendBtn = $('qSend');
+            if (sendBtn && sendBtn.onclick) sendBtn.onclick();
+          }
+        };
+      })(customInputs[ci]);
+    }
     div.onclick = function (e) {
       if (e.target.closest && e.target.closest('[data-workspace-controls]')) { openFolderBrowser('tag'); return; }
       var btn = e.target.closest && e.target.closest('.opt');
       if (!btn) return;
       var qi = btn.getAttribute('data-q');
+      var chosen = questions[Number(qi)].options[Number(btn.getAttribute('data-o'))];
+      var deselect = selections[qi] === chosen;
       var siblings = div.querySelectorAll('.opt[data-q="' + qi + '"]');
-      for (var i2 = 0; i2 < siblings.length; i2++) siblings[i2].classList.remove('sel');
-      btn.classList.add('sel');
-      selections[qi] = questions[Number(qi)].options[Number(btn.getAttribute('data-o'))];
+      for (var i2 = 0; i2 < siblings.length; i2++) {
+        siblings[i2].classList.remove('sel');
+        if (siblings[i2].setAttribute) siblings[i2].setAttribute('aria-pressed', 'false');
+      }
+      if (deselect) {
+        delete selections[qi];
+      } else {
+        btn.classList.add('sel');
+        if (btn.setAttribute) btn.setAttribute('aria-pressed', 'true');
+        selections[qi] = chosen;
+      }
+      var errNode = div.querySelector('.qcard-error');
+      if (errNode && errNode.textContent) errNode.textContent = '';
     };
     $('qSend').onclick = function () {
       if (this.disabled) return;
-      this.disabled = true;
-      var restore = (function (b) { return function () { b.disabled = false; }; })(this);
-      var answers = questions.map(function (qq, qi2) {
+      var resolvedVals = questions.map(function (qq, qi2) {
         var custom = div.querySelector('.custom[data-q="' + qi2 + '"]');
-        var val = (custom && custom.value.trim()) || selections[qi2] || '(no answer)';
-        return qq.question + ' — ' + val;
+        var extra = custom && custom.value ? custom.value.trim() : '';
+        var picked = selections[qi2] || '';
+        if (picked && extra) return extra.indexOf(picked) === 0 ? extra : picked + ' — ' + extra;
+        return picked || extra;
+      });
+      if (!resolvedVals.some(Boolean)) {
+        var errNode = div.querySelector('.qcard-error');
+        if (errNode) errNode.textContent = 'Choose an option or write an answer first.';
+        return;
+      }
+      this.disabled = true;
+      var rememberCb = $('qRememberChief');
+      var rememberForChief = Boolean(rememberCb && rememberCb.checked);
+      var patternInput = $('qRememberPattern');
+      var scopeSelect = $('qRememberScope');
+      if (rememberCb) rememberCb.disabled = true;
+      if (patternInput) patternInput.disabled = true;
+      if (scopeSelect) scopeSelect.disabled = true;
+      var restore = (function (b, cb, pat, sc) {
+        return function () {
+          b.disabled = false;
+          if (cb) cb.disabled = false;
+          if (pat) pat.disabled = false;
+          if (sc) sc.disabled = false;
+        };
+      })(this, rememberCb, patternInput, scopeSelect);
+      var answers = questions.map(function (qq, qi2) {
+        return qq.question + ' — ' + (resolvedVals[qi2] || '(no answer)');
       }).join('\n');
-      api('/api/answers/' + q.id, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ answer: answers }) })
+      var answerPayload = { answer: answers };
+      if (rememberForChief) {
+        answerPayload.rememberForChief = true;
+        if (scopeSelect && scopeSelect.value) answerPayload.chiefScope = scopeSelect.value;
+        var customPat = patternInput && patternInput.value ? patternInput.value.trim() : '';
+        answerPayload.chiefEntries = questions.map(function (qq, qi2) {
+          var val = resolvedVals[qi2];
+          if (!val || qq.kind === 'workspace') return null;
+          var entry = { question: qq.question, answer: val };
+          if (questions.length === 1 && customPat) entry.pattern = customPat;
+          return entry;
+        }).filter(Boolean);
+      }
+      api('/api/answers/' + q.id, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(answerPayload) })
+        .then(function (r) {
+          if (r && r.rememberError) toast(r.rememberError, true);
+          else if (r && r.rememberedRules && r.rememberedRules.length > 1) toast('Saved ' + r.rememberedRules.length + ' standing answers for Chief of Staff');
+          else if (r && r.rememberedRule) toast('Saved standing answer for Chief of Staff');
+        })
         .catch(function (er) { restore(); toast(er.message, true); });
     };
   }

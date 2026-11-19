@@ -385,7 +385,7 @@ describe('Memory and TaskLedger durability across compaction', () => {
     // Verify CoworkMemory facade also sees the durable memory post-compaction
     const coworkMemory = CoworkMemory.forWorkspace(root);
     const agent = { id: 'agent-1', name: 'Database Tuner' } as never;
-    const recalled = coworkMemory.companyEntries(agent, 'company-1', 'PostgreSQL');
+    const recalled = coworkMemory.recall(agent, 'PostgreSQL');
     expect(recalled).toBeDefined();
   });
 

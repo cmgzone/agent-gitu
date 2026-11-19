@@ -1,6 +1,6 @@
 /** Served exclusively by the authenticated, same-origin owner route. */
 export function serverBrowserView(endpoint: string): string {
-  if (!/^\/api(?:\/companies\/[\w-]+)?\/server-browser(?:\/[\w-]+)?$/.test(endpoint)) throw new Error('Invalid browser endpoint.');
+  if (!/^\/api\/server-browser(?:\/[\w-]+)?$/.test(endpoint)) throw new Error('Invalid browser endpoint.');
   const paths: Record<string, string> = {
     back: '<path d="m14 6-6 6 6 6"/>', forward: '<path d="m10 6 6 6-6 6"/>', reload: '<path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 7a7 7 0 0 1 11.6-2L20 8M4 16l2.3 3A7 7 0 0 0 18 17"/>',
     globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a19 19 0 0 1 0 18 19 19 0 0 1 0-18"/>',

@@ -513,9 +513,9 @@ describe('gitu_task tool dispatch', () => {
     expect(calls).toEqual([{ goal: 'fix the build' }]);
   });
 
-  it('routes company engineering through the main coding coordinator and refuses recursive delegation',async()=>{
+  it('routes cowork engineering through the main coding coordinator and refuses recursive delegation',async()=>{
     const run=vi.fn(async()=>({ok:true,output:'verified private work'})),host=vi.fn(async()=>({ok:true,output:'host'}));
-    const scope={agent:{id:'lead',name:'Lead',companyId:'company'},conversationId:'chat',subAgents:{run},delegation:{run:host}} as unknown as CoworkToolScope;
+    const scope={agent:{id:'lead',name:'Lead'},conversationId:'chat',subAgents:{run},delegation:{run:host}} as unknown as CoworkToolScope;
     const perms={allowShell:true,allowWrites:true,allowConfig:false,chief:true,browser:false};
     expect((await executeCoworkTool({} as ToolContext,'gitu_task',{goal:'Fix the repository',maxCostUsd:1},perms,scope)).ok).toBe(true);
     expect(host).toHaveBeenCalledWith(scope,{goal:'Fix the repository',maxCostUsd:1});expect(run).not.toHaveBeenCalled();

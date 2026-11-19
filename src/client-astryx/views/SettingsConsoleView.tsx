@@ -106,7 +106,6 @@ export function SettingsConsoleView({
   );
   const [consolidate, setConsolidate] = useState(true);
   const [skillApproval, setSkillApproval] = useState(false);
-  const [enableCompanies, setEnableCompanies] = useState(false);
   const [projectsPath, setProjectsPath] = useState('');
   const [projectInfo, setProjectInfo] = useState<{
     name?: string;
@@ -135,12 +134,11 @@ export function SettingsConsoleView({
     );
 
     try {
-      const [homeRes, permRes, learnRes, profRes, projRes, onbRes] =
+      const [homeRes, permRes, learnRes, projRes, onbRes] =
         await Promise.allSettled([
           host.api<{
             projectsPath?: string;
             autonomy?: {persistent?: boolean; maxCostUsd?: number};
-            enableCompanies?: boolean;
           }>('/api/home'),
           host.api<{access?: string}>('/api/coding-permissions'),
           host.api<{
@@ -148,7 +146,6 @@ export function SettingsConsoleView({
             consolidate?: boolean;
             skillApproval?: boolean;
           }>('/api/cowork/learning'),
-          host.api<{enableCompanies?: boolean}>('/api/cowork/profile'),
           host.api<{name?: string; repoRoot?: string}>('/api/project'),
           host.api<{mode?: string}>('/api/onboarding'),
         ]);
@@ -165,9 +162,6 @@ export function SettingsConsoleView({
               : String(homeRes.value.autonomy.maxCostUsd),
           );
         }
-        if (typeof homeRes.value.enableCompanies === 'boolean') {
-          setEnableCompanies(homeRes.value.enableCompanies);
-        }
       }
       if (permRes.status === 'fulfilled') {
         setCodingAccess(permRes.value.access === 'full' ? 'full' : 'ask');
@@ -179,9 +173,6 @@ export function SettingsConsoleView({
         );
         setConsolidate(learnRes.value.consolidate !== false);
         setSkillApproval(learnRes.value.skillApproval === true);
-      }
-      if (profRes.status === 'fulfilled') {
-        setEnableCompanies(Boolean(profRes.value.enableCompanies));
       }
       if (projRes.status === 'fulfilled') {
         setProjectInfo(projRes.value);
@@ -341,33 +332,6 @@ export function SettingsConsoleView({
     } catch (err) {
       host.toast(
         err instanceof Error ? err.message : 'Could not update Cowork settings.',
-        true,
-      );
-    }
-  };
-
-  const toggleCompanies = async (enabled: boolean) => {
-    if (!host) return;
-    try {
-      const res = await host.api<{enableCompanies?: boolean}>(
-        '/api/cowork/companies/toggle',
-        {
-          method: 'POST',
-          headers: {'content-type': 'application/json'},
-          body: JSON.stringify({enabled}),
-        },
-      );
-      setEnableCompanies(Boolean(res.enableCompanies));
-      host.refreshCowork(true);
-      host.renderSidebar();
-      host.toast(
-        res.enableCompanies
-          ? 'Organizations enabled in sidebar'
-          : 'Organizations hidden from sidebar',
-      );
-    } catch (err) {
-      host.toast(
-        err instanceof Error ? err.message : 'Could not toggle organizations.',
         true,
       );
     }
@@ -861,15 +825,6 @@ export function SettingsConsoleView({
                   <Card padding={4}>
                     <VStack gap={3}>
                       <Heading level={4}>Team Workspace</Heading>
-                      <Switch
-                        label="Organizations mode"
-                        description="Show multi-department Companies section in the sidebar"
-                        labelPosition="start"
-                        labelSpacing="spread"
-                        width="100%"
-                        value={enableCompanies}
-                        onChange={val => void toggleCompanies(val)}
-                      />
                       <HStack gap={2} wrap="wrap">
                         <Button
                           label="Open Agent Switcher"

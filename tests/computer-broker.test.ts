@@ -9,7 +9,7 @@ const fixture = () => {
   return { exec, broker: new ComputerBroker(owner, exec) };
 };
 describe('private desktop broker', () => {
-  it('requires verified disk enforcement before accepting bounded company desktops', async () => {
+  it('requires verified disk enforcement before accepting bounded desktops', async () => {
     const exec = vi.fn<ComputerExec>(async (args) => args[0] === 'gitu-quota' ? 'quota-ready' : 'created');
     const broker = new ComputerBroker(owner, exec);
     const args = computerCreateArgs(name, { cpu: 2, memoryMb: 2048, diskMb: 10240 });

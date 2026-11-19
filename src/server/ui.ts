@@ -18,9 +18,6 @@ import { UI_CONNECTIONS_JS } from './ui-connections.js';
 import { CONNECTED_APPS_CSS, CONNECTED_APPS_JS } from './ui-connected-apps.js';
 import { COWORK_CSS, COWORK_JS } from './ui-cowork.js';
 import { FILE_UPLOAD_JS } from './ui-files.js';
-import { COMPANY_CSS, COMPANY_JS } from './ui-companies.js';
-import { COMPANY_CONNECTIONS_JS } from './ui-company-connections.js';
-import { COMPANY_WALLETS_JS } from './ui-company-wallets.js';
 import { VOICE_CSS, VOICE_JS } from './ui-voice.js';
 import { OUTPUT_CSS, OUTPUT_JS } from './ui-outputs.js';
 import { CHAT_CREDENTIAL_HELPERS_JS } from './credential-chat.js';
@@ -35,7 +32,6 @@ export const UI_HTML = renderUiDocument(UI_ASSETS, {
   HOME_CSS,
   ACTIVITY_CSS,
   COWORK_CSS,
-  COMPANY_CSS,
   VOICE_CSS,
   OUTPUT_CSS,
   CONNECTED_APPS_CSS,
@@ -67,9 +63,6 @@ export const UI_HTML = renderUiDocument(UI_ASSETS, {
   ACTIVITY_MARK_HTML,
   COWORK_JS,
   FILE_UPLOAD_JS,
-  COMPANY_JS,
-  COMPANY_CONNECTIONS_JS,
-  COMPANY_WALLETS_JS,
   VOICE_JS,
   COWORK_GALLERY_JS,
   COWORK_PROFILE_JS,

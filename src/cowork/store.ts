@@ -23,12 +23,8 @@ export interface CoworkAvatar {
   shape: 'orb' | 'cube' | 'home-blob' | 'diamond' | 'pyramid' | 'dot-orb' | 'dot-block' | 'dot-tip' | 'dot-hexa' | 'dot-nova' | 'dot-dia' | 'dot-penta' | 'dot-luna' | 'dot-plus' | 'dot-pill';
 }
 
-class CoworkScopeError extends Error {}
-
 export interface CoworkAgent extends AgentProfileSettings {
   id: string;
-  /** Execution workspace only; canonical Cowork profiles do not belong to one company. */
-  companyId?: string;
   name: string;
   /** Saved character and accent color. */
   avatar: CoworkAvatar;
@@ -72,8 +68,6 @@ export interface CoworkMessage {
   /** Host-attributed mission session/outcome; ordinary chat cannot supply this provenance. */
   missionId?: string;
   text: string;
-  /** Company proposed through the trusted Cowork company tool. */
-  companyLink?: { id: string; name: string; state: string };
   via: 'web' | 'telegram' | 'discord' | 'schedule' | 'agent';
   /** Explicit composer mode; never inferred from widget or webpage content. */
   widgetRequest?: { mode: 'create' | 'edit' | 'action'; widgetId?: string; action?: string; input?: Record<string, unknown> };
@@ -498,8 +492,14 @@ export interface CoworkRequest {
   credential?: CoworkRequestCredential;
   /** A desktop handoff opens the requesting teammate's computer in the UI. */
   desktopHandoff?: boolean;
+  /** Present when this card stands for a Coding runtime gate (approval, plan review, or questions). */
+  delegatedGate?: 'approval' | 'plan_review' | 'questions';
   status: 'open' | 'approved' | 'denied' | 'answered' | 'accepted' | 'dismissed' | 'provided';
   response?: string;
+  /** Who settled the request (defaults to the human user when omitted). */
+  resolvedBy?: 'user' | 'chief';
+  /** Display label for automated attribution (e.g. "Chief of Staff" or agent name). */
+  resolvedByLabel?: string;
   telegramNotifiedAt?: string;
   /** Same marker as telegramNotifiedAt, for the Discord channel. */
   discordNotifiedAt?: string;
@@ -535,8 +535,6 @@ export interface AppReviewState {
 }
 
 export interface CoworkData {
-  /** Company snapshots contain memberships in the canonical Cowork roster. */
-  sharedRosterVersion?: 1;
   /** Native Codex session ownership; task data, never credentials. */
   nativeCodexSessions?: Record<string, CoworkNativeSession>;
   agents: CoworkAgent[];
@@ -681,17 +679,12 @@ export class CoworkStore {
   private changeSeqs = new Map<string, number>();
   /** Process-local roster version; message appends do not change it. */
   private localRosterRevision = 0;
-  get usesSharedRoster(): boolean { return Boolean(this.options?.sharedRoster); }
-  get rosterRevision(): number { return this.localRosterRevision + (this.options?.sharedRoster?.rosterRevision ?? 0); }
+  get rosterRevision(): number { return this.localRosterRevision; }
 
-  constructor(private readonly filePath?: string, private readonly onRosterChange?: () => void, private readonly options?: { companyId?: string; sharedRoster?: CoworkStore; persistence?: { read(): string | undefined; write(data: string): void }; maxFileBytes?: () => number | null;missionSessions?:()=>number;onNotification?:(conversationId:string)=>void }) {}
+  constructor(private readonly filePath?: string, private readonly onRosterChange?: () => void, private readonly options?: { persistence?: { read(): string | undefined; write(data: string): void }; maxFileBytes?: () => number | null; missionSessions?: () => number; onNotification?: (conversationId: string) => void }) {}
 
   private file(): string {
     if (this.filePath) return this.filePath;
-    if (this.options?.companyId) {
-      if (!/^[\w-]+$/.test(this.options.companyId)) throw new CoworkScopeError('Invalid company storage scope.');
-      return path.join(ensureGituHome().root, 'Companies', this.options.companyId, 'cowork.json');
-    }
     return path.join(ensureGituHome().root, 'Cowork', 'cowork.json');
   }
 
@@ -704,10 +697,7 @@ export class CoworkStore {
     if (!saved && !existsSync(file)) return this.data;
     try {
       const parsed = JSON.parse(saved ?? readFileSync(file, 'utf8')) as Partial<CoworkData>;
-      if (this.options?.companyId && Array.isArray(parsed.agents) && parsed.agents.some(a => a.companyId && a.companyId !== this.options!.companyId))
-        throw new CoworkScopeError('Saved roster belongs to another company. Restore the correct scoped snapshot before continuing.');
       this.data = {
-        sharedRosterVersion: parsed.sharedRosterVersion === 1 ? 1 : undefined,
         nativeCodexSessions: parsed.nativeCodexSessions && typeof parsed.nativeCodexSessions === 'object' && !Array.isArray(parsed.nativeCodexSessions) ? parsed.nativeCodexSessions : {},
         agents: Array.isArray(parsed.agents) ? parsed.agents : [],
         conversations: Array.isArray(parsed.conversations) ? parsed.conversations : [],
@@ -753,7 +743,6 @@ export class CoworkStore {
       this.data.todos = [...unique.values()];
       let avatarsChanged = false;
       for (const agent of this.data.agents) {
-        if (this.options?.companyId && !agent.companyId) { agent.companyId = this.options.companyId; avatarsChanged = true; }
         agent.skills = [...new Set(['browser-workflow', ...(agent.skills ?? [])])];
         const previousAvatar = JSON.stringify(agent.avatar);
         agent.avatar = sanitizeAvatar(agent.avatar, undefined);
@@ -785,22 +774,8 @@ export class CoworkStore {
         }
         this.changeSeqs.set(conversationId, change);
       }
-      if (this.options?.sharedRoster && this.data.sharedRosterVersion !== 1) {
-        // Import legacy employees once, retaining IDs used by meetings, jobs,
-        // artifacts and transcripts. Never resurrect a deleted Cowork profile.
-        for (const member of this.data.agents) {
-          if (this.options.sharedRoster.getAgent(member.id)) continue;
-          let name = member.name;
-          const names = new Set(this.options.sharedRoster.listAgents().map(agent => agent.name.toLowerCase()));
-          for (let suffix = 1; names.has(name.toLowerCase()); suffix++) name = member.name + ' (' + suffix + ')';
-          this.options.sharedRoster.saveAgent({ ...member, id: member.id, name, allowShell: false, allowWrites: false, allowConfig: false, useHostComputer: false, cloudConnectionId: undefined, chiefOfStaff: false, skills: [] });
-        }
-        this.data.sharedRosterVersion = 1;
-        identityChanged = true;
-      }
       if (identityChanged) this.save();
-    } catch (error) {
-      if (error instanceof CoworkScopeError || this.options?.sharedRoster) { this.loaded = false; throw error; }
+    } catch {
       // A corrupt file must not wipe the team silently: keep defaults in
       // memory; the next successful save replaces the damaged document.
       this.data = emptyCoworkData();
@@ -840,58 +815,15 @@ export class CoworkStore {
   // ---------------------------------------------------------------- agents
 
   listAgents(): CoworkAgent[] {
-    const members = this.load().agents;
-    if (!this.options?.sharedRoster) return [...members];
-    return members.flatMap(member => {
-      const profile = this.options!.sharedRoster!.getAgent(member.id);
-      return profile ? [{ ...profile, companyId: this.options!.companyId,
-        skills: member.skills, allowShell: member.allowShell, allowWrites: member.allowWrites, allowConfig: member.allowConfig,
-        useHostComputer: member.useHostComputer, cloudConnectionId: member.cloudConnectionId, chiefOfStaff: member.chiefOfStaff,
-      }] : [];
-    });
+    return [...this.load().agents];
   }
 
   getAgent(id: string): CoworkAgent | undefined {
     return this.listAgents().find((a) => a.id === id);
   }
 
-  /** Join an existing Cowork identity without copying or changing its profile. */
-  addAgent(agentId: string, settings: Partial<CoworkAgent> = {}): CoworkAgent {
-    const profile = this.options?.sharedRoster?.getAgent(agentId);
-    if (!profile) throw new Error('Choose an existing Cowork teammate.');
-    const data = this.load();
-    if (data.agents.some(agent => agent.id === agentId)) return this.getAgent(agentId)!;
-    data.sharedRosterVersion = 1;
-    data.agents.push({ ...profile, companyId: this.options?.companyId,
-      skills: settings.skills ?? [], allowShell: settings.allowShell ?? false, allowWrites: settings.allowWrites ?? false,
-      allowConfig: settings.allowConfig ?? false, useHostComputer: false, cloudConnectionId: settings.cloudConnectionId,
-      chiefOfStaff: settings.chiefOfStaff ?? false,
-    });
-    this.save(true);
-    return this.getAgent(agentId)!;
-  }
-
   saveAgent(input: Partial<Omit<CoworkAgent, 'avatar'>> & { name: string; systemPrompt: string; avatar?: unknown }): CoworkAgent {
     const data = this.load();
-    if (this.options?.sharedRoster) {
-      const roster = this.options.sharedRoster;
-      let profile = input.id ? roster.getAgent(input.id) : undefined;
-      if (!profile) {
-        profile = roster.saveAgent({ ...input, allowShell: false, allowWrites: false, allowConfig: false, useHostComputer: false, cloudConnectionId: undefined, chiefOfStaff: false, skills: [] });
-      } else {
-        // Permission and computer settings belong to this membership. The
-        // identity/personality/model remain the same throughout Cowork.
-        const { companyId: _company, skills: _skills, allowShell: _shell, allowWrites: _writes, allowConfig: _config, useHostComputer: _host, cloudConnectionId: _cloud, chiefOfStaff: _chief, ...identity } = input;
-        if (Object.entries(identity).some(([key, value]) => JSON.stringify((profile as unknown as Record<string,unknown>)[key]) !== JSON.stringify(value))) profile = roster.saveAgent({ ...profile, ...identity });
-      }
-      if (!data.agents.some(agent => agent.id === profile!.id)) this.addAgent(profile.id);
-      const member = data.agents.find(agent => agent.id === profile!.id)!;
-      for (const key of ['skills', 'allowShell', 'allowWrites', 'allowConfig', 'useHostComputer', 'cloudConnectionId', 'chiefOfStaff'] as const) {
-        if (Object.hasOwn(input, key) && (input[key] !== undefined || key === 'cloudConnectionId')) Object.assign(member, { [key]: input[key] });
-      }
-      this.save(true);
-      return this.getAgent(profile.id)!;
-    }
     const name = input.name.trim();
     if (!name) throw new Error('Agent name is required');
     if (!input.systemPrompt.trim()) throw new Error('Agent instructions are required');
@@ -900,7 +832,6 @@ export class CoworkStore {
     if (data.agents.some((a) => a.id !== existing?.id && a.name.toLowerCase() === name.toLowerCase())) throw new Error('Agent names must be unique so mentions identify one teammate.');
     const agent: CoworkAgent = {
       id: existing?.id ?? (input.id && /^[\w-]+$/.test(input.id) ? input.id : `ca-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4)}`),
-      ...(this.options?.companyId ? { companyId: this.options.companyId } : {}),
       name,
       ...sanitizeAgentProfile(input, existing),
       avatar: sanitizeAvatar(input.avatar, existing?.avatar),
@@ -1922,7 +1853,7 @@ export class CoworkStore {
     return this.load().requests.find((request) => request.id === id);
   }
 
-  addRequest(input: { conversationId: string; agentId: string; kind: CoworkRequest['kind']; title: string; detail: string; browserAuth?: BrowserAuthCard; appAction?: CoworkAppAction; appConnection?: AppSuggestion; options?: string[]; recommended?: string; permission?: CoworkRequest['permission']; credential?: CoworkRequestCredential; desktopHandoff?: boolean }): CoworkRequest {
+  addRequest(input: { conversationId: string; agentId: string; kind: CoworkRequest['kind']; title: string; detail: string; browserAuth?: BrowserAuthCard; appAction?: CoworkAppAction; appConnection?: AppSuggestion; options?: string[]; recommended?: string; permission?: CoworkRequest['permission']; credential?: CoworkRequestCredential; desktopHandoff?: boolean; delegatedGate?: CoworkRequest['delegatedGate'] }): CoworkRequest {
     const data = this.load();
     const conversation = data.conversations.find((candidate) => candidate.id === input.conversationId);
     if (!conversation?.memberIds.includes(input.agentId)) throw new Error('Requesting agent is not in this conversation');
@@ -1953,6 +1884,7 @@ export class CoworkStore {
       credential,
       browserAuth,
       desktopHandoff: input.kind === 'question' && input.desktopHandoff === true ? true : undefined,
+      ...(input.delegatedGate ? { delegatedGate: input.delegatedGate } : {}),
       status: 'open',
       createdAt: new Date().toISOString(),
     };
@@ -2065,7 +1997,13 @@ export class CoworkStore {
     this.save();
   }
 
-  resolveRequest(id: string, status: Exclude<CoworkRequest['status'], 'open'>, response?: string, review?: { args?: unknown; saveDraft?: boolean }): CoworkRequest | undefined {
+  resolveRequest(
+    id: string,
+    status: Exclude<CoworkRequest['status'], 'open'>,
+    response?: string,
+    review?: { args?: unknown; saveDraft?: boolean },
+    meta?: { resolvedBy?: 'user' | 'chief'; resolvedByLabel?: string },
+  ): CoworkRequest | undefined {
     const request = this.getRequest(id);
     if (!request || request.status !== 'open') return undefined;
     if (review) {
@@ -2078,6 +2016,8 @@ export class CoworkStore {
     }
     request.status = status;
     request.response = response?.trim() || undefined;
+    if (meta?.resolvedBy) request.resolvedBy = meta.resolvedBy;
+    if (meta?.resolvedByLabel?.trim()) request.resolvedByLabel = meta.resolvedByLabel.trim();
     request.resolvedAt = new Date().toISOString();
     this.save();
     return request;

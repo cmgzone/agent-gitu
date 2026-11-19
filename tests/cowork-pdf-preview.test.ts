@@ -64,18 +64,6 @@ it('serves a protected PDF renderer while retaining original downloads, byte ran
     await response.body?.cancel();
   }
   expect((await fetch(base + '/vendor/pdfjs/package.json', { headers })).status).toBe(404);
-  const service = server as any, company = service.companies().create({ name: 'PDF team' });
-  const companyFile = service.companyScope.run({ id: company.id, version: company.directionVersion }, () => {
-    const companyStore = service.cowork(), member = companyStore.saveAgent({ name: 'Company PDF fixture', systemPrompt: 'Preview fixture' });
-    const chat = companyStore.saveConversation({ kind: 'dm', memberIds: [member.id] });
-    return companyStore.addArtifact({ conversationId: chat.id, name: 'company.pdf', dataBase64: Buffer.from(bytes).toString('base64') });
-  });
-  const companyRoute = '/api/companies/' + company.id + '/cowork/artifacts/' + companyFile.id;
-  const companyPreview = await fetch(base + companyRoute + '/preview', { headers });
-  expect(companyPreview.status).toBe(200);
-  expect(await companyPreview.text()).toContain('data-pdf-url="' + companyRoute + '?inline=1"');
-  expect((await fetch(base + companyRoute + '?inline=1', { headers })).status).toBe(200);
-  expect((await fetch(base + '/api/cowork/artifacts/' + companyFile.id, { headers })).status).toBe(404);
 }, 30000);
 
 it('restricts PDF.js file serving to runtime assets', () => {

@@ -29,7 +29,7 @@ import type { BudgetAccount } from '../coding/budget.js';
 import { describeChiefDecision, type ChiefInput } from '../coding/chief.js';
 import { extractJson, UsageTrackingClient, type LlmClient, type LlmMessage, type LlmUsage } from '../llm/llm.js';
 import { authorityPolicySummary, type AuthorityPolicy } from './authority.js';
-import type { ChiefAdvisor, ChiefDecisionRecord } from './chief.js';
+import type { ChiefAdvisor, ChiefAdvisorRequest, ChiefDecisionRecord } from './chief.js';
 
 export interface ModelChiefAdvisorOptions {
   llm: LlmClient;
@@ -48,6 +48,10 @@ export interface ModelChiefAdvisorOptions {
   account?: BudgetAccount;
   /** The authority in force, summarised into the prompt. */
   policy: AuthorityPolicy;
+  /** Optional project facts (tech stack, verification commands) added to the prompt when available. */
+  projectContext?: string | (() => string | undefined);
+  /** Optional workspace memory facts added to the prompt when available. */
+  memoryContext?: string | ((request: ChiefAdvisorRequest) => string | undefined);
   /** Wall-clock cap for one answer. */
   timeoutMs?: number;
   /** One line per declined answer, for the conversation's progress area. */
@@ -67,6 +71,17 @@ const MAX_DECISIONS_IN_PROMPT = 12;
  * `undefined` is not a failure the runtime has to handle: the chief escalates it to
  * the person, which is exactly what would have happened without an advisor at all.
  */
+function resolveOptionalContext<T>(source: string | ((arg: T) => string | undefined) | undefined, arg: T): string | undefined {
+  if (!source) return undefined;
+  try {
+    const raw = typeof source === 'function' ? source(arg) : source;
+    const trimmed = raw?.trim();
+    return trimmed || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function modelChiefAdvisor(options: ModelChiefAdvisorOptions): ChiefAdvisor {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   return async ({ input, decisions }) => {
@@ -77,7 +92,15 @@ export function modelChiefAdvisor(options: ModelChiefAdvisorOptions): ChiefAdvis
       options.onEvent?.('chief answer declined — the mission budget is spent');
       return undefined;
     }
-    const messages = chiefAdvisorPrompt(input, decisions, options.policy);
+    const project = resolveOptionalContext(
+      options.projectContext as string | ((arg: undefined) => string | undefined) | undefined,
+      undefined,
+    );
+    const memory = resolveOptionalContext(options.memoryContext, { input, decisions });
+    const messages = chiefAdvisorPrompt(input, decisions, options.policy, {
+      ...(project ? { project } : {}),
+      ...(memory ? { memory } : {}),
+    });
     // Only a question is offered to this layer, and anything else is refused rather
     // than reinterpreted: a prompt written for a question cannot answer an approval.
     if (!messages) return undefined;
@@ -134,7 +157,12 @@ export function parseChiefAdvisorReply(reply: string): string | undefined {
  * authority in force, and the decisions already made in this session — so an answer
  * can be consistent with the session it is answering inside.
  */
-export function chiefAdvisorPrompt(input: ChiefInput, decisions: readonly ChiefDecisionRecord[], policy: AuthorityPolicy): LlmMessage[] | undefined {
+export function chiefAdvisorPrompt(
+  input: ChiefInput,
+  decisions: readonly ChiefDecisionRecord[],
+  policy: AuthorityPolicy,
+  extra?: { project?: string; memory?: string },
+): LlmMessage[] | undefined {
   if (input.request.kind !== 'questions') return undefined;
   const { request, context } = input;
   const questions = request.request.questions
@@ -159,26 +187,38 @@ export function chiefAdvisorPrompt(input: ChiefInput, decisions: readonly ChiefD
           .map((record) => `- ${record.requestKind.replace(/_/g, ' ')}: ${clip(record.summary, 160)} → ${record.decision.action} (${clip(describeChiefDecision(record.decision), 160)})`)
           .join('\n');
 
+  const sections: string[] = [
+    `Mission: ${clip(context.goal, 600)}`,
+    `Delegating teammate: ${context.requestedBy ?? context.agentId ?? 'a teammate'}`,
+    `Budget: ${budget}`,
+  ];
+  const project = extra?.project?.trim();
+  if (project) {
+    sections.push('', 'PROJECT CONTEXT', clip(project, 1_200));
+  }
+  const memory = extra?.memory?.trim();
+  if (memory) {
+    sections.push('', 'TEAM & WORKSPACE MEMORY', clip(memory, 1_500));
+  }
+  sections.push(
+    '',
+    'AUTHORITY IN FORCE',
+    authorityPolicySummary(policy),
+    '',
+    'DECISIONS ALREADY MADE IN THIS SESSION',
+    history,
+    '',
+    'QUESTIONS',
+    questions,
+    '',
+    'Reply with JSON only: {"answer": "..."} or {"escalate": "..."}',
+  );
+
   return [
     { role: 'system', content: CHIEF_ADVISOR_SYSTEM_PROMPT },
     {
       role: 'user',
-      content: [
-        `Mission: ${clip(context.goal, 600)}`,
-        `Delegating teammate: ${context.requestedBy ?? context.agentId ?? 'a teammate'}`,
-        `Budget: ${budget}`,
-        '',
-        'AUTHORITY IN FORCE',
-        authorityPolicySummary(policy),
-        '',
-        'DECISIONS ALREADY MADE IN THIS SESSION',
-        history,
-        '',
-        'QUESTIONS',
-        questions,
-        '',
-        'Reply with JSON only: {"answer": "..."} or {"escalate": "..."}',
-      ].join('\n'),
+      content: sections.join('\n'),
     },
   ];
 }

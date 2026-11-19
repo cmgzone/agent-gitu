@@ -127,6 +127,10 @@ export interface CoworkToolScope {
   subAgents?: { run: (params: Record<string, unknown>) => Promise<ToolResult> };
   /** True when this scope belongs to a sub-agent: conversation-facing tools are refused. */
   isSubAgent?: boolean;
+  /** Member IDs of the active group chat, when this turn runs in a multi-agent group. */
+  groupMemberIds?: string[];
+  /** Summon a fellow group member right inside the active group chat instead of a private DM inbox. */
+  summonInGroup?: (agentId: string, brief: string) => void;
 }
 
 /** Tools that normally execute inside the agent's virtual computer. */
@@ -237,7 +241,7 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
   },
   {
     name: 'spawn_sub_agent',
-    doc: 'Spawn a temporary sub-agent for one bounded objective — it works independently and its report comes back only to you, never to the user. params: {"role":"competitor-researcher","objective":"Compare Piki POS with five competitors","reason":"why you need it","budget":{"maxCostUsd":0.4,"maxTurns":20},"permissions":{"allowShell":false},"skills":["web-research"],"maxRuntimeMinutes":15}. Blocks until the sub-agent settles. The budget and permissions you ask for are requests: the host clamps them to your own budget and capabilities, and the sub-agent never gets permissions you lack. You remain responsible for verifying its report with your own tools.',
+    doc: 'Spawn a temporary sub-agent for one bounded objective — it works independently and its report comes back only to you, never to the user. Emit multiple spawn_sub_agent calls in the same round to run up to 8 independent sub-agents in parallel. params: {"role":"competitor-researcher","objective":"Compare Piki POS with five competitors","reason":"why you need it","budget":{"maxCostUsd":0.4,"maxTurns":20},"permissions":{"allowShell":false},"skills":["web-research"],"maxRuntimeMinutes":15}. Blocks until the sub-agent (or parallel batch) settles. The budget and permissions you ask for are requests: the host clamps them to your own budget and capabilities, and the sub-agent never gets permissions you lack. You remain responsible for verifying its report with your own tools.',
   },
   {
     name: 'browse',
@@ -307,7 +311,7 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
   },
   {
     name: 'message_teammate',
-    doc: 'Put a task or message into a teammate\'s inbox — they are woken to act on it. Use for handing off work. params: {"to":"Name","text":"do X and report back"}',
+    doc: 'Send a private 1-on-1 inbox message to a teammate who is NOT in the current group chat (wakes them in their private DM). Inside a group chat, do NOT use message_teammate for fellow group members — mention @Name in your group reply instead so everyone collaborates visibly in the group. params: {"to":"Name","text":"do X and report back"}',
   },
   {
     name: 'todo_manage',
@@ -1031,6 +1035,7 @@ function coworkMessageTeammate(scope: CoworkToolScope | undefined, params: Recor
   try {
     const to = String(params['to'] ?? '')
       .trim()
+      .replace(/^@+/, '')
       .toLowerCase();
     const text = String(params['text'] ?? '').trim();
     if (!text) return { ok: false, output: 'message_teammate requires "text".' };
@@ -1046,6 +1051,13 @@ function coworkMessageTeammate(scope: CoworkToolScope | undefined, params: Recor
         }.`,
       };
     if (target.id === agent.id) return { ok: false, output: 'That is you — just do the work or reply directly.' };
+    if (scope.groupMemberIds?.includes(target.id)) {
+      scope.summonInGroup?.(target.id, text);
+      return {
+        ok: true,
+        output: `Queued @${target.name} to respond directly inside this group chat instead of their private DM inbox. Mention @${target.name} with your brief in your group reply so both the user and @${target.name} see the collaboration here.`,
+      };
+    }
     store.addInbox({ fromAgentId: agent.id, toAgentId: target.id, conversationId: scope.conversationId ?? '', text });
     return { ok: true, output: `Delivered to @${target.name}'s inbox. They will be woken to act on it shortly. Tell the user about the hand-off in your reply.` };
   } catch (err) {

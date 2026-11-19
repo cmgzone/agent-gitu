@@ -75,6 +75,8 @@ const MAX_AGENT_MESSAGES_PER_TRIGGER = Infinity;
  * finishes in waves instead of opening all of those sessions at once.
  */
 const MAX_PARALLEL_WORKERS = Infinity;
+/** Maximum sub-agents a single coworker may launch concurrently in one model round. */
+export const MAX_PARALLEL_SUBAGENTS_PER_ROUND = 8;
 const MAX_TOOL_ROUNDS_PER_TURN = Infinity;
 /** Compaction checkpoint size for the normal cowork tool loop; there is no
  * total segment ceiling. The user can still cancel through the turn signal. */
@@ -295,8 +297,8 @@ function resolveChief(conversation: CoworkConversation, members: CoworkAgent[]):
 const TRIAGE_NOTE = [
   'TEAM TRIAGE — the user addressed the whole team and @mentioned nobody. You speak first; if nobody needs to be involved, your reply is the whole answer.',
   'Decide before answering: can you complete this yourself with your own tools and computer? Then do it now and finish.',
-  'Only delegate the parts that genuinely belong to a teammate\'s specialty, by @mentioning them in your reply (e.g. "@Writer draft the copy and report back"). Mention the smallest set of teammates that covers the work — never the whole team "just in case".',
-  'Mentioned teammates are woken with your message and run in parallel; after they report you get one final synthesis turn to merge the results into the answer.',
+  'Only delegate the parts that genuinely belong to a teammate\'s specialty, by @mentioning them directly in your group reply (e.g. "@Writer draft the copy and report back"). Do NOT use message_teammate for teammates in this group — that routes to private DMs instead of this group chat. Mention the smallest set of teammates that covers the work — never the whole team "just in case".',
+  'Mentioned teammates are woken with your message and run in parallel right here in the group chat; after they report you get one final synthesis turn to merge the results into the answer.',
 ].join('\n');
 
 function systemPrompt(agent: CoworkAgent, conversation: CoworkConversation, members: CoworkAgent[], deps?: CoworkRunnerDeps, mission?: CoworkMission, thread?: CoworkThread): string {
@@ -330,7 +332,7 @@ function systemPrompt(agent: CoworkAgent, conversation: CoworkConversation, memb
       : deps?.computerFor
       ? `You have your own persistent Linux virtual computer, a full desktop shared with the user, private files, shell and browser. Use desktop_screenshot to inspect GUI windows and desktop_input (when shell permission is enabled) to click, type and open apps. The user can also operate this same desktop; check the current screen before interacting. Use browse for structured operations in the Agent browser. For website login, signup or verification, navigate to the HTTPS form with browse and call request_browser_auth. Secure cards submit into this persistent browser and resume your task. Call computer_handoff only for CAPTCHA or another unsupported human step; never ask for passwords or verification codes in chat. Stop desktop, browser, and shell actions while the user has control or the desktop is sleeping. Resume only after the user returns control. Paths are relative to /workspace. Teammates cannot read your private files. Share findings in the conversation; use share_file and receive_file for artifacts. Never claim a tool succeeded unless its result says so. If a tool result reports the virtual computer is unavailable, tools fall back automatically to the user workspace: continue with workspace-relative paths and do not ask the user to install or start Docker.`
       : `Paths in tool calls are relative to your workspace.`,
-    `AUTONOMY: own the user's requested outcome and do the available work now. Make routine reversible decisions yourself using the goal, repository, available tools and prior user preferences. Choose a sensible approach and adapt when evidence changes without over-explaining tradeoffs unless asked. Use a visible checklist with todo_manage when multiple steps need tracking; a simple answer or small task needs no formal plan, checklist, or extra permission. Scale verification to the actual result and risk: one meaningful read, check, or tool result can be enough. Questions, explanations and recommendations may be answered directly. Never claim an action or delivery happened without supporting results. If work must continue later, call schedule_followup before replying. message_teammate privately hands work to a teammate and wakes them automatically; verify its returned work before claiming the whole outcome is complete. Ask the user only for a choice that materially changes the result or a concrete missing dependency, and finish independent authorized work before posting a blocking card. Call request_permission when a required capability is disabled. Recover from unavailable tools using another supported approach. Request missing credentials with request_credential, never ask for secrets in chat. A blocking question or permission card means wait for the user's response.`,
+    `AUTONOMY: own the user's requested outcome and do the available work now. Make routine reversible decisions yourself using the goal, repository, available tools and prior user preferences. Choose a sensible approach and adapt when evidence changes without over-explaining tradeoffs unless asked. Use a visible checklist with todo_manage when multiple steps need tracking; a simple answer or small task needs no formal plan, checklist, or extra permission. Scale verification to the actual result and risk: one meaningful read, check, or tool result can be enough. Questions, explanations and recommendations may be answered directly. Never claim an action or delivery happened without supporting results. If work must continue later, call schedule_followup before replying. Use message_teammate only to privately reach a teammate who is NOT in the current group chat (inside a group chat, mention @Name in your reply so teammates collaborate visibly in the group); verify returned work before claiming the whole outcome is complete. Ask the user only for a choice that materially changes the result or a concrete missing dependency, and finish independent authorized work before posting a blocking card. Call request_permission when a required capability is disabled. Recover from unavailable tools using another supported approach. Request missing credentials with request_credential, never ask for secrets in chat. A blocking question or permission card means wait for the user's response.`,
     `LIVE UPDATES: when work needs tools or takes time, stream a short plain-language progress sentence (one brief line) before calling your first tool or emitting your first <tool> marker, and whenever your next step changes. Say briefly what you are checking or doing so the user sees what you are working on in real time while tools run. This is a public status update, not private reasoning: do not include credentials, raw commands, private paths, or tool protocol details. Continue using the tools in the same reply; a progress sentence alone does not finish the task. After the work, state only the concrete result in 1–2 short sentences with no extra explanation.`,
     `CONVERSATION STYLE: keep text output as short as possible — state only what is important and what the user asked for, with no extra explanations. Talk with the user like a capable colleague in a live chat, not like a report generator. Answer what they actually said in 1–3 short, direct sentences (or a compact list only when listing items), not headings, long explanations, bullet summaries, status tables, rich cards or a "what I did / next steps" structure. Never pad replies with introductions, recaps, background lectures, or unsolicited advice. Respond to follow-ups and corrections dynamically, remember what was just discussed, and ask one short question when you need direction. Write a formal report, briefing or structured card only when the user explicitly asks for one. After finishing work, lead immediately with the outcome and include only the essential facts. Maintain professional, emoji-free language across all technical, business, financial and progress reporting; use clear textual status labels (Completed, In Progress, Blocked, Failed, Pending, Requires Approval) instead of decorative emojis.`,
     'DELIVER FILES: use share_file for every finished document, image, audio or video the user should open or download. A file path in your reply is not an attachment; confirm share_file succeeded before claiming the user can download it. Private desktop downloads and media can be attached from the standard folders under /home/agent, within the owner-selected file-size limit.',
@@ -401,11 +403,11 @@ function systemPrompt(agent: CoworkAgent, conversation: CoworkConversation, memb
       .join('\n');
     parts.push(
       `GROUP CHAT: "${conversation.title}" with these teammates:\n${roster}\n` +
-        `The user sees every group message. A message without @mentions goes to the chief first, who completes it directly or summons only useful specialists. A message with @Name is targeted to the named teammate(s), and multiple named teammates run concurrently. Perform your own part now. Summon a needed specialist by mentioning @Name (exactly their name) in your reply. Mentioning a teammate in a reply wakes them, so avoid incidental mentions that would start unnecessary work. Never answer as or impersonate another teammate.`,
+        `The user sees every group message. Collaborate visibly right here in the group chat: a message without @mentions goes to the chief first, who completes it directly or summons only useful specialists. A message with @Name is targeted to the named teammate(s), and multiple named teammates run concurrently and reply here in the group. Perform your own part now. Summon a needed fellow group member by mentioning @Name (exactly their name) in your reply — do NOT use message_teammate for teammates who are already in this group (that sends work to private DMs instead of this group). Mentioning a teammate in a reply wakes them here, so avoid incidental mentions that would start unnecessary work. Never answer as or impersonate another teammate.`,
     );
     if (agent.id === chief?.id) {
       parts.push(
-        `YOU ARE THE CHIEF OF STAFF for this group. You remain responsible for the user's outcome. Complete work with your own tools when sufficient; choose bounded delegation when a teammate's specialty or parallel work helps. Summon needed teammates in this reply with @Name mentions, or use message_teammate. After results arrive, inspect the evidence, resolve remaining work you can handle, and deliver one clear answer with any concrete blockers. A teammate saying "done" is a report to verify. You may create a shared topic with team_manage create_thread when it helps organize substantial work; do not ask the user to create or switch threads. Creating a topic starts its teammates on the brief and keeps replies together automatically. Simple requests need no delegation or new topic.`,
+        `YOU ARE THE CHIEF OF STAFF for this group. You remain responsible for the user's outcome. Complete work with your own tools when sufficient; choose bounded delegation when a teammate's specialty or parallel work helps. Summon needed group teammates directly in this group reply with @Name mentions so they collaborate visibly here in parallel (never use message_teammate for members already in this group). After results arrive, inspect the evidence, resolve remaining work you can handle, and deliver one clear answer with any concrete blockers. A teammate saying "done" is a report to verify. You may create a shared topic with team_manage create_thread when it helps organize substantial work; do not ask the user to create or switch threads. Creating a topic starts its teammates on the brief and keeps replies together automatically. Simple requests need no delegation or new topic.`,
       );
     }
   } else {
@@ -618,6 +620,7 @@ async function agentTurn(input: {
   /** Attachments resolved from the trigger message (images, extracted text). */
   media?: CoworkTriggerMedia[];
   append: (m: CoworkMessageInput) => CoworkMessage;
+  onGroupSummon?: (targetId: string, brief: string) => void;
 }): Promise<void> {
   if (input.deps.withAgent) {
     return input.deps.withAgent(input.agent, () => agentTurn({ ...input, deps: { ...input.deps, withAgent: undefined } }));
@@ -652,8 +655,32 @@ async function agentTurn(input: {
   const artifactIds: string[] = [];
   let ctx: ToolContext | undefined;
   const taggedFolders = (deps.store?.getConversation(conversation.id)?.folders ?? conversation.folders ?? []).map((folder) => folder.path);
+  const isGroup = conversation.kind === 'group' || members.length > 1;
   const scope: CoworkToolScope | undefined =
-    deps.store && deps.memory ? { store: deps.store, agent, memory: deps.memory, recall: deps.recall, conversationId: conversation.id, threadId, computerFor: deps.computerFor, delegation: deps.delegation, signal: deps.signal, taggedFolders, artifactIds, acquireHostBrowser: deps.acquireHostBrowser, subAgents: subAgentBridgeFor(agent, conversation.id, undefined, deps, threadId), creationKind: agentCreationKind(deps.userRequest ?? '') } : undefined;
+    deps.store && deps.memory
+      ? {
+          store: deps.store,
+          agent,
+          memory: deps.memory,
+          recall: deps.recall,
+          conversationId: conversation.id,
+          threadId,
+          computerFor: deps.computerFor,
+          delegation: deps.delegation,
+          signal: deps.signal,
+          taggedFolders,
+          artifactIds,
+          acquireHostBrowser: deps.acquireHostBrowser,
+          subAgents: subAgentBridgeFor(agent, conversation.id, undefined, deps, threadId),
+          creationKind: agentCreationKind(deps.userRequest ?? ''),
+          ...(isGroup
+            ? {
+                groupMemberIds: members.map((m) => m.id),
+                summonInGroup: (targetId: string, brief: string) => input.onGroupSummon?.(targetId, brief),
+              }
+            : {}),
+        }
+      : undefined;
   if (scope) scope.activateThread = thread => {
     deps.onThreadActivated?.(thread);
     messages.push({ role: 'user', content: `TOPIC ROUTING UPDATE: Continue this task in "${thread.title}"${thread.topic ? ` — ${thread.topic}` : ''}. The team will work in this shared topic automatically. Keep the original request and completed results; do not repeat work.` });
@@ -852,32 +879,9 @@ async function agentTurn(input: {
       messages.push({ role: 'tool', toolCallId: call.nativeCallId, content: text });
       if (result.image && supportsImages) screenshots.push({ role: 'user', content: [{ type: 'text', text: `Image evidence from ${call.tool} (${call.nativeCallId}):` }, { type: 'image_url', image_url: { url: result.image } }] });
     };
-    for (const [index, call] of calls.entries()) {
-      deps.signal?.throwIfAborted();
-      if (index > 0) {
-        const before = messages.length;
-        if (injectSteering()) {
-          const guidance = messages.splice(before);
-          for (const pending of calls.slice(index)) appendResult(pending, { ok: false, output: 'Not executed: live user guidance changed the next step. Replan from completed results.' });
-          messages.push(...guidance);
-          break;
-        }
-      }
-      if (index >= 4) {
-        appendResult(call, { ok: false, output: 'Not executed: at most four calls per round. Retry this call in the next round if still needed.' });
-        continue;
-      }
-      ctx ??= deps.toolContext(agent);
-      const detail = summarizeParams(call.tool, call.params);
-      const meta = coworkProgressMeta(call.tool, call.params, ctx);
-      progress(visibleCoworkText(reply), call.tool, undefined, meta.webUrl, detail, undefined, meta.mcpServer, meta.appService);
-      const result = await executeCoworkTool(
-        ctx,
-        call.tool,
-        call.params,
-        { allowShell: agent.allowShell, allowWrites: agent.allowWrites, allowConfig: agent.allowConfig, chief: agent.chiefOfStaff, browser: Boolean(deps.browser) },
-        scope,
-      );
+    let nonSubAgentCount = 0;
+    let subAgentCount = 0;
+    const recordExecutedTool = (call: (typeof calls)[number], result: ToolResult, detail: string, meta: ReturnType<typeof coworkProgressMeta>, callIndex: number): boolean => {
       repliesWithoutTools = 0;
       usedTools.push({ name: call.tool, ok: result.ok });
       checkpointActions.push({ tool: call.tool, detail: detail.slice(0, 400), result: { ok: result.ok, output: result.output.slice(0, 4000), status: result.status, exitCode: result.exitCode, filesTouched: result.filesTouched } });
@@ -920,9 +924,9 @@ async function agentTurn(input: {
         repeatedResults.set(key, { output, count });
         if (count >= 3) {
           finishRepeatedWork = true;
-          for (const pendingCall of calls.slice(index + 1)) appendResult(pendingCall, { ok: false, output: 'Not executed: repeated calls returned no new evidence.' });
+          for (const pendingCall of calls.slice(callIndex + 1)) appendResult(pendingCall, { ok: false, output: 'Not executed: repeated calls returned no new evidence.' });
           messages.push({ role: 'user', content: 'The same call returned unchanged evidence three times. End this turn now with a concise answer supported by existing results, or explain the unresolved blocker. No further tool calls. Do not claim an estimate is an exact count or invent missing results.' });
-          break;
+          return true;
         }
       }
       const appReview = result.ok && call.tool === 'connected_apps' && /^(?:Review \S+ posted\.|Waiting for review \S+\.)/.test(result.output);
@@ -930,9 +934,73 @@ async function agentTurn(input: {
         reply = appReview ? 'This action is waiting for your approval in the card above.' : call.tool === 'request_credential' ? 'I posted a secure connection card for you above. Please enter your credentials to continue.' : visibleCoworkText(reply) || 'I’m waiting for your response to the card above.';
         waitingForUser = true;
         endedByWaiting = true;
-        for (const pendingCall of calls.slice(index + 1)) appendResult(pendingCall, { ok: false, output: 'Not executed: the turn is paused for the user. Continue only after the dependency is resolved.' });
-        break;
+        for (const pendingCall of calls.slice(callIndex + 1)) appendResult(pendingCall, { ok: false, output: 'Not executed: the turn is paused for the user. Continue only after the dependency is resolved.' });
+        return true;
       }
+      return false;
+    };
+
+    const perms = { allowShell: agent.allowShell, allowWrites: agent.allowWrites, allowConfig: agent.allowConfig, chief: agent.chiefOfStaff, browser: Boolean(deps.browser) };
+    let index = 0;
+    while (index < calls.length) {
+      deps.signal?.throwIfAborted();
+      if (index > 0) {
+        const before = messages.length;
+        if (injectSteering()) {
+          const guidance = messages.splice(before);
+          for (const pending of calls.slice(index)) appendResult(pending, { ok: false, output: 'Not executed: live user guidance changed the next step. Replan from completed results.' });
+          messages.push(...guidance);
+          break;
+        }
+      }
+      const call = calls[index]!;
+      // Contiguous spawn_sub_agent calls run concurrently in one Promise.all batch
+      // so a single coworker can launch multiple sub-agents in parallel.
+      if (call.tool === 'spawn_sub_agent') {
+        let end = index;
+        while (end < calls.length && calls[end]!.tool === 'spawn_sub_agent') end++;
+        const slice = calls.slice(index, end);
+        const remainingSlots = Math.max(0, MAX_PARALLEL_SUBAGENTS_PER_ROUND - subAgentCount);
+        const runnable = slice.slice(0, remainingSlots);
+        const overflow = slice.slice(remainingSlots);
+        subAgentCount += runnable.length;
+        ctx ??= deps.toolContext(agent);
+        const prepared = runnable.map((item, offset) => {
+          const detail = summarizeParams(item.tool, item.params);
+          const meta = coworkProgressMeta(item.tool, item.params, ctx);
+          progress(visibleCoworkText(reply), item.tool, undefined, meta.webUrl, detail, undefined, meta.mcpServer, meta.appService);
+          return { call: item, detail, meta, callIndex: index + offset };
+        });
+        const results = await Promise.all(
+          prepared.map((entry) => executeCoworkTool(ctx!, entry.call.tool, entry.call.params, perms, scope)),
+        );
+        let stopped = false;
+        for (let i = 0; i < prepared.length; i++) {
+          if (recordExecutedTool(prepared[i]!.call, results[i]!, prepared[i]!.detail, prepared[i]!.meta, prepared[i]!.callIndex)) {
+            stopped = true;
+            break;
+          }
+        }
+        if (stopped) break;
+        for (const extra of overflow) {
+          appendResult(extra, { ok: false, output: `Not executed: at most ${MAX_PARALLEL_SUBAGENTS_PER_ROUND} parallel sub-agents per round. Retry in the next round if needed.` });
+        }
+        index = end;
+        continue;
+      }
+      if (nonSubAgentCount >= 4) {
+        appendResult(call, { ok: false, output: 'Not executed: at most four calls per round. Retry this call in the next round if still needed.' });
+        index++;
+        continue;
+      }
+      nonSubAgentCount++;
+      ctx ??= deps.toolContext(agent);
+      const detail = summarizeParams(call.tool, call.params);
+      const meta = coworkProgressMeta(call.tool, call.params, ctx);
+      progress(visibleCoworkText(reply), call.tool, undefined, meta.webUrl, detail, undefined, meta.mcpServer, meta.appService);
+      const result = await executeCoworkTool(ctx, call.tool, call.params, perms, scope);
+      if (recordExecutedTool(call, result, detail, meta, index)) break;
+      index++;
     }
     messages.push(...screenshots);
     if (waitingForUser) break;
@@ -1138,15 +1206,29 @@ export async function runConversationTurn(input: {
   try {
     let coordinatorSpoke = false;
     let firstSpeakerId: string | undefined;
+    const pendingGroupSummons = new Map<string, string[]>();
+    const recordGroupSummon = (targetId: string, brief: string): void => {
+      const list = pendingGroupSummons.get(targetId) ?? [];
+      list.push(brief);
+      pendingGroupSummons.set(targetId, list);
+    };
+    const drainGroupSummons = (targetQueue: CoworkAgent[], seen: Set<string>, current: CoworkAgent[]): void => {
+      for (const targetId of pendingGroupSummons.keys()) {
+        const summoned = current.find((member) => member.id === targetId);
+        if (!summoned || seen.has(summoned.id)) continue;
+        seen.add(summoned.id);
+        targetQueue.push(summoned);
+      }
+    };
     const forced = deps.forceAgentId ? members.find((member) => member.id === deps.forceAgentId) : undefined;
     if ((conversation.kind === 'dm' && members.length === 1) || forced) {
       const agent = forced ?? members[0]!;
       firstSpeakerId = agent.id;
       deps.onWorking?.(agent);
-      await agentTurn({ agent, conversation, members, history, deps, threadId, media: input.media, append: track });
+      await agentTurn({ agent, conversation, members, history, deps, threadId, media: input.media, append: track, onGroupSummon: recordGroupSummon });
       conversation = deps.store?.getConversation(conversation.id) ?? conversation;
       members = currentMembers(conversation, deps);
-      if (members.length < 2 || (forced && !topicStarted)) return { messages };
+      if (members.length < 2 || (forced && !topicStarted && pendingGroupSummons.size === 0)) return { messages };
       coordinatorSpoke = true;
     }
 
@@ -1154,13 +1236,15 @@ export async function runConversationTurn(input: {
     const workerErrors: string[] = [];
     const chief = resolveChief(conversation, members)!;
     const existingRequestIds = new Set((deps.store?.requests(conversation.id) ?? []).map((request) => request.id));
-    const broadcast = mentioned.length === 0;
+    const broadcast = mentioned.length === 0 && pendingGroupSummons.size === 0;
     // Triage first: an unmentioned message is the chief's to answer or route.
     // Only the teammates it @mentions are woken; targeted messages go straight
     // to the mentioned agents.
     const queue: CoworkAgent[] = [...mentioned];
     const responded = new Set<string>();
     for (const agent of queue) responded.add(agent.id);
+    if (firstSpeakerId) responded.add(firstSpeakerId);
+    drainGroupSummons(queue, responded, members);
     let turnBudget = MAX_AGENT_MESSAGES_PER_TRIGGER - 1;
     const enqueueTopicTeam = (): void => {
       if (!topicStarted) return;
@@ -1172,7 +1256,6 @@ export async function runConversationTurn(input: {
         queue.push(member);
       }
     };
-    if (firstSpeakerId) responded.add(firstSpeakerId);
     if (broadcast && !coordinatorSpoke) {
       responded.add(chief.id);
       deps.onWorking?.(chief);
@@ -1185,6 +1268,7 @@ export async function runConversationTurn(input: {
         threadId,
         media: input.media,
         append: track,
+        onGroupSummon: recordGroupSummon,
       });
       // The chief's reply is the delegation contract: seed the worker waves
       // from the teammates it summoned, not from every member.
@@ -1195,6 +1279,7 @@ export async function runConversationTurn(input: {
         responded.add(summoned.id);
         queue.push(summoned);
       }
+      drainGroupSummons(queue, responded, members);
     }
     enqueueTopicTeam();
     let count = 0;
@@ -1213,8 +1298,13 @@ export async function runConversationTurn(input: {
       const firstBatchMessage = messages.length;
       await Promise.all(batch.map(async (agent) => {
         deps.onWorking?.(agent);
+        const briefs = pendingGroupSummons.get(agent.id);
+        if (briefs) pendingGroupSummons.delete(agent.id);
+        const agentHistory = briefs?.length
+          ? [...historyAtStart, { ...trigger, role: 'system' as const, text: `GROUP HANDOFF FOR YOU (${agent.name}): ${briefs.join(' | ')}. Reply visibly here in the group chat.` }]
+          : historyAtStart;
         try {
-          await agentTurn({ agent, conversation, members, history: historyAtStart, deps, threadId, media: input.media, append: track });
+          await agentTurn({ agent, conversation, members, history: agentHistory, deps, threadId, media: input.media, append: track, onGroupSummon: recordGroupSummon });
         } catch (err) {
           deps.signal?.throwIfAborted();
           const error = err instanceof Error ? err.message : String(err);
@@ -1233,6 +1323,7 @@ export async function runConversationTurn(input: {
           queue.push(summoned);
         }
       }
+      drainGroupSummons(queue, responded, members);
       enqueueTopicTeam();
     }
     if (queue.length > 0) track({ role: 'system', text: `Team turn limit reached; not run: ${queue.map((a) => a.name).join(', ')}.`, via: 'web' });
@@ -1401,24 +1492,65 @@ export async function runMissionSession(input: {
       if (round === MAX_TOOL_ROUNDS_PER_TURN) { exhausted = true; break; }
       messages.push({ role: 'assistant', content: reply });
       if (!calls.length) messages.push({ role: 'user', content: 'Invalid tool marker. Retry with valid JSON in <tool>...</tool>.' });
-      for (const [index, call] of calls.entries()) {
-        if (index >= 4) {
-          messages.push(toolResultMessage(call.tool, { ok: false, output: 'Not executed: at most four calls per round. Retry next round if needed.' }));
+      const perms = { allowShell: agent.allowShell, allowWrites: agent.allowWrites, allowConfig: agent.allowConfig, chief: agent.chiefOfStaff, browser: Boolean(deps.browser) };
+      let missionNonSubAgentCount = 0;
+      let missionSubAgentCount = 0;
+      let callIndex = 0;
+      while (callIndex < calls.length) {
+        const call = calls[callIndex]!;
+        deps.signal?.throwIfAborted();
+        if (call.tool === 'spawn_sub_agent') {
+          let end = callIndex;
+          while (end < calls.length && calls[end]!.tool === 'spawn_sub_agent') end++;
+          const slice = calls.slice(callIndex, end);
+          const remainingSlots = Math.max(0, MAX_PARALLEL_SUBAGENTS_PER_ROUND - missionSubAgentCount);
+          const runnable = slice.slice(0, remainingSlots);
+          const overflow = slice.slice(remainingSlots);
+          missionSubAgentCount += runnable.length;
+          ctx ??= deps.toolContext(agent);
+          const prepared = runnable.map((item) => {
+            const key = sha256(canonicalJson({ tool: item.tool, params: item.params }));
+            const meta = coworkProgressMeta(item.tool, item.params, ctx);
+            publicProgress(reply, item.tool, undefined, summarizeParams(item.tool, item.params), meta.webUrl, meta.mcpServer, undefined, meta.appService);
+            return { call: item, key, meta };
+          });
+          if (prepared.some((entry) => (missionResults.get(entry.key)?.count ?? 0) >= 3)) {
+            repeatedWorkStopped = true;
+            break;
+          }
+          const results = await Promise.all(
+            prepared.map((entry) => executeCoworkTool(ctx!, entry.call.tool, entry.call.params, perms, scope)),
+          );
+          for (let i = 0; i < prepared.length; i++) {
+            const entry = prepared[i]!;
+            const result = results[i]!;
+            recordToolResult(scope, entry.call.tool, result, visibleCoworkText(reply));
+            if (!result.ok) {
+              const output = sha256(result.output.replace(/"(responseId|log_id|logId)":"[^"]+"/g, '"$1":"execution"'));
+              const previous = missionResults.get(entry.key);
+              missionResults.set(entry.key, { output, count: previous?.output === output ? previous.count + 1 : 1 });
+            }
+            messages.push(toolResultMessage(entry.call.tool, result, supportsImages));
+            publicProgress(reply, entry.call.tool, result.ok, summarizeParams(entry.call.tool, entry.call.params), entry.meta.webUrl, entry.meta.mcpServer, undefined, entry.meta.appService);
+          }
+          for (const extra of overflow) {
+            messages.push(toolResultMessage(extra.tool, { ok: false, output: `Not executed: at most ${MAX_PARALLEL_SUBAGENTS_PER_ROUND} parallel sub-agents per round. Retry next round if needed.` }));
+          }
+          callIndex = end;
           continue;
         }
-        deps.signal?.throwIfAborted();
+        if (missionNonSubAgentCount >= 4) {
+          messages.push(toolResultMessage(call.tool, { ok: false, output: 'Not executed: at most four calls per round. Retry next round if needed.' }));
+          callIndex++;
+          continue;
+        }
+        missionNonSubAgentCount++;
         const key = sha256(canonicalJson({ tool: call.tool, params: call.params }));
         if ((missionResults.get(key)?.count ?? 0) >= 3) { repeatedWorkStopped = true; break; }
         ctx ??= deps.toolContext(agent);
         const meta = coworkProgressMeta(call.tool, call.params, ctx);
         publicProgress(reply, call.tool, undefined, summarizeParams(call.tool, call.params), meta.webUrl, meta.mcpServer, undefined, meta.appService);
-        const result = await executeCoworkTool(
-          ctx,
-          call.tool,
-          call.params,
-          { allowShell: agent.allowShell, allowWrites: agent.allowWrites, allowConfig: agent.allowConfig, chief: agent.chiefOfStaff, browser: Boolean(deps.browser) },
-          scope,
-        );
+        const result = await executeCoworkTool(ctx, call.tool, call.params, perms, scope);
         recordToolResult(scope, call.tool, result, visibleCoworkText(reply));
         const repeatableRead = call.tool === 'web_fetch' || call.tool === 'todo_manage' && call.params['action'] === 'list' || call.tool === 'connected_apps' &&
           (['list', 'tools', 'discover'].includes(String(call.params['action'])) || call.params['action'] === 'execute' && isBackgroundRead(String(call.params['tool'])));
@@ -1431,6 +1563,7 @@ export async function runMissionSession(input: {
         publicProgress(reply, call.tool, result.ok, summarizeParams(call.tool, call.params), meta.webUrl, meta.mcpServer, undefined, meta.appService);
         waitingForAppReview = result.ok && call.tool === 'connected_apps' && /^(?:Review \S+ posted\.|Waiting for review \S+\.)/.test(result.output);
         if (result.ok && (['ask_user', 'request_permission', 'computer_handoff', 'request_browser_auth', 'request_credential'].includes(call.tool) || waitingForAppReview)) { waiting = true; break; }
+        callIndex++;
       }
       if (waiting || repeatedWorkStopped) break;
       messages.push({ role: 'user', content: 'Continue the work session. Remember to end with your status JSON when this session is done.' });

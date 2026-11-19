@@ -19,6 +19,7 @@ export interface ConnectedAppsRouteDeps {
   sendJson(res: ServerResponse, status: number, data: unknown): void;
   publishCowork(conversationId: string): void;
   dispatchAgentWake(conversationId: string, agentId: string, instruction: string): boolean;
+  onAppConnected?(agentId: string, service: string, accountId: string, opts?: { resumed?: boolean }): void;
 }
 
 /** Authentication remains in the server; this domain also enforces its existing
@@ -113,15 +114,25 @@ export async function connectedAppsRoutes(req: IncomingMessage, res: ServerRespo
         .listConversations()
         .flatMap((conversation) => store.requests(conversation.id))
         .filter((request) => request.agentId === agentId && request.appConnection);
+      const resumedServices = new Set<string>();
       for (const request of requests) {
         if (request.status !== 'open' || !connectedToolkits.has(request.appConnection!.service)) continue;
         store.resolveRequest(request.id, 'accepted', 'Connected');
         deps.publishCowork(request.conversationId);
         if (request.appConnection?.resumeWork) {
+          resumedServices.add(request.appConnection.service);
           const instruction = `${request.appConnection.name} is now connected specifically for you. Continue the user's pending task that needed this app; use connected_apps list to select your active account. If no pending task needs it, acknowledge the connection briefly.`;
           if (!deps.dispatchAgentWake(request.conversationId, request.agentId, instruction))
             store.addFollowUp({ conversationId: request.conversationId, agentId: request.agentId, note: instruction, dueAt: new Date().toISOString() });
         }
+      }
+      for (const account of accounts) {
+        if (account.status === 'ACTIVE' && !account.disabled) {
+          deps.onAppConnected?.(agentId, account.toolkit, account.id, { resumed: resumedServices.has(account.toolkit) });
+        }
+      }
+      for (const account of mail.accounts) {
+        deps.onAppConnected?.(agentId, account.toolkit, account.id, { resumed: resumedServices.has(account.toolkit) });
       }
       let catalog: Awaited<ReturnType<ComposioConnections['catalog']>> = { services: [] },
         catalogUnavailable = false;
@@ -201,6 +212,7 @@ export async function connectedAppsRoutes(req: IncomingMessage, res: ServerRespo
       try {
         const result = await deps.mailConnections.connect(body);
         store.assignAppAccount(agentId, MAIL_SERVICE_SLUG, result.account.id);
+        deps.onAppConnected?.(agentId, MAIL_SERVICE_SLUG, result.account.id);
         deps.sendJson(res, 200, result);
         return;
       } catch (error) {
@@ -321,7 +333,10 @@ export async function connectedAppsRoutes(req: IncomingMessage, res: ServerRespo
         deps.sendJson(res, 502, { code: 'APP_SIGN_IN_FAILED', error: detail });
         return;
       }
-      if (link.accountId) store.assignAppAccount(agentId, service, link.accountId);
+      if (link.accountId) {
+        store.assignAppAccount(agentId, service, link.accountId);
+        if (link.status === 'ACTIVE') deps.onAppConnected?.(agentId, service, link.accountId);
+      }
       deps.sendJson(res, 200, link.url ? link : { accountId: link.accountId, status: link.status || 'INITIALIZING' });
       return;
     }
@@ -340,6 +355,7 @@ export async function connectedAppsRoutes(req: IncomingMessage, res: ServerRespo
         return;
       }
       store.assignAppAccount(agentId, account.toolkit, account.id);
+      deps.onAppConnected?.(agentId, account.toolkit, account.id);
       deps.sendJson(res, 200, { ok: true });
       return;
     }

@@ -154,9 +154,17 @@ export const COWORK_DASHBOARD_CSS = String.raw`
   #cwAgentSwitcher #cwSwitcherSearch { flex:1 1 auto!important; width:100%!important; min-width:0!important; height:100%!important; border:0!important; background:transparent!important; color:var(--text)!important; font:inherit!important; font-size:13px!important; padding:0!important; margin:0!important; outline:none!important; box-shadow:none!important; border-radius:0!important; }
   .cw-switcher-body { flex:1; min-height:0; overflow-y:auto; padding:14px 18px 18px; }
   .cw-agent-switcher-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:10px; }
-  #cwAgentSwitcher .cw-sw-card { display:flex!important; flex-direction:column!important; align-items:flex-start!important; gap:10px!important; padding:14px!important; min-width:0; text-align:left; background:var(--card)!important; border:1px solid var(--border)!important; border-radius:14px!important; color:var(--text)!important; cursor:pointer; transition:border-color .15s ease,background-color .15s ease,transform .12s ease; }
+  #cwAgentSwitcher .cw-sw-card-wrap { position:relative; display:flex; min-width:0; }
+  #cwAgentSwitcher .cw-sw-card { width:100%; display:flex!important; flex-direction:column!important; align-items:flex-start!important; gap:10px!important; padding:14px!important; min-width:0; text-align:left; background:var(--card)!important; border:1px solid var(--border)!important; border-radius:14px!important; color:var(--text)!important; cursor:pointer; transition:border-color .15s ease,background-color .15s ease,transform .12s ease; }
   #cwAgentSwitcher .cw-sw-card:hover { border-color:var(--border2)!important; background:var(--card2)!important; transform:translateY(-1px); }
   #cwAgentSwitcher .cw-sw-card.is-active { border-color:var(--accent)!important; background:color-mix(in srgb,var(--accent) 10%,var(--card))!important; }
+  #cwAgentSwitcher .cw-sw-card-del { position:absolute; top:10px; right:10px; z-index:2; min-width:26px; height:26px; padding:0 6px; border:1px solid transparent; border-radius:8px; background:transparent; color:var(--muted); display:inline-flex; align-items:center; justify-content:center; font:inherit; font-size:11px; font-weight:600; cursor:pointer; transition:color .14s ease,background-color .14s ease,border-color .14s ease; }
+  #cwAgentSwitcher .cw-sw-card-del svg { width:13px; height:13px; flex:none; }
+  #cwAgentSwitcher .cw-sw-card-del:hover { color:var(--err); background:color-mix(in srgb,var(--err) 12%,var(--card)); border-color:color-mix(in srgb,var(--err) 30%,transparent); }
+  #cwAgentSwitcher .cw-sw-card-del.armed { color:#fff; background:var(--err); border-color:var(--err); padding:0 8px; }
+  #cwAgentSwitcher .cw-sw-btn.danger { background:color-mix(in srgb,var(--err) 12%,var(--card))!important; border:1px solid color-mix(in srgb,var(--err) 32%,transparent)!important; color:var(--err)!important; }
+  #cwAgentSwitcher .cw-sw-btn.danger:hover { background:color-mix(in srgb,var(--err) 18%,var(--card))!important; }
+  #cwAgentSwitcher .cw-sw-btn.danger.armed { background:var(--err)!important; border-color:var(--err)!important; color:#fff!important; }
   .cw-sw-card-top { width:100%; display:flex; align-items:center; justify-content:space-between; gap:8px; min-width:0; }
   .cw-sw-card-ava { width:42px; height:42px; border-radius:12px; background:var(--card2); border:1px solid var(--border); display:inline-flex; align-items:center; justify-content:center; flex:none; padding:3px; }
   .cw-sw-card-ava .cw-ava { width:36px; height:36px; }
@@ -318,22 +326,63 @@ export const COWORK_DASHBOARD_JS = String.raw`
     modal.className='modal cw-modal cw-agent-switcher-modal';
     modal.setAttribute('role','dialog');modal.setAttribute('aria-modal','true');modal.setAttribute('aria-labelledby','cwSwitcherTitle');
     var iconFn=typeof cwIcon==='function'?cwIcon:function(n){return typeof icon==='function'?icon(n):'';};
-    modal.innerHTML='<div class="box"><div class="bar"><h2 id="cwSwitcherTitle">Agent Switcher</h2><span class="cw-switcher-count" id="cwSwitcherCount">0</span><span style="flex:1"></span><button type="button" class="cw-sw-btn ghost" id="cwSwClose" aria-label="Close switcher">'+iconFn('close')+'<span>Close</span></button></div><div class="cw-switcher-toolbar"><div class="cw-sw-search">'+iconFn('search')+'<input id="cwSwitcherSearch" type="search" placeholder="Search agents…" aria-label="Search agents"></div><button type="button" class="cw-sw-btn primary" id="cwSwNewAgent">'+iconFn('plus')+'<span>New agent</span></button></div><div class="cw-switcher-body"><div class="cw-agent-switcher-grid" id="cwSwitcherGrid"></div></div></div>';
+    modal.innerHTML='<div class="box"><div class="bar"><h2 id="cwSwitcherTitle">Agent Switcher</h2><span class="cw-switcher-count" id="cwSwitcherCount">0</span><span style="flex:1"></span><button type="button" class="cw-sw-btn danger" id="cwSwDeleteAll" aria-label="Delete all agents" hidden>'+iconFn('trash')+'<span>Delete all</span></button><button type="button" class="cw-sw-btn ghost" id="cwSwClose" aria-label="Close switcher">'+iconFn('close')+'<span>Close</span></button></div><div class="cw-switcher-toolbar"><div class="cw-sw-search">'+iconFn('search')+'<input id="cwSwitcherSearch" type="search" placeholder="Search agents…" aria-label="Search agents"></div><button type="button" class="cw-sw-btn primary" id="cwSwNewAgent">'+iconFn('plus')+'<span>New agent</span></button></div><div class="cw-switcher-body"><div class="cw-agent-switcher-grid" id="cwSwitcherGrid"></div></div></div>';
     document.body.appendChild(modal);
     var close=typeof cwBindDialog==='function'?cwBindDialog(modal,'#cwSwitcherSearch'):function(){modal.remove();};
+    var delAllArmed=false,delAllTimer=null;
+    function resetDelAll(){
+      delAllArmed=false;
+      if(delAllTimer){clearTimeout(delAllTimer);delAllTimer=null;}
+      var btn=$('cwSwDeleteAll');
+      if(btn){if(btn.classList)btn.classList.remove('armed');btn.innerHTML=iconFn('trash')+'<span>Delete all</span>';}
+    }
     function render(){
-      var grid=$('cwSwitcherGrid'),countEl=$('cwSwitcherCount'),qEl=$('cwSwitcherSearch');if(!grid)return;
+      var grid=$('cwSwitcherGrid'),countEl=$('cwSwitcherCount'),qEl=$('cwSwitcherSearch'),delAllBtn=$('cwSwDeleteAll');if(!grid)return;
       var query=String(qEl&&qEl.value||'').trim().toLowerCase(),agents=(cw.agents||[]).slice();
       var active=typeof cwActiveConv==='function'?cwActiveConv():null;
       var currentId=(S&&S.active==='cowork'&&active&&active.kind==='dm'&&active.memberIds&&active.memberIds[0])||cw.selectedAgentId||cw.profileAgentId;
       var filtered=query?agents.filter(function(a){return (a.name+' '+(a.tagline||'')).toLowerCase().indexOf(query)>=0;}):agents;
       if(countEl)countEl.textContent=String(agents.length);
+      if(delAllBtn){delAllBtn.hidden=agents.length===0;if(!agents.length)resetDelAll();}
       if(!filtered.length){grid.innerHTML='<p class="cw-empty" style="grid-column:1 / -1">'+(agents.length?'No agents match that search.':'No agents yet. Create one to start.')+'</p>';return;}
       grid.innerHTML=filtered.map(function(agent){
         var isCurrent=agent.id===currentId,tagline=String(agent.tagline||'').trim();
-        return '<button type="button" class="cw-sw-card'+(isCurrent?' is-active':'')+'" data-sw-chat="'+esc(agent.id)+'" aria-current="'+(isCurrent?'true':'false')+'"><div class="cw-sw-card-top"><span class="cw-sw-card-ava">'+cwAva(agent)+'</span>'+(isCurrent?'<span class="cw-sw-card-active">Active</span>':'')+'</div><div class="cw-sw-card-copy"><strong>'+esc(agent.name)+'</strong>'+(tagline?'<span>'+esc(tagline)+'</span>':'')+'</div></button>';
+        return '<div class="cw-sw-card-wrap"><button type="button" class="cw-sw-card'+(isCurrent?' is-active':'')+'" data-sw-chat="'+esc(agent.id)+'" aria-current="'+(isCurrent?'true':'false')+'"><div class="cw-sw-card-top"><span class="cw-sw-card-ava">'+cwAva(agent)+'</span>'+(isCurrent?'<span class="cw-sw-card-active">Active</span>':'')+'</div><div class="cw-sw-card-copy"><strong>'+esc(agent.name)+'</strong>'+(tagline?'<span>'+esc(tagline)+'</span>':'')+'</div></button><button type="button" class="cw-sw-card-del" data-sw-del="'+esc(agent.id)+'" data-sw-del-name="'+esc(agent.name)+'" title="Delete '+esc(agent.name)+' (click twice)" aria-label="Delete '+esc(agent.name)+'">'+iconFn('trash')+'</button></div>';
       }).join('');
-      grid.querySelectorAll('[data-sw-chat]').forEach(function(btn){btn.onclick=function(){var id=btn.getAttribute('data-sw-chat');close();if(typeof cwSelectAgent==='function'){cwSelectAgent(id);}else if(S&&S.active==='cowork'&&typeof cwOpenDm==='function'){cwOpenDm(id);}else if(typeof cwEnterWorkspace==='function'){cwEnterWorkspace('chat',id);}};});
+      grid.querySelectorAll('[data-sw-chat]').forEach(function(btn){if(btn.classList&&btn.classList.contains('cw-sw-card-del'))return;btn.onclick=function(){var id=btn.getAttribute('data-sw-chat');close();if(typeof cwSelectAgent==='function'){cwSelectAgent(id);}else if(S&&S.active==='cowork'&&typeof cwOpenDm==='function'){cwOpenDm(id);}else if(typeof cwEnterWorkspace==='function'){cwEnterWorkspace('chat',id);}};});
+      grid.querySelectorAll('[data-sw-del]').forEach(function(btn){
+        if(!btn||!btn.classList||!btn.classList.contains('cw-sw-card-del'))return;
+        var armTimer=null;
+        btn.onclick=function(e){
+          if(e&&e.stopPropagation)e.stopPropagation();
+          var id=btn.getAttribute('data-sw-del'),name=btn.getAttribute('data-sw-del-name')||'agent';
+          if(!btn.classList.contains('armed')){
+            btn.classList.add('armed');btn.textContent='Sure?';
+            armTimer=setTimeout(function(){btn.classList.remove('armed');btn.innerHTML=iconFn('trash');},2500);
+            return;
+          }
+          if(armTimer)clearTimeout(armTimer);
+          btn.disabled=true;
+          var run=typeof cwQuickDeleteAgent==='function'?cwQuickDeleteAgent(id,name):api('/api/cowork/agents/'+encodeURIComponent(id),{method:'DELETE'}).then(function(){cw.agents=(cw.agents||[]).filter(function(a){return a.id!==id;});});
+          run.then(function(){if(modal.isConnected)render();}).catch(function(){btn.disabled=false;btn.classList.remove('armed');btn.innerHTML=iconFn('trash');});
+        };
+      });
+    }
+    var delAllBtn=$('cwSwDeleteAll');
+    if(delAllBtn){
+      delAllBtn.onclick=function(){
+        if(!delAllArmed){
+          delAllArmed=true;
+          if(delAllBtn.classList)delAllBtn.classList.add('armed');
+          delAllBtn.textContent='Sure? ('+(cw.agents||[]).length+')';
+          delAllTimer=setTimeout(resetDelAll,3000);
+          return;
+        }
+        resetDelAll();
+        delAllBtn.disabled=true;
+        var run=typeof cwDeleteAllAgents==='function'?cwDeleteAllAgents():api('/api/cowork/agents',{method:'DELETE'}).then(function(){cw.agents=[];});
+        run.then(function(){delAllBtn.disabled=false;if(modal.isConnected)render();}).catch(function(){delAllBtn.disabled=false;});
+      };
     }
     $('cwSwClose').onclick=close;
     $('cwSwNewAgent').onclick=function(){close();if(typeof cwAgentModal==='function')cwAgentModal(null);};

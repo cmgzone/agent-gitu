@@ -65,8 +65,8 @@ import type { CodingEvent } from '../coding/events.js';
 import { classifyFollowUp, conversationIntent, isNonMutatingStatusQuestion, startsUnrelatedTask, type TaskScope } from '../agent/follow-up.js';
 import { CoworkLiveMailbox, type CoworkDelivery } from '../cowork/live-messages.js';
 import { appAwareness, connectionQuestion, connectionReply } from '../cowork/app-awareness.js';
-import { appReviewDue, reviewConnectedApps } from '../cowork/proactive-apps.js';
-import { Proactivity, assistantBrief, localClock, inQuietHours, type AssistantFact } from '../cowork/proactivity.js';
+import { appReviewDue, isBackgroundRead, reviewConnectedApps } from '../cowork/proactive-apps.js';
+import { PA_ONBOARDING_QUESTION_TITLE, Proactivity, assistantBrief, localClock, inQuietHours, type AssistantFact } from '../cowork/proactivity.js';
 import { mainRepositories } from '../cowork/main-repositories.js';
 import { LspManager } from '../lsp/manager.js';
 import { CodeIndex, isGeneratedIndexDirectory } from '../context/code-index.js';
@@ -3462,8 +3462,116 @@ export class GituServer {
   }
   private proactivity(): Proactivity { return this.personalProactivity ??= new Proactivity(nodePath.join(ensureGituHome().settings, 'proactivity.json')); }
   private preparePersonalAssistant(): void {
-    const agent = this.proactivity().ensureAssistant(this.cowork()); if (!agent) return;
-    this.proactivity().notify(this.cowork(), agent, 'welcome', 'I’m P.A, your personal assistant and chief of staff. I’ll highlight important changes, track blockers, suggest useful next steps and keep your teammates coordinated. Tell me your current priority so I can focus on what matters to you.');
+    const store = this.cowork();
+    const assistant = this.proactivity();
+    const agent = assistant.ensureAssistant(store); if (!agent) return;
+    const status = assistant.status();
+    const conversationId = status.conversationId;
+    const assignedApps = store.appConnections(agent.id);
+    if (assignedApps.length > 0) {
+      assistant.notify(
+        store,
+        agent,
+        'welcome',
+        'I’m P.A, your personal assistant and chief of staff. I see your connected apps are ready — I’m starting to learn your priorities right now so I can surface useful next steps and keep your teammates coordinated.',
+        true,
+      );
+      for (const conn of assignedApps) {
+        this.handleConnectedAppLearning(agent.id, conn.service, conn.accountId);
+      }
+      if (conversationId) this.publishCowork(conversationId);
+      return;
+    }
+    assistant.notify(
+      store,
+      agent,
+      'welcome',
+      'I’m P.A, your personal assistant and chief of staff. I’ll learn your goals, highlight what matters, suggest concrete next steps, and keep your teammates coordinated. Pick a starting focus below — or connect an app in Connections and I’ll start learning automatically.',
+      true,
+    );
+    if (
+      conversationId &&
+      agent.personality?.proactivity === 'proactive' &&
+      assistant.settings().enabled &&
+      !store.messages(conversationId).some((message) => message.role === 'user') &&
+      !store.requests(conversationId).some((request) => request.kind === 'question' && request.title === PA_ONBOARDING_QUESTION_TITLE) &&
+      assistant.claimOnce('onboarding-intake')
+    ) {
+      store.addRequest({
+        conversationId,
+        agentId: agent.id,
+        kind: 'question',
+        title: PA_ONBOARDING_QUESTION_TITLE,
+        detail: 'Choose your main focus (or reply with your role and top goal). I’ll remember your preferences, suggest the best apps or teammates to set up, and propose your first next step right away.',
+        options: [
+          'Manage my inbox, calendar & priorities',
+          'Ship & debug my code projects',
+          'Research, writing & planning',
+          'Coordinate my team & daily operations',
+        ],
+        recommended: 'Manage my inbox, calendar & priorities',
+      });
+    }
+    if (conversationId) this.publishCowork(conversationId);
+  }
+
+  private handleConnectedAppLearning(agentId: string, service: string, accountId: string, opts?: { resumed?: boolean }): void {
+    if (this.stopping) return;
+    const assistant = this.proactivity();
+    const settings = assistant.settings();
+    const status = assistant.status();
+    if (!settings.enabled || !status.assistantId || !status.conversationId || agentId !== status.assistantId) return;
+    const store = this.cowork();
+    const agent = store.getAgent(agentId);
+    if (!agent || agent.personality?.proactivity !== 'proactive') return;
+    if (!assistant.claimOnce(`app-learn:${agentId}:${service}:${accountId}`)) return;
+
+    const conversation = store.getConversation(status.conversationId);
+    if (!conversation) return;
+
+    const hasPermittedRead = store
+      .appPermissions()
+      .some((permission) => permission.agentId === agentId && permission.service === service && permission.accountId === accountId && isBackgroundRead(permission.tool));
+    if (hasPermittedRead && !this.coworkComputerBusy(agentId) && !this.coworkRuns.get(conversation.id)?.busy) {
+      const selection = readRuntimeSelection(),
+        provider = agent.provider ?? selection.provider ?? '',
+        model = agent.model ?? selection.model ?? '';
+      const llm = assistant.reviewClient(this.coworkLlm(agent), (usage) => this.priceUsage(usage, provider, model));
+      void reviewConnectedApps({
+        store,
+        agent,
+        conversation,
+        apps: this.appHub,
+        llm,
+        now: Date.now(),
+        userContext:
+          this.coworkUserContext() +
+          '\n' +
+          this.coworkMemoryFor(agent) +
+          '\nRecent user preferences and requests:\n' +
+          store
+            .messages(conversation.id)
+            .filter((message) => message.role === 'user')
+            .slice(-12)
+            .map((message) => message.text)
+            .join('\n')
+            .slice(-6000),
+        signal: AbortSignal.timeout(90000),
+        enabled: () => !this.stopping && this.proactivity().settings().enabled,
+        isBusy: () => this.coworkComputerBusy(agentId),
+        publish: () => this.publishCowork(conversation.id),
+      }).catch((err) => {
+        logger.error({ subsystem: 'cowork-proactive-apps', ...errorMetadata(err) }, 'Immediate connected-app review failed');
+      });
+    }
+
+    if (!opts?.resumed) {
+      const instruction = `The user connected ${service} (account ${accountId}) for you. Immediately inspect read-only context from this app using connected_apps (never send, write, delete, or modify anything without approval) to learn about the user's current priorities, active work, and preferences. Save useful durable facts to user_profile or memory, then reply concisely with what you learned and suggest 1–2 concrete next steps you can help with.`;
+      if (!this.dispatchAgentWake(conversation.id, agentId, instruction, 'web')) {
+        store.addFollowUp({ conversationId: conversation.id, agentId, note: instruction, dueAt: new Date().toISOString() });
+      }
+      this.publishCowork(conversation.id);
+    }
   }
 
   private personalAssistantTick(): void {
@@ -3475,7 +3583,7 @@ export class GituServer {
     const now=Date.now(),facts:AssistantFact[]=[];
     const day=localClock(now,settings.timezone);
     for(const conversation of store.listConversations()){
-      for(const request of store.requests(conversation.id).filter(request=>request.status==='open'&&!request.appConnection))facts.push({id:'request:'+request.id,priority:request.kind==='credential'?95:85,text:request.title+' needs your decision.',next:request.kind==='credential'?'Reconnect the account through the secure sign-in form.':'Review the card so the teammate can continue.',link:'[Open chat](#cowork='+conversation.id+')'});
+      for(const request of store.requests(conversation.id).filter(request=>request.status==='open'&&!request.appConnection&&request.title!==PA_ONBOARDING_QUESTION_TITLE))facts.push({id:'request:'+request.id,priority:request.kind==='credential'?95:85,text:request.title+' needs your decision.',next:request.kind==='credential'?'Reconnect the account through the secure sign-in form.':'Review the card so the teammate can continue.',link:'[Open chat](#cowork='+conversation.id+')'});
       for(const todo of store.todos(conversation.id).filter(todo=>todo.status==='blocked'))facts.push({id:'todo:'+todo.id,priority:55,text:todo.text+' is blocked'+(todo.note?': '+todo.note.slice(0,180):'.'),next:'Clarify the blocker with the assigned teammate.',link:'[Open chat](#cowork='+conversation.id+')'});
       for(const todo of store.todos(conversation.id).filter(todo=>['pending','in_progress'].includes(todo.status)&&now-Date.parse(todo.updatedAt)<7*86400000))facts.push({id:'todo:'+todo.id,priority:30,text:todo.text+' · '+(store.getAgent(todo.agentId)?.name??'Teammate')+(todo.status==='in_progress'?' is working on this.':' has this on the checklist.'),next:'Review the next checklist step or ask the teammate for a concrete progress update.',link:'[Open chat](#cowork='+conversation.id+')'});
     }
@@ -5150,6 +5258,36 @@ export class GituServer {
         }
         return true;
       }
+      if (method === 'DELETE') {
+        let body: Record<string, unknown> = {};
+        try { body = await this.readBody(req); } catch { body = {}; }
+        const requestedIds = Array.isArray(body['ids']) ? body['ids'].map(String).filter(Boolean) : undefined;
+        const keepIds = new Set(Array.isArray(body['keepIds']) ? body['keepIds'].map(String).filter(Boolean) : []);
+        const targets = (requestedIds
+          ? requestedIds.map((id) => store.getAgent(id)).filter((a): a is CoworkAgent => Boolean(a))
+          : store.listAgents()
+        ).filter((agent) => !keepIds.has(agent.id));
+        const deletedIds: string[] = [];
+        for (const target of targets) {
+          for (const conv of store.listConversations()) {
+            if (conv.memberIds.includes(target.id)) {
+              const run = this.coworkRuns.get(conv.id);
+              if (run) { run.queue.length = 0; run.abort.abort(); }
+            }
+          }
+          if (store.deleteAgent(target.id)) {
+            deletedIds.push(target.id);
+            await this.coworkComputers.get(this.coworkRuntimeKey(target.id))?.stop().catch(() => {});
+            this.coworkTools.get(this.coworkRuntimeKey(target.id))?.mcp?.killAll();
+            this.coworkTools.delete(this.coworkRuntimeKey(target.id));
+            this.coworkComputers.delete(this.coworkRuntimeKey(target.id));
+            this.coworkMemory().clear(target);
+          }
+        }
+        if (deletedIds.length > 0) this.stopCoworkPoller('');
+        this.sendJson(res, 200, { ok: true, deletedCount: deletedIds.length, deletedIds, remaining: store.listAgents().length });
+        return true;
+      }
       return false;
     }
 
@@ -5167,6 +5305,7 @@ export class GituServer {
         await this.coworkComputers.get(this.coworkRuntimeKey(target.id))?.stop().catch(() => {});
         this.coworkTools.get(this.coworkRuntimeKey(target.id))?.mcp?.killAll();
         this.coworkTools.delete(this.coworkRuntimeKey(target.id));
+        this.coworkComputers.delete(this.coworkRuntimeKey(target.id));
         this.stopCoworkPoller('');
       }
       if (removed && target) this.coworkMemory().clear(target);
@@ -6148,7 +6287,9 @@ export class GituServer {
       this.publishCowork(request.conversationId);
       const instruction = credentialConnection
         ? `The user saved the credential you requested ("${request.title}") as connection "${credentialConnection.label}" (id: ${credentialConnection.id}). It lives in the local connection store — ${credentialConnection.id.startsWith('ssh-') ? 'use ssh_exec with this connection id for authorized SSH commands' : 'use it through your connection tools'} and continue the task. Never print or quote the secret itself.`
-        : `The user responded to your ${request.kind} "${request.title}": ${answer}. ${resolved?.appAction && status === 'accepted' ? `Repeat the original proposed connected_apps action with approvalId: ${request.id}. The host applies the user-reviewed fields${action === 'save-draft' ? ' and saves a draft only; sending is not approved' : ''}. Do not create a separate send or bypass the reviewed action.` : 'Continue from that decision and report what you do.'}`;
+        : request.kind === 'question' && request.title === PA_ONBOARDING_QUESTION_TITLE && status === 'answered'
+          ? `The user answered your fast-onboarding question ("${request.title}"): ${answer}. Immediately save what you learned about their focus and preferences using user_profile or memory, recommend 1–2 relevant apps to connect (using recommend_app if helpful) or offer to start right away, propose a concrete first next step, and ask at most one short follow-up question if needed to personalize further.`
+          : `The user responded to your ${request.kind} "${request.title}": ${answer}. ${resolved?.appAction && status === 'accepted' ? `Repeat the original proposed connected_apps action with approvalId: ${request.id}. The host applies the user-reviewed fields${action === 'save-draft' ? ' and saves a draft only; sending is not approved' : ''}. Do not create a separate send or bypass the reviewed action.` : 'Continue from that decision and report what you do.'}`;
       if ((!request.appConnection || request.appConnection.resumeWork) && !this.dispatchAgentWake(request.conversationId, request.agentId, instruction)) {
         store.addFollowUp({ conversationId: request.conversationId, agentId: request.agentId, note: instruction, dueAt: new Date().toISOString() });
       }
@@ -7274,6 +7415,7 @@ export class GituServer {
         readBody: request => this.readBody(request), sendJson: (response, status, data) => this.sendJson(response, status, data),
         publishCowork: conversationId => this.publishCowork(conversationId),
         dispatchAgentWake: (conversationId, agentId, instruction) => this.dispatchAgentWake(conversationId, agentId, instruction),
+        onAppConnected: (agentId, service, accountId, opts) => this.handleConnectedAppLearning(agentId, service, accountId, opts),
       });
       return;
     }

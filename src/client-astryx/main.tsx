@@ -269,6 +269,59 @@ function AstryxApp() {
             syncFromHost();
           }}
           onCreateAgent={() => setEditState({open: true, agent: null})}
+          onDeleteAgent={async agent => {
+            const host = getHostBridge();
+            if (!host) return;
+            try {
+              await host.api(
+                `/api/cowork/agents/${encodeURIComponent(agent.id)}`,
+                {method: 'DELETE'},
+              );
+              const cw = host.ensureCowork();
+              cw.agents = (cw.agents || []).filter(a => a.id !== agent.id);
+              if (cw.selectedAgentId === agent.id) {
+                cw.selectedAgentId = cw.agents[0]?.id;
+              }
+              host.refreshCowork(true);
+              syncFromHost();
+              if (profileState.open && profileState.agentId === agent.id) {
+                closeProfile();
+              }
+              host.toast(`Deleted ${agent.name}`);
+            } catch (err) {
+              host.toast(
+                err instanceof Error ? err.message : 'Could not delete agent',
+                true,
+              );
+            }
+          }}
+          onDeleteAllAgents={async () => {
+            const host = getHostBridge();
+            if (!host) return;
+            try {
+              const res = await host.api<{deletedCount?: number}>(
+                '/api/cowork/agents',
+                {method: 'DELETE'},
+              );
+              const cw = host.ensureCowork();
+              cw.agents = [];
+              cw.selectedAgentId = undefined;
+              host.refreshCowork(true);
+              syncFromHost();
+              if (profileState.open) closeProfile();
+              const count = res?.deletedCount ?? agents.length;
+              host.toast(
+                count === 1 ? 'Deleted 1 agent' : `Deleted all ${count} agents`,
+              );
+            } catch (err) {
+              host.toast(
+                err instanceof Error
+                  ? err.message
+                  : 'Could not delete all agents',
+                true,
+              );
+            }
+          }}
         />
 
         <EditAgentDialog

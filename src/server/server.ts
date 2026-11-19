@@ -10213,10 +10213,10 @@ export class GituServer {
         llm: trackedLlm,
         index,
         mode: opts.mode,
-        autoApprove: codingAutoApprove(opts.autoApprove),
-        // Full Access filesystem authority comes from the owner's saved choice
-        // and is re-read at execution time, so switching to Ask applies to the
-        // very next tool call. A request flag only covers approval behaviour.
+        autoApprove: codingPermissions().configured ? false : opts.autoApprove === true,
+        // Full Access filesystem and shell authority come from the owner's saved
+        // choice and are re-read live at execution time, so granting or revoking
+        // Full Access from Code mode applies to the very next tool call.
         fullAccess: () => codingAutoApprove(),
         autoLearn: opts.autoLearn,
         requirePlanReview: opts.review,

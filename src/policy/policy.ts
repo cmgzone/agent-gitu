@@ -88,6 +88,71 @@ export type ApprovalHandler = (request: { tool: string; tier: RiskTier; why: str
  */
 export type AutoApproveAuthority = boolean | (() => boolean);
 
+function humanizeIdentifier(raw: string): string {
+  return raw
+    .replace(/^mcp:/i, '')
+    .replace(/^capability:/i, '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[:./_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function summarizeCommandSteps(command: string): string[] {
+  const segments = command
+    .split(/(?:&&|\|\||[;|\r\n]+)/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const steps: string[] = [];
+  for (const segment of segments) {
+    const tokens = segment.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? [];
+    let i = 0;
+    while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]!)) i += 1;
+    while (i < tokens.length && /^(?:env|sudo|doas|npx|pnpx|bunx|cmd|powershell(?:\.exe)?|pwsh(?:\.exe)?)$/i.test(tokens[i]!)) {
+      i += 1;
+      while (i < tokens.length && /^[-/][A-Za-z0-9-]+$/.test(tokens[i]!)) i += 1;
+    }
+    const rawBin = tokens[i]?.replace(/^['"]|['"]$/g, '') ?? '';
+    const bin = rawBin.split(/[\\/]/).pop()?.replace(/\.(?:exe|cmd|bat|ps1|sh)$/i, '') ?? '';
+    if (!bin) continue;
+    if (/^cd$/i.test(bin) && segments.length > 1) continue;
+    const next = tokens[i + 1]?.replace(/^['"]|['"]$/g, '') ?? '';
+    const sub = next && !next.startsWith('-') && /^[A-Za-z][A-Za-z0-9:_-]{0,24}$/.test(next) ? next : '';
+    const label = sub ? `${bin} ${sub}` : bin;
+    if (!steps.includes(label)) steps.push(label);
+    if (steps.length >= 3) break;
+  }
+  return steps;
+}
+
+function buildDynamicApprovalWhy(
+  tool: string,
+  params: Record<string, unknown>,
+  policyWhy: string,
+  agentReason?: string,
+): string {
+  const cleanReason = typeof agentReason === 'string' ? agentReason.replace(/\s+/g, ' ').trim().slice(0, 220) : '';
+  const isGenericFallback = /^unrecognized command\b|^unknown tool\b/i.test(policyWhy);
+  if (cleanReason) {
+    return isGenericFallback ? cleanReason : `${cleanReason} (${policyWhy})`;
+  }
+  if (!isGenericFallback) return policyWhy;
+  if (tool === 'run_command') {
+    const command = String(params['command'] ?? '').trim();
+    const steps = summarizeCommandSteps(command);
+    if (steps.length > 1) return `Run multi-step command (${steps.join(', ')})`;
+    if (steps.length === 1) return `Run ${steps[0]} in the project`;
+    return 'Run a shell command in the project';
+  }
+  if (tool.startsWith('mcp:')) {
+    const [, server, ...rest] = tool.split(':');
+    const actionName = humanizeIdentifier(rest.join(':')) || 'tool';
+    return server ? `Run ${actionName} via ${humanizeIdentifier(server)}` : `Run ${actionName}`;
+  }
+  const readable = humanizeIdentifier(tool);
+  return readable ? `Run ${readable}` : 'Run the requested tool';
+}
+
 export class PolicyEngine {
   constructor(
     private readonly autoApprove: AutoApproveAuthority = false,
@@ -108,29 +173,33 @@ export class PolicyEngine {
   }
 
   /** External reads require an explicit, scoped decision even in auto-approve mode. */
-  async approveDiagnosticRead(tool: string, target: string, directory: boolean): Promise<boolean> {
+  async approveDiagnosticRead(tool: string, target: string, directory: boolean, reason?: string): Promise<boolean> {
     if (!this.approvalHandler) return false;
+    const scopeNote = `Read diagnostic ${directory ? 'files in this folder and its subfolders' : 'file'} outside the project. This grants no write access.`;
+    const cleanReason = typeof reason === 'string' ? reason.replace(/\s+/g, ' ').trim().slice(0, 180) : '';
     return this.approvalHandler({
       tool,
       tier: 'moderate',
-      why: `Read diagnostic ${directory ? 'files in this folder and its subfolders' : 'file'} outside the project. This grants no write access.`,
+      why: cleanReason ? `${cleanReason} — ${scopeNote}` : scopeNote,
       summary: target,
     });
   }
 
   /** External writes also require an explicit, path-scoped decision: the
    *  alternative to turning on Full Access is asking about the exact target. */
-  async approveExternalWrite(tool: string, target: string, directory: boolean): Promise<boolean> {
+  async approveExternalWrite(tool: string, target: string, directory: boolean, reason?: string): Promise<boolean> {
     if (!this.approvalHandler) return false;
+    const scopeNote = `Write ${directory ? 'files in this folder and its subfolders' : 'this file'} outside the locked project. Approval covers this path for the rest of this task; Agent Gitu state, credentials and Git internals stay protected.`;
+    const cleanReason = typeof reason === 'string' ? reason.replace(/\s+/g, ' ').trim().slice(0, 180) : '';
     return this.approvalHandler({
       tool,
       tier: 'moderate',
-      why: `Write ${directory ? 'files in this folder and its subfolders' : 'this file'} outside the locked project. Approval covers this path for the rest of this task; Agent Gitu state, credentials and Git internals stay protected.`,
+      why: cleanReason ? `${cleanReason} — ${scopeNote}` : scopeNote,
       summary: target,
     });
   }
 
-  async evaluate(tool: string, params: Record<string, unknown>): Promise<PolicyDecision> {
+  async evaluate(tool: string, params: Record<string, unknown>, context?: { reason?: string }): Promise<PolicyDecision> {
     let tier: RiskTier;
     let why: string;
 
@@ -207,10 +276,11 @@ export class PolicyEngine {
       return { tier, allowed: true, requiresApproval: false, reason: `${why} (auto-approved)` };
     }
     if (this.approvalHandler) {
+      const approvalWhy = buildDynamicApprovalWhy(tool, params, why, context?.reason);
       const approved = await this.approvalHandler({
         tool,
         tier,
-        why,
+        why: approvalWhy,
         summary: JSON.stringify(params).slice(0, 300),
       });
       return {

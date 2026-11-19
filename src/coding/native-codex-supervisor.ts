@@ -537,10 +537,11 @@ export async function runNativeCodexTask(input: {
     emit('runtime  The model provider runs its own agent loop with Gitu guarded tools. Direct OS tools are disabled to preserve permissions.');
     typed?.({ type: 'run_started', goal, workspace: guard.activeWritableRoot });
     ledger.setStatus('executing');
+    const fullAccess = Boolean(config.fullAccess ? config.fullAccess() : config.autoApprove);
     const nativeInstructions = [
       'You are the native execution runtime inside Agent Gitu. Use your own agent loop and tools; reply in normal prose, never Gitu action JSON. Gitu is the authority for scope, permissions, and verification.',
       'When the user sends a greeting, question, or conversational message that does not ask to modify files or run commands, reply directly and concisely in plain text like a chat assistant (only what is important and what the user asked for, with no extra explanations or unnecessary tool calls).',
-      config.autoApprove ? 'The owner enabled full coding access. Gitu automatically handles coding approvals under the owner’s grants. Perform authorized work through the registered tools; do not ask for duplicate approval or invent approval.request tools. Missing tools or credentials are actual prerequisites, not approval requests.' : '',
+      fullAccess ? 'The owner enabled full coding access. Gitu automatically handles coding approvals under the owner’s grants, including reads and edits across other repositories and local folders (Gitu credentials, .hermes, and Git internals remain sealed). Perform authorized work through the registered tools; do not ask for duplicate approval or invent approval.request tools. Missing tools or credentials are actual prerequisites, not approval requests.' : '',
       config.deploymentAllowed?.() === false ? DEPLOYMENT_OWNERSHIP : '',
       'For nontrivial work, call gitu_task({operation:"update_plan",plan:[{step:"...",status:"inProgress"},{step:"...",status:"pending"}]}). Update the same checklist as work proceeds; mark each completed step with status:"completed". Small edits need no formal plan or criteria. Choose the smallest meaningful check; substantial work benefits from acceptance criteria with exact verification commands. Use state to recover saved facts and link_criterion only with real recorded evidence. Finish with a final answer reporting changes, checks, and concrete limitations.',
       'A criterion verification field pins an exact executable command, never a description such as "run focused tests". Discover available project commands. Bind a missing or invalid check with gitu_service({tool:"bind_criterion_verification",params:{criterionId:"ac-N",verification:"exact command"}}). An unsuitable model-selected command can be replaced with replacementReason explaining how the new check covers the unchanged requirement and evidence type. Explicit user-pinned commands stay fixed. Binding never supplies passing evidence.',
@@ -551,7 +552,9 @@ export async function runNativeCodexTask(input: {
       COMMAND_RECOVERY_CONTRACT,
       'On Windows, run_command uses powershell.exe. Use PowerShell 5.1-compatible syntax; && and || are unsupported. Preserve the real failing exit status when composing checks.',
       'Use gitu_service for Gitu-authorized browser, network, memory, skills, saved-connection operations and supervised specialists. Native child agents and unrelated host plugins are disabled.',
-      'Do not edit .hermes, Git internals, generated directories, or files outside the selected project. Gitu independently verifies acceptance after your turn.',
+      fullAccess
+        ? 'Do not edit .hermes or Git internals. Gitu independently verifies acceptance after your turn.'
+        : 'Do not edit .hermes, Git internals, generated directories, or files outside the selected project. Gitu independently verifies acceptance after your turn.',
       config.requirePlanReview ? 'Publish a plan and request approval through gitu_service before implementation. Approval must be granted before changes.' : '',
       'User constraints: ' + ledger.data.constraints.join('\n'),
       'Active user instructions: ' + JSON.stringify(ledger.activeInstructions()),

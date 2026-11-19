@@ -188,8 +188,9 @@
       renderQuestions(runId, session);
       renderConnectionRequest(runId, session);
       renderErrorCard(runId, session);
+      if (typeof updateStageDotRail === 'function') updateStageDotRail(runId);
       var summaryKey = session.report && JSON.stringify([session.finishedAt, session.report]);
-      if (session.status !== 'running' && session.report && sess.summaryShown !== summaryKey) {
+      if (sess.viewingStage == null && session.status !== 'running' && session.report && sess.summaryShown !== summaryKey) {
         appendSummary(runId, session);
         sess.summaryShown = summaryKey;
       }

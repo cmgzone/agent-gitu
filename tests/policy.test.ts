@@ -76,4 +76,26 @@ describe('PolicyEngine', () => {
     expect(decision.allowed).toBe(false);
     expect(decision.tier).toBe('dangerous');
   });
+
+  it('passes dynamic agent reasons or command summaries to approvalHandler instead of fail-closed jargon', async () => {
+    const seen: string[] = [];
+    const engine = new PolicyEngine(false, ({ why }) => {
+      seen.push(why);
+      return false;
+    });
+
+    await engine.evaluate('run_command', { command: 'docker compose up -d db' }, { reason: 'Start local Postgres for integration tests' });
+    await engine.evaluate('run_command', { command: 'gh pr list --state open' });
+    await engine.evaluate('mcp:github:create_pull_request', { title: 'Fix' });
+    await engine.evaluate('custom_sync_tool', { target: 'staging' });
+
+    expect(seen[0]).toBe('Start local Postgres for integration tests');
+    expect(seen[1]).toBe('Run gh pr in the project');
+    expect(seen[2]).toBe('external MCP tool (requires approval)');
+    expect(seen[3]).toBe('Run custom sync tool');
+    for (const why of seen) {
+      expect(why.toLowerCase()).not.toContain('unrecognized command');
+      expect(why.toLowerCase()).not.toContain('unknown tool');
+    }
+  });
 });

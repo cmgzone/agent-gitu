@@ -76,6 +76,7 @@ export const CHAT_SURFACE_CSS = String.raw`
   .run-chat .composer-topline { display:flex; align-items:center; gap:8px; min-width:0; flex-wrap:nowrap; }
   .run-chat .composer-topline .composer-workspace { flex:1 1 auto; min-width:0; max-width:none; }
   .run-chat .composer-topline .composer-workspace span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .run-chat .composer-topline .coding-access-pill { margin-left:0; }
   .run-chat .composer-topline .context-trigger { flex-shrink:0; margin-left:0; }
   .run-chat .main-work-details { flex-shrink:0; margin-left:auto; font-size:11px; color:var(--muted); padding:4px 8px; border-radius:6px; white-space:nowrap; }
   .run-chat .approach-panel { display:none; }

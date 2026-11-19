@@ -253,7 +253,7 @@ export class Executor {
           const hardInstructions = typeof this.ledger.hardInstructions === 'function' ? this.ledger.hardInstructions() : [];
           if (!this.instructionPolicy.evaluate(req.tool, req.params, hardInstructions).allowed) throw error;
           const scope = this.guard.diagnosticReadScope(abs);
-          if (!(await this.policy.approveDiagnosticRead(req.tool, scope.path, scope.directory))) throw error;
+          if (!(await this.policy.approveDiagnosticRead(req.tool, scope.path, scope.directory, req.reason))) throw error;
           if (this.signal?.()?.aborted) throw new Error('Diagnostic read cancelled');
           this.guard.grantDiagnosticRead(scope);
           this.guard.assertReadable(abs);
@@ -277,7 +277,7 @@ export class Executor {
           } catch {
             throw error;
           }
-          if (!(await this.policy.approveExternalWrite(req.tool, scope.path, scope.directory))) {
+          if (!(await this.policy.approveExternalWrite(req.tool, scope.path, scope.directory, req.reason))) {
             throw new Error(`${(error as Error).message} Writing outside the project needs the user's approval, which was not granted; do not retry this path.`);
           }
           if (this.signal?.()?.aborted) throw new Error('External write cancelled');
@@ -572,7 +572,7 @@ export class Executor {
 
     // Normal safety/approval policy runs AFTER user authority and loop
     // protection: agent defaults are the lowest-precedence gate.
-    const decision = await this.policy.evaluate(req.tool, req.params);
+    const decision = await this.policy.evaluate(req.tool, req.params, { reason: req.reason });
     if (!decision.allowed) {
       const message = `DENIED by policy [${decision.tier}]: ${decision.reason}`;
       const record = this.ledger.recordAction({

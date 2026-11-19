@@ -58,9 +58,9 @@ export const HOME_CSS = String.raw`
   .home-menu-trigger,.home-nav-backdrop { display:none; }
   .home-composer-wrap { width:min(760px,100%); margin:0; }
   .home-sky .composer-topline { padding:0 4px 10px; }
-  .home-project-label { font-size:12px; color:var(--muted); }
+  .home-project-label { font-size:12px; color:var(--muted); flex:none; }
   .home-attachment-policy { margin:0 10px 6px; color:var(--muted); font-size:11px; line-height:1.5; }
-  .home-sky .composer-workspace { color:var(--text); max-width:100%; gap:8px; font-size:12px; }
+  .home-sky .composer-workspace { color:var(--text); max-width:100%; min-width:0; flex:0 1 auto; gap:8px; font-size:12px; }
   .home-sky .composer-workspace::after { content:'⌄'; color:var(--muted); margin-left:3px; }
   .home-sky .composer { width:100%; padding:12px 14px; border:1.5px solid var(--border2); border-radius:var(--radius-chat, 28px); background:var(--card2); box-shadow:var(--shadow-float); transition:background-color .18s ease,border-color .18s ease,box-shadow .18s ease; }
   .home-sky .composer:focus-within { background:var(--card); border-color:var(--dark); box-shadow:var(--shadow-float); }

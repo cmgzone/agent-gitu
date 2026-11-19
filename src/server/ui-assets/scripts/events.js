@@ -220,8 +220,14 @@
       retireAbubble(sess); closeThought(runId);
       sess.lastPublicReply = null; sess.lastThoughtText = ''; sess.lastBubbleText = '';
       if (sess.nodes) { sess.nodes.attachedReasoning = false; sess.nodes.reasoningText = ''; }
-      if (settlePendingUserMessage(runId, userText, null, true)) return;
-      appendLive(stream, userBubble(userText, runId)); stickScroll(stream, true); return;
+      if (settlePendingUserMessage(runId, userText, null, true, ev.i)) {
+        if (typeof updateStageDotRail === 'function') updateStageDotRail(runId);
+        return;
+      }
+      appendLive(stream, userBubble(userText, runId, null, ev.t, ev.i));
+      if (typeof updateStageDotRail === 'function') updateStageDotRail(runId);
+      if (!sess.replaying) stickScroll(stream, true);
+      return;
     }
     if (text.indexOf('continue ') === 0) return;
     if (text.indexOf('queued ') === 0 || text.indexOf('stopped ') === 0) {

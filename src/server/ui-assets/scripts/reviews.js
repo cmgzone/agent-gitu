@@ -147,12 +147,19 @@
       div.setAttribute('data-aid', a.id);
       var presentation=cardActionPresentation(a.tool,a.why,a.summary);
       var canRemember = a.tool === 'run_command';
+      var canGrantFull = !(S.settings && S.settings.autoApprove) && (
+        a.tool === 'run_command' || a.tool === 'read_file' || a.tool === 'list_files' ||
+        a.tool === 'search_files' || a.tool === 'write_file' || a.tool === 'edit_file' ||
+        a.tool === 'apply_edit' || a.tool === 'delete_file'
+      );
       div.innerHTML =
         '<h3>' + esc(presentation.title) + '</h3>' +
         '<div class="meta-line">' + esc(presentation.detail) + '</div>' +
+        (presentation.preview ? '<div class="approval-preview"><code>' + esc(presentation.preview) + '</code></div>' : '') +
         cardTechnicalDetails([a.why,a.summary].filter(Boolean).join('\n\n'),a.id) +
         (canRemember ? '<label class="meta-line" style="display:flex;align-items:center;gap:6px;margin:8px 0 4px;cursor:pointer"><input type="checkbox" class="appr-remember-cb" style="width:auto;margin:0"> Always allow this command via Chief of Staff</label>' : '') +
         '<div class="actions"><button class="btn dark" data-appr="' + esc(a.id) + '" data-ok="1">Approve</button>' +
+        (canGrantFull ? '<button class="btn ghost" data-appr="' + esc(a.id) + '" data-ok="1" data-grant-full="1">Approve &amp; full access</button>' : '') +
         '<button class="btn red" data-appr="' + esc(a.id) + '" data-ok="0">Deny</button></div>';
       var working = $('working');
       if (working) stream.insertBefore(div, working); else stream.appendChild(div);
@@ -164,22 +171,44 @@
       if (!pending[olds[i].getAttribute('data-aid')]) olds[i].remove();
     }
     stream.onclick = function (e) {
-      var id = e.target.getAttribute && e.target.getAttribute('data-appr');
+      var btn = e.target && e.target.closest ? e.target.closest('[data-appr]') : e.target;
+      var id = btn && btn.getAttribute && btn.getAttribute('data-appr');
       if (id) {
         // Lock the card's buttons immediately: a double-click used to POST
         // the decision twice (second one 404s as "already resolved").
-        var card = e.target.closest ? e.target.closest('.approval') : null;
-        var approved = e.target.getAttribute('data-ok') === '1';
+        var card = btn.closest ? btn.closest('.approval') : null;
+        var approved = btn.getAttribute('data-ok') === '1';
+        var grantFull = approved && btn.getAttribute('data-grant-full') === '1';
         var rememberCb = card ? card.querySelector('.appr-remember-cb') : null;
         var payload = { approved: approved };
         if (approved && rememberCb && rememberCb.checked) payload.rememberForChief = true;
         if (card) card.querySelectorAll('button,input').forEach(function (b) { b.disabled = true; });
-        api('/api/approvals/' + id, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
+        var beforeApprove = grantFull
+          ? api('/api/coding-permissions', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ access: 'full' }),
+            }).then(function (saved) {
+              S.settings.autoApprove = saved.access === 'full';
+              persist();
+              if (typeof updateCodingAccessControl === 'function') updateCodingAccessControl();
+              var setBtn = $('pAuto');
+              if (setBtn) setBtn.classList.toggle('on', !!S.settings.autoApprove);
+            })
+          : Promise.resolve();
+        beforeApprove
+          .then(function () {
+            return api('/api/approvals/' + id, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+          })
           .then(function (r) {
-            if (r && r.rememberError) toast(r.rememberError, true);
+            if (grantFull) toast('Full access enabled and action approved');
+            else if (r && r.rememberError) toast(r.rememberError, true);
             else if (r && r.rememberedRule) toast('Saved standing command rule for Chief of Staff');
           })
-          .catch(function (er) { toast(er.message, true); });
+          .catch(function (er) {
+            if (card) card.querySelectorAll('button,input').forEach(function (b) { b.disabled = false; });
+            toast(er.message, true);
+          });
         return;
       }
     };

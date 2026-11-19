@@ -264,8 +264,8 @@
   .review-card h3, .approval h3 { margin: 0 0 8px; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: var(--evidence); }
   .review-card label { display: block; font-size: 11px; color: var(--muted); margin: 8px 0 3px; }
   .review-card textarea { width: 100%; border: 1px solid var(--border2); border-radius: 8px; background: var(--card2); color: var(--text); padding: 7px 9px; font-family: var(--mono); font-size: 11.5px; resize: vertical; }
-  .review-card .actions, .approval .actions { display: flex; gap: 8px; margin-top: 12px; align-items: center; }
-  .review-card .actions { flex-wrap: wrap; }
+  .review-card .actions, .approval .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; align-items: center; }
+  .approval-preview { margin: 8px 0 4px; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--card2); font-family: var(--mono); font-size: 11.5px; line-height: 1.45; color: var(--text); overflow-wrap: anywhere; white-space: pre-wrap; max-height: 84px; overflow-y: auto; }
   .review-card .actions .btn { flex: none; }
   .review-card .actions input { min-width: 0; flex: 1 1 160px; }
   .review-card input { flex: 1; border: 1px solid var(--border2); border-radius: 8px; background: var(--card2); color: var(--text); padding: 6px 9px; font-size: 12px; }

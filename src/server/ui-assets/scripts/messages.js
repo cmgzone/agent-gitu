@@ -1,5 +1,5 @@
 
-  function userBubble(text, runId, ubId, ts) {
+  function userBubble(text, runId, ubId, ts, eventId) {
     // Unique per-send identity: edit/retry/failure/removal must never target
     // the wrong copy when the user sends the exact same text twice.
     var id = ubId || 'ub-' + Date.now().toString(36) + '-' + (++UB_SEQ);
@@ -7,6 +7,7 @@
     div.className = 'usermsg';
     div.setAttribute('data-ubid', id);
     div.setAttribute('data-ubtext', text);
+    if (eventId != null) div.setAttribute('data-stage-event-id', String(eventId));
     // Same anatomy as the Cowork "me" bubble: a right-aligned meta line with the
     // sender and send time, then the bubble itself. All styling lives in
     // .usermsg/.ub so the two chats render identically.
@@ -182,6 +183,7 @@
       var composer = document.querySelector('.bottom-composer');
       if (composer) jump.style.bottom = (composer.offsetHeight + 12) + 'px';
     }
+    if (typeof updateStageDotRail === 'function') updateStageDotRail(S.active);
   }
   // Chase the bottom ONLY when the user is already reading the tail — never
   // yank someone who scrolled up to re-read. Force=true for action-required
@@ -198,8 +200,10 @@
   var MAX_TIMELINE_NODES = 220;
   function trimTimeline(stream) {
     if (!stream) return;
+    var activeSess = S.sessions[S.active];
+    if (activeSess && activeSess.viewingStage != null) return;
     var nodes = Array.prototype.slice.call(stream.children).filter(function (el) {
-      return el.classList.contains('tl-row') || el.classList.contains('shotmsg') || el.classList.contains('abubble') || el.classList.contains('session-file') || el.classList.contains('intake-line');
+      return el.classList.contains('tl-row') || el.classList.contains('usermsg') || el.classList.contains('shotmsg') || el.classList.contains('abubble') || el.classList.contains('session-file') || el.classList.contains('intake-line');
     });
     if (nodes.length <= MAX_TIMELINE_NODES) return;
     var removeCount = nodes.length - MAX_TIMELINE_NODES;
@@ -228,6 +232,7 @@
   function sendFollow(text, supersede) {
     var runId = S.active;
     var sess = S.sessions[runId];
+    if (sess && sess.viewingStage != null && typeof returnToLatest === 'function') returnToLatest(runId);
     var sup = supersede || S.supersedeNext || undefined;
     S.supersedeNext = null;
     var running = sess && sess.session && sess.session.status === 'running';
@@ -346,7 +351,7 @@
     return ubId;
   }
 
-  function settlePendingUserMessage(runId, safeText, ubId, consume) {
+  function settlePendingUserMessage(runId, safeText, ubId, consume, eventId) {
     var sess = S.sessions[runId];
     var pending = sess && sess.pendingUserMessages;
     if (!pending) return false;
@@ -356,7 +361,12 @@
     item.text = safeText;
     var stream = S.active === runId && $('stream');
     var bubble = stream && stream.querySelector('div[data-ubid="' + item.id + '"]');
-    if (bubble && !item.displayed) { bubble.replaceWith(userBubble(safeText, runId, item.id, item.ts)); item.displayed = true; }
+    if (bubble && !item.displayed) {
+      bubble.replaceWith(userBubble(safeText, runId, item.id, item.ts, eventId));
+      item.displayed = true;
+    } else if (bubble && eventId != null) {
+      bubble.setAttribute('data-stage-event-id', String(eventId));
+    }
     if (consume) pending.splice(index, 1);
     return Boolean(bubble);
   }

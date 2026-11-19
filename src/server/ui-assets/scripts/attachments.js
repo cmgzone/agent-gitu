@@ -144,6 +144,9 @@
     renderThumbs();
     syncModelLabel();
     bindModelMenu();
+    var accessBtn = $('codeAccessToggle');
+    if (accessBtn) accessBtn.onclick = function () { if (typeof toggleCodingFullAccess === 'function') toggleCodingFullAccess(accessBtn); };
+    if (typeof updateCodingAccessControl === 'function') updateCodingAccessControl();
     // The plus menu holds task mode, file picking, and secondary actions.
     var plusBtn = $('homePlusBtn'), plusMenu = $('homePlusMenu');
     if (plusBtn && plusMenu) {
@@ -168,6 +171,7 @@
           var action = b.getAttribute('data-hp');
           if (action === 'agent') setPlanRequested(S.active, false);
           else if (action === 'plan') setPlanRequested(S.active, true);
+          else if (action === 'full-access') { if (typeof toggleCodingFullAccess === 'function') toggleCodingFullAccess(b); }
           else if (action === 'attach') { var ai = $('attachInput'); if (ai) ai.click(); }
           else if (action === 'folder') openFolderBrowser(S.active === 'home' ? 'project' : 'tag');
           else if (action === 'schedule') openSettings('cron');

@@ -6,7 +6,7 @@
       // must never overwrite another device's saved permission choice.
       if (!saved.configured && S.settings.autoApprove === true) return api('/api/coding-permissions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ access: 'full' }) });
       return saved;
-    }).then(function (saved) { S.settings.autoApprove = saved.access === 'full'; persist(); return saved; }).catch(function () {});
+    }).then(function (saved) { S.settings.autoApprove = saved.access === 'full'; persist(); if (typeof updateCodingAccessControl === 'function') updateCodingAccessControl(); return saved; }).catch(function () {});
   }
   function openSettings(section) {
     S.setSection = section || 'overview';
@@ -807,7 +807,7 @@
       }).catch(function () {});
       $('pLearn').onclick = function () { S.settings.autoLearn = !S.settings.autoLearn; persist(); renderSettings(); };
       $('pReview').onclick = function () { S.settings.review = !S.settings.review; persist(); renderSettings(); };
-      $('pAuto').onclick = function () { var button = this, next = !S.settings.autoApprove; button.disabled = true; api('/api/coding-permissions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ access: next ? 'full' : 'ask' }) }).then(function (saved) { S.settings.autoApprove = saved.access === 'full'; persist(); renderSettings(); }).catch(function (error) { toast(error.message, true); button.disabled = false; }); };
+      $('pAuto').onclick = function () { var button = this, next = !S.settings.autoApprove; button.disabled = true; api('/api/coding-permissions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ access: next ? 'full' : 'ask' }) }).then(function (saved) { S.settings.autoApprove = saved.access === 'full'; persist(); if (typeof updateCodingAccessControl === 'function') updateCodingAccessControl(); renderSettings(); }).catch(function (error) { toast(error.message, true); button.disabled = false; }); };
       var cwLearn = $('pCwLearn');
       if (cwLearn) {
         if (['reactive', 'proactive', 'off'].indexOf(S.settings.cwLearn) < 0) S.settings.cwLearn = 'reactive';

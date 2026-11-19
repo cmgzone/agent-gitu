@@ -80,21 +80,111 @@ export const CHAT_QUESTION_JS = String.raw`
     return{detail:clean,technical:''};
   }
   function cardTechnicalDetails(raw,id){return raw?'<details class="card-technical" data-card-details="'+esc(id||'details')+'"><summary>Technical details</summary><pre>'+esc(raw)+'</pre></details>':'';}
+  function cardHumanizeId(value){
+    var text=String(value||'').replace(/^mcp:/i,'').replace(/^capability:/i,'').replace(/([a-z0-9])([A-Z])/g,'$1 $2').replace(/[:./_-]+/g,' ').replace(/\s+/g,' ').trim();
+    return text;
+  }
+  function cardStripGenericWhy(value){
+    var text=String(value||'').trim();
+    if(!text)return '';
+    if(/^(?:unrecognized command|unknown tool|unknown action)(?:\s*\([^)]*\))?$/i.test(text))return '';
+    return text;
+  }
+  function cardCommandSteps(command){
+    var raw=String(command||'').trim();
+    if(!raw)return [];
+    var segments=raw.split(/(?:&&|\|\||[;|\r\n]+)/),steps=[];
+    for(var s=0;s<segments.length;s++){
+      var seg=segments[s].trim();if(!seg)continue;
+      var tokens=seg.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g)||[],i=0;
+      while(i<tokens.length&&/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]))i++;
+      while(i<tokens.length&&/^(?:env|sudo|doas|npx|pnpx|bunx|cmd|powershell(?:\.exe)?|pwsh(?:\.exe)?)$/i.test(tokens[i])){i++;while(i<tokens.length&&/^[-/][A-Za-z0-9-]+$/.test(tokens[i]))i++;}
+      var bin=(tokens[i]||'').replace(/^['"]|['"]$/g,'').split(/[\\/]/).pop().replace(/\.(?:exe|cmd|bat|ps1|sh)$/i,'');
+      if(!bin)continue;
+      if(/^cd$/i.test(bin)&&segments.length>1)continue;
+      var next=(tokens[i+1]||'').replace(/^['"]|['"]$/g,'');
+      var sub=next&&next.charAt(0)!=='-'&&/^[A-Za-z][A-Za-z0-9:_-]{0,24}$/.test(next)?next:'';
+      var label=sub?bin+' '+sub:bin;
+      if(steps.indexOf(label)<0)steps.push(label);
+      if(steps.length>=3)break;
+    }
+    return steps;
+  }
+  function cardTargetBasename(rawPath){
+    var clean=String(rawPath||'').trim().replace(/[\\/]+$/,'');
+    if(!clean||clean.indexOf('\n')>=0||clean.charAt(0)==='{')return '';
+    var part=clean.split(/[\\/]/).pop()||'';
+    return part.length>48?part.slice(0,47)+'…':part;
+  }
+  function cardDynamicParamHint(data){
+    if(!data||typeof data!=='object'||Array.isArray(data))return '';
+    var preferred=['label','operation','action','title','subject','repo','repository','channel','to','target','path','file','url','query','name'];
+    var keys=preferred.concat(Object.keys(data).filter(function(k){return preferred.indexOf(k)<0;}));
+    var parts=[];
+    for(var i=0;i<keys.length&&parts.length<2;i++){
+      var k=keys[i];
+      if(/token|secret|password|passwd|api[_-]?key|auth|cookie|credential|private/i.test(k))continue;
+      var v=data[k];
+      if(typeof v!=='string'&&typeof v!=='number')continue;
+      var s=String(v).replace(/\s+/g,' ').trim();
+      if(!s||s.length>90||cardIsTechnicalPayload(s))continue;
+      parts.push(cardHumanizeId(k)+': '+s);
+    }
+    return parts.join(' · ');
+  }
   function cardActionPresentation(tool,why,summary){
-    var raw=String(summary||''),data;try{data=JSON.parse(raw);}catch(e){var offset=raw.indexOf('{');if(offset>=0)try{data=JSON.parse(raw.slice(offset));}catch(ignore){}}
-    var command=data&&typeof data.command==='string'?data.command:raw,combined=String(tool||'')+' '+command;
-    var title='Allow the next action?',detail=cardPlainText(why,'The agent needs your permission to continue.');
-    if(/\b(?:rm|rmdir|del|Remove-Item)\b|git\s+(?:reset\s+--hard|clean\s+-\w*f)|delete_file/i.test(combined)){title='Allow files to be removed?';detail='This action can delete files or discard changes. Check the details before deciding.';}
-    else if(/git\s+push.*(?:--force|-f\b)/i.test(combined)){title='Allow shared history to be replaced?';detail='This can overwrite changes in the shared repository and affect other people.';}
-    else if(/\b(?:publish|deploy)\b|git\s+push/i.test(combined)){title='Publish these changes?';detail='This will send changes to a shared or live service. Review the destination in the details.';}
-    else if(/(?:curl|wget|Invoke-WebRequest).*(?:\||;|&&).*\b(?:sh|bash|powershell|iex)\b/i.test(combined)){title='Download and run software?';detail='This downloads and runs instructions from another source. Review the source before allowing it.';}
-    else if(/\b(?:npm|pnpm|yarn|pip|pip3|uv)\s+(?:install|add|sync)\b/i.test(combined)){title='Install project software?';detail='This downloads software needed by the project and may run installation instructions.';}
-    else if(/^(?:(?:npm|pnpm|yarn)\s+(?:run\s+)?test|(?:npx\s+)?(?:pytest|vitest|jest))\b[^;&|]*$/i.test(command.trim())){title='Run the project checks?';detail='Run checks to look for problems in the recent changes.';}
-    else if(/^(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:build|typecheck|lint)\b[^;&|]*$/i.test(command.trim())){title='Check the project is ready?';detail='Check that the project can be built or that its files have no reported errors.';}
-    else if(/write_file|apply_edit|apply_patch/i.test(String(tool))){title='Update the project files?';detail='This will change files in the project. The exact changes are available below.';}
-    else if(/read_file|search_files|list_files/i.test(String(tool))){title='Inspect project files?';detail='Read project files to understand the task and check the work.';}
-    else if(/run_command|shell|terminal/i.test(String(tool))){title='Run a project action?';detail=cardPlainText(why,'Run a command in the project. Check the details for exactly what it will do.');}
-    return {title:title,detail:detail};
+    var raw=String(summary||'').trim(),data;try{data=JSON.parse(raw);}catch(e){var offset=raw.indexOf('{');if(offset>=0)try{data=JSON.parse(raw.slice(offset));}catch(ignore){}}
+    var toolStr=String(tool||'').trim();
+    var command=data&&typeof data.command==='string'?data.command.trim():raw;
+    var targetPath=data&&typeof (data.path||data.file||data.target)==='string'?String(data.path||data.file||data.target).trim():(!data&&/^(?:[A-Za-z]:[\\/]|\/|~\/|\.\.?[\\/])/.test(raw)?raw:'');
+    var combined=toolStr+' '+command;
+    var cleanWhy=cardPlainText(cardStripGenericWhy(why),'');
+    var preview='';
+    if(/run_command|shell|terminal/i.test(toolStr)&&command&&command.charAt(0)!=='{')preview=command.length>180?command.slice(0,179)+'…':command;
+    else if(targetPath)preview=targetPath.length>180?targetPath.slice(0,179)+'…':targetPath;
+    else if(toolStr&&!/^run_command$/i.test(toolStr)){
+      var hint=cardDynamicParamHint(data);
+      preview=hint?toolStr+' · '+hint:toolStr;
+    }
+    var title='Allow the next action?',detail=cleanWhy||'The agent needs your permission to continue.';
+    if(/\b(?:rm|rmdir|del|Remove-Item)\b|git\s+(?:reset\s+--hard|clean\s+-\w*f)|delete_file/i.test(combined)){title='Allow files to be removed?';detail=cleanWhy?cleanWhy+' — This action can delete files or discard changes.':'This action can delete files or discard changes. Check the details before deciding.';}
+    else if(/git\s+push.*(?:--force|-f\b)/i.test(combined)){title='Allow shared history to be replaced?';detail=cleanWhy?cleanWhy+' — This can overwrite changes in the shared repository.':'This can overwrite changes in the shared repository and affect other people.';}
+    else if(/\b(?:publish|deploy)\b|git\s+push/i.test(combined)){title='Publish these changes?';detail=cleanWhy?cleanWhy+' — This will send changes to a shared or live service.':'This will send changes to a shared or live service. Review the destination in the details.';}
+    else if(/(?:curl|wget|Invoke-WebRequest).*(?:\||;|&&).*\b(?:sh|bash|powershell|iex)\b/i.test(combined)){title='Download and run software?';detail=cleanWhy?cleanWhy+' — Downloads and runs instructions from another source.':'This downloads and runs instructions from another source. Review the source before allowing it.';}
+    else if(/\b(?:npm|pnpm|yarn|pip|pip3|uv)\s+(?:install|add|sync)\b/i.test(combined)){title='Install project software?';detail=cleanWhy?cleanWhy+' — Downloads software and may run installation instructions.':'This downloads software needed by the project and may run installation instructions.';}
+    else if(/^(?:(?:npm|pnpm|yarn)\s+(?:run\s+)?test|(?:npx\s+)?(?:pytest|vitest|jest))\b[^;&|]*$/i.test(command)){title='Run the project checks?';detail='Run checks to look for problems in the recent changes.';}
+    else if(/^(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:build|typecheck|lint)\b[^;&|]*$/i.test(command)){title='Check the project is ready?';detail='Check that the project can be built or that its files have no reported errors.';}
+    else if(/write_file|apply_edit|apply_patch/i.test(toolStr)){
+      var writeTarget=cardTargetBasename(targetPath),outsideWrite=/outside the (?:locked )?project/i.test(cleanWhy);
+      title=writeTarget?(outsideWrite?'Update '+writeTarget+' outside this project?':'Update '+writeTarget+'?'):'Update the project files?';
+      detail=cleanWhy||'This will change files in the project. The exact changes are available below.';
+    }
+    else if(/read_file|search_files|list_files/i.test(toolStr)){
+      var readTarget=cardTargetBasename(targetPath),outsideRead=/outside the (?:locked )?project/i.test(cleanWhy);
+      title=readTarget?(outsideRead?'Inspect '+readTarget+' outside this project?':'Inspect '+readTarget+'?'):'Inspect project files?';
+      detail=cleanWhy||'Read project files to understand the task and check the work.';
+    }
+    else if(/run_command|shell|terminal/i.test(toolStr)){
+      var steps=cardCommandSteps(command);
+      if(steps.length>1){
+        title='Run '+steps.slice(0,2).join(' & ')+(steps.length>2?' …':'')+'?';
+        detail=cleanWhy||'Run a command chain in the project ('+steps.join(', ')+'). Check the details for exactly what it will do.';
+      }else if(steps.length===1){
+        title='Run '+steps[0]+'?';
+        detail=cleanWhy||'Run a command in the project using '+steps[0]+'. Check the details for the exact arguments.';
+      }else{
+        title='Run a project action?';
+        detail=cleanWhy||'Run a command in the project. Check the details for exactly what it will do.';
+      }
+    }
+    else if(toolStr){
+      var parts=toolStr.indexOf(':')>=0?toolStr.replace(/^(?:mcp|capability):/i,'').split(':').map(cardHumanizeId).filter(Boolean):[cardHumanizeId(toolStr)];
+      var pretty=parts.length>1?(parts[0].charAt(0).toUpperCase()+parts[0].slice(1)+' · '+parts.slice(1).join(' ')):(parts[0]||'the next action');
+      title='Allow '+pretty+'?';
+      var paramHint=cardDynamicParamHint(data);
+      detail=cleanWhy||paramHint||'The agent requested permission to run '+pretty+'. Check the details before deciding.';
+    }
+    return {title:title,detail:detail,preview:preview};
   }
   function cardRequestPresentation(request){
     var raw=String(request.detail||''),title=String(request.title||''),approval=/^Approve\s+([\w.:-]+)/i.exec(title),presentation;

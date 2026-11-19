@@ -133,6 +133,252 @@
     if($('follow'))$('follow').placeholder='Message the coding agent · '+source.agentName+' stays informed';
   }
 
+  function collectSessionStages(sess) {
+    var events = (sess && sess.events) || [];
+    var stages = [];
+    for (var i = 0; i < events.length; i++) {
+      var ev = events[i];
+      var text = String((ev && ev.text) || '');
+      if (text.indexOf('user-msg ') === 0) {
+        if (stages.length) stages[stages.length - 1].endPos = i;
+        var prompt = text.slice(9).trim();
+        stages.push({
+          index: stages.length + 1,
+          eventId: ev.i,
+          startPos: i,
+          endPos: events.length,
+          prompt: prompt,
+          title: shortText(prompt || ('Message ' + (stages.length + 1)), 76),
+          time: ev.t || '',
+        });
+      }
+    }
+    return stages;
+  }
+
+  function currentVisibleStageIndex(runId) {
+    var sess = S.sessions[runId];
+    if (!sess) return 0;
+    var stages = collectSessionStages(sess);
+    if (!stages.length) return 0;
+    if (sess.viewingStage != null) return Math.max(1, Math.min(stages.length, sess.viewingStage));
+    var stream = $('stream');
+    if (!stream || nearBottom(stream)) return stages.length;
+    var anchors = stream.querySelectorAll('.usermsg[data-stage-event-id]');
+    if (!anchors.length) return stages.length;
+    var streamTop = stream.getBoundingClientRect().top + 130;
+    var bestId = null;
+    for (var i = 0; i < anchors.length; i++) {
+      var rect = anchors[i].getBoundingClientRect();
+      if (rect.top <= streamTop) bestId = anchors[i].getAttribute('data-stage-event-id');
+      else if (bestId === null) { bestId = anchors[i].getAttribute('data-stage-event-id'); break; }
+    }
+    if (bestId != null) {
+      for (var s = 0; s < stages.length; s++) {
+        if (String(stages[s].eventId) === String(bestId)) return stages[s].index;
+      }
+    }
+    return stages.length;
+  }
+
+  function scrollStreamToNode(stream, el, instant) {
+    if (!stream || !el) return;
+    var streamRect = stream.getBoundingClientRect();
+    var elRect = el.getBoundingClientRect();
+    var topOffset = (typeof window !== 'undefined' && window.innerWidth <= 720) ? 86 : 96;
+    var targetTop = Math.max(0, stream.scrollTop + (elRect.top - streamRect.top) - topOffset);
+    stream.dataset.follow = 'false';
+    if (!instant && typeof stream.scrollTo === 'function') stream.scrollTo({ top: targetTop, behavior: 'smooth' });
+    else stream.scrollTop = targetTop;
+    el.classList.remove('stage-jump-highlight');
+    void el.offsetWidth;
+    el.classList.add('stage-jump-highlight');
+    setTimeout(function () { if (el.isConnected) el.classList.remove('stage-jump-highlight'); }, 1600);
+    updateStageDotRail(S.active);
+  }
+
+  function renderTrimNote(stream, hiddenCount) {
+    if (!stream || hiddenCount <= 0) return;
+    var note = document.createElement('div');
+    note.className = 'timeline-trim-note';
+    note.textContent = hiddenCount + ' earlier event' + (hiddenCount === 1 ? '' : 's') + ' preserved in history.';
+    var working = $('working');
+    if (working) stream.insertBefore(note, working); else stream.appendChild(note);
+  }
+
+  function renderStreamSlice(runId, opts) {
+    var stream = $('stream');
+    var sess = S.sessions[runId];
+    if (!stream || !sess || S.active !== runId) return;
+    var preserve = {
+      typedApprovals: sess.typedApprovals || {},
+      typedPlanReview: sess.typedPlanReview || null,
+      typedQuestions: sess.typedQuestions || null,
+      settledGates: sess.settledGates || {},
+      checkpoints: sess.checkpoints || [],
+      checkpointsFetchedAt: sess.checkpointsFetchedAt || 0,
+    };
+    Array.prototype.slice.call(stream.children).forEach(function (child) {
+      if (child.id === 'runCheckpoints' || child.id === 'coworkCodingSource' || child.id === 'working') return;
+      child.remove();
+    });
+    stream.dataset.trimmed = '0';
+    sess.nodes = {};
+    resetStreamRenderState(sess);
+    sess.typedApprovals = preserve.typedApprovals;
+    sess.typedPlanReview = preserve.typedPlanReview;
+    sess.typedQuestions = preserve.typedQuestions;
+    sess.settledGates = preserve.settledGates;
+    sess.checkpoints = preserve.checkpoints;
+    sess.checkpointsFetchedAt = preserve.checkpointsFetchedAt;
+
+    var viewingStage = opts && opts.viewingStage != null ? opts.viewingStage : null;
+    sess.viewingStage = viewingStage;
+    var startPos = opts && typeof opts.startPos === 'number'
+      ? Math.max(0, Math.min(sess.events.length, opts.startPos))
+      : Math.max(0, sess.events.length - MAX_REPLAY_EVENTS);
+    var slice = viewingStage != null
+      ? sess.events.slice(startPos, Math.min(sess.events.length, startPos + MAX_REPLAY_EVENTS))
+      : sess.events.slice(startPos);
+
+    if (viewingStage == null && startPos > 0) renderTrimNote(stream, startPos);
+
+    sess.replaying = true;
+    slice.forEach(function (ev) { appendEvent(runId, ev); });
+    sess.replaying = false;
+    if (sess.session && ['running', 'waiting_for_model'].indexOf(sess.session.status) < 0) setWorking(null);
+
+    if (viewingStage == null) {
+      if (sess.session && sess.session.status !== 'running' && sess.session.report) {
+        appendSummary(runId, sess.session);
+        sess.summaryShown = JSON.stringify([sess.session.finishedAt, sess.session.report]);
+      }
+      renderApprovals(runId, sess.session);
+      renderPlanReview(runId, sess.session);
+      renderQuestions(runId, sess.session);
+      renderErrorCard(runId, sess.session);
+      if (opts && opts.highlightEventId != null) {
+        var targetInTail = stream.querySelector('.usermsg[data-stage-event-id="' + String(opts.highlightEventId) + '"]');
+        if (targetInTail) scrollStreamToNode(stream, targetInTail, true);
+        else stickScroll(stream, true);
+      } else {
+        stickScroll(stream, true);
+      }
+    } else {
+      var targetHist = opts && opts.highlightEventId != null
+        ? stream.querySelector('.usermsg[data-stage-event-id="' + String(opts.highlightEventId) + '"]')
+        : null;
+      if (targetHist) scrollStreamToNode(stream, targetHist, true);
+      else { stream.dataset.follow = 'false'; stream.scrollTop = 0; }
+    }
+    updateStageDotRail(runId);
+  }
+
+  function jumpToStage(runId, stageNumber) {
+    var sess = S.sessions[runId];
+    var stream = $('stream');
+    if (!sess || !stream || S.active !== runId) return;
+    var stages = collectSessionStages(sess);
+    var target = stages[stageNumber - 1];
+    if (!target) return;
+    hideStageRailTip();
+    if (stageNumber === stages.length && sess.viewingStage != null) {
+      returnToLatest(runId);
+      return;
+    }
+    var tailStart = Math.max(0, sess.events.length - MAX_REPLAY_EVENTS);
+    if (sess.viewingStage == null && target.startPos >= tailStart) {
+      var existing = stream.querySelector('.usermsg[data-stage-event-id="' + String(target.eventId) + '"]');
+      if (existing) {
+        scrollStreamToNode(stream, existing);
+        updateStageDotRail(runId);
+        return;
+      }
+    }
+    if (target.startPos >= tailStart) {
+      renderStreamSlice(runId, { startPos: tailStart, viewingStage: null, highlightEventId: target.eventId });
+    } else {
+      renderStreamSlice(runId, { startPos: target.startPos, viewingStage: target.index, highlightEventId: target.eventId });
+    }
+  }
+
+  function returnToLatest(runId) {
+    var sess = S.sessions[runId];
+    var stream = $('stream');
+    if (!sess || !stream || S.active !== runId) return;
+    hideStageRailTip();
+    if (sess.viewingStage != null) {
+      var tailStart = Math.max(0, sess.events.length - MAX_REPLAY_EVENTS);
+      renderStreamSlice(runId, { startPos: tailStart, viewingStage: null, highlightEventId: null });
+      return;
+    }
+    stickScroll(stream, true);
+    updateStageDotRail(runId);
+  }
+
+  function hideStageRailTip() {
+    var tip = $('stageRailTip');
+    if (tip) tip.hidden = true;
+  }
+
+  function showStageRailTip(dotEl, text) {
+    var tip = $('stageRailTip');
+    var main = dotEl && dotEl.closest ? dotEl.closest('.run-main') : null;
+    if (!tip || !dotEl || !main || !text) return;
+    var mainRect = main.getBoundingClientRect();
+    var dotRect = dotEl.getBoundingClientRect();
+    tip.textContent = text;
+    tip.hidden = false;
+    var top = Math.max(68, Math.min(mainRect.height - 96, (dotRect.top - mainRect.top) + dotRect.height / 2));
+    tip.style.top = top + 'px';
+  }
+
+  function updateStageDotRail(runId) {
+    if (S.active !== runId) return;
+    var rail = $('stageDotRail');
+    var sess = S.sessions[runId];
+    if (!rail || !sess) return;
+    var stages = collectSessionStages(sess);
+    if (stages.length < 2) {
+      rail.hidden = true;
+      hideStageRailTip();
+      return;
+    }
+    rail.hidden = false;
+    var currentIdx = currentVisibleStageIndex(runId);
+    var sig = stages.map(function (st) { return st.index + ':' + st.eventId + ':' + st.title; }).join('|');
+    if (rail.dataset.stageSig !== sig) {
+      rail.dataset.stageSig = sig;
+      rail.innerHTML = stages.map(function (st) {
+        var isLast = st.index === stages.length;
+        var label = st.title || ('Stage ' + st.index);
+        return '<button type="button" class="stage-rail-dot" data-stage-dot="' + esc(String(st.index)) + '" data-stage-tip="' + esc(label) + '" aria-label="Jump to stage ' + esc(String(st.index)) + ': ' + esc(label) + '"' + (isLast ? ' data-stage-last="1"' : '') + '><span class="srd-pip" aria-hidden="true"></span></button>';
+      }).join('');
+      rail.querySelectorAll('.stage-rail-dot').forEach(function (dot) {
+        var idx = Number(dot.getAttribute('data-stage-dot') || '1');
+        var tipText = dot.getAttribute('data-stage-tip') || '';
+        dot.onclick = function () {
+          if (dot.getAttribute('data-stage-last') === '1' && sess.viewingStage != null) returnToLatest(runId);
+          else jumpToStage(runId, idx);
+        };
+        dot.onmouseenter = function () { showStageRailTip(dot, tipText); };
+        dot.onmouseleave = hideStageRailTip;
+        dot.onfocus = function () { showStageRailTip(dot, tipText); };
+        dot.onblur = hideStageRailTip;
+        dot.onkeydown = function (e) {
+          if (e.key === 'ArrowUp' && dot.previousElementSibling) { e.preventDefault(); dot.previousElementSibling.focus(); }
+          else if (e.key === 'ArrowDown' && dot.nextElementSibling) { e.preventDefault(); dot.nextElementSibling.focus(); }
+        };
+      });
+    }
+    var dots = rail.querySelectorAll('.stage-rail-dot');
+    for (var i = 0; i < dots.length; i++) {
+      var active = Number(dots[i].getAttribute('data-stage-dot')) === currentIdx;
+      dots[i].classList.toggle('is-current', active);
+      dots[i].setAttribute('aria-current', active ? 'step' : 'false');
+    }
+  }
+
   function loadCodingCheckpoints(runId) {
     var body=$('runCheckpointList');if(!body||S.active!==runId)return;
     body.textContent='Loading checkpoints…';
@@ -168,6 +414,7 @@
     persistOfflineMainRun(runId);
     if(opts&&opts.projectPath)sess.projectPath=opts.projectPath;
     sess.nodes = {};
+    sess.viewingStage = null;
     resetStreamRenderState(sess);
     sess.justOpened = true;
     sess.historyReady = false;
@@ -183,10 +430,12 @@
       '<button type="button" class="chat-shell-button" id="mainChatHistory" aria-label="Search sessions and tools" title="Search">'+cwIcon('search')+'</button>' +
       '<button type="button" class="chat-shell-button" id="mainChatDetails" aria-label="Open task details" title="Task details">'+cwIcon('panel')+'</button>' +
       '<details class="approach-panel" id="approachPanel"><summary title="Show the agent’s approach and verification updates"><span class="approach-title">Approach</span><span class="approach-count" id="approachCount"></span><span class="approach-latest" id="approachLatest"></span><span class="approach-status" id="approachStatus"></span></summary><ol class="approach-log" id="approachLog" aria-label="Approach updates" tabindex="0"></ol><p class="approach-note" id="approachEmpty">A brief explanation of the next action appears as the agent works.</p><p class="approach-note" id="approachHistory" hidden></p><p class="approach-note">Progress summaries · hypotheses remain unverified until checked.</p></details>' +
+      '<nav class="stage-dot-rail" id="stageDotRail" aria-label="Session stages" hidden></nav><div class="stage-rail-tip" id="stageRailTip" role="tooltip" hidden></div>' +
       '<div class="stream" id="stream" role="region" aria-label="Agent activity" tabindex="0"><details class="coding-checkpoints" id="runCheckpoints"><summary>Checkpoints &amp; rollback</summary><div id="runCheckpointList" style="padding:0 14px 10px"></div></details></div>' +
       '<button type="button" class="jump-latest" id="jumpLatest" hidden>↓ Jump to latest</button>' +
       '<div class="bottom-composer"><details class="composer-todos" id="composerTodos" aria-label="Current task checklist" hidden></details><div class="composer-topline"><button type="button" class="composer-workspace" id="runProject" aria-label="Project '+esc(runProjectName)+'" title="Browse project folder">'+icon('folder')+'<span>'+esc(runProjectName)+'</span></button>' +
       '<button type="button" class="main-work-details" id="mainWorkDetails" aria-expanded="false" aria-controls="approachPanel">Work details</button>' +
+      codingAccessPillHtml() +
       '<button type="button" class="context-trigger unknown" id="contextToggle" title="Session context and token usage" aria-label="Session context and token usage" aria-expanded="false" aria-controls="contextCard"><svg viewBox="0 0 24 24" aria-hidden="true"><circle class="context-ring-track" cx="12" cy="12" r="9"/><circle class="context-ring-progress" cx="12" cy="12" r="9" pathLength="100"/><circle class="context-ring-core" cx="12" cy="12" r="2"/></svg></button></div>' +
       '<div class="composer"><textarea id="follow" rows="1" placeholder="Message Agent Gitu…" title="Enter sends to this session while working, or continues it when done"></textarea>' +
       '<div class="thumbs" id="thumbs" hidden></div><div class="run-folder-tags" id="runFolderTags" aria-label="Tagged reference folders" hidden></div>' +
@@ -251,10 +500,7 @@
     var replayEvents = sess.events;
     if (replayEvents.length > MAX_REPLAY_EVENTS) {
       var hiddenCount = replayEvents.length - MAX_REPLAY_EVENTS;
-      var historyNote = document.createElement('div');
-      historyNote.className = 'timeline-trim-note';
-      historyNote.textContent = hiddenCount + ' earlier event' + (hiddenCount === 1 ? '' : 's') + ' are preserved in session history. Showing the latest activity.';
-      $('stream').appendChild(historyNote);
+      renderTrimNote($('stream'), hiddenCount);
       replayEvents = replayEvents.slice(-MAX_REPLAY_EVENTS);
     }
     sess.replaying = true;
@@ -268,6 +514,7 @@
     w.innerHTML = '/* GITU_BINDING_ACTIVITY_MARK_HTML */<span class="wtool-ico" id="workingToolIcon" aria-hidden="true" hidden></span><span class="wtext" id="workingText">Connecting…</span><span class="welapsed" id="workingElapsed"></span><div class="reasoning-stream" id="workingReasoning" aria-label="Model reasoning" hidden></div>';
     $('stream').appendChild(w);
     setWorking('Thinking…');
+    updateStageDotRail(runId);
     renderRunSide(runId);
     connect(runId);
     pollRun(runId);
@@ -285,6 +532,7 @@
       var sess = S.sessions[runId];
       if (!sess || S.active !== runId) return;
       sess.historyReady = true;
+      updateStageDotRail(runId);
       if (sess.session && sess.session.status !== 'running') {
         setWorking(null);
         es.close();
@@ -314,6 +562,10 @@
         sess.lastIndex = ev.i;
         sess.events.push(ev);
         persistOfflineMainRun(runId);
+        if (sess.viewingStage != null) {
+          updateStageDotRail(runId);
+          return;
+        }
         sess.replaying = Boolean(ev.replay);
         appendEvent(runId, ev);
         sess.replaying = false;

@@ -102,7 +102,7 @@
           '<h3 style="margin:0 0 4px">Connect a model provider</h3>' +
           '<div class="meta-line">Choose a provider and add a key to start your first task.</div><span class="setup-action">Open provider settings →</span></button>'
       : '') +
-      '<div class="home-composer-wrap"><div class="composer-topline"><span class="home-project-label">Project</span><button type="button" class="composer-workspace" id="homeProj" aria-label="Project '+esc(name)+'" title="Choose project">'+icon('folder')+'<span>'+esc(name)+'</span></button></div>' +
+      '<div class="home-composer-wrap"><div class="composer-topline"><span class="home-project-label">Project</span><button type="button" class="composer-workspace" id="homeProj" aria-label="Project '+esc(name)+'" title="Choose project">'+icon('folder')+'<span>'+esc(name)+'</span></button>' + codingAccessPillHtml() + '</div>' +
       '<div class="composer"><textarea id="goal" aria-label="Describe your task" rows="2" placeholder="What would you like to build or fix?"></textarea>' +
       '<div class="thumbs" id="thumbs" hidden></div>' +
       '<div class="composer-bar">' + controlsHtml() + '<button class="send" id="send" title="Start task" aria-label="Start task"' + (S.modelsLoaded && hasAnyProviderKey() ? '' : ' disabled') + '>&#8593;</button></div></div></div>' +
@@ -391,11 +391,76 @@
     plan.title = busy ? 'Available when this task finishes' : 'Pause for plan review before making changes';
     if (plus) plus.title = enabled ? 'More actions · Plan mode selected' : 'More actions · Agent mode selected';
   }
+  function codingAccessPillHtml() {
+    var on = Boolean(S.settings && S.settings.autoApprove);
+    var tip = on
+      ? 'Full access is ON — Gitu can edit across repositories and run commands without approval prompts. Click to turn off.'
+      : 'Grant Full access across repositories and commands without leaving Code mode.';
+    return '<button type="button" class="coding-access-pill' + (on ? ' on' : '') + '" id="codeAccessToggle" role="switch" aria-checked="' + String(on) + '" aria-label="Full coding access" title="' + esc(tip) + '">' +
+      icon('shield') +
+      '<span>Full access</span>' +
+      '<span class="cap-track" aria-hidden="true"></span>' +
+    '</button>';
+  }
+  function updateCodingAccessControl() {
+    var on = Boolean(S.settings && S.settings.autoApprove);
+    var pill = $('codeAccessToggle');
+    if (pill) {
+      pill.classList.toggle('on', on);
+      pill.setAttribute('aria-checked', String(on));
+      pill.title = on
+        ? 'Full access is ON — Gitu can edit across repositories and run commands without approval prompts. Click to turn off.'
+        : 'Grant Full access across repositories and commands without leaving Code mode.';
+    }
+    var item = $('menuFullAccess');
+    if (item) {
+      item.classList.toggle('active', on);
+      item.setAttribute('aria-checked', String(on));
+    }
+    if (typeof document !== 'undefined' && document.querySelectorAll) {
+      document.querySelectorAll('[data-grant-full="1"]').forEach(function (btn) { btn.hidden = on; });
+    }
+  }
+  function toggleCodingFullAccess(trigger) {
+    if (S._savingCodingAccess) return Promise.resolve();
+    S._savingCodingAccess = true;
+    var next = !(S.settings && S.settings.autoApprove);
+    var pill = $('codeAccessToggle'), item = $('menuFullAccess');
+    if (trigger) trigger.disabled = true;
+    if (pill) pill.disabled = true;
+    if (item) item.disabled = true;
+    return api('/api/coding-permissions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ access: next ? 'full' : 'ask' }),
+    }).then(function (saved) {
+      S.settings.autoApprove = saved.access === 'full';
+      persist();
+      updateCodingAccessControl();
+      var setBtn = $('pAuto');
+      if (setBtn) setBtn.classList.toggle('on', !!S.settings.autoApprove);
+      toast(
+        S.settings.autoApprove
+          ? 'Full access enabled — Gitu can now work across repositories without approval prompts'
+          : 'Full access off — Gitu will stay scoped to this project and ask before commands',
+      );
+      return saved;
+    }).catch(function (error) {
+      toast(error.message || 'Could not update coding access.', true);
+    }).finally(function () {
+      S._savingCodingAccess = false;
+      if (trigger) trigger.disabled = false;
+      if (pill) pill.disabled = false;
+      if (item) item.disabled = false;
+    });
+  }
   function controlsHtml() {
+    var fullOn = Boolean(S.settings && S.settings.autoApprove);
     return voicePhoneButton('mainVoiceCall') + '<button type="button" class="pill control-pill" id="homePlusBtn" title="More actions" aria-label="More actions" aria-haspopup="menu" aria-expanded="false">' + icon('plus') + '</button>' +
       '<div class="home-plus-menu" id="homePlusMenu" hidden role="menu" aria-label="More actions">' +
         '<button type="button" id="menuAgent" data-hp="agent" role="menuitemradio" aria-checked="true"><span class="ico">' + icon('bolt') + '</span>Agent mode<span class="check">✓</span></button>' +
         '<button type="button" id="menuPlan" data-hp="plan" role="menuitemradio" aria-checked="false"><span class="ico">' + icon('layers') + '</span>Plan mode<span class="check">✓</span></button>' +
+        '<button type="button" id="menuFullAccess" class="' + (fullOn ? 'active' : '') + '" data-hp="full-access" role="menuitemcheckbox" aria-checked="' + String(fullOn) + '"><span class="ico">' + icon('shield') + '</span>Full access<span class="check">✓</span></button>' +
         '<button type="button" data-hp="attach" role="menuitem"><span class="ico">' + icon('file') + '</span>Choose files</button>' +
         '<p class="home-attachment-policy" data-file-policy-label role="status">Maximum file size: Loading…</p>' +
         '<button type="button" data-hp="folder" role="menuitem"><span class="ico">' + icon('folder') + '</span>' + (S.active === 'home' ? 'Choose project folder' : 'Tag reference folder') + '</button>' +

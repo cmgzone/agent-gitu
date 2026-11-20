@@ -26,7 +26,7 @@ import type { CoworkDelegation } from './delegation.js';
 import type { CoworkMemory } from './memory.js';
 import type { CoworkRecall } from './recall.js';
 import type { CoworkAgent, CoworkConversation, CoworkMessage, CoworkMessageInput, CoworkMission, CoworkStore, CoworkThread } from './store.js';
-import { BROWSER_WORKFLOW_SKILL, PRODUCTIVITY_SKILL } from '../skills/builtin.js';
+import { BROWSER_WORKFLOW_SKILL, PRODUCTIVITY_SKILL, builtinSkillByName } from '../skills/builtin.js';
 import type { ToolResult } from '../types.js';
 import { summarizeCheckpoint, type CheckpointAction } from './checkpoint.js';
 import { agentProfileInstructions } from './profile-config.js';
@@ -437,7 +437,24 @@ function systemPrompt(agent: CoworkAgent, conversation: CoworkConversation, memb
         `Use the agent_memory tool proactively: when you learn something durable about the user, their projects, or how work should be done, remember it for future conversations.`,
     );
   }
-  const skills = agent.skills.length > 0 ? `\n${agent.skills.map((s) => `- ${s}`).join('\n')}` : '';
+  const hasPikpamRole =
+    agent.skills.includes('pikpam-ecosystem') ||
+    /\b(pikpam|domains?\b[^.\n]*(?:dns|ssl|tls)|dns\b[^.\n]*domains?)\b/i.test(`${agent.tagline ?? ''} ${agent.description ?? ''} ${agent.systemPrompt}`);
+  if (hasPikpamRole && !agent.systemPrompt.includes('PIKPAM_SKILL_ROUTING')) {
+    parts.push(
+      'PIKPAM_PLATFORM_ACCESS: You can directly manage Pikpam Cloud (https://pikpam.com) through the saved pikpam connection using list_connections, connection_read (GETs), and connection_operation (approved writes). Activate the pikpam-ecosystem skill with use_skill first to load the exact endpoints for domains (search, TLD pricing, my-domains, external domain connect & TXT ownership verification, DNS records CRUD, routing to VPS apps, DNS/SSL verification, renewal quotes), VPS instances (plans, instances, services, telemetry, logs, env, start/stop/restart, backups), projects & apps, S3 storage volumes, and custom-domain email/mailboxes. If no pikpam connection is saved yet, use request_credential (providerHint: "pikpam", baseUrl: "https://pikpam.com", validationPath: "/api/cloud/vps/my-instances") so the user can connect securely. Ordering or renewing a domain, VPS, or storage volume returns a Paystack checkout link a human must pay — hand it over and never claim the purchase completed until verified.',
+    );
+  }
+  const effectiveSkills = hasPikpamRole && !agent.skills.includes('pikpam-ecosystem') ? [...agent.skills, 'pikpam-ecosystem'] : agent.skills;
+  const skills =
+    effectiveSkills.length > 0
+      ? `\n${effectiveSkills
+          .map((s) => {
+            const desc = builtinSkillByName(s)?.description;
+            return desc ? `- ${s}: ${desc}` : `- ${s}`;
+          })
+          .join('\n')}`
+      : '';
   if (skills) parts.push(`Your assigned skills (activate with use_skill when relevant):${skills}`);
   return parts.join('\n\n');
 }

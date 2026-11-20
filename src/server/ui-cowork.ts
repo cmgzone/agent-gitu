@@ -271,6 +271,34 @@ export const COWORK_CSS = String.raw`
   .cw-checkpoint-report p { margin: 7px 0 0; font-size: 13px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
   .cw-checkpoint-report .cw-checkpoint-next { color: var(--muted); }
   .cw-checkpoint-report .cw-checkpoint-issues { color: var(--warn, var(--text)); }
+  /* Clean, low-noise chat presentation */
+  .cw-row.me .cw-meta { min-height: 0; margin-bottom: 2px; gap: 4px; }
+  .cw-row.me .cw-meta .nm { display: none; }
+  .cw-row.me .cw-meta:not(.has-via) { position: absolute; top: 6px; right: 12px; margin: 0; pointer-events: none; }
+  .cw-bubble .cw-meta .tg { opacity: 0; transition: opacity .15s ease; }
+  .cw-row:hover .cw-meta .tg, .cw-row:focus-within .cw-meta .tg { opacity: 1; }
+  .cw-row > .cw-message-actions { min-height: 0; margin-top: 2px; }
+  .cw-row > .cw-message-actions .cw-message-more { opacity: 0; height: 22px; width: 26px; }
+  .cw-row:hover > .cw-message-actions .cw-message-more, .cw-row:focus-within > .cw-message-actions .cw-message-more, .cw-row:has(.cw-message-menu:popover-open) > .cw-message-actions .cw-message-more { opacity: 1; }
+  @media (hover: none) { .cw-bubble .cw-meta .tg { opacity: .65; } .cw-row > .cw-message-actions .cw-message-more { opacity: .7; } }
+  .cw-row.cw-grouped { margin-top: -10px; }
+  .cw-row.cw-grouped > .cw-ava { visibility: hidden; height: 0; overflow: hidden; }
+  .cw-row.cw-grouped .cw-meta { display: none; }
+  .cw-row.cw-grouped .cw-bubble { border-top-left-radius: 14px; }
+  .cw-row.me.cw-grouped .cw-bubble { border-top-right-radius: 14px; }
+  .cw-resolved-pill { align-self: center; display: inline-flex; align-items: center; gap: 6px; max-width: min(92%, 620px); padding: 4px 11px; border-radius: 999px; font-size: 11.5px; line-height: 1.4; color: var(--muted); background: color-mix(in srgb, var(--card2) 65%, transparent); border: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+  .cw-resolved-pill .cw-rp-icon { font-weight: 700; color: var(--ok); flex: none; }
+  .cw-resolved-pill.is-denied .cw-rp-icon { color: var(--err); }
+  .cw-resolved-pill .cw-rp-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cw-resolved-pill .cw-rp-text strong { color: var(--text); font-weight: 500; }
+  .cw-resolved-pill time { color: var(--faint); font-size: 10.5px; flex: none; margin-left: 2px; }
+  .cw-checkpoint-compact { padding: 6px 12px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--border) 65%, transparent); background: color-mix(in srgb, var(--card2) 50%, transparent); }
+  .cw-checkpoint-compact > summary { display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; font-size: 11.5px; color: var(--muted); }
+  .cw-checkpoint-compact > summary::-webkit-details-marker { display: none; }
+  .cw-checkpoint-compact > summary strong { color: var(--text); font-weight: 600; flex: none; }
+  .cw-checkpoint-compact > summary .cw-cp-preview { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cw-checkpoint-compact > summary time { color: var(--faint); font-size: 10.5px; flex: none; }
+  .cw-checkpoint-compact[open] > summary { margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
   .cw-code { display: block; background: var(--card2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-family: var(--mono); font-size: 12px; overflow-x: auto; white-space: pre; margin: 6px 0; }
   /* Diff rows inside a code block: an edit rendered as plain text hides which
      lines were REMOVED, which is the half of the change the user needs most. */
@@ -721,13 +749,13 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
   // the name (users name their own agents) and carry no branding.
   var CW_TEMPLATES = [
     { label: 'P.A · Coordinator', name: 'P.A', tagline: 'Chief of Staff & Pikpam Coordinator', description: 'Coordinates your Pikpam team, prioritizes daily tasks, delegates coding & deployments, and delivers verified outcomes.', shape: 'dot-orb', color: '#ff6b57', chiefOfStaff: true, allowShell: true, allowWrites: true, allowConfig: true, useHostComputer: false, skills: ['browser-workflow', 'pikpam-ecosystem', 'productivity'], prompt: 'You are P.A, Chief of Staff on Pikpam. Coordinate specialists, keep priorities clear, delegate coding or Pikpam Cloud deployment when helpful, verify returned results, and deliver concise outcomes.' },
-    { label: 'Atlas · Cloud & VPS', name: 'Atlas', tagline: 'Pikpam Cloud & VPS Architect', description: 'Manages Pikpam Cloud projects, dedicated VPS infrastructure, Docker/Compose services, and runtime health checks.', shape: 'dot-block', color: '#4c7df0', chiefOfStaff: false, allowShell: true, allowWrites: true, allowConfig: true, useHostComputer: true, skills: ['pikpam-ecosystem'], prompt: 'You are Atlas, a Pikpam Cloud and VPS architect. Use pikpam-ecosystem tools to inspect customer projects, configure Docker/Compose services on authorized VPS infrastructure, and verify service health before reporting.' },
-    { label: 'Nova · Deploy', name: 'Nova', tagline: 'GitHub & Deployment Engineer', description: 'Clones GitHub repositories into Pikpam Cloud, configures managed app-env secrets, and ships verified builds.', shape: 'dot-nova', color: '#9c6df2', chiefOfStaff: false, allowShell: true, allowWrites: true, allowConfig: false, useHostComputer: true, skills: ['pikpam-ecosystem'], prompt: 'You are Nova, Pikpam GitHub & Deployment specialist. Clone connected repositories, install dashboard-managed app-env variables safely, deploy apps, and verify live HTTPS endpoints.' },
+    { label: 'Atlas · Cloud & VPS', name: 'Atlas', tagline: 'Pikpam Cloud & VPS Architect', description: 'Manages Pikpam Cloud projects, dedicated VPS infrastructure, Docker/Compose services, and runtime health checks.', shape: 'dot-block', color: '#4c7df0', chiefOfStaff: false, allowShell: true, allowWrites: true, allowConfig: true, useHostComputer: true, skills: ['pikpam-ecosystem'], prompt: 'You are Atlas, a Pikpam Cloud and VPS architect. Activate pikpam-ecosystem with use_skill and operate Pikpam Cloud through the saved pikpam connection (list_connections, connection_read, connection_operation) to inspect VPS plans/instances, services, telemetry, logs, env vars, backups, and cloud projects, and verify health before reporting.' },
+    { label: 'Nova · Deploy', name: 'Nova', tagline: 'GitHub & Deployment Engineer', description: 'Clones GitHub repositories into Pikpam Cloud, configures managed app-env secrets, and ships verified builds.', shape: 'dot-nova', color: '#9c6df2', chiefOfStaff: false, allowShell: true, allowWrites: true, allowConfig: false, useHostComputer: true, skills: ['pikpam-ecosystem'], prompt: 'You are Nova, Pikpam GitHub & Deployment specialist. Activate pikpam-ecosystem with use_skill and use the saved pikpam connection (list_connections, connection_read, connection_operation) to manage cloud projects, apps, app environment variables, VPS deployments, and verify live HTTPS endpoints.' },
     { label: 'Forge · Code', name: 'Forge', tagline: 'Full-Stack Coding Engineer', description: 'Writes, refactors, and tests backend APIs and frontend interfaces directly inside your active project.', shape: 'dot-hexa', color: '#3fd68f', chiefOfStaff: false, allowShell: true, allowWrites: true, allowConfig: false, useHostComputer: true, skills: ['frontend-design', 'pikpam-ecosystem'], prompt: 'You are Forge, a senior full-stack engineer on Pikpam. Read existing files before editing, build clean UIs and APIs in the selected project workspace, and verify changes with builds and tests.' },
-    { label: 'Vault · Data', name: 'Vault', tagline: 'Database & Storage Engineer', description: 'Designs PostgreSQL schemas, manages Redis queues, runs safe migrations, and configures Pikpam storage volumes.', shape: 'dot-plus', color: '#7ccf35', chiefOfStaff: false, allowShell: true, allowWrites: true, allowConfig: false, useHostComputer: true, skills: ['pikpam-ecosystem'], prompt: 'You are Vault, Pikpam database & storage engineer. Configure scoped PIKPAM_POSTGRES_URL, PIKPAM_REDIS_URL, and storage volumes securely without exposing database ports or credentials.' },
-    { label: 'Aegis · Domains & SSL', name: 'Aegis', tagline: 'Domains, SSL & Security Lead', description: 'Configures custom domains and DNS, verifies HTTPS TLS certificates, and audits secrets and permissions.', shape: 'dot-penta', color: '#f39b52', chiefOfStaff: false, allowShell: true, allowWrites: false, allowConfig: false, useHostComputer: true, skills: ['pikpam-ecosystem'], prompt: 'You are Aegis, Pikpam domains, SSL & security specialist. Verify DNS records, TLS certificates, credential hygiene, and least-privilege access without exposing secrets.' },
-    { label: 'Pulse · Commerce', name: 'Pulse', tagline: 'Pikpam Commerce & Growth Strategist', description: 'Optimizes pikpam.com storefront catalogs, product listings, pricing strategy, and merchant conversion funnels.', shape: 'dot-dia', color: '#29b7ad', chiefOfStaff: false, allowShell: false, allowWrites: true, allowConfig: false, useHostComputer: true, skills: ['browser-workflow', 'productivity'], prompt: 'You are Pulse, Pikpam Commerce & Growth strategist. Help merchants and founders launch, organize, and grow storefronts, product listings, and conversion funnels on pikpam.com with clear actionable plans.' },
-    { label: 'Clara · Support', name: 'Clara', tagline: 'Customer Success & Inbox Lead', description: 'Triages inbox threads, drafts empathetic customer & order follow-ups, and keeps approvals organized.', shape: 'dot-pill', color: '#ec4899', chiefOfStaff: false, allowShell: false, allowWrites: true, allowConfig: false, useHostComputer: true, skills: ['browser-workflow', 'productivity'], prompt: 'You are Clara, Customer Success Lead. Triage incoming support requests and inbox threads, surface urgent blockers, and draft clear, accurate replies for user approval.' },
+    { label: 'Vault · Data', name: 'Vault', tagline: 'Database & Storage Engineer', description: 'Designs PostgreSQL schemas, manages Redis queues, runs safe migrations, and configures Pikpam storage volumes.', shape: 'dot-plus', color: '#7ccf35', chiefOfStaff: false, allowShell: true, allowWrites: true, allowConfig: false, useHostComputer: true, skills: ['pikpam-ecosystem'], prompt: 'You are Vault, Pikpam database & storage engineer. Activate pikpam-ecosystem with use_skill and use the saved pikpam connection (list_connections, connection_read, connection_operation) to manage Pikpam S3 storage plans/volumes (list, attach, detach, order link), VPS backups, and scoped PIKPAM_POSTGRES_URL / PIKPAM_REDIS_URL securely without exposing ports or credentials.' },
+    { label: 'Aegis · Domains & SSL', name: 'Aegis', tagline: 'Domains, SSL & Security Lead', description: 'Searches & connects domains on Pikpam Cloud, manages DNS records, routes domains to VPS apps, verifies HTTPS/TLS, and audits security.', shape: 'dot-penta', color: '#f39b52', chiefOfStaff: false, allowShell: true, allowWrites: false, allowConfig: false, useHostComputer: true, skills: ['pikpam-ecosystem'], prompt: 'You are Aegis, Pikpam domains, DNS, SSL & security specialist. Activate pikpam-ecosystem with use_skill and use the saved pikpam connection (list_connections, connection_read, connection_operation) to search domain availability & TLD pricing, list owned domains, connect external domains and verify TXT ownership, manage DNS records (A/AAAA/CNAME/TXT/MX/SPF/DKIM), route domains to VPS apps, verify DNS & HTTPS readiness, prepare domain order/renewal checkout links for the user to pay, and audit credential hygiene without exposing secrets.' },
+    { label: 'Pulse · Commerce', name: 'Pulse', tagline: 'Pikpam Commerce & Growth Strategist', description: 'Optimizes pikpam.com storefront catalogs, product listings, pricing strategy, and merchant conversion funnels.', shape: 'dot-dia', color: '#29b7ad', chiefOfStaff: false, allowShell: false, allowWrites: true, allowConfig: false, useHostComputer: true, skills: ['browser-workflow', 'pikpam-ecosystem', 'productivity'], prompt: 'You are Pulse, Pikpam Commerce & Growth strategist. Help merchants and founders launch, organize, and grow storefronts, domains, and conversion funnels on pikpam.com with clear actionable plans.' },
+    { label: 'Clara · Support', name: 'Clara', tagline: 'Customer Success & Email Lead', description: 'Manages Pikpam custom-domain mailboxes, triages inbox threads, drafts empathetic customer follow-ups, and keeps approvals organized.', shape: 'dot-pill', color: '#ec4899', chiefOfStaff: false, allowShell: false, allowWrites: true, allowConfig: false, useHostComputer: true, skills: ['browser-workflow', 'pikpam-ecosystem', 'productivity'], prompt: 'You are Clara, Customer Success & Email Lead on Pikpam. Activate pikpam-ecosystem with use_skill when managing Pikpam custom-domain email settings, email domains, mailboxes, or mailbox messages through the saved pikpam connection. Triage incoming support requests, surface urgent blockers, and always require approval before sending emails.' },
     { label: 'Scout · Research', name: 'Scout', tagline: 'Research & Market Intelligence', description: 'Runs live web research, benchmarks competitors and APIs, and returns concise cited briefings.', shape: 'dot-tip', color: '#eab308', chiefOfStaff: false, allowShell: false, allowWrites: false, allowConfig: false, useHostComputer: true, skills: ['browser-workflow'], prompt: 'You are Scout, a rigorous research analyst. Gather verified facts from files and the web, compare options objectively, and cite sources clearly.' },
     { label: 'Lyra · Docs & Content', name: 'Lyra', tagline: 'Product Docs, Content & Deck Writer', description: 'Creates crisp launch copy, technical READMEs, campaign docs, and formatted PDF, PPTX, Word, or XLSX exports.', shape: 'dot-luna', color: '#4f6396', chiefOfStaff: false, allowShell: false, allowWrites: true, allowConfig: false, useHostComputer: true, skills: ['productivity', 'frontend-design'], prompt: 'You are Lyra, Product Content & Docs writer on Pikpam. Turn rough ideas into tight copy, technical READMEs, release notes, and polished PDF/PPTX/Word/XLSX deliverables.' }
   ];
@@ -2647,11 +2675,12 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     }
     if (m.role === 'user') {
       var via = '';
-      if (m.via === 'telegram') via = ' · Telegram' + (m.from ? ' — ' + esc(m.from) : '');
-      else if (m.via === 'schedule') via = ' · schedule';
+      if (m.via === 'telegram') via = 'Telegram' + (m.from ? ' — ' + esc(m.from) : '');
+      else if (m.via === 'schedule') via = 'schedule';
       var userImages=cwChatImageParts(m.text,m.artifactIds);
       var userRefs=typeof cwMessageRefsHtml==='function'?cwMessageRefsHtml(m):'';
-      return '<div class="cw-row me" data-cwentrance="' + esc(m.id || '') + '"><div class="cw-bubble"><div class="cw-meta"><span class="nm">You</span><span class="tg">' + via + ' · ' + cwTime(m.ts) + '</span></div>' + cwBody(userImages.text, members, false) + userRefs + '</div>' + cwMessageActionsHtml(m, { omitRefs: true }) + '</div>' + cwPhotoCardsHtml(userImages.images,'user') + cwChatMediaHtml(m.text, 'user', m.id) + cwFilesHtml(m.artifactIds, 'user', true);
+      var userMetaText = (via ? via + ' · ' : '') + cwTime(m.ts);
+      return '<div class="cw-row me" data-cwentrance="' + esc(m.id || '') + '"><div class="cw-bubble"><div class="cw-meta' + (via ? ' has-via' : '') + '"><span class="nm">You</span><span class="tg">' + userMetaText + '</span></div>' + cwBody(userImages.text, members, false) + userRefs + '</div>' + cwMessageActionsHtml(m, { omitRefs: true }) + '</div>' + cwPhotoCardsHtml(userImages.images,'user') + cwChatMediaHtml(m.text, 'user', m.id) + cwFilesHtml(m.artifactIds, 'user', true);
     }
     var reply=cwVisibleReply(m.text),replyImages=cwChatImageParts(reply,m.artifactIds);
     var citations=typeof cwCitationsHtml==='function'?cwCitationsHtml({role:m.role,text:reply,tools:m.tools}):'';
@@ -2977,8 +3006,55 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
   }
 
   function cwCheckpointReportHtml(message) {
-    var checkpoint = message.checkpoint;
-    return '<section class="cw-checkpoint-report" aria-label="Progress update"><header><strong>Progress update</strong><span>' + esc(message.agentName || (cwAgentById(message.agentId) || {}).name || '') + '</span><time datetime="' + esc(message.ts) + '">' + esc(cwTime(message.ts)) + '</time></header><p>' + esc(checkpoint.accomplished) + '</p>' + (checkpoint.issues ? '<p class="cw-checkpoint-issues"><strong>Needs attention:</strong> ' + esc(checkpoint.issues) + '</p>' : '') + '<p class="cw-checkpoint-next"><strong>Next:</strong> ' + esc(checkpoint.next) + '</p></section>';
+    var checkpoint = message.checkpoint || {};
+    var who = message.agentName || (cwAgentById(message.agentId) || {}).name || '';
+    var preview = String(checkpoint.accomplished || '').replace(/\s+/g, ' ').trim();
+    if (preview.length > 96) preview = preview.slice(0, 93).trimEnd() + '…';
+    return '<details class="cw-checkpoint-report cw-checkpoint-compact" aria-label="Progress update"><summary><span class="cw-checkpoint-check" aria-hidden="true">✓</span><strong>Progress' + (who ? ' · ' + esc(who) : '') + '</strong>' + (preview ? '<span class="cw-cp-preview">' + esc(preview) + '</span>' : '') + '<time datetime="' + esc(message.ts) + '">' + esc(cwTime(message.ts)) + '</time></summary><p>' + esc(checkpoint.accomplished) + '</p>' + (checkpoint.issues ? '<p class="cw-checkpoint-issues"><strong>Needs attention:</strong> ' + esc(checkpoint.issues) + '</p>' : '') + (checkpoint.next ? '<p class="cw-checkpoint-next"><strong>Next:</strong> ' + esc(checkpoint.next) + '</p>' : '') + '</details>';
+  }
+
+  function cwIsNoisySystemMessage(message) {
+    if (!message || message.role !== 'system') return false;
+    if (message.checkpoint) return false;
+    var text = String(message.text || '').trim();
+    if (!text) return true;
+    // Always preserve coding task handoffs and email arrival receipts.
+    if (/\[View task\]\(#run=[a-zA-Z0-9_-]+\)/.test(text)) return false;
+    if (text.indexOf('NEW EMAIL NOTIFICATION.') === 0) return false;
+    // Hide duplicate card resolution receipts (the resolved card renders its own compact pill).
+    if (/^(?:Recommendation|Question|Permission|Credential) (?:accepted|dismissed|answered|approved|denied|provided):/i.test(text)) return true;
+    // Hide internal wake/trigger prompts and card-removal echoes.
+    if (/^The user (?:responded to your|answered your|connected |removed the |saved the credential|dismissed )/i.test(text)) return true;
+    if (/^Follow-up reminder from @[^:\n]+:\s*The user (?:responded to your|answered your)/i.test(text)) return true;
+    if (/^Inbox\s*[—-]\s*task from @/i.test(text)) return true;
+    if (/^(?:Mission unblocked|Engineering delegation\b.*\bstarted\b)/i.test(text)) return true;
+    return false;
+  }
+
+  function cwResolvedRequestReceiptHtml(request) {
+    if (!request || request.hiddenAt || request.status === 'dismissed') return '';
+    var app = typeof cwAppApprovalPresentation === 'function' ? cwAppApprovalPresentation(request) : null;
+    var title = app ? app.title : String(request.title || 'Request');
+    var denied = request.status === 'denied';
+    var verb = request.response === 'Always allowed'
+      ? 'Always allowed'
+      : request.status === 'approved' || request.status === 'accepted'
+        ? 'Approved'
+        : denied
+          ? 'Declined'
+          : request.status === 'provided'
+            ? 'Saved'
+            : 'Answered';
+    var answer = request.response && request.response !== 'Always allowed' && request.response.toLowerCase() !== request.status.toLowerCase()
+      ? String(request.response).replace(/\s+/g, ' ').trim()
+      : '';
+    if (answer.length > 90) answer = answer.slice(0, 87).trimEnd() + '…';
+    var when = request.resolvedAt || request.createdAt;
+    return '<div class="cw-resolved-pill' + (denied ? ' is-denied' : '') + '" data-cwresolved-request="' + esc(request.id) + '">' +
+      '<span class="cw-rp-icon" aria-hidden="true">' + (denied ? '×' : '✓') + '</span>' +
+      '<span class="cw-rp-text"><strong>' + esc(verb) + '</strong> · ' + esc(title) + (answer ? ': ' + esc(answer) : '') + '</span>' +
+      (when ? '<time datetime="' + esc(when) + '">' + esc(cwTime(when)) + '</time>' : '') +
+      '</div>';
   }
 
   function cwSubagentGroups() {
@@ -3063,9 +3139,14 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
 
   function cwTranscriptHtml() {
     var cw = cwEnsure();
-    var entries = cw.msgs.map(function (message) { return { time: Date.parse(message.ts) || 0, message: message }; });
+    var entries = cw.msgs
+      .filter(function (message) { return !cwIsNoisySystemMessage(message); })
+      .map(function (message) { return { time: Date.parse(message.ts) || 0, message: message }; });
     (cw.requests || []).forEach(function (request) {
-      if (request.status !== 'open') entries.push({ time: Date.parse(request.resolvedAt || request.createdAt) || 0, html: cwRequestHtml(request) });
+      if (request.status !== 'open') {
+        var pill = cwResolvedRequestReceiptHtml(request);
+        if (pill) entries.push({ time: Date.parse(request.resolvedAt || request.createdAt) || 0, html: pill });
+      }
     });
     (cw.workHistory || []).forEach(function (activity) {
       entries.push({ time: Date.parse(activity.ts) || 0, activity: activity });
@@ -3075,6 +3156,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     });
     entries.sort(function (a, b) { return a.time - b.time; });
     var html = [];
+    var prevSpeaker = null;
     for (var i = 0; i < entries.length;) {
       var entry = entries[i];
       if (entry.activity) {
@@ -3083,6 +3165,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
         var report = entries[i] && entries[i].message;
         if (report && report.role === 'system' && report.checkpoint) {
           html.push(cwCheckpointReportHtml(report));
+          prevSpeaker = null;
           i++;
         }
         html.push(cwWorkHistoryHtml(steps));
@@ -3090,15 +3173,31 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       }
       if (entry.message && entry.message.role === 'system' && entry.message.checkpoint) {
         html.push(cwCheckpointReportHtml(entry.message));
+        prevSpeaker = null;
         i++;
         continue;
       }
       var checkpoint = entry.message && /^(.+?) is continuing automatically after checkpoint (\d+)\.$/.exec(String(entry.message.text || ''));
       if (!checkpoint || entry.message.role !== 'system') {
-        html.push(entry.message ? cwBubbleHtml(entry.message).replace(/^<([a-z]+)(?=[ >])/, '<$1 data-cwscroll-key="' + esc(entry.message.id || 'seq:' + entry.message.seq) + '"') : entry.html);
+        if (entry.message) {
+          var rendered = cwBubbleHtml(entry.message).replace(/^<([a-z]+)(?=[ >])/, '<$1 data-cwscroll-key="' + esc(entry.message.id || 'seq:' + entry.message.seq) + '"');
+          if (entry.message.role === 'user' || entry.message.role === 'agent') {
+            var speakerKey = entry.message.role === 'user' ? 'user' : 'agent:' + String(entry.message.agentId || entry.message.agentName || '');
+            var isGrouped = Boolean(prevSpeaker && prevSpeaker.key === speakerKey && (!entry.time || !prevSpeaker.time || Math.abs(entry.time - prevSpeaker.time) < 5 * 60 * 1000));
+            if (isGrouped) rendered = rendered.replace(/(<div\b[^>]*\bclass="cw-row)\b/, '$1 cw-grouped');
+            prevSpeaker = { key: speakerKey, time: entry.time };
+          } else {
+            prevSpeaker = null;
+          }
+          html.push(rendered);
+        } else {
+          prevSpeaker = null;
+          html.push(entry.html);
+        }
         i++;
         continue;
       }
+      prevSpeaker = null;
       var group = [];
       var agentName = checkpoint[1];
       var first = entry.message;

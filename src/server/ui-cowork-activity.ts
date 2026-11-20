@@ -2,7 +2,7 @@
 export const COWORK_CLEAN_ACTIVITY_CSS = String.raw`
   .cw-working-row { width:100%; max-width:min(94%,660px); }
   .cw-working-row[hidden] { display:none; }
-  .cw-work-card { display:flex; flex-direction:column; gap:6px; min-width:0; max-width:100%; padding:10px 14px; border:1px solid var(--border); border-left:3px solid var(--border2); border-radius:14px; background:var(--card); box-shadow:none; }
+  .cw-work-card { display:flex; flex-direction:column; gap:5px; min-width:0; max-width:100%; padding:8px 12px; border:1px solid color-mix(in srgb,var(--border) 65%,transparent); border-radius:12px; background:color-mix(in srgb,var(--card) 72%,transparent); box-shadow:none; }
   .cw-working-head { display:flex; align-items:center; gap:10px; min-width:0; }
   .cw-work-lead, .cw-working-dot, .cw-team-strip { display:none; }
   .cw-working-bubble { display:flex; align-items:center; justify-content:space-between; gap:8px; min-width:0; flex:1; padding:0; border:0; border-radius:0; background:transparent; color:var(--text); font-size:13px; font-weight:600; line-height:1.45; overflow-wrap:anywhere; }
@@ -25,7 +25,8 @@ export const COWORK_CLEAN_ACTIVITY_CSS = String.raw`
   .cw-step-label { min-width:0; flex:1; overflow-wrap:anywhere; }
   .cw-receipt-row { width:100%; max-width:min(94%,660px); }
   .cw-receipt-row[hidden] { display:none; }
-  .cw-receipt-card { display:inline-flex; flex-direction:column; gap:8px; max-width:100%; padding:7px 12px; border-radius:14px; background:var(--card); border:1px solid var(--border); font-size:12px; color:var(--muted); }
+  .cw-receipt-card { display:inline-flex; flex-direction:column; gap:6px; max-width:100%; padding:5px 11px; border-radius:999px; background:color-mix(in srgb,var(--card2) 60%,transparent); border:1px solid color-mix(in srgb,var(--border) 60%,transparent); font-size:11.5px; color:var(--muted); }
+  .cw-receipt-card:has(.cw-receipt-steps:not([hidden])) { border-radius:12px; padding:7px 12px; }
   .cw-receipt-head { display:inline-flex; align-items:center; gap:8px; flex-wrap:wrap; }
   .cw-receipt-avas { display:none; }
   .cw-receipt-check { width:14px; height:14px; display:inline-flex; align-items:center; justify-content:center; color:#22c55e; font-size:11px; font-weight:700; flex:none; }

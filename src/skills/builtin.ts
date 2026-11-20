@@ -161,43 +161,78 @@ export const BROWSER_WORKFLOW_SKILL: ResolvedBuiltinSkill = def({
  */
 export const PIKPAM_ECOSYSTEM_SKILL: ResolvedBuiltinSkill = def({
   name: 'pikpam-ecosystem',
-  description: 'Operate Pikpam Cloud through its HTTP API: list VPS instances, read VPS telemetry and env, search domain availability and price, manage DNS records, connect domains to a VPS app, and manage projects. Buying a VPS or domain returns a Paystack checkout link the user must pay; never claim a purchase completed. A /data/bin/gitu-cloud CLI exists only inside a Pikpam customer VPS.',
-  keywords: ['pikpam', 'gitu cloud', 'vps', 'github deployment', 'domain', 'storage', 'postgres', 'redis', 'deploy'],
+  description: 'Operate Pikpam Cloud through its HTTP API: search & manage domains and DNS records, route domains to VPS apps, list and configure VPS instances/telemetry/logs/env/backups, manage S3 storage volumes, custom-domain email mailboxes, and cloud projects/apps. Buying or renewing a VPS, domain, or storage volume returns a Paystack checkout link the user must pay; never claim a purchase completed. A /data/bin/gitu-cloud CLI exists only inside a Pikpam customer VPS.',
+  keywords: ['pikpam', 'gitu cloud', 'vps', 'github deployment', 'domain', 'dns', 'ssl', 'storage', 'backup', 'email', 'mailbox', 'postgres', 'redis', 'deploy'],
   instructions: `# Pikpam ecosystem operations
 
-Use this skill whenever work touches a Pikpam project, GitHub deployment, app, domain, storage volume, database, or dedicated VPS. Keep every app and service associated with the correct customer project and VPS.
+Use this skill whenever work touches a Pikpam project, GitHub deployment, app, domain, DNS record, SSL/routing, custom-domain email/mailbox, storage volume, backup, database, or dedicated VPS. Keep every app and service associated with the correct customer project and VPS.
 
 ## Which surface you are on
 
 There are two separate surfaces. Identify yours before promising anything.
 
-**A. Pikpam Cloud HTTP API — available from any Gitu host.** A saved connection with provider \`pikpam\` (base \`https://pikpam.com\`, bearer JWT or \`sk-live-*\` account key) exposes the catalogued operations. Use \`list_connections\` to find it, then \`connection_read\` for GETs and \`connection_operation\` for writes (which require approval). This is the normal path and covers everything below.
+**A. Pikpam Cloud HTTP API — available from any Gitu host.** A saved connection with provider \`pikpam\` (base \`https://pikpam.com\`, bearer JWT or \`sk-live-*\` account key) exposes all catalogued Pikpam Cloud operations. Call \`list_connections\` first to find the saved \`pikpam\` connection, then use \`connection_read\` for GETs and \`connection_operation\` for writes (which require approval). If no \`pikpam\` connection is saved yet, call \`request_credential\` with \`providerHint: "pikpam"\`, \`baseUrl: "https://pikpam.com"\`, and \`validationPath: "/api/cloud/vps/my-instances"\` so the user can connect their Pikpam account key securely.
 
 **B. \`/data/bin/gitu-cloud\` CLI — only inside a Pikpam customer VPS.** It is not bundled with Gitu. If \`/data/bin/gitu-cloud context\` does not resolve, you have no CLI capability: say so and use surface A instead (or report the limitation). Never invent its output.
 
 A saved SSH connection is generic remote shell, not Pikpam platform access.
 
-## What the API actually offers
+## What the Pikpam Cloud API actually offers
 
 Read with \`connection_read\` (use the \`query\` object for parameters, never a query string in the path):
-- \`/api/cloud/vps/my-instances\` — the user's VPS instances. Always start here; every later step needs an instance id the user owns.
-- \`/api/cloud/vps/instances/{id}/services\` — services running on that VPS.
-- \`/api/cloud/vps/{id}/telemetry\` and \`/api/cloud/vps/{id}/env\` — health and configuration.
-- \`/api/cloud/vps/{id}/logs\` — recent logs.
-- \`/api/cloud/domains/search?q=<name>\` — availability and live price. Pass \`q\` through \`query\`.
-- \`/api/cloud/domains/tld-pricing\` — prices by TLD.
-- \`/api/cloud/domains/my-domains\` — registered domains.
-- \`/api/cloud/domains/{domain}/records\` — DNS records.
-- \`/api/cloud/projects\` and \`/api/cloud/apps\` — cloud projects and deployed apps.
+- **Account context & VPS:**
+  - \`/api/cloud/agent/context\` — full snapshot of owned VPS instances, projects, apps, and domains.
+  - \`/api/cloud/plans\` — available VPS plans and pricing.
+  - \`/api/cloud/vps/my-instances\` — the user's VPS instances. Always start here; every later step needs an instance id the user owns.
+  - \`/api/cloud/vps/free-claim\` — check free VPS claim eligibility.
+  - \`/api/cloud/vps/instances/{id}/services\` — services running on that VPS.
+  - \`/api/cloud/vps/{id}/telemetry\`, \`/api/cloud/vps/{id}/logs\`, and \`/api/cloud/vps/{id}/env\` — health, logs, and configuration.
+  - \`/api/cloud/vps/{id}/backups\` — list backups for a VPS.
+  - \`/api/cloud/vps/instances/{id}/domain-routes\` — active domain routes configured on a VPS.
+- **Domains & DNS:**
+  - \`/api/cloud/domains/search\` (with \`query: { q: "<name>" }\`) — availability and live price.
+  - \`/api/cloud/domains/tld-pricing\` — prices by TLD.
+  - \`/api/cloud/domains/my-domains\` — registered and connected domains (with IDs, status, verification state, target VPS).
+  - \`/api/cloud/domains/{domain}/records\` — list DNS records for a domain.
+  - \`/api/cloud/domains/{id}/verify-dns\` — verify DNS propagation & HTTPS readiness for a domain.
+  - \`/api/cloud/domains/{id}/renewal-quote\` — renewal price quote for a domain.
+  - \`/api/cloud/agent/domain-recommendations\` — domain recommendations for an app/project.
+- **Projects & Apps:**
+  - \`/api/cloud/projects\` and \`/api/cloud/apps\` — cloud projects and deployed apps.
+  - \`/api/cloud/apps/{id}/env\` — app environment variables.
+- **S3 Storage Volumes:**
+  - \`/api/cloud/storage/plans\` — storage volume plans and pricing.
+  - \`/api/cloud/storage/volumes\` — user's storage volumes.
+- **Custom-Domain Email & Mailboxes:**
+  - \`/api/cloud/email/settings\` — IMAP/SMTP connection settings.
+  - \`/api/cloud/email/domains\` — verified email-ready domains.
+  - \`/api/cloud/email/domains/{domain}/dns-records\` — required MX/SPF/DKIM/DMARC records for a domain.
+  - \`/api/cloud/email/mailboxes\` and \`/api/cloud/email/mailboxes/{id}/messages\` — list mailboxes and read recent messages.
+- **Notifications:**
+  - \`/api/cloud/notifications\` — Pikpam Cloud notifications.
 
 Write with \`connection_operation\`, which is individually approved:
-- \`POST /api/cloud/vps/instances/{id}/action\` — start, stop, restart.
-- \`POST /api/cloud/vps/{id}/env\` — set an environment variable.
-- \`POST /api/cloud/projects\` and \`POST /api/cloud/apps\` — create a project or register an app.
-- \`POST /api/cloud/apps/{id}/env\` — set an app environment variable.
-- \`POST /api/cloud/domains/connect\` — attach an existing external domain.
-- \`PUT /api/cloud/domains/{id}/configure\` — route a domain to a VPS app.
-- \`POST /api/cloud/domains/{domain}/records\` — create a DNS record; updates and deletes exist too.
+- **VPS & Backups:**
+  - \`POST /api/cloud/vps/instances/{id}/action\` — start, stop, restart.
+  - \`POST /api/cloud/vps/{id}/env\` and \`DELETE /api/cloud/vps/{id}/env/{key}\` — set or remove a VPS env var.
+  - \`POST /api/cloud/vps/free-claim\` — claim an eligible free VPS.
+  - \`POST /api/cloud/vps/{id}/backups\`, \`POST /api/cloud/vps/{id}/backups/{backupId}/restore\`, \`DELETE /api/cloud/vps/{id}/backups/{backupId}\` — manage VPS backups.
+- **Domains & DNS:**
+  - \`POST /api/cloud/domains/connect\` — connect an existing external domain to a VPS (returns TXT verification instructions if not yet verified).
+  - \`POST /api/cloud/domains/{id}/verify-ownership\` — verify the \`_pikpam-verification\` TXT record for an external domain.
+  - \`PUT /api/cloud/domains/{id}/configure\` — route a domain (or subdomain) to a VPS app/port and provision TLS.
+  - \`POST /api/cloud/domains/{domain}/records\`, \`PUT /api/cloud/domains/{domain}/records/{recordId}\`, \`DELETE /api/cloud/domains/{domain}/records/{recordId}\` — create, update, or delete DNS records.
+  - \`DELETE /api/cloud/domains/{id}\` — remove a domain.
+- **Projects & Apps:**
+  - \`POST /api/cloud/projects\`, \`DELETE /api/cloud/projects/{id}\`, \`POST /api/cloud/apps\`, \`DELETE /api/cloud/apps/{id}\`.
+  - \`POST /api/cloud/apps/{id}/env\` and \`DELETE /api/cloud/apps/{id}/env/{key}\`.
+- **Storage Volumes:**
+  - \`POST /api/cloud/storage/{id}/attach\`, \`POST /api/cloud/storage/{id}/detach\`, \`DELETE /api/cloud/storage/{id}\`.
+- **Custom-Domain Email:**
+  - \`POST /api/cloud/email/mailboxes\` — create a mailbox on a verified domain.
+  - \`POST /api/cloud/email/mailboxes/{id}/send\` — send an email (requires explicit user approval).
+- **Notifications:**
+  - \`POST /api/cloud/notifications/read\` — mark notifications read.
 
 ## Configuring a VPS
 
@@ -206,10 +241,11 @@ Write with \`connection_operation\`, which is individually approved:
 3. Apply one change per approved operation, then re-read to verify the new state.
 4. Report the instance name, the change, and the verified resulting state. A successful mutation is not proof the app is healthy — read telemetry or logs.
 
-## Domains: search versus purchase
+## Domains: search, connect, DNS, and purchase
 
 - **Searching is free and needs no approval.** Use \`domains/search\` with \`q\`. It returns \`{ query, suggestions: [{ domain, tld, isAvailable, costPriceUsd, retailPriceUsd, registrationYears, currency, premium, badge }] }\` and requires no credential. Read \`isAvailable\` for availability — never infer it from a price being present, and never estimate a price or claim a name is taken from memory. \`tld-pricing\` returns \`{ configured, marginPercent, tlds: [...] }\`.
-- **You cannot buy a domain or a VPS.** \`POST /api/cloud/domains/order\` and \`POST /api/cloud/vps/order\` create a pending invoice and return a Paystack \`authorizationUrl\`. A human must open that link and pay; only then does \`verify-order\` confirm and register. So: prepare the order if asked, hand the user the checkout link, and stop. Never state that a domain is registered, a VPS exists, or money moved until the user confirms payment and a follow-up read shows the resource.
+- **Connecting an external domain:** Call \`POST /api/cloud/domains/connect\` with \`{ domain, vpsId }\`, share the returned \`_pikpam-verification\` TXT record with the user, then verify with \`POST /api/cloud/domains/{id}/verify-ownership\`, route with \`PUT /api/cloud/domains/{id}/configure\`, and verify propagation with \`GET /api/cloud/domains/{id}/verify-dns\`.
+- **You cannot buy a domain or a VPS.** \`POST /api/cloud/domains/order\`, \`POST /api/cloud/domains/{id}/renew\`, \`POST /api/cloud/vps/order\`, \`POST /api/cloud/vps/instances/{id}/renew\`, and \`POST /api/cloud/storage/order\` create a pending invoice and return a Paystack \`authorizationUrl\`. A human must open that link and pay; only then does \`verify-order\` (or \`confirm-renewal\`) confirm and register. So: prepare the order if asked, hand the user the checkout link, and stop. Never state that a domain is registered, a VPS exists, or money moved until the user confirms payment and a follow-up read shows the resource.
 - Ordering a domain requires an existing VPS owned by the caller to attach it to.
 - Do not retry an order after an ambiguous failure — it can create a second invoice.
 

@@ -30,9 +30,13 @@ export const CHAT_QUESTION_CSS = String.raw`
   .chat-question-choice[aria-pressed=true]{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 11%,var(--card));box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 40%,transparent)}
   .chat-question-choice[aria-pressed=true]::before{content:'';width:6px;height:10px;border-right:2px solid var(--accent);border-bottom:2px solid var(--accent);transform:rotate(40deg) translate(-1px,-1px);flex:none}
   .chat-question-choice.is-recommended{border-color:color-mix(in srgb,var(--accent) 55%,var(--border));background:color-mix(in srgb,var(--accent) 7%,var(--card2,var(--card)))}
+  .chat-question-choice.is-custom-toggle{border-style:dashed;color:var(--muted)}
+  .chat-question-choice.is-custom-toggle:hover,.chat-question-choice.is-custom-toggle[aria-expanded=true]{border-style:solid;color:var(--text);border-color:var(--accent);background:color-mix(in srgb,var(--accent) 9%,var(--card))}
   .chat-question-rec-badge{display:inline-block;font-size:9.5px;font-weight:650;text-transform:uppercase;letter-spacing:.35px;padding:2px 6px;border-radius:5px;background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--accent);line-height:1.3;flex:none}
   .chat-question-form{margin-top:14px;padding-top:14px;border-top:1px solid color-mix(in srgb,var(--border) 75%,transparent)}
-  .chat-question-form>label{display:block;font-size:12px;font-weight:600;margin:0 0 7px;color:var(--text)}
+  .chat-question-custom-wrap{margin-top:2px}
+  .chat-question-custom-wrap[hidden]{display:none}
+  .chat-question-form label[for]{display:block;font-size:12px;font-weight:600;margin:0 0 7px;color:var(--text)}
   .chat-question .chat-question-form textarea{display:block;width:100%;min-width:0;min-height:76px;max-height:320px;resize:vertical;border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--card2,var(--card));color:var(--text);font:inherit;font-size:13px;line-height:1.55;transition:border-color .14s ease}
   .chat-question.has-choices .chat-question-form textarea{min-height:56px}
   .chat-question .chat-question-form textarea:focus{border-color:var(--accent)}
@@ -196,7 +200,7 @@ export const CHAT_QUESTION_JS = String.raw`
 
   function chatQuestionState(owner,scope,id){
     var scopes=owner.questionCards||(owner.questionCards=Object.create(null)),cards=scopes[scope]||(scopes[scope]=Object.create(null));
-    return cards[id]||(cards[id]={selected:'',text:'',pending:false,error:'',answered:false,response:'',remember:false,pattern:'',scope:'global'});
+    return cards[id]||(cards[id]={selected:'',text:'',customOpen:false,pending:false,error:'',answered:false,response:'',remember:false,pattern:'',scope:'global'});
   }
   function chatQuestionHtml(request,owner,scope){
     var presentation=cardRequestPresentation(request),state=chatQuestionState(owner,scope,request.id),closed=request.status!=='open'||state.answered,answer=state.answered?state.response:request.response,
@@ -207,6 +211,7 @@ export const CHAT_QUESTION_JS = String.raw`
     var isProjectPicker=/^Which project folder should I use\?$/i.test(String(request.title||'').trim());
     var canRemember=!isComputer&&!isApproval&&!isPlan&&!isProjectPicker;
     var hasChoices=(request.options||[]).length>0;
+    var customOpen=!hasChoices||Boolean(state.customOpen||state.text||state.error);
     var isChiefResolved=closed&&request.resolvedBy==='chief';
     var icon=isComputer
       ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>'
@@ -231,17 +236,18 @@ export const CHAT_QUESTION_JS = String.raw`
           '</div>' +
         '</div>'
       : '';
-    var inputLabel=hasChoices?(isApproval?'Add a note (optional)':'Add a note or custom answer (optional)'):'Your answer';
-    var inputPlaceholder=hasChoices?(isApproval?'Optional note or reason…':'Add extra details or write a different answer…'):'Write your answer…';
-    var hintText=hasChoices?'Pick an option above, or add a note · Ctrl / ⌘ + Enter to send':'Ctrl / ⌘ + Enter to send';
+    var customToggleLabel=isApproval?'Add note':'Custom answer';
+    var inputLabel=hasChoices?(isApproval?'Note (optional)':'Custom answer'):'Your answer';
+    var inputPlaceholder=hasChoices?(isApproval?'Optional note or reason…':'Write a custom answer or extra details…'):'Write your answer…';
+    var hintText=hasChoices?(customOpen?'Ctrl / ⌘ + Enter to send':'Pick an option above or press '+customToggleLabel):'Ctrl / ⌘ + Enter to send';
     var classes='chat-question'+(hasChoices?' has-choices':'')+(isComputer?' is-computer':isApproval?' is-approval':isPlan?' is-plan':'')+(closed?' is-closed':'')+(isChiefResolved?' is-chief-resolved':'');
     return '<section class="'+classes+'" data-question-card="'+esc(request.id)+'" data-open-state="'+esc(openStateLabel)+'" aria-label="'+esc(label)+': '+esc(request.title)+'" aria-busy="'+String(state.pending)+'">'+
       '<div class="chat-question-heading"><span class="chat-question-label">'+icon+esc(label)+'</span><span class="chat-question-state">'+stateLabel+'</span></div>'+
       '<h3>'+esc(presentation.title)+'</h3>'+(presentation.detail?'<p class="chat-question-detail">'+esc(presentation.detail)+'</p>':'')+cardTechnicalDetails(presentation.technical,request.id)+handoffBtn+
       (closed?(answer?'<div class="chat-question-answer cw-request-result"><strong>'+receiptLabel+'</strong>'+esc(answer)+'</div>':''):
       '<form class="chat-question-form" data-question-form="'+esc(request.id)+'">'+
-      (hasChoices?'<div class="chat-question-choices" role="group" aria-label="Suggested answers">'+request.options.map(function(option){var isRec=Boolean(request.recommended&&request.recommended===option);return '<button type="button" class="chat-question-choice'+(isRec?' is-recommended':'')+'" data-question-choice="'+esc(option)+'" aria-pressed="'+String(state.selected===option)+'"'+pending+'>'+(isRec?'<span class="chat-question-rec-badge">Recommended</span>':'')+esc(option)+'</button>';}).join('')+'</div>':'')+
-      '<label for="'+esc(inputId)+'">'+esc(inputLabel)+'</label><textarea id="'+esc(inputId)+'" data-question-answer data-cwanswer="'+esc(request.id)+'" aria-label="Answer: '+esc(request.title)+'" rows="'+(hasChoices?2:3)+'" placeholder="'+esc(inputPlaceholder)+'" aria-describedby="'+esc(hintId)+' '+esc(errorId)+'" aria-invalid="'+String(Boolean(state.error))+'"'+pending+'>'+esc(state.text)+'</textarea>'+
+      (hasChoices?'<div class="chat-question-choices" role="group" aria-label="Suggested answers">'+request.options.map(function(option){var isRec=Boolean(request.recommended&&request.recommended===option);return '<button type="button" class="chat-question-choice'+(isRec?' is-recommended':'')+'" data-question-choice="'+esc(option)+'" aria-pressed="'+String(state.selected===option)+'"'+pending+'>'+(isRec?'<span class="chat-question-rec-badge">Recommended</span>':'')+esc(option)+'</button>';}).join('')+'<button type="button" class="chat-question-choice is-custom-toggle" data-question-custom aria-expanded="'+String(customOpen)+'"'+pending+'>'+esc(customToggleLabel)+'</button></div>':'')+
+      '<div class="chat-question-custom-wrap" data-question-custom-wrap'+(customOpen?'':' hidden')+'><label for="'+esc(inputId)+'">'+esc(inputLabel)+'</label><textarea id="'+esc(inputId)+'" data-question-answer data-cwanswer="'+esc(request.id)+'" aria-label="Answer: '+esc(request.title)+'" rows="'+(hasChoices?2:3)+'" placeholder="'+esc(inputPlaceholder)+'" aria-describedby="'+esc(hintId)+' '+esc(errorId)+'" aria-invalid="'+String(Boolean(state.error))+'"'+pending+'>'+esc(state.text)+'</textarea></div>'+
       rememberRow+
       '<div class="chat-question-footer"><span id="'+esc(hintId)+'" class="chat-question-hint">'+esc(hintText)+'</span><button type="submit" class="btn dark chat-question-submit"'+pending+'>'+(state.pending?'Sending…':'Send answer')+'</button></div><p id="'+esc(errorId)+'" class="chat-question-error" role="alert">'+esc(state.error)+'</p></form>')+'</section>';
   }
@@ -254,8 +260,15 @@ export const CHAT_QUESTION_JS = String.raw`
       };
     });
     root.querySelectorAll('[data-question-form]').forEach(function(form){
-      var id=form.getAttribute('data-question-form'),state=chatQuestionState(owner,scope,id),input=form.querySelector('[data-question-answer]'),rememberCb=form.querySelector('.chat-question-remember-cb'),rememberOpts=form.querySelector('.chat-question-remember-opts'),patternInput=form.querySelector('.chat-question-remember-pattern'),scopeSelect=form.querySelector('.chat-question-remember-scope'),card=form.closest('[data-question-card]'),error=form.querySelector('.chat-question-error'),button=form.querySelector('[type=submit]');
+      var id=form.getAttribute('data-question-form'),state=chatQuestionState(owner,scope,id),input=form.querySelector('[data-question-answer]'),customBtn=form.querySelector('[data-question-custom]'),customWrap=form.querySelector('[data-question-custom-wrap]'),hintEl=form.querySelector('.chat-question-hint'),rememberCb=form.querySelector('.chat-question-remember-cb'),rememberOpts=form.querySelector('.chat-question-remember-opts'),patternInput=form.querySelector('.chat-question-remember-pattern'),scopeSelect=form.querySelector('.chat-question-remember-scope'),card=form.closest('[data-question-card]'),error=form.querySelector('.chat-question-error'),button=form.querySelector('[type=submit]');
       var openStateLabel=(card&&card.getAttribute('data-open-state'))||'Needs your answer';
+      function setCustomOpen(open,shouldFocus){
+        state.customOpen=Boolean(open);
+        if(customWrap)customWrap.hidden=!state.customOpen;
+        if(customBtn)customBtn.setAttribute('aria-expanded',String(state.customOpen));
+        if(hintEl&&customBtn)hintEl.textContent=state.customOpen?'Ctrl / ⌘ + Enter to send':'Pick an option above or press '+(customBtn.textContent||'Custom answer');
+        if(state.customOpen&&shouldFocus&&input&&typeof input.focus==='function')input.focus();
+      }
       function syncChoices(){
         form.querySelectorAll('[data-question-choice]').forEach(function(choice){choice.setAttribute('aria-pressed',String(choice.getAttribute('data-question-choice')===state.selected));});
       }
@@ -264,6 +277,7 @@ export const CHAT_QUESTION_JS = String.raw`
       }
       function sync(){
         state.text=input.value;
+        if(state.text&&customBtn&&!state.customOpen)setCustomOpen(true,false);
         if(rememberCb)state.remember=Boolean(rememberCb.checked);
         if(patternInput)state.pattern=patternInput.value;
         if(scopeSelect)state.scope=scopeSelect.value;
@@ -271,6 +285,10 @@ export const CHAT_QUESTION_JS = String.raw`
         syncChoices();
       }
       input.oninput=sync;
+      if(customBtn)customBtn.onclick=function(){
+        if(state.pending)return;
+        setCustomOpen(!state.customOpen,true);
+      };
       if(rememberCb)rememberCb.onchange=function(){
         state.remember=Boolean(rememberCb.checked);
         if(rememberOpts)rememberOpts.hidden=!state.remember;
@@ -292,14 +310,14 @@ export const CHAT_QUESTION_JS = String.raw`
         var selected=String(state.selected||'').trim();
         var extra=input.value.trim();
         var response=selected&&extra?(extra.indexOf(selected)===0?extra:selected+'\n'+extra):(selected||extra);
-        if(!response){state.error='Write an answer or choose a suggestion.';error.textContent=state.error;input.setAttribute('aria-invalid','true');input.focus();return;}
+        if(!response){state.error='Write an answer or choose a suggestion.';error.textContent=state.error;input.setAttribute('aria-invalid','true');if(customBtn)setCustomOpen(true,true);else input.focus();return;}
         var rememberForChief=Boolean(rememberCb&&rememberCb.checked);
         var chiefPattern=patternInput?patternInput.value.trim():'';
         var chiefScope=scopeSelect?scopeSelect.value:'global';
         sync();state.pending=true;card.setAttribute('aria-busy','true');form.querySelectorAll('button,textarea,input,select').forEach(function(control){control.disabled=true;});button.textContent='Sending…';card.querySelector('.chat-question-state').textContent='Sending…';
         try{
           await submit(id,response,{rememberForChief:rememberForChief,chiefPattern:chiefPattern,chiefScope:chiefScope});
-          state.answered=true;state.response=response;state.selected='';state.text='';state.remember=false;state.pattern='';state.scope='global';state.error='';
+          state.answered=true;state.response=response;state.selected='';state.text='';state.customOpen=false;state.remember=false;state.pattern='';state.scope='global';state.error='';
           card.classList.add('is-closed');
           card.querySelector('.chat-question-state').textContent='Answered';
           var receipt=document.createElement('div');receipt.className='chat-question-answer cw-request-result';var label=document.createElement('strong');label.textContent='Your answer';receipt.appendChild(label);receipt.appendChild(document.createTextNode(response));form.replaceWith(receipt);

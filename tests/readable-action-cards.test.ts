@@ -38,3 +38,44 @@ it('dynamically formats arbitrary commands, MCP/custom tools, and external paths
   expect(extWrite.detail).toContain('Update router config');
   expect(extWrite.preview).toContain('composio.ts');
 });
+
+it('keeps the custom answer input collapsed until the user presses Custom answer, while keeping open-ended questions expanded',()=>{
+  const c=fixture(),owner:Record<string,any>={};
+  const withChoices=c.chatQuestionHtml({id:'q-opt',title:'Choose region',detail:'Pick a launch region',kind:'question',status:'open',options:['Europe','US']},owner,'cw');
+  expect(withChoices).toContain('data-question-custom aria-expanded="false"');
+  expect(withChoices).toContain('>Custom answer</button>');
+  expect(withChoices).toContain('data-question-custom-wrap hidden>');
+
+  // Pressing the Custom answer button opens the textarea and focuses it; pressing again closes it.
+  let focused=0;
+  const attrs:Record<string,string>={'aria-expanded':'false'};
+  const customWrap={hidden:true};
+  const hintEl={textContent:''};
+  const input={value:'',focus(){focused++;},setAttribute(){}};
+  const customBtn={textContent:'Custom answer',onclick:null as null|(()=>void),setAttribute(k:string,v:string){attrs[k]=v;}};
+  const form={
+    getAttribute:()=>'q-opt',
+    closest:()=>({getAttribute:()=>'Needs your answer'}),
+    querySelector:(sel:string)=>sel==='[data-question-answer]'?input:sel==='[data-question-custom]'?customBtn:sel==='[data-question-custom-wrap]'?customWrap:sel==='.chat-question-hint'?hintEl:sel==='.chat-question-error'?{textContent:''}:sel==='[type=submit]'?{textContent:'Send answer'}:null,
+    querySelectorAll:()=>[],
+  };
+  const root={querySelectorAll:(sel:string)=>sel==='[data-question-form]'?[form]:[]};
+  c.chatBindQuestions(root,owner,'cw',async()=>{});
+  customBtn.onclick!();
+  expect(customWrap.hidden).toBe(false);
+  expect(attrs['aria-expanded']).toBe('true');
+  expect(focused).toBe(1);
+  expect(owner.questionCards.cw['q-opt'].customOpen).toBe(true);
+  // Re-rendering while open keeps it expanded.
+  const reopened=c.chatQuestionHtml({id:'q-opt',title:'Choose region',detail:'Pick a launch region',kind:'question',status:'open',options:['Europe','US']},owner,'cw');
+  expect(reopened).toContain('data-question-custom aria-expanded="true"');
+  expect(reopened).not.toContain('data-question-custom-wrap hidden>');
+  customBtn.onclick!();
+  expect(customWrap.hidden).toBe(true);
+  expect(attrs['aria-expanded']).toBe('false');
+
+  // Open-ended questions with no options show the textarea right away without a Custom answer toggle.
+  const openEnded=c.chatQuestionHtml({id:'q-free',title:'What is your goal?',detail:'Describe your target outcome.',kind:'question',status:'open',options:[]},owner,'cw');
+  expect(openEnded).not.toContain('data-question-custom ');
+  expect(openEnded).not.toContain('data-question-custom-wrap hidden>');
+});

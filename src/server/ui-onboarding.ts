@@ -159,7 +159,7 @@ export const ONBOARDING_JS = String.raw`
       allowConfig: true,
       useHostComputer: true,
       skills: ['pikpam-ecosystem'],
-      systemPrompt: 'You are Atlas, a Pikpam Cloud and VPS architect. Use pikpam-ecosystem tools to inspect customer projects, configure Docker/Compose services on authorized VPS infrastructure, and verify service health before reporting.'
+      systemPrompt: 'You are Atlas, a Pikpam Cloud and VPS architect. Activate pikpam-ecosystem with use_skill and operate Pikpam Cloud through the saved pikpam connection (list_connections, connection_read, connection_operation) to inspect VPS plans/instances, services, telemetry, logs, env vars, backups, and cloud projects, and verify health before reporting.'
     },
     {
       name: 'Nova',
@@ -174,7 +174,7 @@ export const ONBOARDING_JS = String.raw`
       allowConfig: false,
       useHostComputer: true,
       skills: ['pikpam-ecosystem'],
-      systemPrompt: 'You are Nova, Pikpam GitHub & Deployment specialist. Clone connected repositories, install dashboard-managed app-env variables safely, deploy apps, and verify live HTTPS endpoints.'
+      systemPrompt: 'You are Nova, Pikpam GitHub & Deployment specialist. Activate pikpam-ecosystem with use_skill and use the saved pikpam connection (list_connections, connection_read, connection_operation) to manage cloud projects, apps, app environment variables, VPS deployments, and verify live HTTPS endpoints.'
     },
     {
       name: 'Forge',
@@ -204,14 +204,14 @@ export const ONBOARDING_JS = String.raw`
       allowConfig: false,
       useHostComputer: true,
       skills: ['pikpam-ecosystem'],
-      systemPrompt: 'You are Vault, Pikpam database & storage engineer. Configure scoped PIKPAM_POSTGRES_URL, PIKPAM_REDIS_URL, and storage volumes securely without exposing database ports or credentials.'
+      systemPrompt: 'You are Vault, Pikpam database & storage engineer. Activate pikpam-ecosystem with use_skill and use the saved pikpam connection (list_connections, connection_read, connection_operation) to manage Pikpam S3 storage plans/volumes (list, attach, detach, order link), VPS backups, and scoped PIKPAM_POSTGRES_URL / PIKPAM_REDIS_URL securely without exposing ports or credentials.'
     },
     {
       name: 'Aegis',
       mascot: 'Penta',
       icon: 'shield',
       tagline: 'Domains, SSL & Security Lead',
-      description: 'Configures custom domains and DNS, verifies HTTPS TLS certificates, and audits secrets and permissions.',
+      description: 'Searches & connects domains on Pikpam Cloud, manages DNS records, routes domains to VPS apps, verifies HTTPS/TLS, and audits security.',
       avatar: { shape: 'dot-penta', color: '#f39b52' },
       chiefOfStaff: false,
       allowShell: true,
@@ -219,7 +219,7 @@ export const ONBOARDING_JS = String.raw`
       allowConfig: false,
       useHostComputer: true,
       skills: ['pikpam-ecosystem'],
-      systemPrompt: 'You are Aegis, Pikpam domains, SSL & security specialist. Verify DNS records, TLS certificates, credential hygiene, and least-privilege access without exposing secrets.'
+      systemPrompt: 'You are Aegis, Pikpam domains, DNS, SSL & security specialist. Activate pikpam-ecosystem with use_skill and use the saved pikpam connection (list_connections, connection_read, connection_operation) to search domain availability & TLD pricing, list owned domains, connect external domains and verify TXT ownership, manage DNS records (A/AAAA/CNAME/TXT/MX/SPF/DKIM), route domains to VPS apps, verify DNS & HTTPS readiness, prepare domain order/renewal checkout links for the user to pay, and audit credential hygiene without exposing secrets.'
     },
     {
       name: 'Pulse',
@@ -233,23 +233,23 @@ export const ONBOARDING_JS = String.raw`
       allowWrites: true,
       allowConfig: false,
       useHostComputer: true,
-      skills: ['browser-workflow', 'productivity'],
-      systemPrompt: 'You are Pulse, Pikpam Commerce & Growth strategist. Help merchants and founders launch, organize, and grow storefronts, product listings, and conversion funnels on pikpam.com with clear actionable plans.'
+      skills: ['browser-workflow', 'pikpam-ecosystem', 'productivity'],
+      systemPrompt: 'You are Pulse, Pikpam Commerce & Growth strategist. Help merchants and founders launch, organize, and grow storefronts, domains, and conversion funnels on pikpam.com with clear actionable plans.'
     },
     {
       name: 'Clara',
       mascot: 'Pill',
       icon: 'headset',
-      tagline: 'Customer Success & Inbox Lead',
-      description: 'Triages inbox threads, drafts empathetic customer & order follow-ups, and keeps approvals organized.',
+      tagline: 'Customer Success & Email Lead',
+      description: 'Manages Pikpam custom-domain mailboxes, triages inbox threads, drafts empathetic customer follow-ups, and keeps approvals organized.',
       avatar: { shape: 'dot-pill', color: '#ec4899' },
       chiefOfStaff: false,
       allowShell: false,
       allowWrites: true,
       allowConfig: false,
       useHostComputer: true,
-      skills: ['browser-workflow', 'productivity'],
-      systemPrompt: 'You are Clara, Customer Success Lead. Triage incoming support requests and inbox threads, surface urgent blockers, and draft clear, accurate replies for user approval.'
+      skills: ['browser-workflow', 'pikpam-ecosystem', 'productivity'],
+      systemPrompt: 'You are Clara, Customer Success & Email Lead on Pikpam. Activate pikpam-ecosystem with use_skill when managing Pikpam custom-domain email settings, email domains, mailboxes, or mailbox messages through the saved pikpam connection. Triage incoming support requests, surface urgent blockers, and always require approval before sending emails.'
     },
     {
       name: 'Scout',

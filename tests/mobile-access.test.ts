@@ -22,14 +22,14 @@ describe('Remote access', () => {
     const base = `http://127.0.0.1:${port}`;
     const headers = { Authorization: `Bearer ${key}`, Host: `hosted.agent.test:${port}`, 'X-Forwarded-Proto': 'https' };
     const read = (route: string, options: { headers?: Record<string, string>; method?: string } = {}) =>
-      new Promise<{ status: number; text: string; cookie?: string }>((resolve, reject) => {
+      new Promise<{ status: number; text: string; cookie?: string; headers: Record<string, string | string[] | undefined> }>((resolve, reject) => {
         const req = request(`${base}${route}`, options, (res) => {
           let text = '';
           res.setEncoding('utf8');
           res.on('data', (chunk) => {
             text += chunk;
           });
-          res.on('end', () => resolve({ status: res.statusCode!, text, cookie: res.headers['set-cookie']?.[0] }));
+          res.on('end', () => resolve({ status: res.statusCode!, text, cookie: res.headers['set-cookie']?.[0], headers: res.headers }));
         });
         req.on('error', reject);
         req.end();
@@ -43,6 +43,8 @@ describe('Remote access', () => {
       expect(JSON.parse(status.text)).toEqual({ app: 'Agent Gitu', mobileProtocol: 1, mobileFeatures: ['native-workspace'] });
       const page = await read('/mobile', { headers });
       expect(page.status).toBe(200);
+      expect(page.headers['x-frame-options']).toBe('DENY');
+      expect(String(page.headers['content-security-policy'])).toContain("frame-ancestors 'none'");
       const setCookie = page.cookie!;
       expect(setCookie).toContain('HttpOnly');
       expect(setCookie).toContain('SameSite=Strict');

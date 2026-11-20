@@ -126,6 +126,7 @@ import { UI_HTML } from './ui.js';
 import { credentialChatInput } from './credential-chat.js';
 import { coworkActivityView } from './cowork-activity.js';
 import { BRAND_DIR, BRAND_FILES, CHARACTERS_DIR, CHARACTER_FILES, FONT_FILES, FONTS_DIR, VENDOR_THREE, VENDOR_THREE_CORE, isPreviewableMime, isTextLikeFile, mimeForFile, safeFileName } from './static-assets.js';
+import QRCode from 'qrcode';
 
 const PIK_OAUTH_STATE_COOKIE = 'pik_oauth_state';
 
@@ -7471,7 +7472,14 @@ export class GituServer {
         return;
       }
       this.mobileAccess.issue(req, res);
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+      res.writeHead(200, {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'no-store',
+        // Only the app's own top-level WebView (or the desktop shell) may load
+        // this page. Third-party sites cannot iframe the workspace.
+        'x-frame-options': 'DENY',
+        'content-security-policy': "frame-ancestors 'none'",
+      });
       res.end(UI_HTML);
       return;
     }
@@ -7500,6 +7508,30 @@ export class GituServer {
       return;
     }
 
+    // Onboarding pairing code. Authenticated (the guard above), bounded, and
+    // SVG-only: it encodes the server origin as an Agent Gitu deep link.
+    if (method === 'GET' && path === '/api/qr') {
+      const text = (url.searchParams.get('text') ?? '').trim();
+      if (!text || text.length > 512) {
+        this.sendJson(res, 400, { error: 'A short text value is required.' });
+        return;
+      }
+      try {
+        const svg = await QRCode.toString(text, {
+          type: 'svg',
+          margin: 1,
+          width: 240,
+          errorCorrectionLevel: 'M',
+          color: { dark: '#111112', light: '#ffffff' },
+        });
+        res.writeHead(200, { 'content-type': 'image/svg+xml; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
+        res.end(svg);
+      } catch {
+        this.sendJson(res, 400, { error: 'Could not create that QR code.' });
+      }
+      return;
+    }
+
     if (method === 'GET' && (path === '/' || path === '/index.html')) {
       // Android's private WebView may reopen this static shell from its own
       // cache when the workspace server is offline. Keep it private and
@@ -7508,6 +7540,9 @@ export class GituServer {
       res.writeHead(200, {
         'content-type': 'text/html; charset=utf-8',
         ...(webViewShell ? { 'cache-control': 'private, max-age=0, must-revalidate' } : { 'cache-control': 'no-store' }),
+        // Private workspace shell: never embeddable by another website.
+        'x-frame-options': 'DENY',
+        'content-security-policy': "frame-ancestors 'none'",
       });
       res.end(UI_HTML);
       return;

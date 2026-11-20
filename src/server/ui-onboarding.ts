@@ -98,6 +98,15 @@ export const ONBOARDING_CSS = String.raw`
   .setup-custom-queue { display:flex; flex-wrap:wrap; gap:6px; }
   .setup-custom-chip { display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:999px; border:1px solid var(--border); background:var(--card); font-size:12px; }
   .setup-summary-pill { margin-top:16px; padding:12px 14px; border-radius:14px; border:1px solid var(--border); background:var(--card2); font-size:12.5px; color:var(--text); }
+  .setup-phone { display:flex; align-items:center; gap:16px; margin-top:16px; padding:16px; border:1px solid var(--border); border-radius:16px; background:var(--card2); }
+  .setup-phone img { width:132px; height:132px; flex:none; padding:8px; border-radius:12px; background:#fff; }
+  .setup-phone img[hidden] { display:none; }
+  .setup-phone-copy { min-width:0; display:grid; gap:5px; }
+  .setup-phone-copy .t { font-size:13.5px; font-weight:600; }
+  .setup-phone-copy .d { color:var(--muted); font-size:12px; line-height:1.55; }
+  .setup-phone-copy code { color:var(--text); font-size:11.5px; overflow-wrap:anywhere; }
+  .setup-phone-copy .btn { justify-self:start; margin-top:2px; min-height:30px; padding:4px 12px; font-size:11.5px; }
+  @media(max-width:520px) { .setup-phone { flex-direction:column; align-items:flex-start; } .setup-phone img { align-self:center; width:168px; height:168px; } }
   @media(max-width:780px) { .setup-aside { padding:14px 20px; flex-wrap:wrap; gap:12px; }.setup-aside p { display:none; }.setup-steps { order:3; width:100%; justify-content:space-between; }.setup-steps li { flex:1; justify-content:center; padding:6px 10px; }.setup-main { padding:24px 20px; }.setup-main h1 { font-size:24px; }.setup-agent-modes,.setup-agent-grid,.setup-custom-row { grid-template-columns:1fr; }.setup-char-grid { grid-template-columns:repeat(3,minmax(0,1fr)); } }
   @media(max-width:420px) { .setup-main { padding:20px 16px; }.setup-aside { padding:12px 16px; }.setup-steps { gap:4px; }.setup-steps li { gap:6px; font-size:11px; padding:5px 8px; }.setup-step-number { width:20px; height:20px; font-size:10px; }.setup-main h1 { font-size:21px; }.setup-footer,.setup-footer > div { flex-wrap:wrap; }.setup-footer > div { margin-left:auto; } }
   @media(prefers-reduced-motion:reduce) { .opening-dots i { animation:none; } .setup-agent-mode,.setup-agent-card,.setup-char-pick { transition:none; } }
@@ -493,7 +502,8 @@ export const ONBOARDING_JS = String.raw`
       '<div class="setup-summary-pill">' + esc(setupAgentSummaryText()) + '</div>' +
       '<div class="setup-modes" role="radiogroup" aria-label="Starting workspace" hidden>' + [{ id: 'cowork', title: 'Cowork (Recommended)', description: 'Collaborate with your Pikpam agents while coding runs behind the scenes.' }, { id: 'coding', title: 'Coding', description: 'Open directly into local coding mode.' }].map(function (mode) {
         return '<label class="setup-mode"><input type="radio" name="setupMode" value="' + mode.id + '"' + (setupState.mode === mode.id ? ' checked' : '') + '><span><b>' + mode.title + '</b><small>' + mode.description + '</small></span></label>';
-      }).join('') + '</div>';
+      }).join('') + '</div>' +
+      '<div class="setup-phone" id="setupPhone"><img id="setupPhoneQr" alt="QR code to connect the Agent Gitu mobile app" width="132" height="132" hidden><div class="setup-phone-copy"><div class="t">Connect your phone</div><div class="d" id="setupPhoneCopy">Scan this code with your phone camera to open Agent Gitu there.</div><code id="setupPhoneAddress"></code><button type="button" class="btn ghost" id="setupPhoneRefresh">Refresh address</button></div></div>';
     root.innerHTML = '<div class="setup-frame"><aside class="setup-aside"><div class="setup-brand"><img src="/brand/agent-gitu-mark.svg" alt=""><span>Agent Gitu</span></div><p>Your Pikpam team. Powered by PikRouter.</p><ol class="setup-steps">' + ['Agents', 'PikRouter', 'Finish'].map(function (name, i) {
       return '<li' + (i === step ? ' aria-current="step"' : '') + '><span class="setup-step-number">' + (i + 1) + '</span>' + name + '</li>';
     }).join('') + '</ol></aside><section class="setup-main' + (step !== 0 ? ' setup-main-narrow' : '') + '"><h1 id="setupTitle" tabindex="-1">' + titles[step] + '</h1><p class="setup-description">' + descriptions[step] + '</p>' + content +
@@ -632,6 +642,48 @@ export const ONBOARDING_JS = String.raw`
     if ($('setupPikOAuth')) $('setupPikOAuth').onclick = function () { startPikRouterOAuth('/callback'); };
     if ($('setupRefresh')) $('setupRefresh').onclick = refreshSetupProviders;
     root.querySelectorAll('[name=setupMode]').forEach(function (input) { input.onchange = function () { setupState.mode = input.value; $('setupNext').textContent = 'Open ' + (input.value === 'cowork' ? 'Cowork' : 'Coding'); }; });
+    if (step === 2) {
+      var phoneQr = function (address) {
+        var image = $('setupPhoneQr'), copy = $('setupPhoneCopy'), label = $('setupPhoneAddress');
+        if (!image) return;
+        if (!address) {
+          image.hidden = true;
+          image.src = '';
+          if (label) label.textContent = '';
+          if (copy) copy.textContent = 'Use an address your phone can reach, such as your computer’s private network IP. In the desktop app, see Settings → General → Phone access.';
+          return;
+        }
+        var link = 'agentgitu://connect?server=' + encodeURIComponent(address);
+        image.hidden = false;
+        image.src = '/api/qr?text=' + encodeURIComponent(link);
+        image.alt = 'QR code to open ' + address + ' in Agent Gitu';
+        if (label) label.textContent = address;
+        if (copy) copy.textContent = 'Scan this code with your phone camera to open Agent Gitu there. Work stays on this server.';
+      };
+      var pageLocation = typeof location !== 'undefined' ? location : null;
+      var loopback = !pageLocation || /^(localhost|127\.0\.0\.1|\[::1\])$/i.test(pageLocation.hostname);
+      var phoneOrigin = pageLocation && !loopback ? pageLocation.origin : '';
+      var loadPhoneAccess = function () {
+        return typeof window !== 'undefined' && window.gituDesktop && typeof window.gituDesktop.phoneAccess === 'function'
+          ? window.gituDesktop.phoneAccess()
+          : Promise.resolve(null);
+      };
+      phoneQr(phoneOrigin);
+      loadPhoneAccess().then(function (status) {
+        var address = status && status.addresses && status.addresses[0];
+        if (address && $('setupPhoneQr')) phoneQr(address);
+      }).catch(function () {});
+      if ($('setupPhoneRefresh')) $('setupPhoneRefresh').onclick = function () {
+        var button = this;
+        button.disabled = true;
+        loadPhoneAccess().then(function (status) {
+          var address = status && status.addresses && status.addresses[0];
+          phoneQr(address || phoneOrigin);
+        }).catch(function () {
+          phoneQr(phoneOrigin);
+        }).finally(function () { if (button.isConnected) button.disabled = false; });
+      };
+    }
     $('setupTitle').focus();
   }
   async function createOnboardingAgents() {

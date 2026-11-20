@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { workspaceNavigation, workspaceServerUrl } from '../apps/mobile/src/gitu/server-address.js';
+import { parseConnectLink } from '../apps/mobile/src/gitu/connect-link.js';
 import { AppAuth } from '../src/server/app-auth.js';
 import { privateNetworkRequest } from '../src/server/lan-login.js';
 import { GituServer } from '../src/server/server.js';
@@ -36,6 +37,20 @@ describe('Android full workspace', () => {
       expect(workspaceNavigation(url, origin, false)).toBe('workspace');
     }
     expect(workspaceNavigation('blob:https://evil.example/preview', origin, false)).toBe('blocked');
+  });
+
+  it('accepts only the onboarding connect link for a valid workspace address', () => {
+    expect(parseConnectLink(`agentgitu://connect?server=${encodeURIComponent('https://gitu.example.com')}`)).toEqual({
+      server: 'https://gitu.example.com',
+      mode: 'remote',
+    });
+    expect(parseConnectLink(`agentgitu:///connect?server=${encodeURIComponent('http://192.168.1.8:8421')}`)).toEqual({
+      server: 'http://192.168.1.8:8421',
+      mode: 'local',
+    });
+    expect(parseConnectLink(`agentgitu://connect?server=${encodeURIComponent('http://evil.example')}`)).toBeUndefined();
+    expect(parseConnectLink('agentgitu://other?server=https%3A%2F%2Fgitu.example.com')).toBeUndefined();
+    expect(parseConnectLink('https://gitu.example.com')).toBeUndefined();
   });
 
   it('confines opt-in LAN login to private hosts and private peers without relaxing registration', () => {
@@ -88,7 +103,7 @@ describe('Android full workspace', () => {
       });
       expect(setup.status).toBe(201);
       const call = (route: string, host: string, body?: object, cookie?: string, secure = false, origin?: string) =>
-        new Promise<{ status: number; body: string; cookie?: string }>((resolve, reject) => {
+        new Promise<{ status: number; body: string; cookie?: string; headers: Record<string, string | string[] | undefined> }>((resolve, reject) => {
           const req = request(
             base + route,
             {
@@ -107,7 +122,7 @@ describe('Android full workspace', () => {
               res.on('data', (chunk) => {
                 text += chunk;
               });
-              res.on('end', () => resolve({ status: res.statusCode!, body: text, cookie: res.headers['set-cookie']?.[0]?.split(';')[0] }));
+              res.on('end', () => resolve({ status: res.statusCode!, body: text, cookie: res.headers['set-cookie']?.[0]?.split(';')[0], headers: res.headers }));
             },
           );
           req.on('error', reject);
@@ -121,7 +136,14 @@ describe('Android full workspace', () => {
       const login = await call('/api/auth/login', localHost, { email, password }, undefined, false, 'http://' + localHost);
       expect(login.status).toBe(200);
       expect(login.cookie).toMatch(/^gitu_session=/);
-      expect((await call('/', localHost, undefined, login.cookie)).status).toBe(200);
+      const home = await call('/', localHost, undefined, login.cookie);
+      expect(home.status).toBe(200);
+      expect(home.headers['x-frame-options']).toBe('DENY');
+      expect(String(home.headers['content-security-policy'])).toContain("frame-ancestors 'none'");
+      const qr = await call('/api/qr?text=' + encodeURIComponent('agentgitu://connect?server=' + encodeURIComponent('https://gitu.example.com')), localHost, undefined, login.cookie);
+      expect(qr.status).toBe(200);
+      expect(String(qr.headers['content-type'])).toContain('image/svg+xml');
+      expect(qr.body).toContain('<svg');
       expect((await call('/api/project', localHost, undefined, login.cookie)).status).toBe(200);
       expect((await call('/api/auth/logout', localHost, {}, login.cookie)).status).toBe(200);
       expect((await call('/api/project', localHost, undefined, login.cookie)).status).toBe(401);

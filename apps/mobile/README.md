@@ -25,6 +25,12 @@ the permission setup if it was cancelled. No terminal or second server is needed
 The private access key is generated once in the workspace's `Settings` directory.
 `AGENT_GITU_DESKTOP_PHONE_ACCESS=0` disables desktop phone access at startup.
 
+The setup wizard's Finish step and **Settings → General → Phone access** show a
+QR code for the best current address. Scan it with the phone camera to open
+Agent Gitu with that server filled in; confirm the address and sign in. A
+standalone server reached at `localhost` cannot infer a LAN address for the
+phone, so enter its printed LAN address there instead.
+
 For a standalone server without the desktop app, start it from the repository root:
 
 ```powershell

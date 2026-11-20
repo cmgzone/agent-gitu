@@ -1,7 +1,8 @@
 import { StatusBar } from 'expo-status-bar';
 import * as FileSystem from 'expo-file-system/legacy';
+import * as SystemUI from 'expo-system-ui';
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, AppState, BackHandler, KeyboardAvoidingView, Linking, ScrollView, Text, View } from 'react-native';
+import { ActivityIndicator, AppState, BackHandler, KeyboardAvoidingView, Linking, ScrollView, Text, useColorScheme, View } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
@@ -10,9 +11,32 @@ import { isLocalServer, workspaceNavigation, workspaceServerUrl, type Connection
 import { WORKSPACE_COMPAT_JS, WORKSPACE_LOADED_JS } from './workspace-runtime';
 import { nativePushAction, pushPreferences } from './workspace-push';
 import { pushBridgeScript, pushTarget, type PushTarget } from './push-protocol';
+import { parseConnectLink } from './connect-link';
 
 const initialAddress = process.env.EXPO_PUBLIC_API_URL || 'http://10.0.2.2:8321';
 const savedServerFile = FileSystem.documentDirectory && FileSystem.documentDirectory + 'workspace-server.txt';
+const savedThemeFile = FileSystem.documentDirectory && FileSystem.documentDirectory + 'workspace-theme.txt';
+const DARK_CANVAS = '#111112';
+type LoadFailure = { title: string; detail: string };
+function loadFailure(description: string): LoadFailure {
+  const code = String(description || '');
+  if (/ERR_INTERNET_DISCONNECTED|ERR_NETWORK_CHANGED|ERR_NAME_NOT_RESOLVED|ERR_ADDRESS_UNREACHABLE/i.test(code)) {
+    return {
+      title: "You're offline",
+      detail: 'This phone cannot reach your workspace. Agent Gitu keeps running on its server; reconnect and try again.',
+    };
+  }
+  if (/ERR_CONNECTION_REFUSED|ERR_CONNECTION_TIMED_OUT|ERR_TIMED_OUT|ERR_CONNECTION_RESET/i.test(code)) {
+    return {
+      title: "Can't reach your workspace",
+      detail: 'The server did not answer. Check that it is running and that this phone is on the right network.',
+    };
+  }
+  return {
+    title: "Can't load your workspace",
+    detail: 'The page did not load. Check the server address and your network, then try again.',
+  };
+}
 function initialMode(): ConnectionMode {
   try {
     return isLocalServer(new URL(initialAddress).hostname) ? 'local' : 'remote';
@@ -31,24 +55,58 @@ export default function WorkspaceApp() {
   const [localAddress, setLocalAddress] = useState(initialMode() === 'local' ? initialAddress : 'http://10.0.2.2:8321');
   const [remoteAddress, setRemoteAddress] = useState(initialMode() === 'remote' ? initialAddress : '');
   const [error, setError] = useState('');
+  const scheme = useColorScheme();
+  const [workspaceTheme, setWorkspaceTheme] = useState<'light' | 'dark'>();
+  // The WebView covers the screen, but its native background is visible during
+  // keyboard resizes and page loads. Keep it on the workspace canvas instead of
+  // a fixed light color so dark mode never flashes white.
+  const theme = workspaceTheme ?? (scheme === 'dark' ? 'dark' : 'light');
+  const workspaceCanvas = theme === 'dark' ? DARK_CANVAS : colors.canvas;
+  // The root view is what shows through while the keyboard resizes the WebView.
+  // Keep it on the workspace canvas as well, not just the React tree's views.
+  useEffect(() => {
+    void SystemUI.setBackgroundColorAsync(server ? workspaceCanvas : colors.canvas).catch(() => {});
+  }, [server, workspaceCanvas]);
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      try {
-        if (!savedServerFile) return;
-        const saved = await FileSystem.readAsStringAsync(savedServerFile);
-        const savedMode = isLocalServer(new URL(saved).hostname) ? 'local' : 'remote';
-        const normalized = workspaceServerUrl(saved, savedMode);
-        if (!cancelled && !pushRequested.current) {
-          setMode(savedMode);
-          (savedMode === 'local' ? setLocalAddress : setRemoteAddress)(normalized);
-          setServer(normalized);
-        }
-      } catch { /* First launch or an invalid preference opens connection settings. */ }
-      finally { if (!cancelled) setRestoring(false); }
+      if (savedServerFile) {
+        try {
+          const saved = await FileSystem.readAsStringAsync(savedServerFile);
+          const savedMode = isLocalServer(new URL(saved).hostname) ? 'local' : 'remote';
+          const normalized = workspaceServerUrl(saved, savedMode);
+          if (!cancelled && !pushRequested.current) {
+            setMode(savedMode);
+            (savedMode === 'local' ? setLocalAddress : setRemoteAddress)(normalized);
+            setServer(normalized);
+          }
+        } catch { /* First launch or an invalid preference opens connection settings. */ }
+      }
+      if (savedThemeFile) {
+        try {
+          const savedTheme = (await FileSystem.readAsStringAsync(savedThemeFile)).trim();
+          if (!cancelled && (savedTheme === 'light' || savedTheme === 'dark')) setWorkspaceTheme(savedTheme);
+        } catch { /* First launch follows the system theme. */ }
+      }
+      if (!cancelled) setRestoring(false);
     })();
     return () => { cancelled = true; };
   }, []);
+  // Onboarding QR: agentgitu://connect?server=… fills the address, but the
+  // user still confirms it. Never switch a workspace that is already open.
+  useEffect(() => {
+    const apply = (raw: string | null) => {
+      if (server) return;
+      const link = parseConnectLink(raw);
+      if (!link) return;
+      setMode(link.mode);
+      (link.mode === 'local' ? setLocalAddress : setRemoteAddress)(link.server);
+      setError('');
+    };
+    void Linking.getInitialURL().then(apply).catch(() => {});
+    const subscription = Linking.addEventListener('url', ({ url }) => apply(url));
+    return () => subscription.remove();
+  }, [server]);
   useEffect(() => {
     let cancelled = false;
     const receive = async (response: Notifications.NotificationResponse) => {
@@ -88,10 +146,18 @@ export default function WorkspaceApp() {
       {/* The full-screen workspace must not reserve the hidden status bar's top inset. */}
       <SafeAreaView
         edges={server ? ['left', 'right', 'bottom'] : ['top', 'left', 'right', 'bottom']}
-        style={{ flex: 1, backgroundColor: colors.canvas }}
+        style={{ flex: 1, backgroundColor: server ? workspaceCanvas : colors.canvas }}
       >
         {restoring ? <ActivityIndicator color={colors.blueDark} style={{ flex: 1 }} /> : server ? (
-          <Workspace key={server} server={server} close={() => setServer(undefined)} target={notificationTarget} opened={() => setNotificationTarget(undefined)} />
+          <Workspace
+            key={server}
+            server={server}
+            close={() => setServer(undefined)}
+            target={notificationTarget}
+            opened={() => setNotificationTarget(undefined)}
+            theme={theme}
+            onTheme={setWorkspaceTheme}
+          />
         ) : (
           <KeyboardAvoidingView style={{ flex: 1 }}>
             <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', alignItems: 'center', padding: 24 }}>
@@ -132,6 +198,9 @@ export default function WorkspaceApp() {
                     placeholder={mode === 'local' ? 'http://192.168.1.10:8321' : 'https://gitu.example.com'}
                     onSubmitEditing={open}
                   />
+                  <Text style={[s.small, { marginTop: -8, marginBottom: 16 }]}>
+                    On your computer, scan the QR code on Gitu&apos;s setup screen with this phone&apos;s camera to fill in the address.
+                  </Text>
                   <ErrorNotice error={error} />
                   <Button primary disabled={!address.trim()} onPress={open}>
                     Open workspace
@@ -159,10 +228,27 @@ export default function WorkspaceApp() {
   );
 }
 
-function Workspace({ server, close, target, opened }: { server: string; close: () => void; target?: PushTarget; opened: () => void }) {
+function Workspace({
+  server,
+  close,
+  target,
+  opened,
+  theme,
+  onTheme,
+}: {
+  server: string;
+  close: () => void;
+  target?: PushTarget;
+  opened: () => void;
+  theme: 'light' | 'dark';
+  onTheme: (theme: 'light' | 'dark') => void;
+}) {
+  const background = theme === 'dark' ? DARK_CANVAS : colors.canvas;
   const web = useRef<WebView>(null);
   const [canGoBack, setCanGoBack] = useState(false);
   const [error, setError] = useState('');
+  const [failure, setFailure] = useState<LoadFailure>();
+  const [reloadKey, setReloadKey] = useState(0);
   const [showRootBack, setShowRootBack] = useState(false);
   const backTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const backPending = useRef(false);
@@ -172,6 +258,9 @@ function Workspace({ server, close, target, opened }: { server: string; close: (
     return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
   });
   const bridgeScript = pushBridgeScript(bridgeNonce);
+  // The web workspace owns the theme. Report it (and every change) so the
+  // native background, status bar and resize gutters follow the same canvas.
+  const themeBridgeScript = `(function(){function report(){try{var t=document.documentElement.getAttribute('data-theme')==='light'?'light':'dark';if(window.ReactNativeWebView)window.ReactNativeWebView.postMessage(JSON.stringify({type:'gitu-theme',nonce:${JSON.stringify(bridgeNonce)},theme:t}));}catch(e){}}report();if(!window.__gituThemeBridge){window.__gituThemeBridge=true;if(window.MutationObserver)new MutationObserver(report).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});}})();true;`;
   const currentUrl = useRef(source.uri);
   const openNotification = () => {
     if (target?.server !== server) return;
@@ -189,6 +278,9 @@ function Workspace({ server, close, target, opened }: { server: string; close: (
   }, []);
   useEffect(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      // The failure screen owns the whole workspace; Back must not open the
+      // panel of a WebView that is not mounted.
+      if (failure) return true;
       if (showRootBack) { setShowRootBack(false); return true; }
       backPending.current = true;
       if (backTimer.current) clearTimeout(backTimer.current);
@@ -205,30 +297,42 @@ function Workspace({ server, close, target, opened }: { server: string; close: (
       backPending.current = false;
       if (backTimer.current) clearTimeout(backTimer.current);
     };
-  }, [canGoBack, close, showRootBack, bridgeNonce]);
+  }, [canGoBack, close, showRootBack, bridgeNonce, failure]);
   const openExternal = (url: string) => {
     if (workspaceNavigation(url, server) === 'external') void Linking.openURL(url).catch(() => setError('Could not open this link in your browser.'));
   };
   const navigateWorkspace = (url: string) => {
     if (workspaceNavigation(url, server) === 'workspace') web.current?.injectJavaScript(`window.location.assign(${JSON.stringify(url)}); true;`);
   };
+  if (failure) {
+    return (
+      <WorkspaceFailure
+        theme={theme}
+        title={failure.title}
+        detail={failure.detail}
+        address={server}
+        onRetry={() => {
+          setFailure(undefined);
+          setReloadKey((value) => value + 1);
+        }}
+        onSettings={close}
+      />
+    );
+  }
   return (
-    <View style={{ flex: 1 }}>
+    <View style={{ flex: 1, backgroundColor: background }}>
       {!!error && (
         <View style={{ paddingHorizontal: 16 }}>
           <ErrorNotice error={error} />
-          <View style={[s.row, { gap: 12, paddingBottom: 12 }]}>
-            <Button primary onPress={() => web.current?.reload()}>Retry</Button>
-            <Button onPress={close}>Connection settings</Button>
-          </View>
         </View>
       )}
       <WebView
+        key={reloadKey}
         ref={web}
         source={source}
         injectedJavaScriptBeforeContentLoaded={WORKSPACE_COMPAT_JS}
         injectedJavaScript={WORKSPACE_LOADED_JS + bridgeScript}
-        style={{ flex: 1, backgroundColor: colors.canvas }}
+        style={{ flex: 1, backgroundColor: background }}
         originWhitelist={['*']}
         showsVerticalScrollIndicator={false}
         showsHorizontalScrollIndicator={false}
@@ -249,6 +353,12 @@ function Workspace({ server, close, target, opened }: { server: string; close: (
             if (nativeEvent.data.length > 8192) return;
             const message = JSON.parse(nativeEvent.data);
             if (message.nonce !== bridgeNonce) return;
+            if (message.type === 'gitu-theme') {
+              const next = message.theme === 'light' ? 'light' : 'dark';
+              onTheme(next);
+              if (savedThemeFile) void FileSystem.writeAsStringAsync(savedThemeFile, next).catch(() => {});
+              return;
+            }
             if (message.type === 'gitu-push-opened') { if (message.targetId === target?.targetId) opened(); return; }
             if (message.type === 'gitu-logout') {
               setShowRootBack(false); close(); opened();
@@ -269,19 +379,27 @@ function Workspace({ server, close, target, opened }: { server: string; close: (
           } catch { /* Ignore messages from unrelated page widgets. */ }
         }}
         onLoadEnd={() => {
-          web.current?.injectJavaScript(bridgeScript + 'if(window.gituAndroidPush)window.gituAndroidPush.sync().catch(function(){}); true;');
+          web.current?.injectJavaScript(themeBridgeScript + bridgeScript + 'if(window.gituAndroidPush)window.gituAndroidPush.sync().catch(function(){}); true;');
           openNotification();
         }}
         onLoadStart={() => setError('')}
-        onError={() => setError('Could not load your Gitu server. Check its address, network connection, and HTTPS certificate, then reload.')}
+        onError={({ nativeEvent }) => setFailure(loadFailure(nativeEvent.description))}
         onHttpError={({ nativeEvent }) => {
-          if (nativeEvent.url === source.uri || nativeEvent.url === server + '/auth') setError(`The server returned HTTP ${nativeEvent.statusCode}. Check the server and reload.`);
+          if (nativeEvent.url === source.uri || nativeEvent.url === server + '/auth') {
+            setFailure({
+              title: `Server returned HTTP ${nativeEvent.statusCode}`,
+              detail: 'The workspace server answered with an error. Check the server or try another address.',
+            });
+          }
         }}
         onRenderProcessGone={() => {
-          setError('The workspace stopped responding. Reload to reconnect.');
+          setFailure({
+            title: 'The workspace stopped responding',
+            detail: 'Its background page ended. Try again to reload the workspace.',
+          });
         }}
         startInLoadingState
-        renderLoading={() => <ActivityIndicator color={colors.blueDark} style={{ position: 'absolute', alignSelf: 'center', top: 40 }} />}
+        renderLoading={() => <ActivityIndicator color={theme === 'dark' ? '#f1f1f1' : colors.blueDark} style={{ position: 'absolute', alignSelf: 'center', top: 40 }} />}
         javaScriptEnabled
         domStorageEnabled
         cacheEnabled
@@ -312,5 +430,48 @@ function Workspace({ server, close, target, opened }: { server: string; close: (
         </View>
       )}
     </View>
+  );
+}
+
+function WorkspaceFailure({
+  theme,
+  title,
+  detail,
+  address,
+  onRetry,
+  onSettings,
+}: {
+  theme: 'light' | 'dark';
+  title: string;
+  detail: string;
+  address: string;
+  onRetry: () => void;
+  onSettings: () => void;
+}) {
+  const background = theme === 'dark' ? DARK_CANVAS : colors.canvas;
+  return (
+    <ScrollView
+      style={{ flex: 1, backgroundColor: background }}
+      contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', alignItems: 'center', padding: 28, gap: 20 }}
+    >
+      <Mascot size={78} />
+      <View style={{ alignItems: 'center', gap: 8 }}>
+        <Text style={[s.title, { textAlign: 'center' }]}>{title}</Text>
+        <Text style={[s.muted, { textAlign: 'center', maxWidth: 380 }]}>{detail}</Text>
+      </View>
+      <Card style={{ width: '100%', maxWidth: 430, gap: 8 }}>
+        <Text style={s.label}>Workspace</Text>
+        <Text selectable style={[s.text, { fontSize: 13 }]}>
+          {address}
+        </Text>
+        <Text style={s.small}>Work keeps running on the server. This screen only shows the connection.</Text>
+      </Card>
+      <View style={{ width: '100%', maxWidth: 430, gap: 10 }}>
+        <Button primary onPress={onRetry}>
+          Try again
+        </Button>
+        <Button onPress={onSettings}>Connection settings</Button>
+      </View>
+    </ScrollView>
   );
 }

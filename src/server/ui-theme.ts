@@ -110,6 +110,10 @@ export const UI_THEME_BOOTSTRAP = String.raw`
     if (['light', 'dark', 'system'].indexOf(choice) < 0) choice = 'system';
     var dark = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: dark)').matches;
     document.documentElement.setAttribute('data-theme', choice === 'system' ? (dark ? 'dark' : 'light') : choice);
+    // Mobile browser/PWA chrome must match the first painted theme; otherwise a
+    // dark page sits under a white address bar until the next navigation.
+    var meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', document.documentElement.getAttribute('data-theme') === 'light' ? '#f1f4f7' : '#111112');
   })();
 `;
 
@@ -117,10 +121,16 @@ export const UI_THEME_JS = String.raw`
   var themeMedia = typeof window.matchMedia === 'function' ? window.matchMedia('(prefers-color-scheme: dark)') : null;
   function themeChoice(value) { return ['light', 'dark', 'system'].indexOf(value) < 0 ? 'system' : value; }
   function themeToggleLabel() { return 'Switch to ' + (document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark') + ' mode'; }
+  function syncThemeColor() {
+    var meta = document.querySelector('meta[name="theme-color"]');
+    if (!meta) { meta = document.createElement('meta'); meta.setAttribute('name', 'theme-color'); document.head.appendChild(meta); }
+    meta.setAttribute('content', document.documentElement.getAttribute('data-theme') === 'light' ? '#f1f4f7' : '#111112');
+  }
   function applyTheme() {
     var choice = themeChoice(S.settings.theme);
     S.settings.theme = choice;
     document.documentElement.setAttribute('data-theme', choice === 'system' ? (themeMedia && themeMedia.matches ? 'dark' : 'light') : choice);
+    syncThemeColor();
     document.querySelectorAll('[data-theme-toggle]').forEach(function (button) { button.title = themeToggleLabel(); button.setAttribute('aria-label', themeToggleLabel()); });
     document.querySelectorAll('[data-appearance-choice]').forEach(function (input) { input.checked = input.value === choice; });
     if(typeof cwApplyCharacterTheme==='function')cwApplyCharacterTheme();

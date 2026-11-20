@@ -7,6 +7,7 @@ function themeFixture(theme = 'system', systemDark = false) {
   const attributes = new Map<string, string>();
   const choices = ['light', 'dark', 'system'].map(value => ({ value, checked: false }));
   const toggle = { title: '', setAttribute: vi.fn() };
+  const meta = { content: '', setAttribute: (key: string, value: string) => { if (key === 'content') meta.content = value; } };
   const listeners: Record<string, (event?: unknown) => void> = {};
   const media = { matches: systemDark, addEventListener: (_name: string, listener: () => void) => { listeners.system = listener; } };
   const api = vi.fn(async () => ({}));
@@ -15,21 +16,24 @@ function themeFixture(theme = 'system', systemDark = false) {
     window: { matchMedia: () => media },
     document: {
       documentElement: { setAttribute: (key: string, value: string) => attributes.set(key, value), getAttribute: (key: string) => attributes.get(key) },
+      querySelector: (selector: string) => selector === 'meta[name="theme-color"]' ? meta : null,
       querySelectorAll: (selector: string) => selector === '[data-theme-toggle]' ? [toggle] : choices,
       addEventListener: (name: string, listener: () => void) => { listeners[name] = listener; },
     },
   });
   new Script(UI_THEME_JS).runInContext(context);
-  return { context, choices, toggle, listeners, media, api, current: () => attributes.get('data-theme') };
+  return { context, choices, toggle, meta, listeners, media, api, current: () => attributes.get('data-theme') };
 }
 
 describe('appearance preference', () => {
   it('follows the operating system until an explicit theme is selected', () => {
     const u = themeFixture();
     expect(u.current()).toBe('light');
+    expect(u.meta.content).toBe('#f1f4f7');
     u.media.matches = true;
     u.listeners.system!();
     expect(u.current()).toBe('dark');
+    expect(u.meta.content).toBe('#111112');
     u.context.setTheme('light');
     u.listeners.system!();
     expect(u.current()).toBe('light');
@@ -65,6 +69,7 @@ describe('appearance preference', () => {
     u.context.localStorage = { getItem: () => JSON.stringify({ settings: { theme } }) };
     new Script(UI_THEME_BOOTSTRAP).runInContext(u.context);
     expect(u.current()).toBe(theme === 'light' ? 'light' : 'dark');
+    expect(u.meta.content).toBe(theme === 'light' ? '#f1f4f7' : '#111112');
     expect(UI_HTML.indexOf('id="themeBootstrap"')).toBeLessThan(UI_HTML.indexOf('<style>'));
   });
 

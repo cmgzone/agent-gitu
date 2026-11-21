@@ -1,58 +1,92 @@
 import { execSync } from 'node:child_process';
-import { readFileSync, statSync, createReadStream } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { createReadStream, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 function getGitToken() {
   const out = execSync('git credential fill', { input: 'protocol=https\nhost=github.com\n' }).toString();
-  const token = out.split('\n').find(l => l.startsWith('password=')).slice(9).trim();
+  const line = out.split('\n').find((l) => l.startsWith('password='));
+  const token = line ? line.slice(9).trim() : '';
   if (!token) throw new Error('Could not find GitHub token in git credential manager');
   return token;
 }
 
-const token = getGitToken();
+async function sha256File(filePath) {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(filePath)) hash.update(chunk);
+  return hash.digest('hex');
+}
+
+const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+const version = pkg.version;
 const owner = 'cmgzone';
 const repo = 'agent-gitu';
-const tag = 'v0.4.14';
-const releaseName = 'Agent Gitu v0.4.14';
+const tag = `v${version}`;
+const releaseName = `Agent Gitu v${version}`;
 
-const body = `## What's Changed in Agent Gitu v0.4.14
+const setupName = `Agent-Gitu-Setup-${version}.exe`;
+const portableName = `Agent-Gitu-Portable-${version}.exe`;
+const blockmapName = `${setupName}.blockmap`;
+const setupShaName = `${setupName}.sha256`;
 
-- **Mobile Web & Responsive UI:** Fixed Home/Cowork top-nav switcher geometry so it maintains a clean horizontal pill layout on mobile viewports.
-- **Company Workspace Modes:** Added toggle to cleanly hide company icons and features when company mode is turned off.
-- **Cowork VCS & Git Support:** Enabled \`git push\` and version control commands directly in Cowork mode without requiring delegation to the main agent.
-- **Coding Engine & Resiliency:** Enhanced task loop resiliency, mobile UX, verification rigor, and safe Git operations.
-- **Pi Runtime Integration:** Switched to Pi AgentSession loop with OAuth subscription sign-in/sign-out support.
+const setupPath = path.join('release', setupName);
+const portablePath = path.join('release', portableName);
+const blockmapPath = path.join('release', blockmapName);
+const sumsPath = path.join('release', 'SHA256SUMS.txt');
+const setupShaPath = path.join('release', setupShaName);
+
+async function main() {
+  for (const required of [setupPath, portablePath, blockmapPath]) {
+    if (!existsSync(required)) throw new Error(`Missing release artifact: ${required}. Run npm run dist first.`);
+  }
+
+  const setupSha = await sha256File(setupPath);
+  const portableSha = await sha256File(portablePath);
+
+  writeFileSync(setupShaPath, `${setupSha} *${setupName}\n`, 'utf8');
+  writeFileSync(sumsPath, `${setupSha} *${setupName}\n${portableSha} *${portableName}\n`, 'utf8');
+
+  const body = `## What's Changed in Agent Gitu v${version}
+
+- **Astryx UI & Pikpam Console Redesign:** Upgraded Workspace, Cowork, Agents, Connections, Profile, and Settings views with Astryx components, Cowork-first navigation, cleaner coding reports, and collapsed tool stage file/line counts.
+- **PikRouter & Pikpam Cloud Integration:** Added Pikpam hosted OAuth sign-in/register and credit top-up flow, dynamic live model catalog search, credit usage display, Composio connections, and verified Pikpam Cloud operations.
+- **Chief of Staff & Workspace Cleanup:** Added persisted Chief of Staff authority controls, standing answer rules, and decision log; removed legacy Company mode and Company-only storage subsystem.
+- **Cowork Teams & Live Voice:** Enabled parallel Cowork sub-agents, group handoffs, selected-project awareness, proactive P.A onboarding/app learning, and LiveKit voice mode with aura visualizer and background voice suppression.
+- **Mobile Companion & Pairing:** Added QR phone pairing, third-party framing protection, and synced workspace theme support.
+- **Desktop Startup & Large-Project Performance:** Faster Electron startup, hardened large-project indexing, and improved worktree recovery.
 
 ### Windows x64 Downloads
 
-- **Setup Installer:** \`Agent-Gitu-Setup-0.4.14.exe\`
-- **Portable Executable:** \`Agent-Gitu-Portable-0.4.14.exe\`
+- **Setup Installer:** \`${setupName}\`
+- **Portable Executable:** \`${portableName}\`
 
 ### Verification Checksums (SHA-256)
 \`\`\`
-0894932be78cd778dd2a610c54f8573d094f39f8235801273b41889dd33a397d *Agent-Gitu-Setup-0.4.14.exe
-2d331f20dd4ac0a2b0626b4ee56199bbf3934dee6f332d3723a9b431e24f1108 *Agent-Gitu-Portable-0.4.14.exe
+${setupSha} *${setupName}
+${portableSha} *${portableName}
 \`\`\`
 `;
 
-async function main() {
+  const token = getGitToken();
+  const headers = {
+    Authorization: `token ${token}`,
+    Accept: 'application/vnd.github.v3+json',
+    'Content-Type': 'application/json',
+    'User-Agent': 'agent-gitu-releaser',
+  };
+
   console.log(`Creating release ${tag}...`);
   const createRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/releases`, {
     method: 'POST',
-    headers: {
-      'Authorization': `token ${token}`,
-      'Accept': 'application/vnd.github.v3+json',
-      'Content-Type': 'application/json',
-      'User-Agent': 'agent-gitu-releaser'
-    },
+    headers,
     body: JSON.stringify({
       tag_name: tag,
       target_commitish: 'main',
       name: releaseName,
-      body: body,
+      body,
       draft: false,
-      prerelease: false
-    })
+      prerelease: false,
+    }),
   });
 
   const release = await createRes.json();
@@ -63,11 +97,11 @@ async function main() {
   console.log(`Release created: ${release.html_url} (ID: ${release.id})`);
 
   const files = [
-    { file: 'release/Agent-Gitu-Setup-0.4.14.exe', contentType: 'application/octet-stream' },
-    { file: 'release/Agent-Gitu-Portable-0.4.14.exe', contentType: 'application/octet-stream' },
-    { file: 'release/Agent-Gitu-Setup-0.4.14.exe.blockmap', contentType: 'application/octet-stream' },
-    { file: 'release/SHA256SUMS.txt', contentType: 'text/plain; charset=utf-8' },
-    { file: 'release/Agent-Gitu-Setup-0.4.14.exe.sha256', contentType: 'text/plain; charset=utf-8' }
+    { file: setupPath, contentType: 'application/octet-stream' },
+    { file: portablePath, contentType: 'application/octet-stream' },
+    { file: blockmapPath, contentType: 'application/octet-stream' },
+    { file: sumsPath, contentType: 'text/plain; charset=utf-8' },
+    { file: setupShaPath, contentType: 'text/plain; charset=utf-8' },
   ];
 
   for (const { file, contentType } of files) {
@@ -81,27 +115,26 @@ async function main() {
     const uploadRes = await fetch(uploadUrl, {
       method: 'POST',
       headers: {
-        'Authorization': `token ${token}`,
+        Authorization: `token ${token}`,
         'Content-Type': contentType,
         'Content-Length': String(stats.size),
-        'User-Agent': 'agent-gitu-releaser'
+        'User-Agent': 'agent-gitu-releaser',
       },
-      body: buffer
+      body: buffer,
     });
 
     if (!uploadRes.ok) {
       const errText = await uploadRes.text();
-      console.error(`Failed to upload ${filename}: ${uploadRes.status} ${errText}`);
-    } else {
-      const asset = await uploadRes.json();
-      console.log(`Uploaded ${filename} -> ${asset.browser_download_url}`);
+      throw new Error(`Failed to upload ${filename}: ${uploadRes.status} ${errText}`);
     }
+    const asset = await uploadRes.json();
+    console.log(`Uploaded ${filename} -> ${asset.browser_download_url}`);
   }
 
   console.log('\nAll assets uploaded and release published successfully!');
 }
 
-main().catch(err => {
+main().catch((err) => {
   console.error(err);
   process.exit(1);
 });

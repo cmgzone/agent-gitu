@@ -2,7 +2,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { isStructuredAuth, normalizeStructuredAuth, encodeStructuredCredentials, structuredAuthHeaders, structuredSecrets, providerAuthConfiguration, invalidateStructuredAuth, ConnectionAuthenticationError, UnsupportedConnectionAuthError, type StructuredConnectionAuth } from './structured-auth.js';
 import { EnvHttpProxyAgent } from 'undici';
-import { loadStoredKeys, removeStoredKey, setStoredKey } from '../llm/keys.js';
+import { loadStoredKeys, mergedEnv, removeStoredKey, setStoredKey } from '../llm/keys.js';
 import { readCredentialJson, updateCredentialJson } from '../llm/credential-file.js';
 import type { PrerequisiteProvider, ProviderCapabilityResult, ProviderRecoveryInput, ProviderRecoveryResult } from '../recovery/prerequisites.js';
 import { SkillStore } from '../skills/skills.js';
@@ -711,7 +711,111 @@ export class ConnectionRegistry {
     return this.discoveryCache;
   }
 
+  private syncingPikpam = false;
+
+  /**
+   * Auto-provision the `pikpam` connection profile and API key whenever a
+   * Pikpam/PikRouter credential is available in stored keys or environment.
+   * This allows agents to manage Pikpam Cloud immediately without prompting
+   * the user to add an API key.
+   */
+  ensurePikpamConnection(opts?: { token?: string; baseUrl?: string }): ConnectionProfileView | undefined {
+    if (this.syncingPikpam || (this.scope && !this.scope('pikpam'))) return undefined;
+    const env = mergedEnv();
+    const rawToken = (
+      opts?.token ??
+      env['PIKPAM_API_KEY'] ??
+      env['HERMES_PIKROUTER_API_KEY'] ??
+      env['PIKROUTER_API_KEY'] ??
+      env['PIKROUTER_TOKEN'] ??
+      ''
+    ).trim();
+    if (!rawToken) return undefined;
+    const catalog = catalogProvider('pikpam');
+    if (!catalog) return undefined;
+    const token = normalizeSavedCredential(rawToken, { provider: 'pikpam' });
+    if (!token) return undefined;
+    const configuredBaseUrl = (
+      opts?.baseUrl ??
+      env['PIKPAM_INTEGRATIONS_URL'] ??
+      env['PIKPAM_BASE_URL'] ??
+      catalog.baseUrl ??
+      'https://pikpam.com'
+    ).trim();
+    const baseUrl = normalizeBaseUrl(configuredBaseUrl) ?? catalog.baseUrl ?? 'https://pikpam.com';
+    this.syncingPikpam = true;
+    try {
+      const existingProfiles = this.decodeProfiles(
+        readCredentialJson(connectionFile(), (raw) => {
+          this.decodeProfiles(raw);
+          return raw;
+        }),
+      );
+      const existing = existingProfiles.find((p) => p.id === 'pikpam');
+      const storedToken = loadStoredKeys()[keyRef('pikpam')]?.trim();
+      const catalogOps = normalizeOperations(catalog.operations.filter((op) => !/:[a-zA-Z]|\{/.test(op.path)));
+      const catalogCaps = normalizeCapabilities(catalog.capabilities.map((c) => c.id));
+      const fingerprint = sha256(token);
+      if (
+        existing &&
+        storedToken === token &&
+        existing.baseUrl === baseUrl &&
+        catalogCaps.every((cap) => existing.capabilities.includes(cap)) &&
+        catalogOps.every((op) => existing.operations.some((item) => item.id === op.id))
+      ) {
+        return { ...existing, hasCredential: true };
+      }
+      const now = nowIso();
+      const mergedOps = existing ? [...existing.operations] : [];
+      for (const op of catalogOps) {
+        if (!mergedOps.some((item) => item.id === op.id)) mergedOps.push(op);
+      }
+      const mergedCaps = normalizeCapabilities([
+        ...(existing?.capabilities ?? []),
+        ...catalogCaps,
+        ...mergedOps.map((op) => op.capability),
+      ]);
+      const documentationUrl = normalizeConnectionDocumentationUrl(existing?.documentationUrl ?? catalog.documentationUrl);
+      const profile: ConnectionProfile = {
+        id: 'pikpam',
+        label: existing?.label || 'Pikpam Cloud',
+        provider: 'pikpam',
+        baseUrl,
+        capabilities: mergedCaps,
+        operations: mergedOps,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+        ...(documentationUrl ? { documentationUrl } : {}),
+        ...(existing?.auth ? { auth: existing.auth } : {}),
+        lastValidatedAt: existing?.lastValidatedAt ?? now,
+        lastValidationStatus: 'ok',
+        authState: {
+          status: 'valid',
+          checkedAt: now,
+          credentialFingerprint: fingerprint,
+        },
+        capabilityState: existing?.capabilityState ?? { denied: [], missing: [] },
+        ...(existing?.rejectedOperations?.length ? { rejectedOperations: existing.rejectedOperations } : {}),
+      };
+      this.mutateProfiles((profiles) => {
+        setStoredKey(keyRef('pikpam'), token);
+        return [...profiles.filter((candidate) => candidate.id !== 'pikpam'), profile];
+      });
+      try {
+        this.syncGlobalSkill(profile);
+      } catch {
+        /* best effort skill sync */
+      }
+      return { ...profile, hasCredential: true };
+    } catch {
+      return undefined;
+    } finally {
+      this.syncingPikpam = false;
+    }
+  }
+
   private profiles(): ConnectionProfile[] {
+    this.ensurePikpamConnection();
     return this.decodeProfiles(
       readCredentialJson(connectionFile(), (raw) => {
         this.decodeProfiles(raw);
@@ -752,6 +856,7 @@ export class ConnectionRegistry {
   }
 
   list(): ConnectionProfileView[] {
+    this.ensurePikpamConnection();
     const keys = loadStoredKeys();
     return this.profiles().map((profile) => ({ ...profile, hasCredential: Boolean(keys[keyRef(profile.id)]?.trim()) }));
   }
@@ -1478,6 +1583,7 @@ export class ConnectionRegistry {
    * construction — the controller never executes a write without approval.
    */
   safestRead(preferredConnectionId?: string): { connectionId: string; operationId: string } | undefined {
+    this.ensurePikpamConnection();
     const tokens = loadStoredKeys();
     const profiles = this.profiles()
       .filter((profile) => Boolean(tokens[keyRef(profile.id)]?.trim()))

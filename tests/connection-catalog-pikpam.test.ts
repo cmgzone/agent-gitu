@@ -1,7 +1,22 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 import { catalogOperation, catalogProvider } from '../src/connections/catalog.js';
+import { ConnectionRegistry } from '../src/connections/connections.js';
 import { coworkIdentityPrompt } from '../src/cowork/runner.js';
 import type { CoworkAgent, CoworkConversation } from '../src/cowork/store.js';
+import { setStoredKey } from '../src/llm/keys.js';
+import { isFreeModel, pickLiveDefaultModel } from '../src/llm/providers.js';
+
+const tempHomes: string[] = [];
+const previousHome = process.env.AGENT_GITU_HOME;
+
+afterEach(() => {
+  if (previousHome === undefined) delete process.env.AGENT_GITU_HOME;
+  else process.env.AGENT_GITU_HOME = previousHome;
+  for (const dir of tempHomes.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
 
 describe('pikpam catalog provider', () => {
   it('exposes VPS reads, domain search, DNS writes, storage, backups, and custom-domain email operations', () => {
@@ -97,5 +112,44 @@ describe('Pikpam specialist agent prompt awareness', () => {
       skills: [],
     };
     expect(coworkIdentityPrompt(genericWriter, conv, [genericWriter])).not.toContain('PIKPAM_PLATFORM_ACCESS');
+  });
+
+  it('auto-provisions the pikpam connection and API key directly from PIKROUTER_API_KEY without user intervention', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'gitu-pikpam-auto-'));
+    tempHomes.push(root);
+    process.env.AGENT_GITU_HOME = root;
+    setStoredKey('PIKROUTER_API_KEY', 'pik_live_auto_token_12345');
+
+    const registry = new ConnectionRegistry();
+    const list = registry.list();
+    const pikpam = list.find((c) => c.id === 'pikpam');
+    expect(pikpam).toBeDefined();
+    expect(pikpam?.hasCredential).toBe(true);
+    expect(pikpam?.provider).toBe('pikpam');
+    expect(pikpam?.baseUrl).toBe('https://pikpam.com');
+    expect(pikpam?.authState?.status).toBe('valid');
+    expect(pikpam?.operations.some((op) => op.id === 'pikpam-vps-instances')).toBe(true);
+    expect(pikpam?.operations.some((op) => op.id === 'pikpam-domains-search')).toBe(true);
+
+    // Resolving by ID or provider finds the pre-configured connection with valid auth.
+    const resolved = registry.resolveConnectionOperation({
+      connectionId: 'pikpam',
+      operationId: 'pikpam-vps-instances',
+    });
+    expect(resolved.connectionValid).toBe(true);
+    expect(resolved.operationAvailable).toBe(true);
+    expect(resolved.state).toBe('CONNECTED');
+  });
+
+  it('recognizes openrouter/free as a free model and never picks it as default when paid models exist', () => {
+    expect(isFreeModel('openrouter/free')).toBe(true);
+    expect(isFreeModel('deepseek/deepseek-r1:free')).toBe(true);
+    expect(isFreeModel('DeepSeek-V4.1-Flash')).toBe(false);
+
+    const chosen = pickLiveDefaultModel(
+      { defaultModel: 'DeepSeek-V4.1-Flash', models: ['DeepSeek-V4.1-Flash'] },
+      [{ id: 'openrouter/free' }, { id: 'Qwen3-Coder-Next' }],
+    );
+    expect(chosen).toBe('Qwen3-Coder-Next');
   });
 });

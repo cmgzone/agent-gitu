@@ -125,4 +125,38 @@ describe('Clean low-noise Cowork chat transcript', () => {
     expect(COWORK_CSS).toContain('.cw-row.me .cw-meta .nm { display: none; }');
     expect(COWORK_CSS).toContain('.cw-row.cw-grouped .cw-meta { display: none; }');
   });
+
+  it('hides model turn failure / rate-limit system errors as long as the user has credits or a turn is actively retrying', () => {
+    const f = fixture();
+    f.cw.msgs = [
+      { id: 'u1', role: 'user', text: 'hello', ts: '2026-11-20T08:00:00Z' },
+      {
+        id: 'e1',
+        role: 'system',
+        text: 'Error: The model turn failed: 429: {"message":"litellm.RateLimitError: RateLimitError: OpenrouterException"}',
+        ts: '2026-11-20T08:00:02Z',
+      },
+      {
+        id: 'e2',
+        role: 'system',
+        text: 'Error: The model turn failed: 429: {"message":"Pikpam AI is experiencing high demand for \'openrouter/free\' right now. Please retry in a few seconds or switch to another Pikpam model.","type":"rate_limit_error","code":"rate_limit_exceeded"}',
+        ts: '2026-11-20T08:00:04Z',
+      },
+    ];
+
+    // When credits are available via cw.usage.creditsBalance > 0, the errors disappear.
+    f.cw.usage = { creditsBalance: 120 };
+    expect(f.context.cwTranscriptHtml()).not.toContain('The model turn failed');
+    expect(f.context.cwTranscriptHtml()).not.toContain('openrouter/free');
+
+    // When credits are available via window.__pikRouterCredits, the errors also disappear.
+    f.cw.usage = null;
+    (f.context as any).window.__pikRouterCredits = { available: 85, balance: 85 };
+    expect(f.context.cwTranscriptHtml()).not.toContain('The model turn failed');
+
+    // While a retry is actively in progress, the old error rows also disappear.
+    (f.context as any).window.__pikRouterCredits = null;
+    f.cw.msgs[0].status = 'retrying';
+    expect(f.context.cwTranscriptHtml()).not.toContain('The model turn failed');
+  });
 });

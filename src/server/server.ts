@@ -101,7 +101,7 @@ import { readOnboarding, saveOnboarding, saveOnboardingTheme } from './onboardin
 import { evaluateChiefAuthority, type ChiefAuthorityPolicy, type ChiefResolverContext } from '../cowork/chief-resolver.js';
 import type { ToolContext } from '../tools/tools.js';
 import { chatgptSubscriptionInfo, chatgptLoginPending, chatgptLogout, startChatgptLogin, type ChatgptLoginStart, type ChatgptSubscriptionInfo } from '../llm/pi-chatgpt.js';
-import { PROVIDERS, ProviderError, allProviderSpecs, fetchModelCatalog, freeModelFallback, modelCapabilityTier, modelMetadataFor, peekModelCatalog, providerKey, resolveImageSupport, resolveLlm, usageCostUsd } from '../llm/providers.js';
+import { PROVIDERS, ProviderError, allProviderSpecs, fetchModelCatalog, freeModelFallback, isFreeModel, modelCapabilityTier, modelMetadataFor, peekModelCatalog, providerKey, resolveImageSupport, resolveLlm, usageCostUsd } from '../llm/providers.js';
 import { resolveModelCatalog } from '../llm/resolved-model-catalog.js';
 import { resolveEmbedder } from '../llm/providers.js';
 import { removeStoredKey, setStoredKey, storedKeyVars } from '../llm/keys.js';
@@ -3227,17 +3227,45 @@ export class GituServer {
     return context;
   }
 
-  private coworkLlm(agent: CoworkAgent): LlmClient {
+  private hasPikRouterCredits(): boolean {
+    const credits = this.cachedPikCredits?.data?.credits;
+    if (!credits) return false;
+    return (typeof credits.available === 'number' && credits.available > 0) || (typeof credits.balance === 'number' && credits.balance > 0);
+  }
+
+  private resolveEffectiveCoworkModel(agent: CoworkAgent): { provider?: string; model?: string } {
     const selected = !agent.provider && !agent.model ? readRuntimeSelection() : {};
-    const resolved = this.config.llm ? { client: this.config.llm, providerId: agent.provider ?? '', model: agent.model ?? '' } : resolveLlm({ provider: agent.provider ?? selected.provider, model: agent.model ?? selected.model, workingDirectory: this.coworkToolContext(agent).cwd });
+    const provider = agent.provider ?? selected.provider;
+    let model = agent.model ?? selected.model;
+    const isPik = !provider || /pikrouter|pikprovider|^pik$/i.test(provider);
+    if (isPik && !this.cachedPikCredits && !this.fetchingPikCredits) {
+      this.refreshPikCreditsBackground();
+    }
+    if (isPik && model && isFreeModel(model) && this.hasPikRouterCredits()) {
+      const paidDefault = PROVIDERS['pikrouter']?.defaultModel ?? 'DeepSeek-V4.1-Flash';
+      model = paidDefault;
+      if (!agent.model && selected.model && isFreeModel(selected.model)) {
+        try {
+          saveRuntimeSelection({ provider: provider ?? 'pikrouter', model: paidDefault });
+        } catch {
+          /* best effort */
+        }
+      }
+    }
+    return { provider, model };
+  }
+
+  private coworkLlm(agent: CoworkAgent): LlmClient {
+    const { provider, model } = this.resolveEffectiveCoworkModel(agent);
+    const resolved = this.config.llm ? { client: this.config.llm, providerId: provider ?? '', model: model ?? '' } : resolveLlm({ provider, model, workingDirectory: this.coworkToolContext(agent).cwd });
     return resolved.client;
   }
 
   private coworkTrackedLlm(agent: CoworkAgent, conversationId: string): LlmClient {
     const base = this.coworkLlm(agent);
-    const selected = !agent.provider && !agent.model ? readRuntimeSelection() : {};
-    const providerId = agent.provider ?? selected.provider ?? '';
-    const model = agent.model ?? selected.model ?? '';
+    const { provider: effectiveProvider, model: effectiveModel } = this.resolveEffectiveCoworkModel(agent);
+    const providerId = effectiveProvider ?? '';
+    const model = effectiveModel ?? '';
     const key = this.budgetKey(conversationId);
     const tracked = new UsageTrackingClient(base, (usage) => {
       const bucket = this.coworkUsage.get(key) ?? {
@@ -4494,8 +4522,20 @@ export class GituServer {
    * already stored that message (fresh send, edit or retry), so this never
    * appends a second copy: an edit or retry keeps the same message id.
    */
+  private clearStaleCoworkErrorMessages(conversationId: string, threadId?: string | null): void {
+    const store = this.cowork();
+    for (const msg of store.messages(conversationId, 0, threadId ?? null)) {
+      if (msg.role === 'system' && /^Error:\s*(?:The model turn failed:|LLM rate limit|\d{3}\b|.*(?:rate[_ -]?limit|openrouter\/free|high demand|temporarily unavailable))/i.test(msg.text.trim())) {
+        store.deleteMessage(conversationId, msg.id);
+      }
+    }
+  }
+
   private beginCoworkTurn(conversationId: string, trigger: CoworkMessage): { ok: boolean; queued?: boolean; error?: string } {
     const store = this.cowork();
+    if (this.hasPikRouterCredits() || trigger.status === 'retrying') {
+      this.clearStaleCoworkErrorMessages(conversationId, trigger.threadId ?? null);
+    }
     const run = this.coworkRuns.get(conversationId);
     if (run?.busy) {
       if (run.abort.signal.aborted) {
@@ -4571,6 +4611,7 @@ export class GituServer {
     if (!existing) return { ok: false, error: 'message not found' };
     if (existing.role !== 'user') return { ok: false, error: 'only your own messages can be retried' };
     if (existing.status === 'sending' || existing.status === 'retrying') return { ok: true, message: existing };
+    this.clearStaleCoworkErrorMessages(conversationId, existing.threadId ?? null);
     const retried = store.retryMessage(conversationId, messageId)!;
     return { message: retried, ...this.beginCoworkTurn(conversationId, retried) };
   }
@@ -4741,6 +4782,7 @@ export class GituServer {
       });
       // Delivery state of the logical message, never its identity.
       if (trigger.via === 'schedule' && turn.error) throw new Error('Scheduled work failed: ' + String(turn.error), { cause: turn.error });
+      if (!turn.error) this.clearStaleCoworkErrorMessages(conversationId, threadId ?? null);
       if (trigger.role === 'user') store.setMessageStatus(conversationId, trigger.id, turn.error ? 'failed' : 'sent');
       await this.surfaceCoworkRequests(conv);
       } catch (err) {
@@ -7265,6 +7307,7 @@ export class GituServer {
             // Pikpam account can never overwrite the workspace owner's API key.
             this.appAuth.pikrouterLogin({ email, name, userId: verifiedUserId });
             setStoredKey('PIKROUTER_API_KEY', oauthToken);
+            this.connections.ensurePikpamConnection({ token: oauthToken });
             this.appAuth.issue(req, res);
             this.sendJson(res, 200, { ok: true, token: oauthToken, user: { id: verifiedUserId, email, name }, provider: 'pikrouter' });
             return;
@@ -7295,6 +7338,7 @@ export class GituServer {
             userId: result.user?.id !== undefined ? String(result.user.id) : undefined,
           });
           setStoredKey('PIKROUTER_API_KEY', result.token);
+          this.connections.ensurePikpamConnection({ token: result.token });
           this.appAuth.issue(req, res);
           this.sendJson(res, 200, { ok: true, token: result.token, user: result.user, provider: 'pikrouter' });
         } catch (err) {
@@ -8617,6 +8661,7 @@ export class GituServer {
           password,
           saveKey: body['saveKey'] !== false,
         });
+        if (body['saveKey'] !== false) this.connections.ensurePikpamConnection({ token: result.token });
         this.sendJson(res, 200, { ok: true, token: result.token, user: result.user });
       } catch (err) {
         this.sendJson(res, 400, { error: (err as Error).message });
@@ -8640,6 +8685,7 @@ export class GituServer {
           password,
           saveKey: body['saveKey'] !== false,
         });
+        if (body['saveKey'] !== false) this.connections.ensurePikpamConnection({ token: result.token });
         this.sendJson(res, 200, { ok: true, token: result.token, user: result.user });
       } catch (err) {
         this.sendJson(res, 400, { error: (err as Error).message });
@@ -8680,6 +8726,7 @@ export class GituServer {
           return;
         }
         setStoredKey('PIKROUTER_API_KEY', token);
+        this.connections.ensurePikpamConnection({ token });
         const userId = jwtClaims.userId ?? (body['userId'] !== undefined ? String(body['userId']).trim() : body['user_id'] !== undefined ? String(body['user_id']).trim() : undefined);
         this.sendJson(res, 200, { ok: true, token, user: { ...(userId ? { id: userId } : {}), ...(email ? { email } : {}) } });
       } catch (err) {

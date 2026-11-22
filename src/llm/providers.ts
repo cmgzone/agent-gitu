@@ -557,7 +557,7 @@ export function resolveSupportedImages(
 
 /** Free promotional / community models (no credits needed) across providers. */
 export function isFreeModel(model: string): boolean {
-  return /-free$/i.test(model) || /:free$/i.test(model) || model === 'big-pickle';
+  return /-free$/i.test(model) || /:free$/i.test(model) || /\/free$/i.test(model) || model === 'big-pickle';
 }
 
 export type ModelCapabilityTier = 'low' | 'standard' | 'high';
@@ -789,7 +789,8 @@ export function pickLiveDefaultModel(
     const fuzzy = liveModels.find((m) => m.id.toLowerCase().replace(/[^a-z0-9]/g, '').includes(normalizedConfigured));
     if (fuzzy) return fuzzy.id;
   }
-  return liveModels[0]?.id ?? configured;
+  const nonFree = liveModels.find((m) => !isFreeModel(m.id));
+  return nonFree?.id ?? liveModels[0]?.id ?? configured;
 }
 
 export async function fetchLiveModels(opts: {

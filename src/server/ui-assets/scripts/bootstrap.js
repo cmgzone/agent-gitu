@@ -230,6 +230,15 @@
     var pikEntry = (S.models || []).filter(function(p){return p&&p.id==='pikrouter';})[0];
     var current = String(S.sel.model || '');
     if (pikEntry && current.indexOf('pikrouter::') !== 0) current = '';
+    var hasPikCredits = Boolean(
+      typeof window !== 'undefined' &&
+      window.__pikRouterCredits &&
+      ((typeof window.__pikRouterCredits.available === 'number' && window.__pikRouterCredits.available > 0) ||
+        (typeof window.__pikRouterCredits.balance === 'number' && window.__pikRouterCredits.balance > 0))
+    );
+    if (hasPikCredits && /^pikrouter::.*(?:[:\/-]free$|^big-pickle$)/i.test(current)) {
+      current = '';
+    }
     var found = false;
     (S.models || []).forEach(function (p) {
       if (pikEntry && p.id !== 'pikrouter') return;
@@ -240,7 +249,9 @@
     var pikProvider = (S.models || []).filter(function(p){return p.id==='pikrouter'&&providerIsUsable(p);})[0];
     var firstProvider = pikProvider || (pikEntry ? null : (S.models || []).filter(function(p){return p.id!=='alibaba'&&providerIsUsable(p);})[0]);
     if (!firstProvider) { S.sel.model = ''; return; }
-    var firstModel = (firstProvider.models || []).filter(function (m) { return m.id === firstProvider.defaultModel; })[0] || firstProvider.models[0];
+    var firstModel = (firstProvider.models || []).filter(function (m) { return m.id === firstProvider.defaultModel; })[0]
+      || (firstProvider.models || []).filter(function (m) { return !/(?:[:\/-]free$|^big-pickle$)/i.test(m.id || ''); })[0]
+      || firstProvider.models[0];
     S.sel.model = firstModel ? firstProvider.id + '::' + firstModel.id : '';
     persist();
   }

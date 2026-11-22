@@ -123,7 +123,7 @@
 
   function isFreeModelId(id) {
     id = String(id || '');
-    return /-free$/i.test(id) || /:free$/i.test(id) || id === 'big-pickle';
+    return /-free$/i.test(id) || /:free$/i.test(id) || /\/free$/i.test(id) || id === 'big-pickle';
   }
 
   function modelInfo(value) {

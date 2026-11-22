@@ -3013,6 +3013,29 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     return '<details class="cw-checkpoint-report cw-checkpoint-compact" aria-label="Progress update"><summary><span class="cw-checkpoint-check" aria-hidden="true">✓</span><strong>Progress' + (who ? ' · ' + esc(who) : '') + '</strong>' + (preview ? '<span class="cw-cp-preview">' + esc(preview) + '</span>' : '') + '<time datetime="' + esc(message.ts) + '">' + esc(cwTime(message.ts)) + '</time></summary><p>' + esc(checkpoint.accomplished) + '</p>' + (checkpoint.issues ? '<p class="cw-checkpoint-issues"><strong>Needs attention:</strong> ' + esc(checkpoint.issues) + '</p>' : '') + (checkpoint.next ? '<p class="cw-checkpoint-next"><strong>Next:</strong> ' + esc(checkpoint.next) + '</p>' : '') + '</details>';
   }
 
+  function cwHasAvailableCredits() {
+    var cw = cwEnsure();
+    if (cw && cw.usage && typeof cw.usage.creditsBalance === 'number' && cw.usage.creditsBalance > 0) return true;
+    if (typeof window !== 'undefined' && window.__pikRouterCredits) {
+      var c = window.__pikRouterCredits;
+      if (typeof c.available === 'number' && c.available > 0) return true;
+      if (typeof c.balance === 'number' && c.balance > 0) return true;
+    }
+    return false;
+  }
+
+  function cwIsActivelyWorkingOrRetrying() {
+    var cw = cwEnsure();
+    if (!cw) return false;
+    if (cw.working || cw.progress) return true;
+    var msgs = cw.msgs || [];
+    for (var i = 0; i < msgs.length; i++) {
+      var m = msgs[i];
+      if (m && m.role === 'user' && (m.status === 'sending' || m.status === 'retrying')) return true;
+    }
+    return false;
+  }
+
   function cwIsNoisySystemMessage(message) {
     if (!message || message.role !== 'system') return false;
     if (message.checkpoint) return false;
@@ -3021,6 +3044,9 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     // Always preserve coding task handoffs and email arrival receipts.
     if (/\[View task\]\(#run=[a-zA-Z0-9_-]+\)/.test(text)) return false;
     if (text.indexOf('NEW EMAIL NOTIFICATION.') === 0) return false;
+    // Hide model/rate-limit/free-tier/credit system error messages whenever the user has credits
+    // or while a retry / active turn is in flight.
+    if (/^Error:\s/i.test(text) && (cwHasAvailableCredits() || cwIsActivelyWorkingOrRetrying())) return true;
     // Hide duplicate card resolution receipts (the resolved card renders its own compact pill).
     if (/^(?:Recommendation|Question|Permission|Credential) (?:accepted|dismissed|answered|approved|denied|provided):/i.test(text)) return true;
     // Hide internal wake/trigger prompts and card-removal echoes.

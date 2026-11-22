@@ -341,206 +341,240 @@ export class PiNativeRuntime implements NativeTaskRuntime {
           { kind: 'prompt_too_large' },
         );
       }
-      const sdk = await (this.options.loadSdk ?? loadPiSdk)();
-      const agentDir = this.options.agentDir;
-      const sessionsDir = path.join(agentDir, 'pi', 'sessions');
-      mkdirSync(sessionsDir, { recursive: true });
+      const executeOnce = async (): Promise<NativeTaskResult> => {
+        const sdk = await (this.options.loadSdk ?? loadPiSdk)();
+        const agentDir = this.options.agentDir;
+        const sessionsDir = path.join(agentDir, 'pi', 'sessions');
+        mkdirSync(sessionsDir, { recursive: true });
 
-      const settingsManager = sdk.SettingsManager.create(input.cwd, agentDir);
-      const modelRuntime = await sdk.ModelRuntime.create({
-        authPath: path.join(agentDir, 'pi', 'auth.json'),
-        modelsPath: null,
-        refreshOnCreate: false,
-      });
-      if (this.options.target.builtin) {
-        // A pi-owned provider (the ChatGPT subscription) brings its own models
-        // and sign-in; registering Gitu's catalog over it would replace both.
-        const signedIn = (await modelRuntime.listCredentials()).some((credential) => credential.providerId === this.options.target.providerId);
-        if (!signedIn) {
-          throw new LlmError('Sign in to ChatGPT in Settings → Providers to use your subscription.', { kind: 'auth' });
+        const settingsManager = sdk.SettingsManager.create(input.cwd, agentDir);
+        const modelRuntime = await sdk.ModelRuntime.create({
+          authPath: path.join(agentDir, 'pi', 'auth.json'),
+          modelsPath: null,
+          refreshOnCreate: false,
+        });
+        if (this.options.target.builtin) {
+          // A pi-owned provider (the ChatGPT subscription) brings its own models
+          // and sign-in; registering Gitu's catalog over it would replace both.
+          const signedIn = (await modelRuntime.listCredentials()).some((credential) => credential.providerId === this.options.target.providerId);
+          if (!signedIn) {
+            throw new LlmError('Sign in to ChatGPT in Settings → Providers to use your subscription.', { kind: 'auth' });
+          }
+        } else {
+          modelRuntime.registerProvider(this.options.target.providerId, piProviderConfig(this.options.target));
         }
-      } else {
-        modelRuntime.registerProvider(this.options.target.providerId, piProviderConfig(this.options.target));
+        const model = modelRuntime.getModel(this.options.target.providerId, this.options.target.modelId);
+        if (!model) {
+          throw new LlmError(
+            `The model "${this.options.target.modelId}" is not available from provider "${userFacingProviderId(this.options.target.providerId)}". Check the provider configuration.`,
+            { kind: 'provider_unavailable' },
+          );
+        }
+
+        const resumed = input.threadId ? this.resumeSession(sdk, input.threadId, input.cwd, sessionsDir) : undefined;
+        const sessionManager = resumed?.manager ?? sdk.SessionManager.create(input.cwd, sessionsDir);
+        const sessionId = sessionManager.getSessionId();
+        input.onThread(sessionId);
+
+        // The allowlist is exact: only tools this task declared are exposed.
+        const declared = (input.tools ?? [])
+          .map((tool) => record(tool))
+          .filter((tool) => typeof tool['name'] === 'string' && tool['name'])
+          .map((tool) => ({ name: String(tool['name']), description: String(tool['description'] ?? ''), schema: tool['inputSchema'] }));
+        const exposed = new Set(declared.map((tool) => tool.name));
+        const turnId = `pi-turn-${++this.turns}`;
+
+        let events: Promise<void> = Promise.resolve();
+        const emit = (method: string, params: NativeRecord): void => {
+          events = events.then(() => input.onEvent(method, params)).catch(() => undefined);
+        };
+
+        const allowImages = this.options.target.vision !== false;
+        const customTools: ToolDefinition[] = declared.map((tool) => ({
+          name: tool.name,
+          label: tool.name,
+          description: tool.description,
+          parameters: (tool.schema ?? { type: 'object', properties: {} }) as ToolDefinition['parameters'],
+          // Side effects are serial, matching Gitu's existing semantics.
+          executionMode: 'sequential',
+          execute: async (toolCallId, params) => {
+            await events;
+            const answer = await input.onRequest('item/tool/call', {
+              callId: toolCallId,
+              turnId,
+              tool: tool.name,
+              arguments: record(params),
+            });
+            return toToolResult(answer, allowImages);
+          },
+        }));
+
+        const compactionExt = piCompactionExtension({
+          getContext: (reason) => {
+            const fromInput = input.config['compactionContext'] as GituCompactionContext | undefined;
+            return fromInput ?? this.options.getCompactionContext?.(reason);
+          },
+          onCompacted: (result) => {
+            this.options.onCompacted?.(result);
+            emit('compaction/completed', result);
+          },
+          compactFn: this.options.compactFn,
+        });
+
+        const resourceLoader = new sdk.DefaultResourceLoader({
+          cwd: input.cwd,
+          agentDir,
+          settingsManager,
+          // Gitu keeps building the prompt; this applies it as the session's own.
+          systemPrompt: input.instructions,
+          noSkills: true,
+          noPromptTemplates: true,
+          noThemes: true,
+          noContextFiles: true,
+          // Gitu owns MCP, so pi's built-in MCP extension must not also load one.
+          disabledBuiltinExtensions: ['mcp'],
+          extensionFactories: [
+            piAdmissionExtension(exposed, this.options.onAdmission),
+            compactionExt,
+          ],
+        });
+        await resourceLoader.reload();
+
+        const created = await sdk.createAgentSession({
+          cwd: input.cwd,
+          agentDir,
+          modelRuntime,
+          model,
+          thinkingLevel: thinkingLevelFor(input.effort),
+          noTools: 'builtin',
+          tools: [...exposed],
+          customTools,
+          sessionManager,
+          settingsManager,
+          resourceLoader,
+        });
+        session = created.session;
+        this.active = { session, sessionId, turnId };
+        input.onTurn(turnId);
+        input.onSettings?.({ model: this.options.target.modelId, requestedEffort: input.effort, effectiveEffort: input.effort });
+
+        let narration = '';
+        let itemId = '';
+        let messageSeq = 0;
+        let lastError: unknown;
+
+        unsubscribe = session.subscribe((event: PiSessionEvent) => {
+          const kind = String(event['type'] ?? '');
+          if (kind === 'compaction_start') {
+            emit('compaction/started', { reason: event['reason'] });
+            return;
+          }
+          if (kind === 'compaction_end') {
+            emit('compaction/completed', {
+              reason: event['reason'],
+              result: event['result'],
+              aborted: event['aborted'],
+              errorMessage: event['errorMessage'],
+            });
+            return;
+          }
+          if (kind === 'message_start') {
+            const message = record(event['message']);
+            if (message['role'] === 'assistant') {
+              itemId = `pi-msg-${++messageSeq}`;
+              narration = '';
+              emit('item/started', { item: { type: 'agentMessage', id: itemId } });
+            }
+            return;
+          }
+          if (kind === 'message_update') {
+            const update = record(event['assistantMessageEvent']);
+            const delta = typeof update['delta'] === 'string' ? update['delta'] : '';
+            if (!delta) return;
+            if (update['type'] === 'text_delta') {
+              narration += delta;
+              emit('item/agentMessage/delta', { itemId, delta });
+            } else if (update['type'] === 'thinking_delta') {
+              emit('item/reasoning/delta', { itemId, delta });
+            }
+            return;
+          }
+          if (kind === 'message_end') {
+            const message = record(event['message']);
+            if (message['role'] !== 'assistant') return;
+            if (message['stopReason'] === 'error' && message['errorMessage']) {
+              lastError = message['errorMessage'];
+            }
+            if (message['stopReason'] === 'aborted') {
+              aborted = true;
+            }
+            // A message that called tools is commentary; the answer is the one
+            // that did not. This is the same distinction Codex reported.
+            emit('item/completed', {
+              item: {
+                type: 'agentMessage',
+                id: itemId,
+                text: assistantText(message, narration),
+                phase: messageHasToolCall(message) ? 'commentary' : 'final_answer',
+              },
+            });
+            if (message['usage']) input.onUsage?.(toUsage(record(message['usage'])));
+            return;
+          }
+        });
+
+        let aborted = false;
+        onAbort = () => {
+          aborted = true;
+          void session?.abort().catch(() => {});
+        };
+        input.signal.addEventListener('abort', onAbort, { once: true });
+
+        const images = allowImages ? toImages(input.images ?? []) : [];
+        const resetNote = resumed?.droppedChars
+          ? `CONTEXT RESET: the earlier transcript (${resumed.droppedChars.toLocaleString()} characters) was not resumed because sending it would exceed the provider's prompt limit. Continue from the task state in this message; completed work is saved.\n\n`
+          : '';
+        await session.prompt(resetNote + input.text, images.length ? { images } : undefined);
+        await events;
+        if (lastError) throw classifyPiError(lastError, this.options.target.providerId);
+        return {
+          threadId: sessionId,
+          turnId,
+          status: aborted || input.signal.aborted ? 'interrupted' : 'completed',
+        };
+      };
+
+      try {
+        return await executeOnce();
+      } catch (err) {
+        const errText = err instanceof Error ? err.message : String(err);
+        const isPikProvider =
+          this.options.target.providerId === 'gitu-pikrouter' ||
+          /pikrouter|pikprovider|(?:^|\/\/)(?:www\.)?pikpam\.com(?:\/|$)/i.test(this.options.target.baseUrl);
+        const isFreeModelTarget = /(?:[:/-]free$|^big-pickle$)/i.test(this.options.target.modelId);
+        if (
+          isPikProvider &&
+          isFreeModelTarget &&
+          /429|rate[_ -]?limit|high demand|openrouter\/free/i.test(errText) &&
+          !input.signal.aborted
+        ) {
+          if (onAbort) {
+            input.signal.removeEventListener('abort', onAbort);
+            onAbort = undefined;
+          }
+          unsubscribe?.();
+          unsubscribe = undefined;
+          try {
+            session?.dispose();
+          } catch {
+            /* ignore */
+          }
+          session = undefined;
+          this.options.target.modelId = 'DeepSeek-V4.1-Flash';
+          return await executeOnce();
+        }
+        throw err;
       }
-      const model = modelRuntime.getModel(this.options.target.providerId, this.options.target.modelId);
-      if (!model) {
-        throw new LlmError(
-          `The model "${this.options.target.modelId}" is not available from provider "${userFacingProviderId(this.options.target.providerId)}". Check the provider configuration.`,
-          { kind: 'provider_unavailable' },
-        );
-      }
-
-      const resumed = input.threadId ? this.resumeSession(sdk, input.threadId, input.cwd, sessionsDir) : undefined;
-      const sessionManager = resumed?.manager ?? sdk.SessionManager.create(input.cwd, sessionsDir);
-      const sessionId = sessionManager.getSessionId();
-      input.onThread(sessionId);
-
-      // The allowlist is exact: only tools this task declared are exposed.
-      const declared = (input.tools ?? [])
-        .map((tool) => record(tool))
-        .filter((tool) => typeof tool['name'] === 'string' && tool['name'])
-        .map((tool) => ({ name: String(tool['name']), description: String(tool['description'] ?? ''), schema: tool['inputSchema'] }));
-      const exposed = new Set(declared.map((tool) => tool.name));
-      const turnId = `pi-turn-${++this.turns}`;
-
-      let events: Promise<void> = Promise.resolve();
-      const emit = (method: string, params: NativeRecord): void => {
-        events = events.then(() => input.onEvent(method, params)).catch(() => undefined);
-      };
-
-      const allowImages = this.options.target.vision !== false;
-      const customTools: ToolDefinition[] = declared.map((tool) => ({
-        name: tool.name,
-        label: tool.name,
-        description: tool.description,
-        parameters: (tool.schema ?? { type: 'object', properties: {} }) as ToolDefinition['parameters'],
-        // Side effects are serial, matching Gitu's existing semantics.
-        executionMode: 'sequential',
-        execute: async (toolCallId, params) => {
-          await events;
-          const answer = await input.onRequest('item/tool/call', {
-            callId: toolCallId,
-            turnId,
-            tool: tool.name,
-            arguments: record(params),
-          });
-          return toToolResult(answer, allowImages);
-        },
-      }));
-
-      const compactionExt = piCompactionExtension({
-        getContext: (reason) => {
-          const fromInput = input.config['compactionContext'] as GituCompactionContext | undefined;
-          return fromInput ?? this.options.getCompactionContext?.(reason);
-        },
-        onCompacted: (result) => {
-          this.options.onCompacted?.(result);
-          emit('compaction/completed', result);
-        },
-        compactFn: this.options.compactFn,
-      });
-
-      const resourceLoader = new sdk.DefaultResourceLoader({
-        cwd: input.cwd,
-        agentDir,
-        settingsManager,
-        // Gitu keeps building the prompt; this applies it as the session's own.
-        systemPrompt: input.instructions,
-        noSkills: true,
-        noPromptTemplates: true,
-        noThemes: true,
-        noContextFiles: true,
-        // Gitu owns MCP, so pi's built-in MCP extension must not also load one.
-        disabledBuiltinExtensions: ['mcp'],
-        extensionFactories: [
-          piAdmissionExtension(exposed, this.options.onAdmission),
-          compactionExt,
-        ],
-      });
-      await resourceLoader.reload();
-
-      const created = await sdk.createAgentSession({
-        cwd: input.cwd,
-        agentDir,
-        modelRuntime,
-        model,
-        thinkingLevel: thinkingLevelFor(input.effort),
-        noTools: 'builtin',
-        tools: [...exposed],
-        customTools,
-        sessionManager,
-        settingsManager,
-        resourceLoader,
-      });
-      session = created.session;
-      this.active = { session, sessionId, turnId };
-      input.onTurn(turnId);
-      input.onSettings?.({ model: this.options.target.modelId, requestedEffort: input.effort, effectiveEffort: input.effort });
-
-      let narration = '';
-      let itemId = '';
-      let messageSeq = 0;
-      let lastError: unknown;
-
-      unsubscribe = session.subscribe((event: PiSessionEvent) => {
-        const kind = String(event['type'] ?? '');
-        if (kind === 'compaction_start') {
-          emit('compaction/started', { reason: event['reason'] });
-          return;
-        }
-        if (kind === 'compaction_end') {
-          emit('compaction/completed', {
-            reason: event['reason'],
-            result: event['result'],
-            aborted: event['aborted'],
-            errorMessage: event['errorMessage'],
-          });
-          return;
-        }
-        if (kind === 'message_start') {
-          const message = record(event['message']);
-          if (message['role'] === 'assistant') {
-            itemId = `pi-msg-${++messageSeq}`;
-            narration = '';
-            emit('item/started', { item: { type: 'agentMessage', id: itemId } });
-          }
-          return;
-        }
-        if (kind === 'message_update') {
-          const update = record(event['assistantMessageEvent']);
-          const delta = typeof update['delta'] === 'string' ? update['delta'] : '';
-          if (!delta) return;
-          if (update['type'] === 'text_delta') {
-            narration += delta;
-            emit('item/agentMessage/delta', { itemId, delta });
-          } else if (update['type'] === 'thinking_delta') {
-            emit('item/reasoning/delta', { itemId, delta });
-          }
-          return;
-        }
-        if (kind === 'message_end') {
-          const message = record(event['message']);
-          if (message['role'] !== 'assistant') return;
-          if (message['stopReason'] === 'error' && message['errorMessage']) {
-            lastError = message['errorMessage'];
-          }
-          if (message['stopReason'] === 'aborted') {
-            aborted = true;
-          }
-          // A message that called tools is commentary; the answer is the one
-          // that did not. This is the same distinction Codex reported.
-          emit('item/completed', {
-            item: {
-              type: 'agentMessage',
-              id: itemId,
-              text: assistantText(message, narration),
-              phase: messageHasToolCall(message) ? 'commentary' : 'final_answer',
-            },
-          });
-          if (message['usage']) input.onUsage?.(toUsage(record(message['usage'])));
-          return;
-        }
-      });
-
-      let aborted = false;
-      onAbort = () => {
-        aborted = true;
-        void session?.abort().catch(() => {});
-      };
-      input.signal.addEventListener('abort', onAbort, { once: true });
-
-      const images = allowImages ? toImages(input.images ?? []) : [];
-      const resetNote = resumed?.droppedChars
-        ? `CONTEXT RESET: the earlier transcript (${resumed.droppedChars.toLocaleString()} characters) was not resumed because sending it would exceed the provider's prompt limit. Continue from the task state in this message; completed work is saved.\n\n`
-        : '';
-      await session.prompt(resetNote + input.text, images.length ? { images } : undefined);
-      await events;
-      if (lastError) throw classifyPiError(lastError, this.options.target.providerId);
-      return {
-        threadId: sessionId,
-        turnId,
-        status: aborted || input.signal.aborted ? 'interrupted' : 'completed',
-      };
     } catch (error) {
       if (input.signal.aborted) throw new LlmError('The model turn was stopped by the user.', { kind: 'aborted' });
       throw classifyPiError(error, this.options.target.providerId);

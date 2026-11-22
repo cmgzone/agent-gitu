@@ -41,7 +41,9 @@
       if (res && res.ok && res.credits) {
         window.__pikRouterCredits = res.credits;
         window.__pikRouterActive = true;
+        if (typeof ensureUsableModelSelection === 'function') ensureUsableModelSelection();
         if (typeof cwRenderContextMeter === 'function') cwRenderContextMeter();
+        if (typeof cwRenderMsgs === 'function' && S.cw && S.cw.active) cwRenderMsgs();
       }
     }).catch(function () {});
     $('gearBtn').onclick = function () { toggleMobileNav(false); openSettings('overview'); };

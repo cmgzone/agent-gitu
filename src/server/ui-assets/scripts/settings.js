@@ -1228,4 +1228,34 @@
       });
     };
     host.syncCodingPermissions = syncCodingPermissions;
+    host.sendChatAction = function (rawText, sourceEl) {
+      var text = String(rawText == null ? '' : rawText).trim();
+      if (!text || text.length > 4000) return false;
+      var overlay = sourceEl && sourceEl.closest ? sourceEl.closest('.out-ov') : null;
+      var origin = overlay && overlay._outCard ? overlay._outCard : sourceEl;
+      if (origin && origin.closest && origin.closest('#cw')) {
+        if (typeof host.sendCoworkText !== 'function') {
+          if (typeof toast === 'function') toast('Open a chat first', true);
+          return false;
+        }
+        var sentCw = host.sendCoworkText(text);
+        if (sentCw && overlay && typeof outClosePanel === 'function') outClosePanel();
+        return Boolean(sentCw);
+      }
+      if (typeof sendFollow !== 'function' || typeof S === 'undefined' || !S.active) {
+        if (typeof toast === 'function') toast('Open an active chat to send this action.', true);
+        return false;
+      }
+      var follow = typeof $ === 'function' ? $('follow') : document.getElementById('follow');
+      var prevDraft = follow ? String(follow.value || '') : '';
+      var runId = S.active;
+      sendFollow(text);
+      if (follow && prevDraft) {
+        follow.value = prevDraft;
+        if (typeof homeSaveFollowDraft === 'function') homeSaveFollowDraft(runId, prevDraft);
+        if (typeof updateSendState === 'function') updateSendState();
+      }
+      if (overlay && typeof outClosePanel === 'function') outClosePanel();
+      return true;
+    };
   })();

@@ -21,9 +21,10 @@ import {Switch} from '@astryxdesign/core/Switch';
 import {Text} from '@astryxdesign/core/Text';
 import {TextInput} from '@astryxdesign/core/TextInput';
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {getHostBridge} from '../bridge';
+import {getDesktopCloudBridge, getHostBridge} from '../bridge';
 import {
   AppIcon,
+  Cloud,
   Layers,
   Moon,
   RefreshCw,
@@ -712,6 +713,33 @@ export function SettingsConsoleView({
                         </HStack>
                       </VStack>
                     </Card>
+
+                    {getDesktopCloudBridge() ? (
+                      <Card padding={4}>
+                        <VStack gap={3}>
+                          <HStack hAlign="between" vAlign="center">
+                            <HStack gap={1.5} vAlign="center">
+                              <AppIcon icon={Cloud} size="sm" color="accent" />
+                              <Heading level={4}>Desktop Agent Mode</Heading>
+                            </HStack>
+                          </HStack>
+                          <Text color="secondary">
+                            Switch between your Local Agent and your Pikpam Cloud Agent, or buy a new Cloud VPS using your connected Pikpam account.
+                          </Text>
+                          <HStack gap={2} wrap="wrap">
+                            <Button
+                              label="Switch or buy Cloud Agent"
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => {
+                                onClose();
+                                window.__gituAstryx?.openCloudAgents?.();
+                              }}
+                            />
+                          </HStack>
+                        </VStack>
+                      </Card>
+                    ) : null}
                   </VStack>
                 </Grid>
               ) : null}

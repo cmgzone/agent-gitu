@@ -4,6 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { phoneAddresses, registerPhoneAccess, ensurePhoneFirewall } = require('./phone-access.cjs');
+const { createCloudAgentManager, registerCloudAgent } = require('./cloud-agent.cjs');
 
 const APP_ICON_PATH = path.join(__dirname, '..', 'assets', 'agent-gitu-icon.png');
 // Keep native crash dumps on this computer; never submit them to a service.
@@ -27,6 +28,40 @@ let runtimeStopped = false;
 let stoppingEngine = false;
 let keepEngineRunning = false;
 let phoneFirewall = { allowed: false, pending: true };
+
+async function readPikpamToken() {
+  try {
+    const keysMod = await import(pathToFileURL(path.join(__dirname, '..', 'dist', 'llm', 'keys.js')).href);
+    const env = typeof keysMod.mergedEnv === 'function' ? keysMod.mergedEnv() : {};
+    return String(env.PIKROUTER_API_KEY || env.HERMES_PIKROUTER_API_KEY || env.PIKROUTER_TOKEN || '').trim();
+  } catch {
+    return String(process.env.PIKROUTER_API_KEY || process.env.HERMES_PIKROUTER_API_KEY || process.env.PIKROUTER_TOKEN || '').trim();
+  }
+}
+
+const cloudAgentManager = createCloudAgentManager({
+  getLocalOrigin: () => (boundPort ? `http://127.0.0.1:${boundPort}` : ''),
+  getPrefsPath: () => (engine && engine.paths && engine.paths.dir ? path.join(engine.paths.dir, 'desktop-cloud-agent.json') : ''),
+  getPikpamToken: readPikpamToken,
+  getSessionFetch: () => {
+    const ses = mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && mainWindow.webContents.session
+      ? mainWindow.webContents.session
+      : null;
+    return ses && typeof ses.fetch === 'function'
+      ? ses.fetch.bind(ses)
+      : (...args) => globalThis.fetch(...args);
+  },
+  navigateToUrl: async (url) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (typeof mainWindow._gituPrepareNavigation === 'function') {
+      mainWindow._gituPrepareNavigation(url);
+    }
+    await mainWindow.loadURL(url);
+  },
+  openExternal: (url) => shell.openExternal(url),
+  onTargetChange: () => updateRuntimeTray(),
+});
+
 function phoneAccessStatus() {
   const enabled = process.env.AGENT_GITU_DESKTOP_PHONE_ACCESS !== '0';
   return { enabled, addresses: enabled ? phoneAddresses(boundPort) : [], ...phoneFirewall };
@@ -46,7 +81,34 @@ function updateRuntimeTray() {
   if (!phoneItems.length) phoneItems.push({ label: status.enabled ? 'Connect this computer to Wi-Fi' : 'Phone access disabled', enabled: false });
   phoneItems.push({ label: 'Same Wi-Fi · use your Gitu email and password', enabled: false });
   if (status.enabled && process.platform === 'win32') phoneItems.push({ label: 'Allow phone access through Windows Firewall', click: () => { void allowPhoneAccess(true); } });
-  runtimeTray.setContextMenu(Menu.buildFromTemplate([{label:'Open Agent Gitu',click:showWorkspace},{label:'Connect Android phone',submenu:phoneItems},{type:'separator'},{label:'Exit interface (keep agents running)',click:()=>{keepEngineRunning=true;app.quit();}},{label:'Quit Agent Gitu and stop agents',click:()=>{keepEngineRunning=false;app.quit();}}]));
+  const cloudStatus = cloudAgentManager.getStatus();
+  const activeTarget = cloudAgentManager.getTarget();
+  const workspaceAgentItems = [
+    {
+      label: `${activeTarget.mode === 'local' ? '● ' : ''}Local Agent (This PC)`,
+      click: () => {
+        void cloudAgentManager.switchToLocal();
+        showWorkspace();
+      },
+    },
+    ...(cloudStatus.instances || [])
+      .filter((inst) => String(inst.status || '').toUpperCase() === 'ACTIVE')
+      .map((inst) => ({
+        label: `${activeTarget.mode === 'cloud' && activeTarget.vpsId === inst.id ? '● ' : ''}Cloud: ${inst.name || inst.domain || inst.id}`,
+        click: () => {
+          void cloudAgentManager.connectCloud(inst.id);
+          showWorkspace();
+        },
+      })),
+  ];
+  runtimeTray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Open Agent Gitu', click: showWorkspace },
+    { label: 'Workspace Agent', submenu: workspaceAgentItems },
+    { label: 'Connect Android phone', submenu: phoneItems },
+    { type: 'separator' },
+    { label: 'Exit interface (keep agents running)', click: () => { keepEngineRunning = true; app.quit(); } },
+    { label: 'Quit Agent Gitu and stop agents', click: () => { keepEngineRunning = false; app.quit(); } },
+  ]));
 }
 function showWorkspace(){if(mainWindow&&!mainWindow.isDestroyed()){mainWindow.show();if(mainWindow.isMinimized())mainWindow.restore();mainWindow.focus();}else if(boundPort)createMainWindow();}
 function createRuntimeTray(){if(runtimeTray)return;const icon=nativeImage.createFromPath(APP_ICON_PATH).resize({width:24,height:24});runtimeTray=new Tray(icon);runtimeTray.setToolTip('Agent Gitu — agent engine running independently');updateRuntimeTray();runtimeTray.on('right-click',updateRuntimeTray);runtimeTray.on('double-click',showWorkspace);}
@@ -667,15 +729,17 @@ function createMainWindow() {
 
   let revealed = false;
   const appUrl = `http://127.0.0.1:${boundPort}`;
+  let currentUrl = appUrl;
   const themedWindow = mainWindow;
   require('./project-folder.cjs').registerProjectFolder(themedWindow.webContents, appUrl, (folderPath) => shell.openPath(folderPath));
-  require('./app-sign-in.cjs').registerAppSignIn(themedWindow.webContents, appUrl, (url) => shell.openExternal(url));
-    registerPhoneAccess(themedWindow.webContents, appUrl, phoneAccessStatus, () => allowPhoneAccess(true));
+  require('./app-sign-in.cjs').registerAppSignIn(themedWindow.webContents, (origin) => cloudAgentManager.isTrustedOrigin(origin), (url) => shell.openExternal(url));
+  registerPhoneAccess(themedWindow.webContents, appUrl, phoneAccessStatus, () => allowPhoneAccess(true));
+  registerCloudAgent(themedWindow.webContents, cloudAgentManager);
   themedWindow.webContents.ipc.on('gitu:theme', (event, theme) => {
     if (themedWindow.isDestroyed() || event.senderFrame !== themedWindow.webContents.mainFrame) return;
     if (theme !== 'light' && theme !== 'dark') return;
     try {
-      if (new URL(event.senderFrame.url).origin !== appUrl) return;
+      if (!cloudAgentManager.isTrustedOrigin(new URL(event.senderFrame.url).origin)) return;
       const colors = windowColors(theme);
       themedWindow.setBackgroundColor(colors.color);
       themedWindow.setTitleBarOverlay({ ...colors, height: 32 });
@@ -717,23 +781,38 @@ function createMainWindow() {
   let failureShown = false;
   let loadWatchdog;
   let retryTimer;
+  const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  }[ch]));
   const loadFailurePage = (reason) => {
     clearTimeout(loadWatchdog);
     clearTimeout(retryTimer);
     if (failureShown || !mainWindow || mainWindow.isDestroyed()) return;
     failureShown = true;
+    const target = cloudAgentManager.getTarget();
+    const isCloud = target && target.mode === 'cloud';
+    const heading = isCloud
+      ? `Could not connect to Cloud Agent (${escapeHtml(target.name || 'Cloud')})`
+      : 'Agent Gitu could not load its interface';
+    const detailLine = isCloud
+      ? `Cloud server endpoint: ${escapeHtml(target.origin || currentUrl)}.`
+      : `The local server is running at ${escapeHtml(appUrl)}.`;
+    const actionsHtml = isCloud
+      ? `<a href="${escapeHtml(appUrl)}">Back to Local Agent</a><a class="alt" href="${escapeHtml(target.origin || currentUrl)}">Retry Cloud Agent</a>`
+      : `<a href="${escapeHtml(appUrl)}">Try again</a>`;
     const html =
       '<!doctype html><html><head><meta charset="utf-8"><title>Agent Gitu</title>' +
       '<style>html,body{height:100%;margin:0;background:#111;color:#e8e8e8;font:15px/1.6 system-ui,sans-serif;display:flex;align-items:center;justify-content:center}' +
       'main{max-width:520px;padding:32px;text-align:center}h1{font-size:20px;margin:0 0 10px}p{color:#a3a3a3;margin:0 0 18px}' +
-      'a{display:inline-block;background:#dedede;color:#171717;text-decoration:none;border-radius:8px;padding:9px 18px;font-weight:600}@media(prefers-color-scheme:light){html,body{background:#fafaf9;color:#242422}p{color:#62625e}a{background:#30302e;color:#fff}}</style></head>' +
-      '<body><main id="gitu-fail"><h1>Agent Gitu could not load its interface</h1><p>' +
-      reason +
-      '</p><p>The local server is running at ' +
-      appUrl +
-      '.</p><a href="' +
-      appUrl +
-      '">Try again</a></main></body></html>';
+      '.actions{display:flex;flex-wrap:wrap;gap:10px;justify-content:center}' +
+      'a{display:inline-block;background:#dedede;color:#171717;text-decoration:none;border-radius:8px;padding:9px 18px;font-weight:600}' +
+      'a.alt{background:transparent;color:#e8e8e8;border:1px solid #3f3f46}' +
+      '@media(prefers-color-scheme:light){html,body{background:#fafaf9;color:#242422}p{color:#62625e}a{background:#30302e;color:#fff}a.alt{background:transparent;color:#242422;border-color:#d4d4d8}}</style></head>' +
+      `<body><main id="gitu-fail"><h1>${heading}</h1><p>${escapeHtml(reason)}</p><p>${detailLine}</p><div class="actions">${actionsHtml}</div></main></body></html>`;
     log(`showing load failure page: ${reason}`);
     mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html)).catch((err) => {
       log(`load failure page could not be shown: ${err && err.message}`);
@@ -765,6 +844,15 @@ function createMainWindow() {
       scheduleRetry('the page stalled');
     }, 20000);
   };
+  mainWindow._gituPrepareNavigation = (nextUrl) => {
+    currentUrl = nextUrl || appUrl;
+    loaded = false;
+    loadAttempts = 0;
+    failureShown = false;
+    clearTimeout(retryTimer);
+    retryTimer = null;
+    armLoadWatchdog();
+  };
   const appShellProbe = `(function(){
     if (document.getElementById('gitu-fail')) return 'fail';
     if (document.getElementById('view') && document.getElementById('gearBtn')) return 'app';
@@ -775,6 +863,20 @@ function createMainWindow() {
   mainWindow.once('ready-to-show', () => {
     log('mainWindow ready-to-show fired');
     revealWindow();
+  });
+
+  mainWindow.webContents.on('did-navigate', (_event, navigatedUrl) => {
+    if (!failureShown || typeof navigatedUrl !== 'string') return;
+    try {
+      if (new URL(navigatedUrl).origin === appUrl && cloudAgentManager.getTarget().mode === 'cloud') {
+        cloudAgentManager.resetToLocalSync();
+        currentUrl = appUrl;
+        loaded = false;
+        loadAttempts = 0;
+        failureShown = false;
+        armLoadWatchdog();
+      }
+    } catch {}
   });
 
   mainWindow.webContents.on('did-finish-load', () => {
@@ -790,6 +892,32 @@ function createMainWindow() {
           clearTimeout(loadWatchdog);
           log('mainWindow did-finish-load fired (' + (state === 'auth' ? 'sign-in page' : 'app shell present') + ')');
           revealWindow();
+          const activeTarget = cloudAgentManager.getTarget();
+          if (state === 'app' && activeTarget && activeTarget.mode === 'cloud') {
+            const cloudLabel = `Cloud: ${activeTarget.name || 'Agent'}`;
+            void mainWindow.webContents.executeJavaScript(
+              `(function(label){
+                try {
+                  if (window.__gituAstryx && window.__gituAstryx.hasDesktopCloudSwitcher) return;
+                  if (document.getElementById('gituDesktopCloudFallback')) return;
+                  var bar = document.createElement('div');
+                  bar.id = 'gituDesktopCloudFallback';
+                  bar.style.cssText = 'position:fixed;top:12px;right:156px;z-index:2147483640;display:flex;align-items:center;gap:8px;padding:4px 10px;border-radius:999px;background:#1c1c1f;color:#f4f4f5;border:1px solid #3f3f46;font:600 12px system-ui,sans-serif;box-shadow:0 4px 14px rgba(0,0,0,.28);-webkit-app-region:no-drag';
+                  var tag = document.createElement('span');
+                  tag.textContent = label;
+                  var btn = document.createElement('button');
+                  btn.type = 'button';
+                  btn.textContent = 'Switch to Local';
+                  btn.style.cssText = 'border:0;border-radius:999px;padding:3px 9px;background:#f4f4f5;color:#18181b;font:600 11px system-ui,sans-serif;cursor:pointer';
+                  btn.onclick = function(){ if (window.gituDesktop && window.gituDesktop.cloudAgent) window.gituDesktop.cloudAgent.switchToLocal(); };
+                  bar.appendChild(tag);
+                  bar.appendChild(btn);
+                  document.body.appendChild(bar);
+                } catch {}
+              })(${JSON.stringify(cloudLabel)})`,
+              true,
+            ).catch(() => {});
+          }
         } else if (state === 'fail') {
           clearTimeout(loadWatchdog);
           revealWindow();
@@ -913,6 +1041,11 @@ async function start() {
     createMainWindow();
     log('main window created');
     updateRuntimeTray();
+    if (mainWindow && !mainWindow.isDestroyed() && cloudAgentManager.shouldAutoConnectOnLaunch()) {
+      mainWindow.webContents.once('did-finish-load', () => {
+        void cloudAgentManager.tryAutoConnectOnLaunch().catch(() => {});
+      });
+    }
     void allowPhoneAccess().catch(() => { phoneFirewall = { allowed: false, pending: false, message: 'Use Phone access in Settings to allow the Windows permission request.' }; });
 
   } catch (err) {

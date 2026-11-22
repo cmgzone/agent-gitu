@@ -188,6 +188,8 @@ export interface GituHostBridge {
   toggleThemeMode(): void;
   getWorkspaceSettingItems(): WorkspaceSettingItem[];
   syncCodingPermissions?(): Promise<unknown>;
+  sendChatAction?(text: string, sourceEl?: HTMLElement | null): boolean;
+  sendCoworkText?(text: string): boolean;
   onProfileClosed?(): void;
   onProfileOpened?(agentId: string, section?: string): void;
 }
@@ -203,4 +205,126 @@ export function readDomThemeMode(): 'light' | 'dark' {
   return document.documentElement.getAttribute('data-theme') === 'light'
     ? 'light'
     : 'dark';
+}
+
+export interface DesktopCloudInstance {
+  id: string;
+  name: string;
+  plan: string;
+  status: string;
+  ipAddress: string | null;
+  domain: string | null;
+  customDomain: string | null;
+  agentUrl: string | null;
+  expiresAt: string | null;
+  provisioning: {
+    state: string;
+    attentionReason: string | null;
+    customerMessage: string;
+  } | null;
+}
+
+export interface DesktopCloudPlan {
+  id: string;
+  name: string;
+  vCpus: number;
+  ramGb: number;
+  storageGb: number;
+  storageType: string;
+  priceUsd: number;
+  includedCredits: number;
+  isPopular?: boolean;
+  isActive?: boolean;
+  description?: string;
+}
+
+export interface DesktopCloudFreeClaim {
+  enabled: boolean;
+  canClaim: boolean;
+  reason?: string | null;
+  plan?: {
+    id: string;
+    name: string;
+    priceUsd: number;
+    vCpus: number;
+    ramGb: number;
+    storageGb: number;
+    storageType: string;
+  } | null;
+}
+
+export interface DesktopCloudWallet {
+  balance?: number;
+  available?: number;
+  paidBalance?: number;
+  paidAvailable?: number;
+  paidAvailableUsd?: number;
+  bonusBalance?: number;
+  bonusUsd?: number;
+  usdValue?: number;
+  currencyFormatted?: string;
+  creditRate?: string;
+}
+
+export interface DesktopCloudState {
+  signedIn?: boolean;
+  authExpired?: boolean;
+  mode: 'local' | 'cloud';
+  activeCloud: {
+    mode: 'cloud';
+    vpsId: string;
+    name: string;
+    agentUrl: string;
+    origin: string;
+  } | null;
+  autoConnectCloud: boolean;
+  user?: {
+    id?: string;
+    email?: string;
+    role?: string;
+  } | null;
+  wallet?: DesktopCloudWallet | null;
+  instances: DesktopCloudInstance[];
+  plans?: DesktopCloudPlan[];
+  freeClaim?: DesktopCloudFreeClaim | null;
+}
+
+export interface DesktopCloudActionResult {
+  ok: boolean;
+  code?: string;
+  error?: string;
+  mode?: 'local' | 'cloud';
+  status?: string;
+  paymentMethod?: 'WALLET' | 'PAYSTACK';
+  pendingPayment?: boolean;
+  reference?: string | null;
+  authorizationUrl?: string;
+  autoConnectCloud?: boolean;
+  state?: DesktopCloudState;
+}
+
+export interface DesktopCloudBridge {
+  status(): Promise<DesktopCloudState>;
+  refresh(): Promise<DesktopCloudState>;
+  connect(vpsId: string): Promise<DesktopCloudActionResult>;
+  switchToLocal(): Promise<DesktopCloudActionResult>;
+  claimFree(params?: {instanceName?: string}): Promise<DesktopCloudActionResult>;
+  buy(params: {
+    planId: string;
+    instanceName?: string;
+    paymentMethod: 'WALLET' | 'PAYSTACK';
+    countryCode?: string;
+  }): Promise<DesktopCloudActionResult>;
+  verifyOrder(reference: string): Promise<DesktopCloudActionResult>;
+  setAutoConnect(enabled: boolean): Promise<DesktopCloudActionResult>;
+  openTopup(): Promise<DesktopCloudActionResult>;
+}
+
+export function getDesktopCloudBridge(): DesktopCloudBridge | null {
+  if (typeof window === 'undefined') return null;
+  const w = window as unknown as {
+    gituDesktop?: {cloudAgent?: DesktopCloudBridge};
+  };
+  const bridge = w.gituDesktop?.cloudAgent;
+  return bridge && typeof bridge.connect === 'function' ? bridge : null;
 }

@@ -118,6 +118,7 @@ ${ADAPTIVE_RESULT_CSS}
 .out-ov-panel{background:var(--bg, #0e1015);border:1px solid var(--border2, #2a2f3a);border-radius:12px;width:100%;max-width:min(1200px,100%);max-height:100%;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.5)}
 .out-ov-head{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--border2, #2a2f3a)}
 .out-ov-body{overflow:auto;padding:12px}
+.out-a2ui-host{min-width:0;width:100%}
 @media (max-width:640px){.out-docs{grid-template-columns:1fr}.out-ov{padding:0}.out-ov-panel{border-radius:0}}
 `;
 
@@ -534,9 +535,78 @@ function outMapHtml(spec){
   return source ? outLinksHtml([{ url: source, title: title, description: spec.caption || 'Open this map at its source.' }]) : null;
 }
 
+/* Parse and validate A2UI v0.9/v1.0 message payloads before mounting via Portal. */
+function outParseA2ui(text){
+  var raw = String(text == null ? '' : text).trim();
+  if(!raw || raw.length > 131072) return null;
+  var parsed = outJson(raw), msgs = null, wrapperTitle = null;
+  if(Array.isArray(parsed)){
+    msgs = parsed;
+  } else if(parsed && typeof parsed === 'object'){
+    if(Array.isArray(parsed.messages)){
+      msgs = parsed.messages;
+      if(typeof parsed.title === 'string' && parsed.title.trim()) wrapperTitle = parsed.title.trim();
+    } else {
+      msgs = [parsed];
+    }
+  } else {
+    var lines = raw.split(/\r?\n/), list = [];
+    for(var i = 0; i < lines.length; i++){
+      var line = lines[i].trim();
+      if(!line) continue;
+      var item = outJson(line);
+      if(!item || typeof item !== 'object' || Array.isArray(item)) return null;
+      list.push(item);
+    }
+    msgs = list;
+  }
+  if(!Array.isArray(msgs) || !msgs.length || msgs.length > 50) return null;
+  var envKeys = { createSurface: 1, updateComponents: 1, updateDataModel: 1, deleteSurface: 1 };
+  var hasCreate = false, surfaceTitle = null, outMsgs = [];
+  for(var m = 0; m < msgs.length; m++){
+    var msg = msgs[m];
+    if(!msg || typeof msg !== 'object' || Array.isArray(msg)) return null;
+    if(msg.version !== undefined && msg.version !== '1.0' && msg.version !== 'v0.9' && msg.version !== 'v0.9.1') return null;
+    var foundKey = null, keyCount = 0;
+    for(var k in msg){
+      if(!Object.prototype.hasOwnProperty.call(msg, k)) continue;
+      if(k === 'version') continue;
+      if(!envKeys[k]) return null;
+      foundKey = k;
+      keyCount++;
+    }
+    if(keyCount !== 1 || !foundKey) return null;
+    var env = msg[foundKey];
+    if(!env || typeof env !== 'object' || Array.isArray(env)) return null;
+    if(typeof env.surfaceId !== 'string' || !env.surfaceId.trim()) return null;
+    if(foundKey === 'createSurface'){
+      hasCreate = true;
+      var th = env.theme;
+      if(!surfaceTitle && th && typeof th === 'object'){
+        var tCand = typeof th.agentDisplayName === 'string' ? th.agentDisplayName : (typeof th.title === 'string' ? th.title : '');
+        if(tCand && tCand.trim()) surfaceTitle = tCand.trim();
+      }
+    }
+    var copy = {};
+    for(var cp in msg){ if(Object.prototype.hasOwnProperty.call(msg, cp)) copy[cp] = msg[cp]; }
+    if(copy.version == null) copy.version = 'v0.9';
+    outMsgs.push(copy);
+  }
+  if(!hasCreate) return null;
+  return { messages: outMsgs, title: wrapperTitle || surfaceTitle || null };
+}
+function outA2uiHtml(text){
+  var parsed = outParseA2ui(text);
+  if(!parsed) return null;
+  var html = '<div class="out-a2ui-host" data-a2ui-surface="1" data-a2ui-payload="'
+    + outEsc(JSON.stringify(parsed.messages))
+    + '"><p class="out-note">Loading interactive view...</p></div>';
+  return { html: html, title: parsed.title };
+}
+
 /* Soft panel shared by every viewer. */
 function outCard(kind, title, body, presentation){
-  var labels={email:'Inbox briefing',brief:'At a glance',tasks:'Task progress',documents:'Files',links:'Sources',chart:'Chart',image:'Image',gallery:'Gallery',map:'Map',video:'Video',audio:'Audio',json:'Data',table:'Table',app:'App',preview:'Preview',html:'Preview'};
+  var labels={email:'Inbox briefing',brief:'At a glance',tasks:'Task progress',documents:'Files',links:'Sources',chart:'Chart',image:'Image',gallery:'Gallery',map:'Map',video:'Video',audio:'Audio',json:'Data',table:'Table',app:'App',preview:'Preview',html:'Preview',a2ui:'Interactive'};
   return '<div class="out-card' + (kind === 'image' ? ' out-media-image' : '') + '" data-out-card="1" data-out-kind="'+outEsc(kind)+'"'+outVisualAttrs(presentation)+'>'
     + '<div class="out-head"><div class="out-heading"><h3 class="out-title">' + outEsc(title || labels[kind] || kind) + '</h3></div>'
     + '<span class="out-sp"></span>'
@@ -615,6 +685,15 @@ function outBlockHtml(kind, payload){
     if(!j) return null;
     return outCard('json', null, '<pre class="out-pre">' + outEsc(JSON.stringify(j, null, 2)) + '</pre>');
   }
+  if(kind === 'a2ui'){
+    var a2 = outA2uiHtml(text);
+    if(!a2) return null;
+    var a2Pres = { width: 'wide' };
+    if(data && typeof data === 'object' && !Array.isArray(data)){
+      for(var ak in data){ if(Object.prototype.hasOwnProperty.call(data, ak)) a2Pres[ak] = data[ak]; }
+    }
+    return outCard('a2ui', title || a2.title, a2.html, a2Pres);
+  }
   return null;
 }
 /* Object-friendly entry point for widgets and ordinary chat attachments. */
@@ -661,6 +740,11 @@ function outOpenPanel(card){
   var clone = card.cloneNode(true);
   var cardHead = clone.querySelector('.out-head');
   if(cardHead) cardHead.remove();
+  var a2uiHosts = clone.querySelectorAll('[data-a2ui-surface="1"]');
+  for(var ai = 0; ai < a2uiHosts.length; ai++){
+    a2uiHosts[ai].removeAttribute('data-a2ui-claimed');
+    a2uiHosts[ai].innerHTML = '<p class="out-note">Loading interactive view...</p>';
+  }
   while(body.firstChild){ body.removeChild(body.firstChild); }
   body.appendChild(clone);
   ov._outCard = card;

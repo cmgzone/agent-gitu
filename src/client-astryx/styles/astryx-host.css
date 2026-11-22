@@ -40,3 +40,17 @@
 .gitu-astryx-legacy-host :is(h1, h2) {
   color: var(--color-text-primary);
 }
+
+.gitu-desktop-agent-bar {
+  position: fixed;
+  top: var(--spacing-3);
+  right: 152px;
+  z-index: 35;
+  -webkit-app-region: no-drag;
+}
+
+@media (max-width: 720px) {
+  .gitu-desktop-agent-bar {
+    display: none;
+  }
+}

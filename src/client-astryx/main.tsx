@@ -8,23 +8,30 @@ import {useCallback, useEffect, useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {defaultThemeSlug, themes} from '../astryx-themes';
 import {
+  getDesktopCloudBridge,
   getHostBridge,
   readDomThemeMode,
   type AppSkill,
   type CloudServer,
   type CoworkAgent,
+  type DesktopCloudState,
 } from './bridge';
 import {AgentProfileView} from './views/AgentProfileView';
 import {AgentSwitcherDialog} from './views/AgentSwitcherDialog';
+import {CloudAgentDialog} from './views/CloudAgentDialog';
+import {DesktopAgentBar} from './views/DesktopAgentBar';
 import {EditAgentDialog} from './views/EditAgentDialog';
 import {SettingsConsoleView} from './views/SettingsConsoleView';
+import {A2uiPortalHost, useA2uiPortalTargets} from './a2ui/A2uiPortalHost';
 
 export interface GituAstryxApi {
+  hasDesktopCloudSwitcher?: boolean;
   openSwitcher(): void;
   openProfile(agentId: string, section?: string): void;
   closeProfile(): void;
   openEditAgent(agent?: CoworkAgent | null): void;
   openSettings(section?: string): void;
+  openCloudAgents?(): void;
   closeSettings(): void;
   syncThemeMode(): void;
   handleBack(): boolean;
@@ -42,6 +49,7 @@ function AstryxApp() {
     readDomThemeMode(),
   );
   const [switcherOpen, setSwitcherOpen] = useState(false);
+  const a2uiTargets = useA2uiPortalTargets();
   const [profileState, setProfileState] = useState<{
     open: boolean;
     agentId: string;
@@ -60,6 +68,10 @@ function AstryxApp() {
   const [activeAgentId, setActiveAgentId] = useState<string>('');
   const [skills, setSkills] = useState<AppSkill[]>([]);
   const [cloudServers, setCloudServers] = useState<CloudServer[]>([]);
+  const desktopCloudBridge = getDesktopCloudBridge();
+  const [cloudDialogOpen, setCloudDialogOpen] = useState(false);
+  const [cloudStatus, setCloudStatus] = useState<DesktopCloudState | null>(null);
+  const [switchingMode, setSwitchingMode] = useState(false);
 
   const syncFromHost = useCallback(() => {
     const host = getHostBridge();
@@ -109,6 +121,14 @@ function AstryxApp() {
   }, []);
 
   useEffect(() => {
+    if (!desktopCloudBridge) return;
+    void desktopCloudBridge
+      .status()
+      .then(setCloudStatus)
+      .catch(() => {});
+  }, [desktopCloudBridge]);
+
+  useEffect(() => {
     const syncTheme = () => setThemeMode(readDomThemeMode());
     syncTheme();
 
@@ -119,6 +139,7 @@ function AstryxApp() {
     });
 
     window.__gituAstryx = {
+      hasDesktopCloudSwitcher: Boolean(desktopCloudBridge),
       openSwitcher() {
         syncFromHost();
         setSwitcherOpen(true);
@@ -147,9 +168,17 @@ function AstryxApp() {
         getHostBridge()?.setSettingSection(sec);
         setSettingsState({open: true, section: sec});
       },
+      openCloudAgents() {
+        if (!desktopCloudBridge) return;
+        setCloudDialogOpen(true);
+      },
       closeSettings,
       syncThemeMode: syncTheme,
       handleBack() {
+        if (cloudDialogOpen) {
+          setCloudDialogOpen(false);
+          return true;
+        }
         if (editState.open) {
           setEditState({open: false, agent: null});
           return true;
@@ -175,8 +204,10 @@ function AstryxApp() {
       observer.disconnect();
     };
   }, [
+    cloudDialogOpen,
     closeProfile,
     closeSettings,
+    desktopCloudBridge,
     editState.open,
     profileState.open,
     refreshAgentsFromServer,
@@ -189,7 +220,7 @@ function AstryxApp() {
     if (!profileState.open && !settingsState.open) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
-      if (editState.open || switcherOpen) return;
+      if (editState.open || switcherOpen || cloudDialogOpen) return;
       if (profileState.open) {
         closeProfile();
       } else if (settingsState.open) {
@@ -199,6 +230,7 @@ function AstryxApp() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [
+    cloudDialogOpen,
     closeProfile,
     closeSettings,
     editState.open,
@@ -214,15 +246,40 @@ function AstryxApp() {
     switcherOpen ||
     editState.open ||
     profileState.open ||
-    settingsState.open;
+    settingsState.open ||
+    cloudDialogOpen;
 
-  if (!hasAnyOpen) {
+  if (!hasAnyOpen && !desktopCloudBridge && a2uiTargets.length === 0) {
     return null;
   }
 
   return (
     <Theme theme={themes[defaultThemeSlug]} mode={themeMode}>
       <LayerProvider>
+        {desktopCloudBridge && !settingsState.open && !profileState.open ? (
+          <DesktopAgentBar
+            cloudBridge={desktopCloudBridge}
+            cloudStatus={cloudStatus}
+            switchingMode={switchingMode}
+            onSwitchLocal={() => {
+              if (!desktopCloudBridge || switchingMode) return;
+              setSwitchingMode(true);
+              void desktopCloudBridge
+                .switchToLocal()
+                .then(res => {
+                  if (!res.ok) {
+                    getHostBridge()?.toast(
+                      res.error || 'Could not switch to Local Agent.',
+                      true,
+                    );
+                  }
+                })
+                .finally(() => setSwitchingMode(false));
+            }}
+            onOpenCloudDialog={() => setCloudDialogOpen(true)}
+          />
+        ) : null}
+
         <SettingsConsoleView
           isOpen={settingsState.open}
           section={settingsState.section}
@@ -355,6 +412,15 @@ function AstryxApp() {
             if (profileState.open) closeProfile();
           }}
         />
+        {desktopCloudBridge ? (
+          <CloudAgentDialog
+            isOpen={cloudDialogOpen}
+            cloudBridge={desktopCloudBridge}
+            onClose={() => setCloudDialogOpen(false)}
+            onStatusChanged={setCloudStatus}
+          />
+        ) : null}
+        <A2uiPortalHost targets={a2uiTargets} />
       </LayerProvider>
     </Theme>
   );

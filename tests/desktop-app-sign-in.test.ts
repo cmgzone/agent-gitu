@@ -27,9 +27,21 @@ describe('desktop app sign-in', () => {
       require: () => ({ contextBridge: { exposeInMainWorld: (_name: string, value: typeof exposed) => { exposed = value; } }, ipcRenderer: { invoke } }),
       window: { addEventListener: vi.fn() },
     }));
-    expect(Object.keys(exposed)).toEqual(['openProjectFolder','openAppSignIn','phoneAccess','allowPhoneAccess']);
+    expect(Object.keys(exposed)).toEqual(['openProjectFolder','openAppSignIn','phoneAccess','allowPhoneAccess','cloudAgent']);
     expect(await exposed.openAppSignIn('https://connect.composio.dev/link')).toBe(true);
     expect(invoke).toHaveBeenCalledWith('gitu:open-app-sign-in', 'https://connect.composio.dev/link');
+  });
+
+  it('supports an origin predicate in registerAppSignIn for Cloud Agent origins', async () => {
+    let handler!: (event: unknown, url: string) => Promise<boolean>;
+    const mainFrame = { url: 'https://alex.gitu.app/' };
+    const openExternal = vi.fn(async () => {});
+    const contents = { isDestroyed: () => false, mainFrame, ipc: { handle: (_channel: string, callback: typeof handler) => { handler = callback; } } };
+    registerAppSignIn(contents, (origin: string) => origin === 'https://alex.gitu.app', openExternal);
+    expect(await handler({ senderFrame: mainFrame }, 'https://connect.composio.dev/link')).toBe(true);
+    mainFrame.url = 'https://evil.example/';
+    expect(await handler({ senderFrame: mainFrame }, 'https://connect.composio.dev/link')).toBe(false);
+    expect(openExternal).toHaveBeenCalledOnce();
   });
 
   it('permits Pikpam and Composio app sign-in hosts and rejects lookalikes', async () => {

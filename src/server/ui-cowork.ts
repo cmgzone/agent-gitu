@@ -4604,6 +4604,23 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     cwRenderReferences();
     return (typeof modelSelectionQueue!=='undefined'?modelSelectionQueue:Promise.resolve()).then(function(){return cwPostLocal(entry);});
   }
+  function cwSendText(rawText) {
+    var text = String(rawText == null ? '' : rawText).trim();
+    if (!text || text.length > 4000) return false;
+    var cw = cwEnsure();
+    if (!cw.active) { toast('Open a chat first', true); return false; }
+    var id = crypto.randomUUID();
+    var payload = { id: id, text: text, files: [], threadId: cw.threadId || null, referencedMessageIds: [], delivery: cw.delivery || 'steer' };
+    var entry = { conversationId: cw.active, payload: payload, message: {
+      id: id, text: text, role: 'user', via: 'web', ts: new Date().toISOString(),
+      status: 'sending', revision: 0, attempt: 0, localOnly: true,
+      threadId: payload.threadId, referencedMessageIds: [], files: []
+    } };
+    cw.outbox[id] = entry;
+    cw.msgs.push(entry.message);
+    (typeof modelSelectionQueue!=='undefined'?modelSelectionQueue:Promise.resolve()).then(function(){return cwPostLocal(entry);});
+    return true;
+  }
 
   // Mutation responses are scoped to their original view; late responses must
   // not inject a row into a different conversation/thread.
@@ -4855,6 +4872,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     };
     host.openCloudServerModal = cwCloudServerModal;
     host.refreshCowork = function (force) { return cwLoad(Boolean(force)); };
+    host.sendCoworkText = cwSendText;
     host.onProfileOpened = function (agentId, section) {
       var cw = cwEnsure();
       cw.profileAgentId = agentId;

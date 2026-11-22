@@ -7202,7 +7202,9 @@ export class GituServer {
               this.sendJson(res, 403, { error: 'OAuth state mismatch or shared sign-in link detected. Please start sign-in from this browser.' });
               return;
             }
-            if (!this.appAuth.configured && !this.appAuth.canRegister(req, body['registrationToken'])) {
+            const expectedOwnerEmail = (process.env['AGENT_GITU_OWNER_EMAIL'] || '').trim().toLowerCase();
+            const ownerBoundHttpsOAuth = Boolean(expectedOwnerEmail && (AppAuth.local(req) || this.appAuth.secure(req)));
+            if (!this.appAuth.configured && !ownerBoundHttpsOAuth && !this.appAuth.canRegister(req, body['registrationToken'])) {
               this.sendJson(res, 403, { error: 'Register locally, or use the private setup code over HTTPS.' });
               return;
             }
@@ -7255,6 +7257,10 @@ export class GituServer {
             }
             const email = verifiedEmail;
             const name = verifiedName || email.split('@')[0] || 'User';
+            if (expectedOwnerEmail && email.toLowerCase() !== expectedOwnerEmail) {
+              this.sendJson(res, 403, { error: `Access denied: this workspace belongs to ${expectedOwnerEmail}. Sign in with that account on Pikpam.` });
+              return;
+            }
             // Verify workspace owner BEFORE persisting PIKROUTER_API_KEY so an unauthorized
             // Pikpam account can never overwrite the workspace owner's API key.
             this.appAuth.pikrouterLogin({ email, name, userId: verifiedUserId });

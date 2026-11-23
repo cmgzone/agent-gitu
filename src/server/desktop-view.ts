@@ -24,10 +24,11 @@ export function desktopAsset(relative: string): string | undefined {
 
 export function desktopView(agentId: string, chromeProfile = false): string {
   const endpoint = JSON.stringify(chromeProfile ? '/api/chrome-profile/vnc' : '/api/cowork/agents/' + encodeURIComponent(agentId) + '/computer/vnc');
+  const audioEndpoint = JSON.stringify(chromeProfile ? '/api/chrome-profile/audio' : '/api/cowork/agents/' + encodeURIComponent(agentId) + '/computer/audio');
   const inputEndpoint = JSON.stringify(chromeProfile ? '/api/chrome-profile' : '/api/cowork/agents/' + encodeURIComponent(agentId) + '/computer');
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Shared desktop</title><style>html,body,#screen{width:100%;height:100%;margin:0;overflow:hidden;background:#151821}#message{position:fixed;inset:0;display:grid;place-items:center;color:#c3c6d1;font:14px system-ui;pointer-events:none}#message[hidden]{display:none}${DESKTOP_TOUCH_CSS}</style></head><body><div id="screen"></div><div id="message">Connecting to live desktop…</div>${DESKTOP_TOUCH_HTML}<script type="module">
 import RFB from '/api/desktop-assets/core/rfb.js';
-let rfb, activeSocket, timer, frames, monitorTimer, closed=false;
+let rfb, activeSocket, audioSocket, audioCtx, audioTime=0, audioCarry, timer, frames, monitorTimer, closed=false;
 const message=document.getElementById('message'),screen=document.getElementById('screen');
 const options=new URLSearchParams(location.search),diagnostic=options.has('diagnostic');
 const preview=options.get('preview')==='1';
@@ -48,10 +49,39 @@ if(diagnostic){
 }
 function status(state){parent.postMessage({type:'gitu-desktop',state},location.origin);}
 function stopFrames(){clearInterval(frames);frames=undefined;}
+function stopAudio(){try{audioSocket?.close?.();}catch{}audioSocket=undefined;audioCarry=undefined;audioTime=0;}
+function startAudio(){
+  const Ctx=globalThis.AudioContext||globalThis.webkitAudioContext;
+  if(preview||closed||!Ctx)return;
+  if(!audioCtx)audioCtx=new Ctx({sampleRate:24000});
+  if(audioCtx.state==='suspended')audioCtx.resume?.().catch(()=>{});
+  if(audioSocket)return;
+  const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+${audioEndpoint});
+  ws.binaryType='arraybuffer';
+  audioSocket=ws;
+  ws.addEventListener('message',event=>{
+    if(closed||!audioCtx||audioCtx.state!=='running'||!(event.data instanceof ArrayBuffer))return;
+    let raw=new Uint8Array(event.data);
+    if(audioCarry?.length){const merged=new Uint8Array(audioCarry.length+raw.length);merged.set(audioCarry,0);merged.set(raw,audioCarry.length);raw=merged;audioCarry=undefined;}
+    const rem=raw.byteLength%4;
+    if(rem){audioCarry=raw.slice(raw.byteLength-rem);raw=raw.subarray(0,raw.byteLength-rem);}
+    const framesCount=raw.byteLength>>2;if(!framesCount)return;
+    const pcm=new Int16Array(raw.buffer,raw.byteOffset,framesCount*2);
+    const buf=audioCtx.createBuffer(2,framesCount,24000);
+    const left=buf.getChannelData(0),right=buf.getChannelData(1);
+    for(let i=0,j=0;i<framesCount;i++,j+=2){left[i]=pcm[j]/32768;right[i]=pcm[j+1]/32768;}
+    const node=audioCtx.createBufferSource();node.buffer=buf;node.connect(audioCtx.destination);
+    const now=audioCtx.currentTime;if(audioTime<now||audioTime>now+0.4)audioTime=now+0.04;
+    node.start(audioTime);audioTime+=buf.duration;
+  });
+  ws.addEventListener('close',()=>{if(audioSocket===ws)audioSocket=undefined;});
+}
+if(!preview){screen.addEventListener('pointerdown',startAudio,true);screen.addEventListener('keydown',startAudio,true);}
 addEventListener('message',event=>{
   if(!preview&&event.origin===location.origin&&event.source===parent&&event.data?.type==='gitu-desktop-control'&&event.data.action==='privacy'&&!closed){touchControls?.privateEnd();return;}
   if(!preview&&event.origin===location.origin&&event.source===parent&&event.data?.type==='gitu-desktop-control'&&event.data.action==='viewport'&&!closed){if(touchControls)touchControls.viewport(event.data.scale!==false,event.data.pan===true);else if(rfb){rfb.scaleViewport=event.data.scale!==false;rfb.clipViewport=event.data.scale===false;rfb.dragViewport=event.data.pan===true&&event.data.scale===false;}return;}
   if(preview||event.origin!==location.origin||event.source!==parent||event.data?.type!=='gitu-desktop-control'||event.data.action!=='focus'||closed)return;
+  startAudio();
   // A modifier held by the previous controller must not affect the next user's typing.
   for(const [keysym,code] of [[0xffe1,'ShiftLeft'],[0xffe2,'ShiftRight'],[0xffe3,'ControlLeft'],[0xffe4,'ControlRight'],[0xffe9,'AltLeft'],[0xffea,'AltRight'],[0xffeb,'MetaLeft'],[0xffec,'MetaRight']])rfb?.sendKey(keysym,code,false);
   rfb?.focus({preventScroll:true});
@@ -82,10 +112,10 @@ function connect(){
       requests++;
     },40);
   });
-  rfb.addEventListener('disconnect',()=>{stopFrames();touchControls?.disconnected();if(closed)return;message.hidden=false;message.textContent='Reconnecting to desktop…';status('Reconnecting…');timer=setTimeout(connect,2000);});
-  rfb.addEventListener('securityfailure',()=>{message.hidden=false;message.textContent='Desktop access was rejected.';status(message.textContent);});
+  rfb.addEventListener('disconnect',()=>{stopFrames();stopAudio();touchControls?.disconnected();if(closed)return;message.hidden=false;message.textContent='Reconnecting to desktop…';status('Reconnecting…');timer=setTimeout(connect,2000);});
+  rfb.addEventListener('securityfailure',()=>{stopAudio();message.hidden=false;message.textContent='Desktop access was rejected.';status(message.textContent);});
 }
-addEventListener('pagehide',()=>{closed=true;touchControls?.close();clearTimeout(timer);clearInterval(monitorTimer);stopFrames();rfb?.disconnect();});
+addEventListener('pagehide',()=>{closed=true;touchControls?.close();clearTimeout(timer);clearInterval(monitorTimer);stopFrames();stopAudio();try{audioCtx?.close?.();}catch{}rfb?.disconnect();});
 connect();
 </script></body></html>`;
 }

@@ -8,12 +8,13 @@ import { describe, expect, it, vi } from 'vitest';
 import { GituServer } from '../src/server/server.js';
 import { CoworkComputer, type ComputerExec } from '../src/cowork/computer.js';
 import { createComputerBrokerServer } from '../src/cowork/computer-broker.js';
-import { localDesktopStream } from '../src/cowork/desktop-stream.js';
+import { localDesktopAudioStream, localDesktopStream } from '../src/cowork/desktop-stream.js';
 import { desktopAsset } from '../src/server/desktop-view.js';
 
 vi.mock('../src/cowork/desktop-stream.js', async (original) => ({
   ...await original<object>(),
   localDesktopStream: vi.fn(() => { const stream = new PassThrough(); stream.write(Buffer.from('RFB 003.008\n')); return stream; }),
+  localDesktopAudioStream: vi.fn(() => { const stream = new PassThrough(); stream.write(Buffer.from([1, 2, 3, 4])); return stream; }),
 }));
 
 function rejected(url: string, headers: Record<string, string> = {}): Promise<number> {
@@ -86,6 +87,11 @@ describe('shared live desktop connection', () => {
       try {
         expect((await once(proxied, 'message'))[0].toString()).toBe('RFB 003.008\n');
       } finally { proxied.terminate(); }
+      const audioClient = new WebSocket(wsBase + `/api/cowork/agents/${agent.id}/computer/audio`, { headers: { cookie, origin: base } });
+      try {
+        expect((await once(audioClient, 'message'))[0]).toEqual(Buffer.from([1, 2, 3, 4]));
+        expect(localDesktopAudioStream).toHaveBeenLastCalledWith(expect.stringMatching(/^gitu-cowork-[a-f0-9]{24}$/));
+      } finally { audioClient.terminate(); }
       const closed = once(client, 'close');
       expect((await post('/api/auth/logout', {}, cookie)).status).toBe(200);
       await closed;

@@ -3,7 +3,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { WebSocketServer } from 'ws';
-import { bridgeDesktop, localDesktopStream } from './desktop-stream.js';
+import { bridgeDesktop, localDesktopAudioStream, localDesktopStream } from './desktop-stream.js';
 import { COWORK_COMPUTER_IMAGE as IMAGE, MAX_COMPUTER_MESSAGE_BYTES, computerCreateArgs, dockerExec, type ComputerExec } from './computer.js';
 import {validateComputerChunk, type ComputerChunk, COMPUTER_CHUNK_BYTES} from './file-transport.js';
 
@@ -163,14 +163,14 @@ export function createComputerBrokerServer(key: string, owner: string, exec: Com
     void (async () => {
       const reject = (code: number) => { socket.end(`HTTP/1.1 ${code} Rejected\r\nConnection: close\r\n\r\n`); };
       if (!authorized(req)) { reject(401); return; }
-      const match = req.url?.match(/^\/desktop\/(gitu-cowork-[a-f0-9]{24})$/);
+      const match = req.url?.match(/^\/(desktop|desktop-audio)\/(gitu-cowork-[a-f0-9]{24})$/);
       if (!match) { reject(404); return; }
       if (sockets.clients.size + pendingSockets >= 16) { reject(429); return; }
       pendingSockets++;
       try {
-        try { await broker.owned(match[1]!); } catch { reject(403); return; }
+        try { await broker.owned(match[2]!); } catch { reject(403); return; }
         if (socket.destroyed) return;
-        sockets.handleUpgrade(req, socket, head, (client) => bridgeDesktop(client, localDesktopStream(match[1]!)));
+        sockets.handleUpgrade(req, socket, head, (client) => bridgeDesktop(client, match[1] === 'desktop-audio' ? localDesktopAudioStream(match[2]!) : localDesktopStream(match[2]!)));
       } finally { pendingSockets--; }
     })().catch(() => socket.destroy());
   });

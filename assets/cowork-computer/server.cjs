@@ -182,7 +182,7 @@ async function command(id, params) {
 async function browserPage(id) {
   if (cancelled.has(id)) throw new Error('Browser operation cancelled.');
   if (!browser) {
-    const context = await chromium.launchPersistentContext('/home/agent/browser', { ...(fs.existsSync('/usr/bin/google-chrome-stable') ? { channel: 'chrome' } : {}), headless: !process.env.DISPLAY, viewport: { width: 1280, height: 720 } });
+    const context = await chromium.launchPersistentContext('/home/agent/browser', { ...(fs.existsSync('/usr/bin/google-chrome-stable') ? { channel: 'chrome' } : {}), headless: !process.env.DISPLAY, viewport: { width: 1280, height: 720 }, args: ['--no-sandbox', '--autoplay-policy=no-user-gesture-required', '--ignore-gpu-blocklist'] });
     browser = context;
     context.on('close', () => { if (browser === context) browser = undefined; });
   }

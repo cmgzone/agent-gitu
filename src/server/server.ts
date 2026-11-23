@@ -14,7 +14,7 @@ import { chromeProfileView } from '../browser/chrome-profile-view.js';
 import { UploadStore, UPLOAD_CHUNK_BYTES } from '../files/uploads.js';
 import { readFilePrefix } from '../files/prefix.js';
 import { WebSocket, WebSocketServer } from 'ws';
-import { bridgeDesktop, connectDesktopStream, localDesktopStream } from '../cowork/desktop-stream.js';
+import { bridgeDesktop, connectDesktopStream, localDesktopAudioStream, localDesktopStream } from '../cowork/desktop-stream.js';
 import { CloudComputerTransport } from '../cowork/cloud-computer.js';
 import { desktopAsset, desktopView } from './desktop-view.js';
 import { MobileAccess } from './mobile-access.js';
@@ -650,9 +650,9 @@ export class GituServer {
         return docker?[local,...cloud]:[...cloud,local];
       },
       id => {
-        if(id==='local') return {id,label:'This computer',execute:dockerExec,stream:name=>localDesktopStream(name)};
-        if(id==='hosted') return {id,label:'This hosted server',execute:hostedComputerExec,stream:name=>{if(!process.env['AGENT_GITU_COMPUTER_BROKER_URL'])throw new Error('Hosted Chrome runtime unavailable.');return connectDesktopStream(name);}};
-        const cloud=this.cloudComputer(id);return {id,label:this.cloudServers().find(server=>server.id===id)?.label??'Cloud computer',execute:cloud.execute,stream:(name,signal)=>cloud.desktopStream(name,signal)};
+        if(id==='local') return {id,label:'This computer',execute:dockerExec,stream:(name,_signal,audio)=>audio?localDesktopAudioStream(name):localDesktopStream(name)};
+        if(id==='hosted') return {id,label:'This hosted server',execute:hostedComputerExec,stream:(name,_signal,audio)=>{if(!process.env['AGENT_GITU_COMPUTER_BROKER_URL'])throw new Error('Hosted Chrome runtime unavailable.');return connectDesktopStream(name,audio);}};
+        const cloud=this.cloudComputer(id);return {id,label:this.cloudServers().find(server=>server.id===id)?.label??'Cloud computer',execute:cloud.execute,stream:(name,signal,audio)=>cloud.desktopStream(name,signal,audio)};
       });
     return this.chromeProfile;
   }
@@ -1459,22 +1459,23 @@ export class GituServer {
       // Browsers always supply Origin on a WebSocket handshake. Reject missing
       // Origin as well, so a cross-site socket cannot bypass the JSON CSRF gate.
       if (!req.headers.origin || !this.isSameOrigin(req)) { reject(403); return; }
-      if (req.url === '/api/chrome-profile/vnc') {
+      if (req.url === '/api/chrome-profile/vnc' || req.url === '/api/chrome-profile/audio') {
         if (!this.appAuth.authenticated(req)) { reject(401); return; }
-        const profile=this.ownerChromeProfile();
+        const profile=this.ownerChromeProfile(),audio=req.url.endsWith('/audio');
         if(profile.snapshot().state!=='running'){reject(409);return;}
         desktopSockets.handleUpgrade(req,socket,head,client=>{
           this.appAuth.track(req,socket);
           const opening=new AbortController();client.once('close',()=>opening.abort());
-          void profile.stream(opening.signal).then(desktop=>{if(client.readyState!==WebSocket.OPEN){desktop.destroy();return;}bridgeDesktop(client,desktop);}).catch(()=>client.close(1011,'Chrome profile unavailable'));
+          void profile.stream(opening.signal,audio).then(desktop=>{if(client.readyState!==WebSocket.OPEN){desktop.destroy();return;}bridgeDesktop(client,desktop);}).catch(()=>client.close(1011,'Chrome profile unavailable'));
         });return;
       }
-      const match = req.url?.match(/^\/api\/cowork\/agents\/([\w-]+)\/computer\/vnc$/);
+      const match = req.url?.match(/^\/api\/cowork\/agents\/([\w-]+)\/computer\/(vnc|audio)$/);
       if (!match) { reject(404); return; }
       const agent = this.cowork().getAgent(match[1]!);
       if (!agent) { reject(404); return; }
       const computer = this.coworkComputer(agent.id);
       if (agent.useHostComputer || computer.status().state !== 'running') { reject(409); return; }
+      const audio = match[2] === 'audio';
       desktopSockets.handleUpgrade(req, socket, head, (client) => {
         this.appAuth.track(req, socket);
         this.desktopAgents.set(client, this.coworkRuntimeKey(agent.id));
@@ -1483,7 +1484,7 @@ export class GituServer {
         client.once('close', () => opening.abort());
         void (async () => {
           if (agent.cloudConnectionId === 'hosted' && !process.env['AGENT_GITU_COMPUTER_BROKER_URL']) throw new Error('Gitu cloud is unavailable.');
-          const desktop = agent.cloudConnectionId && agent.cloudConnectionId !== 'hosted' ? await this.cloudComputer(agent.cloudConnectionId).desktopStream(computer.name, opening.signal) : connectDesktopStream(computer.name);
+          const desktop = agent.cloudConnectionId && agent.cloudConnectionId !== 'hosted' ? await this.cloudComputer(agent.cloudConnectionId).desktopStream(computer.name, opening.signal, audio) : connectDesktopStream(computer.name, audio);
           if (client.readyState !== WebSocket.OPEN) { desktop.destroy(); return; }
           bridgeDesktop(client, desktop);
         })().catch(() => client.close(1011, 'Desktop unavailable'));

@@ -28,6 +28,12 @@ done
 export XDG_RUNTIME_DIR=/tmp/gitu-runtime
 mkdir -p "$XDG_RUNTIME_DIR" "$HOME/Desktop" "$HOME/.local/share/applications"
 chmod 700 "$XDG_RUNTIME_DIR"
+export PULSE_SERVER="unix:$XDG_RUNTIME_DIR/pulse/native"
+pulseaudio --start --exit-idle-time=-1 --disallow-exit -n \
+  -L "module-native-protocol-unix auth-anonymous=1 socket=$XDG_RUNTIME_DIR/pulse/native" \
+  -L "module-null-sink sink_name=gitu_audio sink_properties=device.description=AgentGituAudio" \
+  -L "module-always-sink" > /tmp/gitu-audio.log 2>&1 || true
+pactl set-default-sink gitu_audio >/dev/null 2>&1 || true
 panel_dir="$HOME/.config/xfce4/xfconf/xfce-perchannel-xml"
 if [ ! -f "$panel_dir/xfce4-panel.xml" ] && [ -f /etc/xdg/xfce4/panel/default.xml ]; then
   mkdir -p "$panel_dir"

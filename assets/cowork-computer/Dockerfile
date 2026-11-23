@@ -18,7 +18,7 @@ RUN sed -i 's/\r$//' /computer/start-desktop.sh && chmod 755 /computer/start-des
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 ENV DISPLAY=:99
 RUN mv /root/.cache/ms-playwright /ms-playwright && chmod -R a+rX /ms-playwright
-RUN apt-get update && apt-get install -y --no-install-recommends xfce4 xfce4-terminal dbus-x11 xdotool mousepad adwaita-icon-theme xdg-utils x11vnc arc-theme papirus-icon-theme fonts-inter && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends xfce4 xfce4-terminal dbus-x11 xdotool mousepad adwaita-icon-theme xdg-utils x11vnc arc-theme papirus-icon-theme fonts-inter pulseaudio pulseaudio-utils ffmpeg libgl1-mesa-dri libglx-mesa0 libegl-mesa0 && rm -rf /var/lib/apt/lists/*
 # ARM64 uses the matching Playwright Chromium installed above. Google's Linux
 # desktop package is available only for AMD64.
 RUN if [ "$(dpkg --print-architecture)" = amd64 ]; then \

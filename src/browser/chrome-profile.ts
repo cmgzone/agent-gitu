@@ -11,7 +11,7 @@ export interface ChromeProfileLocation {
 }
 export interface ChromeProfileTarget extends ChromeProfileLocation {
   execute: ComputerExec;
-  stream(name: string, signal?: AbortSignal): Duplex | Promise<Duplex>;
+  stream(name: string, signal?: AbortSignal, audio?: boolean): Duplex | Promise<Duplex>;
 }
 type ProfileComputer = Pick<CoworkComputer, 'name' | 'status' | 'setControl' | 'start' | 'stop' | 'refreshStatus' | 'desktopInput' | 'execute'>;
 export interface ChromeProfileSnapshot {
@@ -160,9 +160,9 @@ export class ChromeProfileSession {
     const result = await this.computer.desktopInput(input);
     if (!result.ok) throw new Error(result.output);
   }
-  async stream(signal?: AbortSignal): Promise<Duplex> {
+  async stream(signal?: AbortSignal, audio = false): Promise<Duplex> {
     if (!this.target || !this.computer || this.snapshot().state !== 'running' || this.opening) throw new Error('Start Chrome before opening its screen.');
-    return this.target.stream(this.computer.name, signal);
+    return this.target.stream(this.computer.name, signal, audio);
   }
 
   private activeHandoff() {

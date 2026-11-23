@@ -8,7 +8,7 @@ import { SshConnectionRegistry } from '../connections/ssh-connections.js';
 import { deadline } from '../tools/command-timeout.js';
 import { ComputerBroker } from './computer-broker.js';
 import { MAX_COMPUTER_MESSAGE_BYTES, type ComputerExec } from './computer.js';
-import { DESKTOP_BRIDGE } from './desktop-stream.js';
+import { DESKTOP_AUDIO_BRIDGE, DESKTOP_BRIDGE } from './desktop-stream.js';
 import {binaryArgs,binaryChannel,validateComputerChunk,type ComputerBinary} from './file-transport.js';
 
 const ASSETS = fileURLToPath(new URL('../../assets/cowork-computer/', import.meta.url));
@@ -188,14 +188,14 @@ export class CloudComputerTransport {
     });
   }
 
-  async desktopStream(name: string, signal?: AbortSignal): Promise<Duplex> {
+  async desktopStream(name: string, signal?: AbortSignal, audio = false): Promise<Duplex> {
     if (!/^gitu-cowork-[a-f0-9]{24}$/.test(name)) throw new Error('Invalid cloud desktop container.');
     const timeout = new AbortController();
     const combined = signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal;
     const cancel = deadline(15_000, () => timeout.abort(new Error('Cloud desktop connection timed out.')));
     const opening = async () => {
       await this.broker.owned(name, combined);
-      const channel = await this.channel(cloudDockerCommand(['exec', '-i', name, '/computer/quota-guard', 'node', '-e', DESKTOP_BRIDGE]), combined);
+      const channel = await this.channel(cloudDockerCommand(['exec', '-i', name, '/computer/quota-guard', 'node', '-e', audio ? DESKTOP_AUDIO_BRIDGE : DESKTOP_BRIDGE]), combined);
       channel.stderr.resume();
       return channel;
     };

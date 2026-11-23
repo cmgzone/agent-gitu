@@ -2,7 +2,7 @@ import { runInNewContext } from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
 import { desktopView } from '../src/server/desktop-view.js';
 
-function viewer(search = '') {
+function viewer(search = '', extraGlobals: Record<string, unknown> = {}) {
   const intervals = new Map<number, () => void>();
   const retries = new Map<number, () => void>();
   const pageEvents: Record<string, (event?: unknown) => void> = {};
@@ -31,7 +31,7 @@ function viewer(search = '') {
   let sequence = 0;
   const script = desktopView('shared-agent').match(/<script type="module">([\s\S]*?)<\/script>/)![1]!.replace(/^import RFB from .*;$/m, '');
   runInNewContext(script, {
-    RFB: Client, WebSocket: Channel, Uint8Array, DataView, URLSearchParams, document,
+    RFB: Client, WebSocket: Channel, Uint8Array, Int16Array, ArrayBuffer, DataView, URLSearchParams, document,
     location: { protocol: 'https:', host: 'gitu.example', origin: 'https://gitu.example', search },
     parent,
     addEventListener: (event: string, callback: (event?: unknown) => void) => { pageEvents[event] = callback; },
@@ -40,6 +40,7 @@ function viewer(search = '') {
     setTimeout: (callback: () => void) => { const id = ++sequence; retries.set(id, callback); return id; },
     clearTimeout: (id: number) => retries.delete(id),
     performance: { now: () => 0 },
+    ...extraGlobals,
   });
   return { intervals, retries, document, sockets, connections, canvas, pageEvents, parent, monitor };
 }
@@ -123,5 +124,40 @@ describe('live desktop update pipeline', () => {
     v.pageEvents.pagehide!();
     expect(v.intervals.size).toBe(0); expect(v.retries.size).toBe(0);
     expect(v.connections[1]!.disconnect).toHaveBeenCalledOnce();
+  });
+
+  it('streams live PCM audio over the desktop audio socket on interactive focus', () => {
+    const played: Float32Array[] = [];
+    class FakeAudioContext {
+      state = 'running';
+      currentTime = 1;
+      destination = {};
+      resume = vi.fn(async () => {});
+      close = vi.fn(async () => {});
+      createBuffer(channels: number, length: number) {
+        const data = Array.from({ length: channels }, () => new Float32Array(length));
+        return { duration: length / 24000, getChannelData: (c: number) => data[c]! };
+      }
+      createBufferSource() {
+        return {
+          buffer: null as { getChannelData: (c: number) => Float32Array } | null,
+          connect: vi.fn(),
+          start: vi.fn(function (this: { buffer: { getChannelData: (c: number) => Float32Array } | null }) {
+            if (this.buffer) played.push(this.buffer.getChannelData(0));
+          }),
+        };
+      }
+    }
+    const v = viewer('', { AudioContext: FakeAudioContext });
+    v.connections[0]!.events.connect!();
+    v.pageEvents.message!({ origin: 'https://gitu.example', source: v.parent, data: { type: 'gitu-desktop-control', action: 'focus' } });
+    expect(v.sockets).toHaveLength(2);
+    expect(v.sockets[1]!.url).toBe('wss://gitu.example/api/cowork/agents/shared-agent/computer/audio');
+    const onMessage = v.sockets[1]!.addEventListener.mock.calls.find(([e]) => e === 'message')?.[1];
+    const samples = new Int16Array([16384, -16384, 8192, -8192]);
+    onMessage?.({ data: samples.buffer });
+    expect(played).toHaveLength(1);
+    expect(played[0]![0]).toBeCloseTo(0.5, 4);
+    expect(played[0]![1]).toBeCloseTo(0.25, 4);
   });
 });

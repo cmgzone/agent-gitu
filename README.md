@@ -176,6 +176,11 @@ logout is in **Settings → General**; **Cowork → Lock app** also revokes the 
 session. Five failed logins trigger a
 15-minute cooldown. Keep the password in your password manager.
 
+Pikpam/PikRouter connection sign-in from the desktop app opens in your default
+browser. The callback lands on the local server, and the workspace refreshes
+when the connection completes. The first workspace unlock still runs in the
+desktop window because it establishes that window's own session.
+
 In **Cowork → Connections**, enter your Composio project API key once, search
 for a service, choose **Connect → Continue sign-in**, and complete authorization
 with that service. Refresh to see the account status. Use **Reconnect** for

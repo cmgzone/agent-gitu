@@ -255,7 +255,7 @@
     S.sel.model = firstModel ? firstProvider.id + '::' + firstModel.id : '';
     persist();
   }
-  function startPikRouterOAuth(redirectPath) {
+  function startPikRouterOAuthInApp(redirectPath) {
     // Request a server-generated state token that is simultaneously bound to an HttpOnly
     // browser cookie. This prevents CSRF and link-sharing attacks: even if a callback URL
     // leaks, any third party browser will not have the matching state cookie and the server
@@ -271,6 +271,41 @@
     }).catch(function (err) {
       console.error('Could not start Pikpam sign-in:', err);
     });
+  }
+  function startPikRouterOAuth(redirectPath) {
+    var desktop = typeof window !== 'undefined' && window.gituDesktop;
+    var openAuthBrowser = desktop && typeof desktop.openAuthBrowser === 'function' ? desktop.openAuthBrowser.bind(desktop) : null;
+    if (!openAuthBrowser) { startPikRouterOAuthInApp(redirectPath); return; }
+    // The system browser owns the Pikpam cookies. Its callback updates the
+    // server-side connection, so the desktop app polls for the result instead
+    // of navigating away from the workspace.
+    openAuthBrowser(window.location.origin + '/auth/pikrouter/start').then(function (opened) {
+      if (!opened) { startPikRouterOAuthInApp(redirectPath); return; }
+      if (typeof toast === 'function') toast('Complete Pikpam sign-in in your browser. This window will refresh when you return.');
+      var checks = 0, timer = null, finished = false;
+      var finish = function () {
+        finished = true;
+        if (timer) clearInterval(timer);
+        if (typeof window.removeEventListener === 'function') window.removeEventListener('focus', check);
+      };
+      var check = function () {
+        if (finished) return;
+        checks++;
+        api('/api/auth/status').then(function (status) {
+          if (finished) return;
+          if (status && status.pikrouterConnected) {
+            finish();
+            if (typeof toast === 'function') toast('Pikpam connected.');
+            if (typeof loadModelCatalog === 'function') loadModelCatalog(true);
+            if (typeof refreshSetupProviders === 'function') refreshSetupProviders();
+          } else if (checks >= 150) {
+            finish();
+          }
+        }).catch(function () { if (checks >= 150) finish(); });
+      };
+      timer = setInterval(check, 2000);
+      if (typeof window.addEventListener === 'function') window.addEventListener('focus', check);
+    }).catch(function () { startPikRouterOAuthInApp(redirectPath); });
   }
   function openPikRouterTopup(redirectPath) {
     var token = '';

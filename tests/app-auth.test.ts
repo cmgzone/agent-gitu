@@ -59,6 +59,14 @@ describe('whole-app authentication', () => {
       expect(await page.text()).toContain('Continue with Pikpam');
       expect(page.headers.get('cache-control')).toBe('no-store');
       expect(page.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
+      const oauthStart = await fetch(base + '/auth/pikrouter/start', { redirect: 'manual' });
+      expect(oauthStart.status).toBe(302);
+      expect(oauthStart.headers.get('location')).toMatch(/^https:\/\/pikpam\.com\/oauth\/authorize\?/);
+      expect(oauthStart.headers.get('location')).toContain('client_id=client_gitu_agent');
+      const oauthState = oauthStart.headers.get('set-cookie')!;
+      expect(oauthState).toContain('pik_oauth_state=');
+      expect(oauthState).toContain('HttpOnly');
+      expect(oauthState).toContain('SameSite=Lax');
       expect(await remotePost('/api/auth/setup')).toBe(403);
       expect((await post('/api/auth/setup', { password }, { origin: 'http://evil.example' })).status).toBe(403);
       expect((await post('/api/auth/setup', { password }, { origin: base.replace('http:', 'https:') })).status).toBe(403);

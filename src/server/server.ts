@@ -7146,6 +7146,17 @@ export class GituServer {
       res.end(authPage(!this.appAuth.configured, AppAuth.local(req), this.appAuth.requiresEmail, this.appAuth.remoteRegistrationEnabled && this.appAuth.secure(req), this.appAuth.lanLogin(req), { pikrouterOAuth: true, google: this.googleSignIn.enabled && this.appAuth.requiresEmail && (AppAuth.local(req)||this.appAuth.secure(req)), link: url.searchParams.get('link') === 'google' && this.appAuth.authenticated(req) }));
       return;
     }
+    // Browser sign-in entry point for the desktop app. The state cookie is set
+    // in the system browser (where the callback lands), not in Electron.
+    if (path === '/auth/pikrouter/start' && method === 'GET') {
+      const state = randomBytes(24).toString('base64url');
+      const redirectUri = `${req.headers['x-forwarded-proto'] === 'https' || this.appAuth.secure(req) ? 'https' : 'http'}://${req.headers['host']}/callback`;
+      const authUrl = `https://pikpam.com/oauth/authorize?client_id=client_gitu_agent&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}`;
+      appendSetCookie(res, `${PIK_OAUTH_STATE_COOKIE}=${state}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600${this.appAuth.secure(req) ? '; Secure' : ''}`);
+      res.writeHead(302, { location: authUrl, 'cache-control': 'no-store' });
+      res.end();
+      return;
+    }
     if (path.startsWith('/api/auth/')) {
       // Credentials are accepted only as same-origin JSON, never URL parameters.
       if (!this.isSameOrigin(req)) { this.sendJson(res, 403, { error: 'cross-origin request rejected' }); return; }

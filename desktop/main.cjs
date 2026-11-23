@@ -733,6 +733,7 @@ function createMainWindow() {
   const themedWindow = mainWindow;
   require('./project-folder.cjs').registerProjectFolder(themedWindow.webContents, appUrl, (folderPath) => shell.openPath(folderPath));
   require('./app-sign-in.cjs').registerAppSignIn(themedWindow.webContents, (origin) => cloudAgentManager.isTrustedOrigin(origin), (url) => shell.openExternal(url));
+  require('./app-sign-in.cjs').registerAuthBrowser(themedWindow.webContents, (origin) => cloudAgentManager.isTrustedOrigin(origin), (url) => shell.openExternal(url));
   registerPhoneAccess(themedWindow.webContents, appUrl, phoneAccessStatus, () => allowPhoneAccess(true));
   registerCloudAgent(themedWindow.webContents, cloudAgentManager);
   themedWindow.webContents.ipc.on('gitu:theme', (event, theme) => {

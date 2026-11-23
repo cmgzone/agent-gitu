@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('gituDesktop', {
   openProjectFolder: (folderPath) => ipcRenderer.invoke('gitu:open-project-folder', folderPath),
   openAppSignIn: (url) => ipcRenderer.invoke('gitu:open-app-sign-in', url),
+  openAuthBrowser: (url) => ipcRenderer.invoke('gitu:open-auth-browser', url),
   phoneAccess: () => ipcRenderer.invoke('gitu:phone-access'),
   allowPhoneAccess: () => ipcRenderer.invoke('gitu:allow-phone-access'),
   cloudAgent: {

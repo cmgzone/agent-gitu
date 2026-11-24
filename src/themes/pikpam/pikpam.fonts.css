@@ -1,4 +1,6 @@
-/* Local offline fonts served from /fonts/* by Agent Gitu server */
+@import url('https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap');
+
+/* Local offline fallback fonts served from /fonts/* by Agent Gitu server */
 @font-face {
   font-family: 'Inter';
   font-style: normal;

@@ -4,34 +4,34 @@ export const UI_THEME_CSS = String.raw`
     color-scheme: dark;
     --cw-chat-surface:var(--bg);
     --chat-cloud-light:transparent; --chat-cloud-shade:transparent;
-    --bg: #111112; --card: #1f1f22; --card2: #161618; --sidebar: #161618;
-    --border: #2a2a2e; --border2: #3c3c42; --line: #2e2e33;
-    --text: #dfe2e5; --muted: #aaafb5; --faint: #91969e;
-    --accent: #3e9efb; --on-accent: #0a1317; --dark: #f1f1f1;
-    --hover: #252529; --selected: #2c2c31; --selection: #3a3a41;
-    --ok: #7cd49c; --err: #f0958d; --run: #59adff; --evidence: #e3b963;
-    --ok-dim: #1a2921; --err-dim: #311f1e; --run-dim: #1c2430; --amber-bg: #2b2416;
+    --bg: #000000; --card: #1F1F1F; --card2: #181818; --sidebar: #181818;
+    --border: oklch(1 0 0 / 10%); --border2: oklch(1 0 0 / 18%); --line: oklch(1 0 0 / 10%);
+    --text: #F4F4F5; --muted: #A1A1AA; --faint: #71717A;
+    --accent: #3B82F6; --on-accent: #FFFFFF; --dark: #FFFFFF;
+    --hover: #242426; --selected: #27272A; --selection: #132440;
+    --ok: #7cd49c; --err: #f0958d; --run: #60A5FA; --evidence: #e3b963;
+    --ok-dim: #1a2921; --err-dim: #311f1e; --run-dim: #132440; --amber-bg: #2b2416;
     --ok-border: #2c4a3a; --err-border: #5a3431; --run-border: #2f4561; --warn-border: #524322;
     --green: var(--ok); --red: var(--err); --blue: var(--run); --amber: var(--evidence);
-    --overlay: rgba(0,0,0,.64); --shadow: 0 1px 2px rgba(0,0,0,.35), 0 4px 12px rgba(0,0,0,.25);
-    --shadow-float: 0 8px 24px rgba(0,0,0,.45), 0 16px 48px rgba(0,0,0,.4); --thumb: #3c3c42;
-    --radius-inner: 8px; --radius-el: 12px; --radius-card: 16px;
-    --radius-bubble: 20px; --radius-chat: 28px; --radius-page: 32px; --radius-full: 9999px;
+    --overlay: rgba(0,0,0,.72); --shadow: 0 4px 12px oklch(0 0 0 / 32%), 0 1px 2px oklch(0 0 0 / 24%);
+    --shadow-float: 0 8px 24px oklch(0 0 0 / 45%), 0 2px 6px oklch(0 0 0 / 30%); --thumb: #3c3c42;
+    --radius-inner: 0.5rem; --radius-el: 0.625rem; --radius-card: 0.875rem;
+    --radius-bubble: 1rem; --radius-chat: 1.25rem; --radius-page: 1.25rem; --radius-full: 9999px;
   }
   :root[data-theme="light"] {
     color-scheme: light;
     --cw-chat-surface:var(--bg);
     --chat-cloud-light:transparent; --chat-cloud-shade:transparent;
-    --bg: #f1f4f7; --card: #ffffff; --card2: #eef2f6; --sidebar: #f1f4f7;
-    --border: #e1e6ec; --border2: #cbd3dc; --line: #dde3ea;
-    --text: #0a1317; --muted: #4e606f; --faint: #576572;
-    --accent: #0064e0; --on-accent: #ffffff; --dark: #1b1b1b;
-    --hover: #e7ecf2; --selected: #dfe5ec; --selection: #d2dae4;
-    --ok: #1f6d43; --err: #b42318; --run: #0064e0; --evidence: #7a5400;
-    --ok-dim: #ebf4ee; --err-dim: #fceeed; --run-dim: #ebf2fb; --amber-bg: #fbf5e6;
+    --bg: #F7F8FA; --card: #FFFFFF; --card2: #EEF1F6; --sidebar: #FFFFFF;
+    --border: oklch(0 0 0 / 8%); --border2: oklch(0 0 0 / 15%); --line: oklch(0 0 0 / 8%);
+    --text: #09090B; --muted: #52525B; --faint: #71717A;
+    --accent: #0057D8; --on-accent: #FFFFFF; --dark: #09090B;
+    --hover: #EEF1F6; --selected: #E6F0FF; --selection: #E6F0FF;
+    --ok: #1f6d43; --err: #b42318; --run: #0057D8; --evidence: #7a5400;
+    --ok-dim: #ebf4ee; --err-dim: #fceeed; --run-dim: #E6F0FF; --amber-bg: #fbf5e6;
     --ok-border: #c2decb; --err-border: #efc7c3; --run-border: #c2d6f2; --warn-border: #ead7a4;
-    --overlay: rgba(10,19,23,.32); --shadow: 0 1px 1px rgba(10,19,23,.05), 0 2px 8px rgba(10,19,23,.06);
-    --shadow-float: 0 4px 12px rgba(10,19,23,.08), 0 16px 36px rgba(10,19,23,.1); --thumb: #bcc6d1;
+    --overlay: rgba(10,19,23,.32); --shadow: 0 2px 6px oklch(0 0 0 / 6%), 0 6px 16px oklch(0 0 0 / 6%);
+    --shadow-float: 0 4px 12px oklch(0 0 0 / 8%), 0 12px 24px oklch(0 0 0 / 8%); --thumb: #bcc6d1;
   }
   .theme-toggle { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 32px; height: 32px; padding: 6px; color: var(--muted); border: 0; border-radius: var(--radius-inner); background: transparent; cursor: pointer; }
   #view .cw-top-nav button[aria-pressed=true] { background: var(--dark) !important; color: var(--bg); }
@@ -42,8 +42,15 @@ export const UI_THEME_CSS = String.raw`
   .sb .foot { display: flex; align-items: center; gap: 8px; }
   .sb .foot .project-chip { flex: 1; min-width: 0; }
   .cw-rail-foot .theme-toggle { align-self: center; }
-  /* Quiet surfaces and a clear type hierarchy replace decorative glow. */
-  body { background: var(--bg); }
+  /* Quiet Pikpam Neutral surfaces, Geist typography, and crisp Astryx button motion. */
+  body { background: var(--bg); font-family: Geist, Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  code, pre, kbd, .mono { font-family: "Geist Mono", "JetBrains Mono", ui-monospace, "SF Mono", Monaco, Consolas, monospace; }
+  button.btn, .home-sidebar nav button, .home-sidebar-foot button, .cw-top-nav button, .cw-tool-item {
+    border-radius: var(--radius-el);
+    transition: transform 140ms cubic-bezier(.2,.8,.2,1), background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+  }
+  button.btn:hover:not(:disabled) { transform: translateY(-1px); }
+  button.btn:active:not(:disabled) { transform: scale(0.98); }
   input::placeholder, textarea::placeholder { color: var(--faint); opacity: 1; }
   #mascotWrap { display: none !important; }
   .home::before { display: none; }
@@ -113,7 +120,7 @@ export const UI_THEME_BOOTSTRAP = String.raw`
     // Mobile browser/PWA chrome must match the first painted theme; otherwise a
     // dark page sits under a white address bar until the next navigation.
     var meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.setAttribute('content', document.documentElement.getAttribute('data-theme') === 'light' ? '#f1f4f7' : '#111112');
+    if (meta) meta.setAttribute('content', document.documentElement.getAttribute('data-theme') === 'light' ? '#F7F8FA' : '#000000');
   })();
 `;
 

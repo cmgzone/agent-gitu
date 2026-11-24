@@ -12,13 +12,10 @@ import { DropdownMenu } from '@astryxdesign/core/DropdownMenu';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { Heading, Text } from '@astryxdesign/core/Text';
 import { List, ListItem } from '@astryxdesign/core/List';
-import { Selector } from '@astryxdesign/core/Selector';
 import { StatusDot } from '@astryxdesign/core/StatusDot';
 import { Tab, TabList } from '@astryxdesign/core/TabList';
-import { TextArea } from '@astryxdesign/core/TextArea';
 import { TextInput } from '@astryxdesign/core/TextInput';
 import { Divider } from '@astryxdesign/core/Divider';
-import { Banner } from '@astryxdesign/core/Banner';
 import { useMediaQuery } from '@astryxdesign/core/hooks';
 import {
   Activity,
@@ -41,6 +38,10 @@ import {
 } from 'lucide-react';
 import { AppIcon } from '../components/AppIcons';
 import { getHostBridge, type CoworkAgent } from '../bridge';
+import {
+  CodingChatLandingView,
+  type StartCodingTaskOptions,
+} from './CodingChatLandingView';
 
 interface ManagedProject {
   path: string;
@@ -127,13 +128,13 @@ export function CodeDashboardView({
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  const [goal, setGoal] = useState('');
   const [starting, setStarting] = useState(false);
   const [sessionFilter, setSessionFilter] = useState('');
   const [selectedProject, setSelectedProject] = useState<string>(() => getHostBridge()?.effectiveProjectPath?.() || '');
   const [selectedModel, setSelectedModel] = useState<string>(() => getHostBridge()?.getState?.().sel?.model || '');
   const [selectedEffort, setSelectedEffort] = useState<string>(() => getHostBridge()?.getState?.().sel?.effort || 'medium');
   const [creditsAvailable, setCreditsAvailable] = useState<number | null>(null);
+  const [ownerName, setOwnerName] = useState<string>('');
   const [ownerEmail, setOwnerEmail] = useState<string>('');
   const [errorMsg, setErrorMsg] = useState<string>('');
 
@@ -200,6 +201,7 @@ export function CodeDashboardView({
         if (typeof avail === 'number' && Number.isFinite(avail)) setCreditsAvailable(avail);
       }
       if (authRes.status === 'fulfilled' && authRes.value?.account) {
+        setOwnerName(authRes.value.account.name || '');
         setOwnerEmail(authRes.value.account.email || authRes.value.account.name || '');
       }
       const eff = bridge.effectiveProjectPath?.() || '';
@@ -244,22 +246,25 @@ export function CodeDashboardView({
     }
   };
 
-  const handleStartTask = async () => {
-    const trimmed = goal.trim();
-    if (!trimmed || starting) return;
+  const handleStartTask = async (opts: StartCodingTaskOptions): Promise<boolean> => {
+    const trimmed = opts.goal.trim();
+    const hasFiles = Array.isArray(opts.files) && opts.files.length > 0;
+    if ((!trimmed && !hasFiles) || starting) return false;
     const bridge = getHostBridge();
-    if (!bridge) return;
+    if (!bridge) return false;
     if (!selectedModel) {
       setErrorMsg('Connect a model provider first in Settings → Providers.');
       onOpenSettings('providers');
-      return;
+      return false;
     }
     setErrorMsg('');
     setStarting(true);
+    const taskMode = opts.mode || 'agent';
     try {
       const parts = selectedModel.split('::');
       const provider = parts[0] || '';
       const model = parts.slice(1).join('::');
+      const projectPath = selectedProject || bridge.effectiveProjectPath?.() || undefined;
       const res = await bridge.api<{ runId: string }>('/api/runs', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -267,22 +272,26 @@ export function CodeDashboardView({
           goal: trimmed,
           provider,
           model,
-          mode: 'agent',
-          effort: selectedEffort || 'medium',
-          projectPath: selectedProject || bridge.effectiveProjectPath?.() || undefined,
+          mode: taskMode,
+          effort: opts.effort || selectedEffort || 'medium',
+          ...(typeof opts.review === 'boolean' ? { review: opts.review } : {}),
+          projectPath,
+          ...(hasFiles ? { files: opts.files } : {}),
         }),
       });
-      setGoal('');
       bridge.openRun?.(res.runId, {
-        chatish: false,
-        goal: trimmed,
-        projectPath: selectedProject || bridge.effectiveProjectPath?.() || undefined,
+        chatish: taskMode === 'chat',
+        mode: taskMode,
+        goal: trimmed || opts.files?.[0]?.name || 'Attached files',
+        projectPath,
       });
       bridge.renderSidebar?.();
+      return true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to start task.';
       setErrorMsg(msg);
       bridge.toast(msg, true);
+      return false;
     } finally {
       setStarting(false);
     }
@@ -505,173 +514,170 @@ export function CodeDashboardView({
         topNav={topNav}
         sideNav={sideNav}
       >
-        <LayoutContent padding={isCompact ? 4 : 6}>
-          <VStack gap={6}>
-            {/* Page Header */}
-            <HStack hAlign="between" vAlign="center" wrap="wrap" gap={3}>
-              <VStack gap={1}>
-                <Heading level={1}>Code workspace</Heading>
-                <Text type="supporting" color="secondary">
-                  Autonomous coding sessions, managed repositories, and collaborative agents.
-                </Text>
-              </VStack>
-              <HStack gap={2} wrap="wrap">
-                <Button
-                  label={refreshing ? 'Refreshing…' : 'Refresh'}
-                  variant="secondary"
-                  size="sm"
-                  icon={<AppIcon icon={RefreshCw} size="sm" />}
-                  isDisabled={refreshing}
-                  onClick={() => void loadData(true)}
-                />
-                <Button
-                  label="Open Folder"
-                  variant="secondary"
-                  size="sm"
-                  icon={<AppIcon icon={Folder} size="sm" />}
-                  onClick={() => host?.openFolderBrowser?.()}
-                />
-                <Button
-                  label="New Project"
-                  variant="primary"
-                  size="sm"
-                  icon={<AppIcon icon={Plus} size="sm" />}
-                  onClick={() => host?.newProject?.()}
-                />
+        {tab === 'overview' ? (
+          <CodingChatLandingView
+            isCompact={isCompact}
+            ownerName={ownerName}
+            ownerEmail={ownerEmail}
+            agents={agents}
+            selectedProject={selectedProject}
+            projectOptions={projectOptions}
+            selectedModel={selectedModel}
+            modelOptions={modelOptions}
+            selectedEffort={selectedEffort}
+            starting={starting}
+            errorMsg={errorMsg}
+            onSelectProject={handleSelectProject}
+            onSelectModel={handleSelectModel}
+            onSelectEffort={handleSelectEffort}
+            onOpenFolderBrowser={() => host?.openFolderBrowser?.()}
+            onNewProject={() => host?.newProject?.()}
+            onOpenSettings={onOpenSettings}
+            onOpenSearch={() => host?.openSearchOverlay?.()}
+            onStartTask={handleStartTask}
+          />
+        ) : (
+          <LayoutContent padding={isCompact ? 4 : 6}>
+            <VStack gap={6}>
+              {/* Page Header */}
+              <HStack hAlign="between" vAlign="center" wrap="wrap" gap={3}>
+                <VStack gap={1}>
+                  <Heading level={1}>Code workspace</Heading>
+                  <Text type="supporting" color="secondary">
+                    Autonomous coding sessions, managed repositories, and collaborative agents.
+                  </Text>
+                </VStack>
+                <HStack gap={2} wrap="wrap">
+                  <Button
+                    label="New Chat"
+                    variant="secondary"
+                    size="sm"
+                    icon={<AppIcon icon={Terminal} size="sm" />}
+                    onClick={() => setTab('overview')}
+                  />
+                  <Button
+                    label={refreshing ? 'Refreshing…' : 'Refresh'}
+                    variant="secondary"
+                    size="sm"
+                    icon={<AppIcon icon={RefreshCw} size="sm" />}
+                    isDisabled={refreshing}
+                    onClick={() => void loadData(true)}
+                  />
+                  <Button
+                    label="Open Folder"
+                    variant="secondary"
+                    size="sm"
+                    icon={<AppIcon icon={Folder} size="sm" />}
+                    onClick={() => host?.openFolderBrowser?.()}
+                  />
+                  <Button
+                    label="New Project"
+                    variant="primary"
+                    size="sm"
+                    icon={<AppIcon icon={Plus} size="sm" />}
+                    onClick={() => host?.newProject?.()}
+                  />
+                </HStack>
               </HStack>
-            </HStack>
 
-            <TabList
-              value={tab}
-              onChange={(val) => setTab(val as DashboardTab)}
-              aria-label="Code workspace tabs"
-              hasDivider
-            >
-              <Tab value="overview" label="Overview" />
-              <Tab value="projects" label={`Projects (${projects.length})`} />
-              <Tab value="sessions" label={`Sessions (${sessions.length})`} />
-            </TabList>
+              <TabList
+                value={tab}
+                onChange={(val) => setTab(val as DashboardTab)}
+                aria-label="Code workspace tabs"
+                hasDivider
+              >
+                <Tab value="overview" label="Overview" />
+                <Tab value="projects" label={`Projects (${projects.length})`} />
+                <Tab value="sessions" label={`Sessions (${sessions.length})`} />
+              </TabList>
 
-            {errorMsg ? (
-              <Banner
-                status="error"
-                title="Could not start task"
-                description={errorMsg}
-              />
-            ) : null}
-
-            {tab === 'overview' ? (
-              <VStack gap={5}>
-                <Card padding={5}>
-                  <VStack gap={4}>
-                    <HStack hAlign="between" vAlign="center" wrap="wrap" gap={2}>
-                      <VStack gap={0}>
-                        <Heading level={3}>What shall we build?</Heading>
-                        <Text type="supporting" color="secondary">
-                          Select a repository and describe the task — Agent Gitu plans, edits, and verifies end-to-end.
-                        </Text>
-                      </VStack>
-                      <StatusDot
-                        variant={selectedProject ? 'success' : 'warning'}
-                        label={selectedProject ? shortPath(selectedProject) : 'No folder selected'}
+              {tab === 'projects' ? (
+                <VStack gap={4}>
+                  {loading && projects.length === 0 ? (
+                    <Card padding={4}>
+                      <Text type="supporting" color="secondary">Loading projects…</Text>
+                    </Card>
+                  ) : projects.length === 0 ? (
+                    <Card padding={6}>
+                      <EmptyState
+                        isCompact
+                        title="No managed projects"
+                        description="Click New Project or Open Folder to add your workspace."
                       />
-                    </HStack>
-
-                    <TextArea
-                      label="Task prompt"
-                      isLabelHidden
-                      placeholder="Describe a feature to build, a bug to investigate, or a refactor to verify…"
-                      value={goal}
-                      onChange={(val) => setGoal(val)}
-                      rows={3}
-                    />
-
-                    <HStack hAlign="between" vAlign="center" wrap="wrap" gap={3}>
-                      <HStack gap={2} wrap="wrap" vAlign="center">
-                        {projectOptions.length > 0 ? (
-                          <Selector
-                            label="Project"
-                            isLabelHidden
-                            size="sm"
-                            variant="secondary"
-                            value={selectedProject}
-                            options={projectOptions}
-                            onChange={(val) => handleSelectProject(String(val))}
-                          />
-                        ) : null}
-                        {modelOptions.length > 0 ? (
-                          <Selector
-                            label="Model"
-                            isLabelHidden
-                            size="sm"
-                            variant="secondary"
-                            value={selectedModel}
-                            options={modelOptions}
-                            onChange={(val) => handleSelectModel(String(val))}
-                          />
-                        ) : null}
-                        <Selector
-                          label="Effort"
-                          isLabelHidden
-                          size="sm"
-                          variant="secondary"
-                          value={selectedEffort}
-                          options={[
-                            { value: 'low', label: 'Low effort' },
-                            { value: 'medium', label: 'Medium effort' },
-                            { value: 'high', label: 'High effort' },
-                            { value: 'max', label: 'Max effort' },
-                          ]}
-                          onChange={(val) => handleSelectEffort(String(val))}
-                        />
-                      </HStack>
-
-                      <Button
-                        label={starting ? 'Starting…' : 'Start Task'}
-                        variant="primary"
-                        size="sm"
-                        icon={<AppIcon icon={Terminal} size="sm" />}
-                        isDisabled={starting || !goal.trim()}
-                        onClick={() => void handleStartTask()}
+                    </Card>
+                  ) : (
+                    <Grid columns={{ minWidth: 240, max: 3 }} gap={4}>
+                      {projects.map((proj) => {
+                        const isCurrent = selectedProject === proj.path;
+                        const projRuns = sessions.filter((s) => s.projectPath === proj.path).length;
+                        return (
+                          <Card key={proj.path} padding={5}>
+                            <VStack gap={3}>
+                              <HStack hAlign="between" vAlign="center" gap={2}>
+                                <Heading level={4}>{proj.name || shortPath(proj.path)}</Heading>
+                                <StatusDot
+                                  variant={isCurrent ? 'success' : 'neutral'}
+                                  label={isCurrent ? 'Active' : 'Ready'}
+                                />
+                              </HStack>
+                              <Text type="code" size="sm" color="secondary" maxLines={2}>
+                                {proj.path}
+                              </Text>
+                              <Text type="supporting" color="accent">
+                                {projRuns} {projRuns === 1 ? 'session' : 'sessions'}
+                              </Text>
+                              <Divider />
+                              <Button
+                                label={isCurrent ? 'Selected project' : 'Select project'}
+                                variant={isCurrent ? 'primary' : 'secondary'}
+                                size="sm"
+                                width="100%"
+                                onClick={() => {
+                                  handleSelectProject(proj.path);
+                                  setTab('overview');
+                                }}
+                              />
+                            </VStack>
+                          </Card>
+                        );
+                      })}
+                    </Grid>
+                  )}
+                </VStack>
+              ) : (
+                <VStack gap={4}>
+                  <HStack gap={2} vAlign="center">
+                    <StackItem size="fill">
+                      <TextInput
+                        label="Filter sessions"
+                        isLabelHidden
+                        placeholder="Filter by task goal, project, status, or model…"
+                        value={sessionFilter}
+                        onChange={(val) => setSessionFilter(val)}
                       />
-                    </HStack>
-                  </VStack>
-                </Card>
-
-                {/* Recent Coding Sessions */}
-                <VStack gap={3}>
-                  <HStack hAlign="between" vAlign="center">
-                    <Heading level={3}>Recent sessions</Heading>
-                    {sessions.length > 6 ? (
-                      <Button
-                        label="View all sessions"
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setTab('sessions')}
-                      />
-                    ) : null}
+                    </StackItem>
                   </HStack>
 
                   {loading && sessions.length === 0 ? (
                     <Card padding={4}>
                       <Text type="supporting" color="secondary">Loading sessions…</Text>
                     </Card>
-                  ) : sessions.length === 0 ? (
-                    <Card padding={5}>
+                  ) : filteredSessions.length === 0 ? (
+                    <Card padding={6}>
                       <EmptyState
                         isCompact
-                        title="No coding sessions yet"
-                        description="Enter a task above to launch your first autonomous coding run."
+                        title="No matching sessions"
+                        description="Start a new task in Overview or clear your search filter."
                       />
                     </Card>
                   ) : (
                     <Card padding={2}>
                       <List density="compact" hasDividers>
-                        {sessions.slice(0, 6).map((s) => (
+                        {filteredSessions.map((s) => (
                           <ListItem
                             key={s.runId}
                             label={s.goal || 'Untitled task'}
-                            description={`${s.project || shortPath(s.projectPath)} · ${s.model || 'Default model'} · ${formatStamp(s.updatedAt || s.startedAt)}`}
+                            description={`${s.project || shortPath(s.projectPath)} · ${s.model || 'Default model'} · ${formatStamp(s.updatedAt || s.startedAt)}${s.coworkTask?.agentName ? ` · via ${s.coworkTask.agentName}` : ''}`}
                             startContent={
                               <StatusDot
                                 variant={statusDotVariant(s.status)}
@@ -698,172 +704,10 @@ export function CodeDashboardView({
                     </Card>
                   )}
                 </VStack>
-
-                {/* Managed Projects Grid */}
-                <VStack gap={3}>
-                  <HStack hAlign="between" vAlign="center">
-                    <Heading level={3}>Managed projects</Heading>
-                    <Button
-                      label="Browse folder"
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => host?.openFolderBrowser?.()}
-                    />
-                  </HStack>
-
-                  {projects.length === 0 ? (
-                    <Card padding={5}>
-                      <EmptyState
-                        isCompact
-                        title="No projects added yet"
-                        description="Create a project or open a local folder to keep code and sessions organized."
-                      />
-                    </Card>
-                  ) : (
-                    <Grid columns={{ minWidth: 240, max: 3 }} gap={4}>
-                      {projects.slice(0, 6).map((proj) => {
-                        const isCurrent = selectedProject === proj.path;
-                        const projRuns = sessions.filter((s) => s.projectPath === proj.path).length;
-                        return (
-                          <Card key={proj.path} padding={5}>
-                            <VStack gap={3}>
-                              <HStack hAlign="between" vAlign="center" gap={2}>
-                                <Heading level={4}>{proj.name || shortPath(proj.path)}</Heading>
-                                <StatusDot
-                                  variant={isCurrent ? 'success' : 'neutral'}
-                                  label={isCurrent ? 'Active' : 'Ready'}
-                                />
-                              </HStack>
-                              <Text type="code" size="sm" color="secondary" maxLines={1}>
-                                {proj.path}
-                              </Text>
-                              <Text type="supporting" color="accent">
-                                {projRuns} {projRuns === 1 ? 'session' : 'sessions'} recorded
-                              </Text>
-                              <Divider />
-                              <Button
-                                label={isCurrent ? 'Selected project' : 'Select project'}
-                                variant={isCurrent ? 'primary' : 'secondary'}
-                                size="sm"
-                                width="100%"
-                                onClick={() => handleSelectProject(proj.path)}
-                              />
-                            </VStack>
-                          </Card>
-                        );
-                      })}
-                    </Grid>
-                  )}
-                </VStack>
-              </VStack>
-            ) : tab === 'projects' ? (
-              <VStack gap={4}>
-                {projects.length === 0 ? (
-                  <Card padding={6}>
-                    <EmptyState
-                      isCompact
-                      title="No managed projects"
-                      description="Click New Project or Open Folder to add your workspace."
-                    />
-                  </Card>
-                ) : (
-                  <Grid columns={{ minWidth: 240, max: 3 }} gap={4}>
-                    {projects.map((proj) => {
-                      const isCurrent = selectedProject === proj.path;
-                      const projRuns = sessions.filter((s) => s.projectPath === proj.path).length;
-                      return (
-                        <Card key={proj.path} padding={5}>
-                          <VStack gap={3}>
-                            <HStack hAlign="between" vAlign="center" gap={2}>
-                              <Heading level={4}>{proj.name || shortPath(proj.path)}</Heading>
-                              <StatusDot
-                                variant={isCurrent ? 'success' : 'neutral'}
-                                label={isCurrent ? 'Active' : 'Ready'}
-                              />
-                            </HStack>
-                            <Text type="code" size="sm" color="secondary" maxLines={2}>
-                              {proj.path}
-                            </Text>
-                            <Text type="supporting" color="accent">
-                              {projRuns} {projRuns === 1 ? 'session' : 'sessions'}
-                            </Text>
-                            <Divider />
-                            <Button
-                              label={isCurrent ? 'Selected project' : 'Select project'}
-                              variant={isCurrent ? 'primary' : 'secondary'}
-                              size="sm"
-                              width="100%"
-                              onClick={() => {
-                                handleSelectProject(proj.path);
-                                setTab('overview');
-                              }}
-                            />
-                          </VStack>
-                        </Card>
-                      );
-                    })}
-                  </Grid>
-                )}
-              </VStack>
-            ) : (
-              <VStack gap={4}>
-                <HStack gap={2} vAlign="center">
-                  <StackItem size="fill">
-                    <TextInput
-                      label="Filter sessions"
-                      isLabelHidden
-                      placeholder="Filter by task goal, project, status, or model…"
-                      value={sessionFilter}
-                      onChange={(val) => setSessionFilter(val)}
-                    />
-                  </StackItem>
-                </HStack>
-
-                {filteredSessions.length === 0 ? (
-                  <Card padding={6}>
-                    <EmptyState
-                      isCompact
-                      title="No matching sessions"
-                      description="Start a new task in Overview or clear your search filter."
-                    />
-                  </Card>
-                ) : (
-                  <Card padding={2}>
-                    <List density="compact" hasDividers>
-                      {filteredSessions.map((s) => (
-                        <ListItem
-                          key={s.runId}
-                          label={s.goal || 'Untitled task'}
-                          description={`${s.project || shortPath(s.projectPath)} · ${s.model || 'Default model'} · ${formatStamp(s.updatedAt || s.startedAt)}${s.coworkTask?.agentName ? ` · via ${s.coworkTask.agentName}` : ''}`}
-                          startContent={
-                            <StatusDot
-                              variant={statusDotVariant(s.status)}
-                              label={statusLabel(s.status)}
-                            />
-                          }
-                          endContent={
-                            <Button
-                              label="Open"
-                              size="sm"
-                              variant="primary"
-                              onClick={() =>
-                                host?.openRun?.(s.runId, {
-                                  chatish: s.mode === 'chat',
-                                  mode: s.mode,
-                                  projectPath: s.projectPath,
-                                })
-                              }
-                            />
-                          }
-                        />
-                      ))}
-                    </List>
-                  </Card>
-                )}
-              </VStack>
-            )}
-          </VStack>
-        </LayoutContent>
+              )}
+            </VStack>
+          </LayoutContent>
+        )}
       </AppShell>
     </VStack>
   );

@@ -110,8 +110,9 @@
     .composer { width: 100%; }
     .composer-bar { gap: 4px; padding-inline: 2px; }
     .composer-bar .pill, .composer-bar .send { min-height: 40px; }
+    .composer-bar .send { width: 40px; min-width: 40px; height: 40px; }
     .control-prefix { display: none; }
-    .model-control { max-width: calc(100% - 78px); }
+    .model-control { min-width: 0; flex: 1 1 0; max-width: none; }
     .model-pick .mp-label { max-width: 150px; }
     .model-menu { position: fixed; left: 12px; right: 12px; bottom: 72px; top: auto; width: auto; max-width: none; }
     .model-meta { display: none; }

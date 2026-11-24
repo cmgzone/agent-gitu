@@ -27,7 +27,8 @@ export const UI_BUTTON_CSS = String.raw`
   .action-glyph svg { width: 17px; height: 17px; }
   button:not(.btn) > .action-glyph:not(:only-child) { margin-inline-end: 7px; }
   :is(.iconbtn, .ubtn, .cw-attach, .cw-send, .cw-info-toggle, .cw-panel-toggle, .cw-profile-close, .close, .send) { border-radius: 50%; }
-  :is(button.on, button.cur, button.active, button.sel, button[aria-selected="true"], button[aria-pressed="true"]):not(.cw-colors button):not(.toggle):not([role="switch"]):not(.chat-question-choice):not(.qcard .opt):not(.setup-agent-mode):not(.setup-agent-card):not(.setup-char-pick) { background: var(--selected) !important; }
+  :is(button.on, button.cur, button.active, button.sel, button[aria-selected="true"], button[aria-pressed="true"]):not(.cw-colors button):not(.toggle):not([role="switch"]):not(.chat-question-choice):not(.qcard .opt):not(.setup-agent-mode):not(.setup-agent-card):not(.setup-char-pick):where(:not(#gituAstryxRoot *, dialog *)),
+  .gitu-astryx-legacy-host :is(button.on, button.cur, button.active, button.sel, button[aria-selected="true"], button[aria-pressed="true"]):not(.cw-colors button):not(.toggle):not([role="switch"]):not(.chat-question-choice):not(.qcard .opt):not(.setup-agent-mode):not(.setup-agent-card):not(.setup-char-pick) { background: var(--selected) !important; }
   .cw-rail-head .iconbtn { width: 30px; height: 30px; }
   .cw-chat-head #cwBack { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; padding: 0; }
   .cw-chat-head #cwBack svg, .cw-attach svg, .cw-send svg, .cw-panel-toggle svg { width: 19px; height: 19px; }
@@ -58,12 +59,12 @@ export const UI_BUTTON_JS = String.raw`
     if (/folder|project|files/.test(text)) return 'folder';
     if (/browser|website|web/.test(text)) return 'globe';
     if (/terminal|shell/.test(text)) return 'terminal';
+    if (/stop|pause/.test(text)) return 'stop';
+    if (/send/.test(text)) return 'send';
     if (/team|agent|profile|cowork/.test(text)) return 'users';
     if (/schedule|history/.test(text)) return 'clock';
     if (/settings|setup|configure/.test(text)) return 'gear';
     if (/copy/.test(text)) return 'copy';
-    if (/stop|pause/.test(text)) return 'stop';
-    if (/send/.test(text)) return 'send';
     if (/new|add|create|install/.test(text)) return 'plus';
     if (/start|continue|open|launch|run/.test(text)) return 'play';
     return null;
@@ -76,8 +77,8 @@ export const UI_BUTTON_JS = String.raw`
       download: '<path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/>',
       upload: '<path d="M12 16V4m-5 5 5-5 5 5M4 16v5h16v-5"/>',
       play: '<path d="m8 4 12 8-12 8z"/>',
-      stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
-      send: '<path d="M12 20V4m-7 7 7-7 7 7"/>'
+      stop: '<rect x="6" y="6" width="12" height="12" rx="2.5" fill="currentColor" stroke="none"/>',
+      send: '<path d="M12 19V5m-6 6 6-6 6 6"/>'
     };
     return paths[name] ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' + paths[name] + '</svg>' : icon(name);
   }

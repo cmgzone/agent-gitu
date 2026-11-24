@@ -17,7 +17,9 @@
     b.classList.toggle('stop', stopMode);
     b.title = stopMode ? 'Stop the agent' : 'send (Enter)';
     b.setAttribute('aria-label', stopMode ? 'Stop the agent' : 'Send message');
-    b.innerHTML = stopMode ? '&#9632;' : '&#8593;';
+    b.innerHTML = stopMode
+      ? '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg>'
+      : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 19V5m-6 6 6-6 6 6"/></svg>';
     b.disabled=!stopMode&&pendingFor().some(function(file){return file.loading||file.error;});
     // A new task can be queued behind a live run and starts as a fresh phase
     // in this session once the current task completes.

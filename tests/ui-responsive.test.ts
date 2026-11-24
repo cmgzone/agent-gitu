@@ -205,4 +205,19 @@ describe('UI — responsive task shell and trustworthy controls', () => {
     expect(UI_HTML).toContain('class="cw-identity-hero"');
     expect(UI_HTML).toContain('.cw-profile-tabs');
   });
+
+  it('maps stop/pause controls to stop icon instead of agent/users and renders crisp #send2 SVGs', () => {
+    const start = UI_HTML.indexOf('  function actionIconName(label) {');
+    const end = UI_HTML.indexOf('  function actionSvg(name) {', start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const context = createContext({});
+    new Script(UI_HTML.slice(start, end)).runInContext(context);
+    const actionIconName = context.actionIconName as (label: string) => string | null;
+    expect(actionIconName('Stop the agent')).toBe('stop');
+    expect(actionIconName('Send message')).toBe('send');
+    expect(actionIconName('Switch agents')).toBe('users');
+    expect(UI_HTML).toContain('<rect x="6" y="6" width="12" height="12" rx="2.5"');
+    expect(UI_HTML).toContain('<path d="M12 19V5m-6 6 6-6 6 6"/>');
+  });
 });

@@ -13,13 +13,17 @@
 .gitu-astryx-dashboard-host {
   position: fixed;
   inset: 0;
-  z-index: 15;
+  z-index: 25;
   background: var(--color-background-body);
   color: var(--color-text-primary);
   display: flex;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+}
+
+body:has(.gitu-astryx-dashboard-host) #mascotWrap {
+  display: none !important;
 }
 
 .gitu-astryx-plush {

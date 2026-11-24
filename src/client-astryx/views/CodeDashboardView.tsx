@@ -332,7 +332,7 @@ export function CodeDashboardView({
         <TopNavHeading
           logo={<Avatar src="/brand/agent-gitu-mark.svg" name="Agent Gitu" size="sm" />}
           heading="Agent Gitu"
-          subheading="Code Console"
+          subheading={isCompact ? undefined : 'Code Console'}
         />
       }
       startContent={
@@ -375,7 +375,7 @@ export function CodeDashboardView({
               },
             ]}
           />
-          {creditsAvailable !== null ? (
+          {!isCompact && creditsAvailable !== null ? (
             <Button
               label={`${Math.round(creditsAvailable).toLocaleString('en-US')} cr`}
               size="sm"
@@ -401,13 +401,15 @@ export function CodeDashboardView({
               onClick={onOpenCloudAgents}
             />
           ) : null}
-          <Button
-            label="Cowork"
-            size="sm"
-            variant="primary"
-            icon={<AppIcon icon={Bot} size="sm" />}
-            onClick={() => host?.openCowork?.()}
-          />
+          {isCompact ? (
+            <Button
+              label="Cowork"
+              size="sm"
+              variant="primary"
+              icon={<AppIcon icon={Bot} size="sm" />}
+              onClick={() => host?.openCowork?.()}
+            />
+          ) : null}
         </HStack>
       }
     />

@@ -257,7 +257,7 @@
   .composer-topline .coding-access-pill + .context-trigger { margin-left:0; }
   .composer-workspace svg { width:15px; height:15px; flex:none; }
   .composer-bar { flex-wrap:nowrap; gap:8px; }
-  .composer-bar .model-control { min-width:0; flex:1; max-width:calc(100% - 88px); }
+  .composer-bar .model-control { min-width:0; flex:1 1 0; max-width:none; }
   .model-pick { max-width:100%; }
   .model-pick .mp-label { display:inline-flex; align-items:center; gap:7px; min-width:0; }
   .model-short-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }

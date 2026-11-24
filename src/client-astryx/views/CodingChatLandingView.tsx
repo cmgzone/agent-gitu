@@ -94,7 +94,11 @@ const pageStyle: CSSProperties = {minHeight: '100%'};
 const composerInputStyle: CSSProperties = {
   minHeight: 'calc(var(--spacing-10) * 2)',
 };
-const categoriesStyle: CSSProperties = {paddingInline: 'var(--spacing-3)'};
+const categoriesStyle: CSSProperties = {paddingInline: 'var(--spacing-2)'};
+const categoryGroupStyle: CSSProperties = {
+  flexWrap: 'wrap',
+  maxWidth: '100%',
+};
 
 const CATEGORY_SUGGESTIONS: Record<
   string,
@@ -272,6 +276,12 @@ function shortPath(raw: string | undefined): string {
   const normalized = raw.replace(/\\/g, '/').replace(/\/+$/, '');
   const parts = normalized.split('/').filter(Boolean);
   return parts[parts.length - 1] || normalized;
+}
+
+function truncateLabel(text: string, maxLen: number): string {
+  const clean = text.trim();
+  if (clean.length <= maxLen) return clean;
+  return `${clean.slice(0, Math.max(1, maxLen - 1)).trimEnd()}…`;
 }
 
 function fileKey(file: File): string {
@@ -649,10 +659,10 @@ export function CodingChatLandingView({
     <Layout
       height="fill"
       contentWidth={720}
-      padding={isCompact ? 4 : 6}
+      padding={isCompact ? 3 : 6}
       content={
         <LayoutContent>
-          <VStack gap={8} vAlign="center" style={pageStyle}>
+          <VStack gap={isCompact ? 5 : 8} vAlign="center" style={pageStyle}>
             {/* Greeting */}
             <VStack gap={1}>
               <HStack gap={2} vAlign="center">
@@ -661,7 +671,7 @@ export function CodingChatLandingView({
                   {greeting}
                 </Text>
               </HStack>
-              <Text type="display-2" as="h1">
+              <Text type={isCompact ? 'heading-1' : 'display-2'} as="h1">
                 Where should we start?
               </Text>
             </VStack>
@@ -672,6 +682,7 @@ export function CodingChatLandingView({
               onChange={setDraft}
               onSubmit={value => void submitDraft(value)}
               isDisabled={starting}
+              density={isCompact ? 'compact' : 'balanced'}
               placeholder="Ask anything or describe a coding task"
               status={
                 visibleError
@@ -734,9 +745,19 @@ export function CodingChatLandingView({
                     variant={selectedProject ? 'success' : 'warning'}
                     label={projectLabel}
                   />
-                  <Text type="supporting" color="secondary" maxLines={1}>
-                    {projectLabel}
-                  </Text>
+                  <DropdownMenu
+                    button={{
+                      label: projectLabel,
+                      variant: 'ghost',
+                      size: 'sm',
+                      icon: <Icon icon={FolderIcon} size="sm" />,
+                      children: truncateLabel(projectLabel, isCompact ? 12 : 20),
+                    }}
+                    alignment="end"
+                    menuWidth={240}
+                    menuMaxHeight={320}
+                    items={projectMenuItems}
+                  />
                 </HStack>
               }
               footerActions={
@@ -745,7 +766,7 @@ export function CodingChatLandingView({
                     button={{
                       label: activeMode.label,
                       variant: 'ghost',
-                      size: 'md',
+                      size: isCompact ? 'sm' : 'md',
                       icon: <Icon icon={activeMode.icon} size="sm" />,
                       children: activeMode.label,
                     }}
@@ -787,25 +808,14 @@ export function CodingChatLandingView({
                   />
                   <DropdownMenu
                     button={{
-                      label: projectLabel,
-                      variant: 'ghost',
-                      size: 'md',
-                      icon: <Icon icon={FolderIcon} size="sm" />,
-                      children: selectedProject
-                        ? shortPath(selectedProject)
-                        : 'Select folder',
-                    }}
-                    menuWidth={240}
-                    menuMaxHeight={320}
-                    items={projectMenuItems}
-                  />
-                  <DropdownMenu
-                    button={{
                       label: activeModelLabel,
                       variant: 'ghost',
-                      size: 'md',
+                      size: isCompact ? 'sm' : 'md',
                       icon: <Icon icon={CpuChipIcon} size="sm" />,
-                      children: activeModelLabel,
+                      children: truncateLabel(
+                        activeModelLabel,
+                        isCompact ? 6 : 16,
+                      ),
                     }}
                     menuWidth={280}
                     menuMaxHeight={320}
@@ -813,12 +823,13 @@ export function CodingChatLandingView({
                   />
                   <DropdownMenu
                     button={{
-                      label: 'Settings',
+                      label: 'Effort and settings',
                       variant: 'ghost',
-                      size: 'md',
+                      size: isCompact ? 'sm' : 'md',
                       icon: <Icon icon={Cog6ToothIcon} size="sm" />,
-                      children: 'Settings',
+                      isIconOnly: true,
                     }}
+                    hasChevron={false}
                     menuWidth={220}
                     items={settingsMenuItems}
                   />
@@ -828,6 +839,7 @@ export function CodingChatLandingView({
               sendButton={
                 attachments.length > 0 && !draft.trim() ? (
                   <ChatSendButton
+                    size={isCompact ? 'sm' : 'md'}
                     isDisabled={starting}
                     onSend={() => void submitDraft(draft)}
                   />
@@ -844,7 +856,8 @@ export function CodingChatLandingView({
                 onChange={val =>
                   setCategory(Array.isArray(val) ? (val[0] ?? null) : val)
                 }
-                size="lg">
+                size={isCompact ? 'sm' : 'lg'}
+                style={categoryGroupStyle}>
                 {CATEGORIES.map(cat => (
                   <ToggleButton
                     key={cat.key}
@@ -856,7 +869,7 @@ export function CodingChatLandingView({
               </ToggleButtonGroup>
 
               {suggestions && (
-                <Grid columns={{minWidth: 280}} gap={3}>
+                <Grid columns={{minWidth: isCompact ? 220 : 280}} gap={3}>
                   {suggestions.map(suggestion => (
                     <ClickableCard
                       key={suggestion.heading}

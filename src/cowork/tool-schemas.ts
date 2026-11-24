@@ -43,7 +43,7 @@ const schemas: Record<string, { fields: Fields; required?: string[] }> = {
   },
   gitu_task: { fields: { goal: text, retryOf:text,reviewOf:text, projectPath: text, mode: text, effort: text, timeoutMinutes: number, maxCostUsd: number }, required: ['goal'] },
   spawn_sub_agent: {
-    fields: { role: text, objective: text, reason: text, budget: object, permissions: object, skills: strings, maxRuntimeMinutes: number },
+    fields: { role: text, objective: text, reason: text, budget: object, permissions: object, skills: strings, background: boolean, provider: text, model: text, effort: text, maxRuntimeMinutes: number },
     required: ['role', 'objective', 'reason'],
   },
   conversation_history: { fields: { query: text, limit: number } },
@@ -81,6 +81,30 @@ const schemas: Record<string, { fields: Fields; required?: string[] }> = {
   request_permission: { fields: { permission: text, reason: text }, required: ['permission', 'reason'] },
   recommend: { fields: { title: text, reason: text, action: text }, required: ['title', 'reason', 'action'] },
   team_manage: { fields: { action: text, name: text, tagline: text, instructions: text, title: text, topic: text, members: strings, chief: text }, required: ['action'] },
+  local_pc: {
+    fields: {
+      action: {
+        type: 'string',
+        enum: ['status', 'list_files', 'read_file', 'search_files', 'write_file', 'pull_file', 'drop_file', 'open_url', 'run_command'],
+      },
+      peer: text,
+      path: text,
+      pattern: text,
+      content: text,
+      dataBase64: text,
+      url: text,
+      command: text,
+      cwd: text,
+      offset: number,
+      limit: number,
+      recursive: boolean,
+      mode: text,
+      include: strings,
+      timeoutMs: number,
+    },
+    required: ['action'],
+  },
+  ask_local_agent: { fields: { prompt: text, peer: text, agent: text }, required: ['prompt'] },
 };
 
 export function coworkToolSchema(name: string): Record<string, unknown> {

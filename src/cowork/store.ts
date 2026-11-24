@@ -342,6 +342,12 @@ export interface SubAgentInstance {
   skills: string[];
   role: string;
   objective: string;
+  /** True when launched detached in the background so the parent turn stays free. */
+  background?: boolean;
+  /** Optional provider/model/effort chosen for this sub-agent (falls back to parent). */
+  provider?: string;
+  model?: string;
+  effort?: CoworkAgent['effort'];
   maxRuntimeMinutes?: number;
   status: SubAgentStatus;
   /** Why it is blocked, failed, terminated or orphaned, when it is. */
@@ -1438,6 +1444,10 @@ export class CoworkStore {
     skills: string[];
     role: string;
     objective: string;
+    background?: boolean;
+    provider?: string;
+    model?: string;
+    effort?: CoworkAgent['effort'];
     maxRuntimeMinutes?: number;
   }): SubAgentInstance {
     const data = this.load();
@@ -1465,6 +1475,10 @@ export class CoworkStore {
       skills: [...new Set(input.skills.map((skill) => String(skill).trim()).filter(Boolean))],
       role: role,
       objective: objective,
+      ...(input.background ? { background: true } : {}),
+      ...(input.provider ? { provider: input.provider } : {}),
+      ...(input.model ? { model: input.model } : {}),
+      ...(input.effort ? { effort: input.effort } : {}),
       ...(input.maxRuntimeMinutes !== undefined ? { maxRuntimeMinutes: input.maxRuntimeMinutes } : {}),
       status: 'starting',
       createdAt: new Date().toISOString(),

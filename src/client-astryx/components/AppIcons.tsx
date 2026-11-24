@@ -42,6 +42,7 @@ export type LucideComp = ComponentType<SVGProps<SVGSVGElement>>;
 export const SETTING_ICONS: Record<string, LucideComp> = {
   overview: Layers,
   general: SlidersHorizontal,
+  'local-link': Link2,
   providers: Cpu,
   connections: Link2,
   agents: Bot,

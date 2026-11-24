@@ -59,6 +59,19 @@ export const MAX_SUBAGENT_RUNTIME_MINUTES = Infinity;
 /** Statuses in which an instance still holds resources and can transition. */
 const ACTIVE_STATUSES: ReadonlySet<SubAgentStatus> = new Set(['starting', 'running', 'blocked']);
 
+/** Optional model override requested by the parent for a sub-agent. */
+export interface SubAgentModelRequest {
+  provider?: string;
+  model?: string;
+  effort?: 'low' | 'medium' | 'high' | 'max';
+}
+
+export type SubAgentModelResolution =
+  | { ok: true; provider?: string; model?: string; effort?: 'low' | 'medium' | 'high' | 'max' }
+  | { ok: false; error: string };
+
+const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'max']);
+
 /** What the model asked for — a request, never an authorization. */
 export interface SubAgentSpawnRequest {
   role: string;
@@ -68,6 +81,10 @@ export interface SubAgentSpawnRequest {
   requestedBudget: RunBudget;
   requestedPermissions?: Partial<SubAgentPermissions>;
   requestedSkills?: string[];
+  /** When true, run detached in the background and wake the parent on completion. */
+  background?: boolean;
+  /** Optional provider/model/effort requested for this sub-agent. */
+  requestedModel?: SubAgentModelRequest;
   maxRuntimeMinutes: number;
 }
 
@@ -101,6 +118,8 @@ export interface SubAgentSpawnScope {
   hostPermissions?: SubAgentPermissions;
   /** The host's depth allowance, clamped to MAX_COWORK_DEPTH. */
   maxDepth?: number;
+  /** Optional host-side validator/resolver for an agent-chosen model override. */
+  resolveModel?: (request: SubAgentModelRequest) => SubAgentModelResolution;
 }
 
 export type SubAgentSpawnResult =
@@ -168,6 +187,30 @@ export function parseSubAgentParams(params: Record<string, unknown>): { ok: true
   if (skillsInput !== undefined && (!Array.isArray(skillsInput) || skillsInput.some((skill) => typeof skill !== 'string'))) {
     return { ok: false, error: 'spawn_sub_agent "skills" must be an array of skill names.' };
   }
+  const backgroundInput = params['background'];
+  if (backgroundInput !== undefined && typeof backgroundInput !== 'boolean') {
+    return { ok: false, error: 'spawn_sub_agent "background" must be boolean.' };
+  }
+  const providerInput = params['provider'];
+  if (providerInput !== undefined && (typeof providerInput !== 'string' || !providerInput.trim())) {
+    return { ok: false, error: 'spawn_sub_agent "provider" must be a non-empty string when given.' };
+  }
+  const modelInput = params['model'];
+  if (modelInput !== undefined && (typeof modelInput !== 'string' || !modelInput.trim())) {
+    return { ok: false, error: 'spawn_sub_agent "model" must be a non-empty string when given.' };
+  }
+  const effortInput = params['effort'];
+  if (effortInput !== undefined && (typeof effortInput !== 'string' || !EFFORT_LEVELS.has(effortInput.trim().toLowerCase()))) {
+    return { ok: false, error: 'spawn_sub_agent "effort" must be one of "low", "medium", "high", or "max".' };
+  }
+  const requestedModel: SubAgentModelRequest | undefined =
+    providerInput !== undefined || modelInput !== undefined || effortInput !== undefined
+      ? {
+          ...(typeof providerInput === 'string' ? { provider: providerInput.trim() } : {}),
+          ...(typeof modelInput === 'string' ? { model: modelInput.trim() } : {}),
+          ...(typeof effortInput === 'string' ? { effort: effortInput.trim().toLowerCase() as SubAgentModelRequest['effort'] } : {}),
+        }
+      : undefined;
   const runtimeInput = params['maxRuntimeMinutes'];
   let maxRuntimeMinutes = DEFAULT_SUBAGENT_RUNTIME_MINUTES;
   if (runtimeInput !== undefined) {
@@ -185,6 +228,8 @@ export function parseSubAgentParams(params: Record<string, unknown>): { ok: true
       requestedBudget,
       ...(Object.keys(requestedPermissions).length > 0 ? { requestedPermissions } : {}),
       ...(Array.isArray(skillsInput) ? { requestedSkills: skillsInput.map((skill) => skill.trim()).filter(Boolean) } : {}),
+      ...(backgroundInput === true ? { background: true } : {}),
+      ...(requestedModel ? { requestedModel } : {}),
       maxRuntimeMinutes,
     },
   };
@@ -276,6 +321,10 @@ export class CoworkSubAgents {
             depth: instance.depth,
             role: instance.role,
             objective: instance.objective,
+            ...(instance.background ? { background: true } : {}),
+            ...(instance.provider ? { provider: instance.provider } : {}),
+            ...(instance.model ? { model: instance.model } : {}),
+            ...(instance.effort ? { effort: instance.effort } : {}),
             status: instance.status,
             ...(instance.statusReason ? { statusReason: instance.statusReason } : {}),
             spend: { costUsd: spend?.costUsd ?? 0, turns: spend?.turns ?? 0 },
@@ -348,6 +397,17 @@ export class CoworkSubAgents {
     const parentSkills = scope.parentSkills ?? [];
     const skills = request.requestedSkills === undefined ? [...parentSkills] : request.requestedSkills.filter((skill) => parentSkills.includes(skill));
 
+    let resolvedModel: SubAgentModelRequest | undefined = request.requestedModel;
+    if (request.requestedModel && scope.resolveModel) {
+      const check = scope.resolveModel(request.requestedModel);
+      if (!check.ok) return { ok: false, error: check.error };
+      resolvedModel = {
+        ...(check.provider ? { provider: check.provider } : {}),
+        ...(check.model ? { model: check.model } : {}),
+        ...(check.effort ? { effort: check.effort } : {}),
+      };
+    }
+
     // Budget: the parent's delegation ceiling bounds how many live children
     // it may have (a count of active instances, kept apart from the money and
     // turn exhaustion of the account itself), and the child draws from an
@@ -388,6 +448,10 @@ export class CoworkSubAgents {
       skills,
       role: request.role,
       objective: request.objective,
+      ...(request.background ? { background: true } : {}),
+      ...(resolvedModel?.provider ? { provider: resolvedModel.provider } : {}),
+      ...(resolvedModel?.model ? { model: resolvedModel.model } : {}),
+      ...(resolvedModel?.effort ? { effort: resolvedModel.effort } : {}),
       maxRuntimeMinutes: request.maxRuntimeMinutes,
     });
     if (account) this.accounts.set(instance.id, account);
@@ -467,6 +531,13 @@ export class CoworkSubAgents {
   terminateConversationSubtree(conversationId: string, reason: string): SubAgentInstance[] {
     return this.active()
       .filter((instance) => instance.conversationId === conversationId)
+      .map((instance) => this.terminate(instance.id, reason))
+      .filter((instance): instance is SubAgentInstance => Boolean(instance));
+  }
+
+  /** Application shutdown: stop every active sub-agent across all conversations. */
+  terminateAll(reason: string): SubAgentInstance[] {
+    return this.active()
       .map((instance) => this.terminate(instance.id, reason))
       .filter((instance): instance is SubAgentInstance => Boolean(instance));
   }
@@ -594,10 +665,14 @@ export interface SubAgentToolScope {
   parentSkills: string[];
   parentAccount?: BudgetAccount;
   hostPermissions?: SubAgentPermissions;
-  /** The calling turn's signal: the child stops when the parent turn does. */
+  /** The calling turn's signal: the child stops when the parent turn does (ignored when background:true). */
   signal?: AbortSignal;
   /** Optional listener for child activity/tool events during this delegated run. */
   onChildProgress?: (update: SubAgentProgressUpdate) => void;
+  /** Optional host-side validator/resolver for an agent-chosen model override. */
+  resolveModel?: (request: SubAgentModelRequest) => SubAgentModelResolution;
+  /** Called when a detached background sub-agent reaches a terminal state. */
+  onBackgroundSettled?: (instance: SubAgentInstance, result: ToolResult) => void;
 }
 
 /**
@@ -618,6 +693,10 @@ export interface SubAgentTreeNode {
   depth: number;
   role: string;
   objective: string;
+  background?: boolean;
+  provider?: string;
+  model?: string;
+  effort?: SubAgentInstance['effort'];
   status: SubAgentStatus;
   /** Why it is blocked / failed / terminated, when it is. */
   statusReason?: string;
@@ -780,6 +859,11 @@ export class CoworkSubAgentRunner {
     return this.manager.terminateConversationSubtree(conversationId, reason);
   }
 
+  /** Application shutdown: abort and terminate every live sub-agent. */
+  terminateAll(reason: string): SubAgentInstance[] {
+    return this.manager.terminateAll(reason);
+  }
+
   /** Startup sweep, wired to this runner's live set by construction. */
   sweepOrphans(): SubAgentInstance[] {
     return this.manager.sweepOrphans((instanceId) => this.runtimeOwns(instanceId));
@@ -825,6 +909,7 @@ export class CoworkSubAgentRunner {
         parentSkills: scope.parentSkills,
         ...(scope.parentAccount ? { parentAccount: scope.parentAccount } : {}),
         ...(scope.hostPermissions ? { hostPermissions: scope.hostPermissions } : {}),
+        ...(scope.resolveModel ? { resolveModel: scope.resolveModel } : {}),
       },
       params,
     );
@@ -845,50 +930,83 @@ export class CoworkSubAgentRunner {
     const offTerminate = this.manager.onTerminate((terminatedId, reason) => {
       if (terminatedId === instance.id) abortWith(reason);
     });
+    const detached = instance.background === true;
     const onParentAbort = (): void => abortWith(scope.signal?.reason ?? 'the parent turn stopped');
-    scope.signal?.addEventListener('abort', onParentAbort, { once: true });
+    if (!detached) {
+      scope.signal?.addEventListener('abort', onParentAbort, { once: true });
+    }
     const runtimeMinutes = instance.maxRuntimeMinutes ?? DEFAULT_SUBAGENT_RUNTIME_MINUTES;
     const cancelDeadline = deadline(runtimeMinutes * 60_000, () => abortWith(`time limit reached (${runtimeMinutes} minutes)`));
 
     this.manager.markRunning(instance.id);
-    try {
-      const executeChild=()=>runChild({
-        instance,
-        permissions,
-        account,
-        ...(scope.parentAccount?.remaining().costUsd !== undefined ? { availableSharedUsd: scope.parentAccount.remaining().costUsd } : {}),
-        signal: controller.signal,
-        ...(scope.onChildProgress ? { onProgress: scope.onChildProgress } : {}),
+    const executeRun = async (): Promise<ToolResult> => {
+      try {
+        const executeChild=()=>runChild({
+          instance,
+          permissions,
+          account,
+          ...(scope.parentAccount?.remaining().costUsd !== undefined ? { availableSharedUsd: scope.parentAccount.remaining().costUsd } : {}),
+          signal: controller.signal,
+          ...(scope.onChildProgress ? { onProgress: scope.onChildProgress } : {}),
+        });
+        const outcome = this.worker?await this.worker(instance,controller.signal,executeChild):await executeChild();
+        if (controller.signal.aborted) {
+          this.manager.terminate(instance.id, String(controller.signal.reason ?? 'terminated'));
+          return { ok: false, output: `Sub-agent "${instance.role}" was terminated before it could report: ${String(controller.signal.reason ?? 'terminated')}. Its budget account is sealed.` };
+        }
+        // The Evidence Gate: the child's report is evidence FOR the parent to
+        // evaluate, never automatic proof. A rejected report means the child is
+        // NOT completed — the reasons tell the parent exactly why.
+        const verdict = evaluateSubAgentEvidence(instance, outcome.evidence, this.policy);
+        if (!verdict.accepted) {
+          this.manager.fail(instance.id, `evidence gate: ${verdict.reasons.join('; ')}`);
+          return { ok: false, output: `Sub-agent "${instance.role}" was NOT accepted. Evidence gate: ${verdict.reasons.join('; ')}. Verify nothing on its behalf — re-spawn with a tighter objective or do the work directly.` };
+        }
+        const completed = this.manager.complete(instance.id, outcome.summary, outcome.evidence);
+        if (!completed) return { ok: false, output: `Sub-agent "${instance.role}" was settled externally before its report landed.` };
+        return { ok: true, output: subAgentResultSummary(completed) };
+      } catch (err) {
+        if (controller.signal.aborted) {
+          this.manager.terminate(instance.id, String(controller.signal.reason ?? 'terminated'));
+          return { ok: false, output: `Sub-agent "${instance.role}" was terminated: ${String(controller.signal.reason ?? 'terminated')}. Its budget account is sealed.` };
+        }
+        this.manager.fail(instance.id, (err as Error).message);
+        return { ok: false, output: `Sub-agent "${instance.role}" failed: ${(err as Error).message}` };
+      } finally {
+        cancelDeadline();
+        offTerminate();
+        if (!detached) {
+          scope.signal?.removeEventListener('abort', onParentAbort);
+        }
+        this.controllers.delete(instance.id);
+      }
+    };
+
+    if (detached) {
+      void executeRun().then((result) => {
+        const settled = this.manager.store.getSubAgent(instance.id) ?? instance;
+        try {
+          scope.onBackgroundSettled?.(settled, result);
+        } catch {
+          // Never allow a notification hook error to become an unhandled rejection.
+        }
       });
-      const outcome = this.worker?await this.worker(instance,controller.signal,executeChild):await executeChild();
-      if (controller.signal.aborted) {
-        this.manager.terminate(instance.id, String(controller.signal.reason ?? 'terminated'));
-        return { ok: false, output: `Sub-agent "${instance.role}" was terminated before it could report: ${String(controller.signal.reason ?? 'terminated')}. Its budget account is sealed.` };
-      }
-      // The Evidence Gate: the child's report is evidence FOR the parent to
-      // evaluate, never automatic proof. A rejected report means the child is
-      // NOT completed — the reasons tell the parent exactly why.
-      const verdict = evaluateSubAgentEvidence(instance, outcome.evidence, this.policy);
-      if (!verdict.accepted) {
-        this.manager.fail(instance.id, `evidence gate: ${verdict.reasons.join('; ')}`);
-        return { ok: false, output: `Sub-agent "${instance.role}" was NOT accepted. Evidence gate: ${verdict.reasons.join('; ')}. Verify nothing on its behalf — re-spawn with a tighter objective or do the work directly.` };
-      }
-      const completed = this.manager.complete(instance.id, outcome.summary, outcome.evidence);
-      if (!completed) return { ok: false, output: `Sub-agent "${instance.role}" was settled externally before its report landed.` };
-      return { ok: true, output: subAgentResultSummary(completed) };
-    } catch (err) {
-      if (controller.signal.aborted) {
-        this.manager.terminate(instance.id, String(controller.signal.reason ?? 'terminated'));
-        return { ok: false, output: `Sub-agent "${instance.role}" was terminated: ${String(controller.signal.reason ?? 'terminated')}. Its budget account is sealed.` };
-      }
-      this.manager.fail(instance.id, (err as Error).message);
-      return { ok: false, output: `Sub-agent "${instance.role}" failed: ${(err as Error).message}` };
-    } finally {
-      cancelDeadline();
-      offTerminate();
-      scope.signal?.removeEventListener('abort', onParentAbort);
-      this.controllers.delete(instance.id);
+      return {
+        ok: true,
+        output: JSON.stringify({
+          status: 'running',
+          background: true,
+          instanceId: instance.id,
+          role: instance.role,
+          ...(instance.provider ? { provider: instance.provider } : {}),
+          ...(instance.model ? { model: instance.model } : {}),
+          ...(instance.effort ? { effort: instance.effort } : {}),
+          message: `Sub-agent "${instance.role}" is running in the background. You can finish this turn and stay available; its verified result or failure will wake you automatically when it finishes.`,
+        }),
+      };
     }
+
+    return executeRun();
   }
 }
 
@@ -901,6 +1019,9 @@ export class CoworkSubAgentRunner {
 export function subAgentResultSummary(instance: SubAgentInstance): string {
   const lines = [
     `Sub-agent "${instance.role}" ${instance.status} (id ${instance.id}).`,
+    ...(instance.model || instance.provider
+      ? [`Model: ${instance.provider ? `${instance.provider}/` : ''}${instance.model ?? 'default'}${instance.effort ? ` (effort: ${instance.effort})` : ''}`]
+      : []),
     `Report: ${instance.resultSummary ?? '(none)'}`,
   ];
   const spend = instance.spend;

@@ -21,6 +21,7 @@ import {AgentSwitcherDialog} from './views/AgentSwitcherDialog';
 import {CloudAgentDialog} from './views/CloudAgentDialog';
 import {DesktopAgentBar} from './views/DesktopAgentBar';
 import {EditAgentDialog} from './views/EditAgentDialog';
+import {InboxView} from './views/InboxView';
 import {SettingsConsoleView} from './views/SettingsConsoleView';
 import {A2uiPortalHost, useA2uiPortalTargets} from './a2ui/A2uiPortalHost';
 
@@ -31,6 +32,8 @@ export interface GituAstryxApi {
   closeProfile(): void;
   openEditAgent(agent?: CoworkAgent | null): void;
   openSettings(section?: string): void;
+  openInbox(): void;
+  closeInbox(): void;
   openCloudAgents?(): void;
   closeSettings(): void;
   syncThemeMode(): void;
@@ -70,6 +73,7 @@ function AstryxApp() {
   const [cloudServers, setCloudServers] = useState<CloudServer[]>([]);
   const desktopCloudBridge = getDesktopCloudBridge();
   const [cloudDialogOpen, setCloudDialogOpen] = useState(false);
+  const [inboxOpen, setInboxOpen] = useState(false);
   const [cloudStatus, setCloudStatus] = useState<DesktopCloudState | null>(null);
   const [switchingMode, setSwitchingMode] = useState(false);
 
@@ -168,6 +172,12 @@ function AstryxApp() {
         getHostBridge()?.setSettingSection(sec);
         setSettingsState({open: true, section: sec});
       },
+      openInbox() {
+        setInboxOpen(true);
+      },
+      closeInbox() {
+        setInboxOpen(false);
+      },
       openCloudAgents() {
         if (!desktopCloudBridge) return;
         setCloudDialogOpen(true);
@@ -175,6 +185,10 @@ function AstryxApp() {
       closeSettings,
       syncThemeMode: syncTheme,
       handleBack() {
+        if (inboxOpen) {
+          setInboxOpen(false);
+          return true;
+        }
         if (cloudDialogOpen) {
           setCloudDialogOpen(false);
           return true;
@@ -205,6 +219,7 @@ function AstryxApp() {
     };
   }, [
     cloudDialogOpen,
+    inboxOpen,
     closeProfile,
     closeSettings,
     desktopCloudBridge,
@@ -231,6 +246,7 @@ function AstryxApp() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [
     cloudDialogOpen,
+    inboxOpen,
     closeProfile,
     closeSettings,
     editState.open,
@@ -420,13 +436,36 @@ function AstryxApp() {
             onStatusChanged={setCloudStatus}
           />
         ) : null}
+        {inboxOpen ? (
+          <InboxView onClose={() => setInboxOpen(false)} />
+        ) : null}
         <A2uiPortalHost targets={a2uiTargets} />
       </LayerProvider>
     </Theme>
   );
 }
 
+function StandaloneInboxApp() {
+  const [themeMode] = useState<'light' | 'dark'>(() => readDomThemeMode());
+  const theme = themes[defaultThemeSlug];
+  return (
+    <Theme theme={theme} mode={themeMode}>
+      <LayerProvider>
+        <InboxView standalone />
+      </LayerProvider>
+    </Theme>
+  );
+}
+
 function mountAstryxRoot() {
+  const isStandaloneInbox = window.location.pathname === '/inbox';
+  if (isStandaloneInbox) {
+    document.body.innerHTML = '';
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    createRoot(host).render(<StandaloneInboxApp />);
+    return;
+  }
   const mountEl =
     document.getElementById('gituAstryxRoot') ||
     document.getElementById('root');

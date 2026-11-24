@@ -20,7 +20,7 @@ import {StatusDot} from '@astryxdesign/core/StatusDot';
 import {Switch} from '@astryxdesign/core/Switch';
 import {Tab, TabList} from '@astryxdesign/core/TabList';
 import {TextInput} from '@astryxdesign/core/TextInput';
-import {useCallback, useEffect, useMemo, useState} from 'react';
+import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
   getHostBridge,
   type DesktopCloudBridge,
@@ -29,6 +29,7 @@ import {
 } from '../bridge';
 import {
   AppIcon,
+  ChevronLeft,
   Cloud,
   ExternalLink,
   Monitor,
@@ -41,10 +42,10 @@ type DialogTab = 'agents' | 'buy';
 
 function statusVariant(
   status: string,
-): 'success' | 'warning' | 'info' | 'neutral' {
+): 'success' | 'warning' | 'accent' | 'neutral' {
   const normalized = status.toUpperCase();
   if (normalized === 'ACTIVE') return 'success';
-  if (normalized === 'PROVISIONING' || normalized === 'QUEUED') return 'info';
+  if (normalized === 'PROVISIONING' || normalized === 'QUEUED') return 'accent';
   if (normalized === 'SUSPENDED' || normalized === 'GRACE_PERIOD')
     return 'warning';
   return 'neutral';
@@ -85,6 +86,8 @@ export function CloudAgentDialog({
   const [ordering, setOrdering] = useState(false);
   const [pendingReference, setPendingReference] = useState<string | null>(null);
   const [verifyingOrder, setVerifyingOrder] = useState(false);
+  const pendingReferenceRef = useRef<string | null>(null);
+  pendingReferenceRef.current = pendingReference;
 
   const syncRefresh = useCallback(
     async (quiet = false) => {
@@ -116,6 +119,12 @@ export function CloudAgentDialog({
     },
     [cloudBridge, onStatusChanged, selectedPlanId],
   );
+
+  useEffect(() => {
+    if (isOpen && !pendingReferenceRef.current) {
+      setTab('agents');
+    }
+  }, [isOpen]);
 
   useEffect(() => {
     if (!isOpen || !cloudBridge) return;
@@ -528,10 +537,11 @@ export function CloudAgentDialog({
                     onChange={val => setTab(val as DialogTab)}
                     aria-label="Cloud Agent sections"
                     hasDivider>
-                    <Tab value="agents">
-                      My Agents ({(state.instances || []).length + 1})
-                    </Tab>
-                    <Tab value="buy">Buy Cloud Agent</Tab>
+                    <Tab
+                      value="agents"
+                      label={`My Agents (${(state.instances || []).length + 1})`}
+                    />
+                    <Tab value="buy" label="Buy Cloud Agent" />
                   </TabList>
 
                   {tab === 'agents' ? (
@@ -625,6 +635,19 @@ export function CloudAgentDialog({
 
                   {tab === 'buy' ? (
                     <VStack gap={4}>
+                      <HStack hAlign="between" vAlign="center" wrap="wrap" gap={2}>
+                        <Button
+                          label="Back to My Agents"
+                          variant="secondary"
+                          size="sm"
+                          icon={<AppIcon icon={ChevronLeft} size="sm" />}
+                          onClick={() => setTab('agents')}
+                        />
+                        <Text type="supporting" color="secondary">
+                          Deploy a new Cloud Agent or return to connect an existing one
+                        </Text>
+                      </HStack>
+
                       {state.freeClaim?.canClaim && state.freeClaim.plan ? (
                         <Card variant="muted" padding={4}>
                           <VStack gap={3}>
@@ -806,7 +829,12 @@ export function CloudAgentDialog({
                               />
                             ) : null}
 
-                            <HStack hAlign="end" gap={2}>
+                            <HStack hAlign="end" gap={2} wrap="wrap">
+                              <Button
+                                label="Back to My Agents"
+                                variant="secondary"
+                                onClick={() => setTab('agents')}
+                              />
                               <Button
                                 label={
                                   paymentMethod === 'WALLET'

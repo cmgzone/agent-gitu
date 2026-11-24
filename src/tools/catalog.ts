@@ -333,6 +333,8 @@ const TOOLS: ToolDescriptor[] = [
   { id: 'request_credential', routes: { cowork: cowork() } },
   { id: 'request_permission', routes: { cowork: cowork() } },
   { id: 'recommend', routes: { cowork: cowork() } },
+  { id: 'local_pc', routes: { cowork: cowork() } },
+  { id: 'ask_local_agent', routes: { cowork: cowork() } },
 ];
 
 /** Declared order, for tests and for anything that renders the catalog. */

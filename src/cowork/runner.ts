@@ -14,7 +14,7 @@ import { appAwareness, connectionQuestion, connectionReply } from './app-awarene
 import type { ConnectedAppsProvider } from '../connections/provider.js';
 import type { BudgetAccount } from '../coding/budget.js';
 import { readRuntimeSelection } from '../workspace/runtime-selection.js';
-import type { CoworkSubAgentBridge, CoworkSubAgentRunner, SubAgentChildRunner, SubAgentToolScope, SubAgentTrailEntry } from './subagents.js';
+import type { CoworkSubAgentBridge, CoworkSubAgentRunner, SubAgentChildRunner, SubAgentModelRequest, SubAgentModelResolution, SubAgentToolScope, SubAgentTrailEntry } from './subagents.js';
 import { buildSubAgentEvidenceReport } from './subagents.js';
 import type { SubAgentInstance } from './store.js';
 import { extractLastJsonObject, findXmlCallStart, compactDialectMarkers, requestLlmTurn, LlmError } from '../llm/llm.js';
@@ -33,6 +33,7 @@ import { agentProfileInstructions } from './profile-config.js';
 import { RICH_OUTPUT_GUIDANCE } from '../agent/output-style.js';
 import { runNativeCoworkTurn } from './codex-native.js';
 import { visibleCoworkText } from './visible-text.js';
+import type { LocalLinkBridge } from '../peer/local-link-protocol.js';
 import { AGENT_CREATION_GUIDANCE, agentCreationKind } from './live-messages.js';
 
 /** Describe the user's UI-selected host project for Cowork agents. */
@@ -156,6 +157,14 @@ export interface CoworkRunnerDeps {
    * path passes through honestly.
    */
   budgetFor?: (scope: { conversationId: string; missionId?: string; agentId: string }) => BudgetAccount | undefined;
+  /** Optional host-side validator/resolver for an agent-chosen sub-agent model. */
+  resolveSubAgentModel?: (request: SubAgentModelRequest, parentAgent: CoworkAgent) => SubAgentModelResolution;
+  /** Compact credential-free summary of configured models available for sub-agents. */
+  availableSubAgentModels?: () => string | undefined;
+  /** Called when a detached background sub-agent finishes, fails, or is terminated. */
+  onBackgroundSubAgentSettled?: (instance: SubAgentInstance, result: ToolResult) => void;
+  /** Direct Cloud-to-Local PC link bridge when a Local PC is paired. */
+  localLink?: LocalLinkBridge;
 }
 
 export interface CoworkProgress {
@@ -309,6 +318,7 @@ function systemPrompt(agent: CoworkAgent, conversation: CoworkConversation, memb
     'OUTPUT LENGTH RULE: Keep every reply as short as possible. Output ONLY the important facts and exact answer the user asked for — no long explanations, no filler, no repeating the question, no step-by-step narration of what you did, and no unsolicited next steps. Prefer 1–3 short sentences (or a compact list when listing items). Only explain in detail when the user explicitly asks for an explanation.',
     ...(agent.chiefOfStaff?[`APP CONTROL: use app_manage to change the user's selected model, project and app preferences, inspect or stop tasks, and queue internal messages. It can list_agents/delete_agent {agentId}, delete_task {runId}, and delete_conversation {conversationId}. Delete only the exact items the user requested. Report successful tool receipts; never claim a setting cannot be changed before checking this tool. Security grants, credentials and approvals retain their dedicated controls.`]:[]),
     'CODING CONCURRENCY: A chat gitu_task handoff returns a running task handle immediately. Tell the user coding is in progress, finish your current chat turn and remain available for other tasks. Do not wait or repeatedly poll. The user can talk to Main Agent Gitu directly; its updates inform you without requiring you to relay or repeat the request. A host-recorded result or failure will wake you. On failure diagnose and use gitu_task {retryOf:runId,goal:"concrete repair"} for at most two bounded attempts. Escalate missing access/credentials/approval, a repeated identical failure or an unfixable blocker to the user. Keep the user-selected model and do not restart stopped or completed work.',
+    'BACKGROUND SUB-AGENTS: When the user asks you to run a task in the background (or work without blocking the chat), call spawn_sub_agent with background:true. It returns a running handle immediately; tell the user it is running in the background (mentioning the chosen model if you picked a different one), finish your turn, and stay available for other messages. Its verified result or failure will wake you automatically when done. You may choose a configured provider/model/effort on spawn_sub_agent to match the task (e.g. a faster/lighter model for routine background tasks or a stronger model for deep analysis), or omit them to inherit your own model.',
     `CODING OWNERSHIP: Main Agent Gitu is responsible for repository code implementation, debugging, builds and test tasks. Use gitu_task with the user's full brief, repository location, constraints and acceptance checks for code changes, debugging, builds and tests. It creates a visible task in the main Code workspace and returns the outcome to you. Coordinate and report that verified result to the user. Direct Git operations (git push, git pull, git fetch, git status, git diff, git log, git add, git commit, branch management) requested by the user are version control and repository sync/publishing actions: you can and should execute them directly via run_command (targeting the project repository) or delegate them via gitu_task if the user requested a full coding workflow. Never refuse a requested git push or git command by claiming it is only for the main coding agent. Do not implement new code with write_file, shell, desktop input or a separately spawned helper, including when delegation is blocked. Keep non-coding work moving; report a concrete coding blocker honestly.`,
     'DEPLOYMENT OWNERSHIP: P.A coordinates and executes deployments with connection_execute, connected_apps, SSH or documented deployment commands using the saved connections. Delegate only implementation, debugging, builds and tests to Main Agent Gitu. After its verified result returns, handle deployment yourself when requested. A coding handoff does not authorize Main Agent to deploy. For API setup use update_connection with discoverCapabilities:true, or persist newly documented operations, retaining both read and write capabilities for later tasks. Never invent MCP aliases for saved API connections.',
     'API AUTHENTICATION: Use connection_test with the exact saved connectionId for a fresh authenticated API check before asking to replace a key after an authentication error. Its current result supersedes older 401 messages and reconnect requests. A single verification endpoint may reject a token type that the resource API accepts; research the official documentation and select a supported authenticated GET with update_connection validationOperationId before declaring the saved key unusable. A timeout, homepage, missing route or missing permission does not establish an invalid credential. API-key headers are configured in the secure connection settings; never put a key in a tool argument, chat, URL or shell command. REST API access and MCP server configuration are separate: a saved REST connection does not create an MCP server, and an unauthenticated web_fetch to /mcp cannot test its saved credential.',
@@ -428,7 +438,12 @@ function systemPrompt(agent: CoworkAgent, conversation: CoworkConversation, memb
       `CURRENT THREAD: "${thread.title}"${thread.topic ? ` — ${thread.topic}` : ''}. Keep this work on this thread's topic; unrelated work belongs in another thread.`,
     );
   }
-  const docs = coworkToolDocs(agent, Boolean(deps?.browser));
+  const includeLocalLink = Boolean(deps?.localLink?.hasPairedPeer());
+  const localLinkSummary = includeLocalLink ? deps?.localLink?.promptSummary() : '';
+  if (localLinkSummary) parts.push(localLinkSummary);
+  const subAgentModels = deps?.availableSubAgentModels?.();
+  if (subAgentModels) parts.push(subAgentModels);
+  const docs = coworkToolDocs(agent, Boolean(deps?.browser), { includeLocalLink });
   if (docs) {
     parts.push(
       `TOOLS — call the named native function when provided. For text-only endpoints, use this fallback marker:\n<tool>{"name":"read_file","params":{"path":"src/x.ts"}}</tool>\n` +
@@ -581,6 +596,8 @@ export function subAgentBridgeFor(agent: CoworkAgent, conversationId: string, mi
     parentSkills: agent.skills,
     ...(account ? { parentAccount: account } : {}),
     ...(deps.signal ? { signal: deps.signal } : {}),
+    ...(deps.resolveSubAgentModel ? { resolveModel: (request: SubAgentModelRequest) => deps.resolveSubAgentModel!(request, agent) } : {}),
+    ...(deps.onBackgroundSubAgentSettled ? { onBackgroundSettled: deps.onBackgroundSubAgentSettled } : {}),
   };
   return deps.subAgents.bridgeFor(scope, createSubAgentChildRunner(deps));
 }
@@ -690,6 +707,7 @@ async function agentTurn(input: {
           acquireHostBrowser: deps.acquireHostBrowser,
           subAgents: subAgentBridgeFor(agent, conversation.id, undefined, deps, threadId),
           creationKind: agentCreationKind(deps.userRequest ?? ''),
+          ...(deps.localLink ? { localLink: deps.localLink } : {}),
           ...(isGroup
             ? {
                 groupMemberIds: members.map((m) => m.id),
@@ -737,11 +755,12 @@ async function agentTurn(input: {
   // Old tasks, other threads and teammates must not hijack a fresh question.
   const initialTodos = new Map((deps.store?.todos(conversation.id) ?? []).map(todo => [todo.id, JSON.stringify(todo)]));
 
+  const includeLocalLink = Boolean(deps.localLink?.hasPairedPeer());
   try {
   if (client.nativeTask) {
     ctx ??= deps.toolContext(agent);
     const native = await runNativeCoworkTurn({ client, ctx, agent, conversationId: conversation.id, threadId, messages,
-      tools: coworkNativeTools(agent, Boolean(deps.browser)), perms: { allowShell: agent.allowShell, allowWrites: agent.allowWrites, allowConfig: agent.allowConfig, chief: agent.chiefOfStaff, browser: Boolean(deps.browser) }, scope, store: deps.store, signal: deps.signal,
+      tools: coworkNativeTools(agent, Boolean(deps.browser), { includeLocalLink }), perms: { allowShell: agent.allowShell, allowWrites: agent.allowWrites, allowConfig: agent.allowConfig, chief: agent.chiefOfStaff, browser: Boolean(deps.browser) }, scope, store: deps.store, signal: deps.signal,
       takeSteering: () => (deps.takeSteering?.(agent.id, threadId) ?? []).map(message => message.text),
       onProgress: (text, tool, ok, detail, nativeReasoning, args) => {
         reasoning = nativeReasoning ?? '';
@@ -798,7 +817,7 @@ async function agentTurn(input: {
       temperature: 0.6,
       effort: agent.effort,
       signal: deps.signal,
-      ...(nativeTools ? { protocolMode: 'native' as const, tools: coworkNativeTools(agent, Boolean(deps.browser)), toolChoice: 'auto' as const } : {}),
+      ...(nativeTools ? { protocolMode: 'native' as const, tools: coworkNativeTools(agent, Boolean(deps.browser), { includeLocalLink }), toolChoice: 'auto' as const } : {}),
       ...(finishRepeatedWork ? { toolChoice: 'none' as const } : {}),
       onActivity: (event: LlmActivityEvent) => {
         const next = event.type === 'reasoning' ? 'reasoning' : event.type === 'content' ? 'responding' : 'working';
@@ -1420,7 +1439,7 @@ export async function runMissionSession(input: {
     const artifactIds: string[] = [];
     const taggedFolders = (deps.store?.getConversation(mission.conversationId)?.folders ?? []).map((folder) => folder.path);
     const scope: CoworkToolScope | undefined =
-      deps.store && deps.memory ? { store: deps.store, agent, memory: deps.memory, recall: deps.recall, conversationId: mission.conversationId, missionId: mission.id, computerFor: deps.computerFor, delegation: deps.delegation, signal: deps.signal, taggedFolders, artifactIds, acquireHostBrowser: deps.acquireHostBrowser, subAgents: subAgentBridgeFor(agent, mission.conversationId, mission.id, deps) } : undefined;
+      deps.store && deps.memory ? { store: deps.store, agent, memory: deps.memory, recall: deps.recall, conversationId: mission.conversationId, missionId: mission.id, computerFor: deps.computerFor, delegation: deps.delegation, signal: deps.signal, taggedFolders, artifactIds, acquireHostBrowser: deps.acquireHostBrowser, subAgents: subAgentBridgeFor(agent, mission.conversationId, mission.id, deps), ...(deps.localLink ? { localLink: deps.localLink } : {}) } : undefined;
     let ctx: ToolContext | undefined;
     const messages: LlmMessage[] = [
       // The transcript is deliberately not included: missions run in their own
@@ -1455,11 +1474,12 @@ export async function runMissionSession(input: {
       }
       deps.onProgress?.({ agentId: agent.id, agentName: agent.name, text: visible || lastPublicUpdate || (tool ? lastRoundUpdate : ''), reasoning, tool, toolOk, detail, webUrl, mcpServer, phase, appService });
     };
+    const includeLocalLink = Boolean(deps.localLink?.hasPairedPeer());
     try {
     if (client.nativeTask) {
       ctx ??= deps.toolContext(agent);
       const native = await runNativeCoworkTurn({ client, ctx, agent, conversationId: mission.conversationId, purpose: 'mission:' + mission.id, messages,
-        tools: coworkNativeTools(agent, Boolean(deps.browser)), perms: { allowShell: agent.allowShell, allowWrites: agent.allowWrites, allowConfig: agent.allowConfig, chief: agent.chiefOfStaff, browser: Boolean(deps.browser) }, scope, store: deps.store, signal: deps.signal,
+        tools: coworkNativeTools(agent, Boolean(deps.browser), { includeLocalLink }), perms: { allowShell: agent.allowShell, allowWrites: agent.allowWrites, allowConfig: agent.allowConfig, chief: agent.chiefOfStaff, browser: Boolean(deps.browser) }, scope, store: deps.store, signal: deps.signal,
         onProgress: (text, tool, ok, detail, nativeReasoning, args) => { reasoning = nativeReasoning ?? ''; const meta = coworkProgressMeta(tool, args ?? {}, ctx); publicProgress(text, tool, ok, detail, meta.webUrl, meta.mcpServer, tool ? 'working' : nativeReasoning ? 'thinking' : 'responding', meta.appService); },
         onTool: (tool, params, result) => recordToolResult(scope, tool, result, lastPublicUpdate),
       });
@@ -1679,17 +1699,21 @@ export function createSubAgentChildRunner(deps: CoworkRunnerDeps): SubAgentChild
   return async ({ instance, permissions, account, availableSharedUsd, signal, onProgress }) => {
     const parentAgent = agentById(deps, instance.parentAgentId);
     if (!parentAgent) throw new Error('the parent agent no longer exists');
-    // The child borrows its parent's model, avatar and computer mode — and
-    // nothing else. Its identity is the instance; its capabilities the grant.
+    const effectiveProvider = instance.provider ?? parentAgent.provider;
+    const effectiveModel = instance.model ?? parentAgent.model;
+    const effectiveEffort = instance.effort ?? parentAgent.effort;
+    // The child borrows its parent's model (unless overridden at spawn), avatar
+    // and computer mode — and nothing else. Its identity is the instance; its
+    // capabilities the grant.
     const childAgent: CoworkAgent = {
       id: instance.id,
       name: instance.role,
       avatar: parentAgent.avatar,
       tagline: `sub-agent of ${parentAgent.name}`,
       systemPrompt: '',
-      ...(parentAgent.provider ? { provider: parentAgent.provider } : {}),
-      ...(parentAgent.model ? { model: parentAgent.model } : {}),
-      ...(parentAgent.effort ? { effort: parentAgent.effort } : {}),
+      ...(effectiveProvider ? { provider: effectiveProvider } : {}),
+      ...(effectiveModel ? { model: effectiveModel } : {}),
+      ...(effectiveEffort ? { effort: effectiveEffort } : {}),
       skills: instance.skills,
       allowShell: permissions.allowShell,
       allowWrites: permissions.allowWrites,
@@ -1699,9 +1723,9 @@ export function createSubAgentChildRunner(deps: CoworkRunnerDeps): SubAgentChild
       chiefOfStaff: false,
       createdAt: instance.createdAt,
     };
-    if(instance.role==='Agent Gitu coding'){
-      const selected=readRuntimeSelection();
-      if(selected.provider&&selected.model){childAgent.provider=selected.provider;childAgent.model=selected.model;}
+    if (instance.role === 'Agent Gitu coding' && !instance.model && !instance.provider) {
+      const selected = readRuntimeSelection();
+      if (selected.provider && selected.model) { childAgent.provider = selected.provider; childAgent.model = selected.model; }
     }
     const metered = Boolean(deps.subAgentLlm);
     let budgetStopped = false;
@@ -1731,11 +1755,13 @@ export function createSubAgentChildRunner(deps: CoworkRunnerDeps): SubAgentChild
             acquireHostBrowser: deps.acquireHostBrowser,
             isSubAgent: true,
             privateWorkingDirectory: deps.privateWorkingDirectory,
+            ...(deps.localLink ? { localLink: deps.localLink } : {}),
             // No delegation and no subAgents bridge: a child cannot delegate
             // engineering or spawn workers of its own in v1.
           }
         : undefined;
-    const docs = coworkToolDocs(childAgent, perms.browser)
+    const includeLocalLink = Boolean(deps.localLink?.hasPairedPeer());
+    const docs = coworkToolDocs(childAgent, perms.browser, { includeLocalLink })
       .split('\n')
       .filter((line) => !SUBAGENT_BLOCKED_TOOLS.some((name) => line.startsWith(`- ${name} `)))
       .join('\n');
@@ -1754,7 +1780,7 @@ export function createSubAgentChildRunner(deps: CoworkRunnerDeps): SubAgentChild
       if (llm.nativeTask) {
         ctx ??= deps.toolContext(parentAgent);
         const native = await runNativeCoworkTurn({ client: llm, ctx, agent: childAgent, conversationId: instance.conversationId, threadId: instance.threadId, purpose: 'subagent:' + instance.id, messages,
-          tools: coworkNativeTools(childAgent, perms.browser).filter(tool => !SUBAGENT_BLOCKED_TOOLS.includes(tool.name)), perms, scope, store: deps.store, signal,
+          tools: coworkNativeTools(childAgent, perms.browser, { includeLocalLink }).filter(tool => !SUBAGENT_BLOCKED_TOOLS.includes(tool.name)), perms, scope, store: deps.store, signal,
           beforeTool: () => { signal.throwIfAborted(); if (account.exhausted()) { budgetStopped = true; throw new Error('The parent budget is exhausted.'); } },
           onUsage: () => { turns++; if (!metered && !account.charge({ turns: 1 })) { budgetStopped = true; throw new Error('The sub-agent turn budget is exhausted.'); } },
           onTool: (tool, params, result) => {

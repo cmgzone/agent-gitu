@@ -34,6 +34,7 @@ import {
   Sun,
   X,
 } from '../components/AppIcons';
+import {LocalLinkSection} from './LocalLinkSection';
 
 interface NavGroup {
   title: string;
@@ -41,7 +42,7 @@ interface NavGroup {
 }
 
 const NAV_GROUPS: NavGroup[] = [
-  {title: 'Console', items: ['overview', 'general', 'developer']},
+  {title: 'Console', items: ['overview', 'general', 'local-link', 'developer']},
   {
     title: 'AI & Integrations',
     items: ['providers', 'connections', 'agents', 'skills', 'mcp'],
@@ -55,6 +56,7 @@ const NAV_GROUPS: NavGroup[] = [
 const NATIVE_SECTIONS = new Set([
   'overview',
   'general',
+  'local-link',
   'permissions',
   'cowork',
   'workspace',
@@ -64,6 +66,7 @@ const NATIVE_SECTIONS = new Set([
 const SECTION_TITLES: Record<string, string> = {
   overview: 'Overview',
   general: 'General',
+  'local-link': 'Local PC Link',
   providers: 'Providers',
   connections: 'Connections',
   agents: 'Specialist agents',
@@ -924,6 +927,8 @@ export function SettingsConsoleView({
                   </Card>
                 </Grid>
               ) : null}
+
+              {activeSection === 'local-link' ? <LocalLinkSection /> : null}
 
               {activeSection === 'developer' ? (
                 <Grid columns={isMobile ? 1 : 2} gap={4}>

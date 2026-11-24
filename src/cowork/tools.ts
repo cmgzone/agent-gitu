@@ -71,6 +71,7 @@ import { ComposioExecutionUncertainError } from '../connections/composio.js';
 import { isNativeMailRead, isNativeMailTool, requiresMessageReview } from '../connections/provider.js';
 import { coworkToolSchema } from './tool-schemas.js';
 import { normalizeQuestionOptions } from './question-cards.js';
+import type { LocalLinkAction, LocalLinkBridge } from '../peer/local-link-protocol.js';
 
 /**
  * Tool surface for cowork chat agents. It reuses the project's audited tool
@@ -131,6 +132,8 @@ export interface CoworkToolScope {
   groupMemberIds?: string[];
   /** Summon a fellow group member right inside the active group chat instead of a private DM inbox. */
   summonInGroup?: (agentId: string, brief: string) => void;
+  /** Direct Cloud-to-Local PC link bridge when a Local PC is paired. */
+  localLink?: LocalLinkBridge;
 }
 
 /** Tools that normally execute inside the agent's virtual computer. */
@@ -167,6 +170,7 @@ export const SUBAGENT_BLOCKED_TOOLS = [
   'recommend',
   'message_teammate',
   'schedule_followup',
+  'ask_local_agent',
 ];
 /** Computer-only tools with no meaningful host equivalent. */
 const COMPUTER_ONLY_TOOLS = ['computer_status', 'computer_process', 'desktop_screenshot', 'desktop_input'];
@@ -241,7 +245,7 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
   },
   {
     name: 'spawn_sub_agent',
-    doc: 'Spawn a temporary sub-agent for one bounded objective — it works independently and its report comes back only to you, never to the user. Emit multiple spawn_sub_agent calls in the same round to run up to 8 independent sub-agents in parallel. params: {"role":"competitor-researcher","objective":"Compare Piki POS with five competitors","reason":"why you need it","budget":{"maxCostUsd":0.4,"maxTurns":20},"permissions":{"allowShell":false},"skills":["web-research"],"maxRuntimeMinutes":15}. Blocks until the sub-agent (or parallel batch) settles. The budget and permissions you ask for are requests: the host clamps them to your own budget and capabilities, and the sub-agent never gets permissions you lack. You remain responsible for verifying its report with your own tools.',
+    doc: 'Spawn a temporary sub-agent for one bounded objective — it works independently and its report comes back only to you, never to the user. Emit multiple spawn_sub_agent calls in the same round to run up to 8 independent sub-agents in parallel. params: {"role":"competitor-researcher","objective":"Compare Piki POS with five competitors","reason":"why you need it","background":false,"provider":"optional-provider-id","model":"optional-model-id","effort":"low|medium|high|max","budget":{"maxCostUsd":0.4,"maxTurns":20},"permissions":{"allowShell":false},"skills":["web-research"],"maxRuntimeMinutes":15}. Set background:true when the user asks you to run work in the background or keep the chat free: it returns a running handle immediately and wakes you automatically with its verified result or failure when finished. Use optional provider/model/effort to pick a suitable configured model for the sub-agent (e.g., a faster/cheaper model for lightweight background tasks or a stronger model for deep analysis); omit them to inherit your own model. Without background:true, the call blocks until the sub-agent (or parallel batch) settles. The budget and permissions you ask for are requests: the host clamps them to your own budget and capabilities, and the sub-agent never gets permissions you lack. You remain responsible for verifying its report with your own tools.',
   },
   {
     name: 'browse',
@@ -347,7 +351,28 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
     name: 'team_manage',
     doc: 'As chief of staff: list the actual persistent teammate roster, hire teammates, remove them, create a group chat, or start a shared topic without asking the user to switch. New hires join this conversation with distinct characters. Temporary task workers use spawn_sub_agent instead. create_thread moves the current team turn to that topic and wakes its teammates to work on the brief; all replies stay there. params: {"action":"list"} | {"action":"create","name":"Scout","tagline":"Research assistant","instructions":"..."} | {"action":"delete","name":"Scout"} | {"action":"create_group","title":"Launch room","members":["Scout","Writer"],"chief":"Scout"} | {"action":"create_thread","title":"Launch copy","topic":"Only landing page copy"}.',
   },
+  {
+    name: 'local_pc',
+    doc: 'Run a fast, lightweight action directly on a linked Local PC (no local LLM turn). params: {"action":"status"} | {"action":"list_files","path":""} | {"action":"read_file","path":"..."} | {"action":"search_files","pattern":"...","path":"."} | {"action":"pull_file","path":"..."} | {"action":"write_file","path":"...","content":"..."} | {"action":"drop_file","path":"...","content":"..."} | {"action":"open_url","url":"https://..."} | {"action":"run_command","command":"..."}. Optional "peer" selects a specific linked PC.',
+  },
+  {
+    name: 'ask_local_agent',
+    doc: 'Send a direct prompt to an agent running on the linked Local PC (e.g., when local reasoning or local browser context is needed) and return its reply. params: {"prompt":"...","peer":"optional PC name/id","agent":"optional local agent name"}',
+  },
 ];
+
+const LOCAL_LINK_TOOL_IDS = new Set(['local_pc', 'ask_local_agent']);
+const LOCAL_PC_ACTIONS = new Set<LocalLinkAction>([
+  'status',
+  'list_files',
+  'read_file',
+  'search_files',
+  'write_file',
+  'pull_file',
+  'drop_file',
+  'open_url',
+  'run_command',
+]);
 
 /** The grants one access decision reads, in the catalog's shape. */
 function accessInput(
@@ -365,12 +390,24 @@ function accessInput(
 
 /** Cowork capabilities this agent may be offered, in declaration order. The
  *  same decision backs the prompt docs, both native tool lists and dispatch. */
-function offeredToolNames(agent: Parameters<typeof accessInput>[0], browser: boolean): Set<string> {
-  return new Set(coworkToolIds(accessInput(agent, browser)));
+function offeredToolNames(
+  agent: Parameters<typeof accessInput>[0],
+  browser: boolean,
+  options?: { includeLocalLink?: boolean },
+): Set<string> {
+  const names = new Set(coworkToolIds(accessInput(agent, browser)));
+  if (options?.includeLocalLink === false) {
+    for (const id of LOCAL_LINK_TOOL_IDS) names.delete(id);
+  }
+  return names;
 }
 
-export function coworkToolDocs(agent: Pick<CoworkAgent, 'allowShell' | 'allowWrites' | 'allowConfig' | 'chiefOfStaff'>, browser: boolean): string {
-  const offered = offeredToolNames(agent, browser);
+export function coworkToolDocs(
+  agent: Pick<CoworkAgent, 'allowShell' | 'allowWrites' | 'allowConfig' | 'chiefOfStaff'>,
+  browser: boolean,
+  options?: { includeLocalLink?: boolean },
+): string {
+  const offered = offeredToolNames(agent, browser, options);
   return COWORK_TOOLS.filter((t) => offered.has(t.name))
     .map((t) => `- ${t.name} — ${t.doc}`)
     .join('\n');
@@ -378,8 +415,12 @@ export function coworkToolDocs(agent: Pick<CoworkAgent, 'allowShell' | 'allowWri
 
 /** Native entry point for the same permission-gated tools documented in the
  * prompt. Execution still passes through executeCoworkTool's validation. */
-export function coworkNativeTool(agent: Pick<CoworkAgent, 'allowShell' | 'allowWrites' | 'allowConfig' | 'chiefOfStaff'>, browser: boolean): LlmToolDefinition {
-  const offered = offeredToolNames(agent, browser);
+export function coworkNativeTool(
+  agent: Pick<CoworkAgent, 'allowShell' | 'allowWrites' | 'allowConfig' | 'chiefOfStaff'>,
+  browser: boolean,
+  options?: { includeLocalLink?: boolean },
+): LlmToolDefinition {
+  const offered = offeredToolNames(agent, browser, options);
   const names = COWORK_TOOLS.filter((t) => offered.has(t.name)).map((t) => t.name);
   return {
     name: 'cowork_tool',
@@ -398,8 +439,12 @@ export function coworkNativeTool(agent: Pick<CoworkAgent, 'allowShell' | 'allowW
 }
 
 /** Each tool carries its own parameters; the legacy wrapper remains readable. */
-export function coworkNativeTools(agent: Pick<CoworkAgent, 'allowShell' | 'allowWrites' | 'allowConfig' | 'chiefOfStaff'>, browser: boolean): LlmToolDefinition[] {
-  const offered = offeredToolNames(agent, browser);
+export function coworkNativeTools(
+  agent: Pick<CoworkAgent, 'allowShell' | 'allowWrites' | 'allowConfig' | 'chiefOfStaff'>,
+  browser: boolean,
+  options?: { includeLocalLink?: boolean },
+): LlmToolDefinition[] {
+  const offered = offeredToolNames(agent, browser, options);
   return COWORK_TOOLS.filter((tool) => offered.has(tool.name)).map((tool) => ({
     name: tool.name,
     description: tool.doc,
@@ -568,6 +613,85 @@ async function executeAuthorizedCoworkTool(ctx: ToolContext, tool: string, param
       return {
         ok: false,
         output: `${tool} is unavailable to a sub-agent: your report goes to your parent agent, who decides what needs the user. Report the blocker or finding in your final reply instead.`,
+      };
+    }
+    if (tool === 'local_pc') {
+      if (!scope?.localLink) {
+        return { ok: false, output: 'No direct Local PC link is available in this session.' };
+      }
+      const actionRaw = typeof params['action'] === 'string' ? params['action'].trim() : '';
+      if (!LOCAL_PC_ACTIONS.has(actionRaw as LocalLinkAction)) {
+        return {
+          ok: false,
+          output: `local_pc "action" must be one of: ${[...LOCAL_PC_ACTIONS].join(', ')}.`,
+        };
+      }
+      const action = actionRaw as LocalLinkAction;
+      const peer = typeof params['peer'] === 'string' && params['peer'].trim() ? params['peer'].trim() : undefined;
+      const res = await scope.localLink.request(action, params, {
+        ...(peer ? { peer } : {}),
+        fromAgent: scope.agent.name,
+        signal: scope.signal,
+      });
+      if (action === 'pull_file' && res.ok && typeof res.data?.['dataBase64'] === 'string') {
+        const name = typeof res.data['name'] === 'string' && res.data['name'] ? res.data['name'] : 'local-file';
+        const mime = typeof res.data['mime'] === 'string' ? res.data['mime'] : undefined;
+        const size = typeof res.data['size'] === 'number' ? res.data['size'] : undefined;
+        const preview = typeof res.data['textPreview'] === 'string' ? res.data['textPreview'] : undefined;
+        if (scope.conversationId) {
+          const artifact = scope.store.addArtifact({
+            conversationId: scope.conversationId,
+            agentId: scope.agent.id,
+            name,
+            ...(mime ? { mime } : {}),
+            dataBase64: res.data['dataBase64'],
+          });
+          (scope.artifactIds ??= []).push(artifact.id);
+          return {
+            ok: true,
+            output:
+              `Pulled ${name}${size !== undefined ? ` (${size} bytes)` : ''} as artifact ${artifact.id}.` +
+              (preview !== undefined ? `\n\nPreview:\n${preview}` : ''),
+          };
+        }
+        return {
+          ok: true,
+          output:
+            `Pulled ${name}${size !== undefined ? ` (${size} bytes)` : ''}.` +
+            (preview !== undefined ? `\n\nPreview:\n${preview}` : ''),
+        };
+      }
+      return {
+        ok: res.ok,
+        output: res.output ?? res.error ?? (res.ok ? 'Done.' : 'Local PC request failed.'),
+      };
+    }
+    if (tool === 'ask_local_agent') {
+      if (!scope?.localLink) {
+        return { ok: false, output: 'No direct Local PC link is available in this session.' };
+      }
+      if (scope.isSubAgent) {
+        return { ok: false, output: 'ask_local_agent is unavailable to sub-agents.' };
+      }
+      const prompt = typeof params['prompt'] === 'string' ? params['prompt'].trim() : '';
+      if (!prompt) {
+        return { ok: false, output: 'ask_local_agent requires a non-empty "prompt".' };
+      }
+      const peer = typeof params['peer'] === 'string' && params['peer'].trim() ? params['peer'].trim() : undefined;
+      const agent = typeof params['agent'] === 'string' && params['agent'].trim() ? params['agent'].trim() : undefined;
+      const res = await scope.localLink.request(
+        'ask_local_agent',
+        { prompt, ...(agent ? { agent } : {}) },
+        {
+          ...(peer ? { peer } : {}),
+          fromAgent: scope.agent.name,
+          timeoutMs: 90_000,
+          signal: scope.signal,
+        },
+      );
+      return {
+        ok: res.ok,
+        output: res.output ?? res.error ?? (res.ok ? 'Done.' : 'Local agent request failed.'),
       };
     }
     // A status poll or a stop acts on a command this host already manages: it

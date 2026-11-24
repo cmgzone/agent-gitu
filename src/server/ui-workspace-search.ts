@@ -729,7 +729,7 @@ export const WORKSPACE_SEARCH_JS = String.raw`
   var workspaceSearchState=null;
   var WORKSPACE_SETTINGS=[
     ['files','folder','Files & storage','Choose attachment size limits and manage file transfers'],
-    ['general','gear','General','Appearance, defaults, reasoning, and autonomy'],['cowork','users','Cowork','Team preferences, learning, and skill approvals'],
+    ['general','gear','General','Appearance, defaults, reasoning, and autonomy'],['local-link','link','Local PC Link','Direct Cloud-to-Local agent link (no Pikpam relay)'],['cowork','users','Cowork','Team preferences, learning, and skill approvals'],
     ['providers','layers','Providers','Models, API keys, and provider accounts'],['connections','plug','Connections','Apps, accounts, and service permissions'],
     ['permissions','shield','Permissions','Workspace access and action approvals'],['workspace','folder','Workspace','Project locations, files, and constraints'],
     ['project','search','Project','Inspect your current project'],['agents','users','Specialist agents','Coding specialists and orchestration'],

@@ -60,7 +60,25 @@ import { workspaceCheckpoint } from '../checkpoint/workspace-checkpoints.js';
 import { codingPermissions, codingAutoApprove, saveCodingPermissions } from '../workspace/coding-permissions.js';
 import { deploymentIntent, isDeploymentAction, DEPLOYMENT_OWNERSHIP } from '../coding/deployment-authority.js';
 import { CoworkDelegation, type DelegationScope, type DelegationSessionInput } from '../cowork/delegation.js';
-import { CoworkSubAgents, CoworkSubAgentRunner } from '../cowork/subagents.js';
+import { CoworkSubAgents, CoworkSubAgentRunner, type SubAgentModelRequest, type SubAgentModelResolution } from '../cowork/subagents.js';
+import {
+  INBOX_MEMBER_COOKIE,
+  InboxStore,
+  type InboxAgentTriggerMode,
+  type InboxCustomPerms,
+  type InboxMember,
+  type InboxToolPolicy,
+} from '../cowork/inbox-store.js';
+import {
+  createPikpamWorkspaceInvite,
+  resolveOwnerPikpamKey,
+  resolvePikpamApiBase,
+  revokePikpamWorkspaceInvite,
+  revokePikpamWorkspaceMember,
+  runInboxAgentReply,
+  selectInboxRespondingAgents,
+  verifyPikpamWorkspaceTicket,
+} from '../cowork/inbox-runtime.js';
 import type { CodingEvent } from '../coding/events.js';
 import { classifyFollowUp, conversationIntent, isNonMutatingStatusQuestion, startsUnrelatedTask, type TaskScope } from '../agent/follow-up.js';
 import { CoworkLiveMailbox, type CoworkDelivery } from '../cowork/live-messages.js';
@@ -82,7 +100,7 @@ import { acquireTaskLock } from '../ledger/task-lock.js';
 import { gitExec, isGitRepo } from '../git/git.js';
 import type { LlmClient, LlmMessage, LlmUsage } from '../llm/llm.js';
 import { LlmError, UsageTrackingClient, extractLastJsonObject } from '../llm/llm.js';
-import { CoworkStore, MAX_ARTIFACT_BYTES, type CoworkBudgetData, type CoworkConversation, type CoworkMessage, type CoworkAgent, type CoworkWidgetKind, type CoworkMission, type CoworkRequest } from '../cowork/store.js';
+import { CoworkStore, MAX_ARTIFACT_BYTES, type CoworkBudgetData, type CoworkConversation, type CoworkMessage, type CoworkAgent, type CoworkWidgetKind, type CoworkMission, type CoworkRequest, type SubAgentInstance } from '../cowork/store.js';
 import { CoworkMemory } from '../cowork/memory.js';
 import type { AgentPersonality, AgentRole } from '../cowork/profile-config.js';
 import { runConversationTurn, runMissionSession, answerCoworkQuestion, reviewCoworkLearning, mentionNames, renderReferencedMessages, subAgentBridgeFor, type CoworkProgress, type CoworkTriggerMedia } from '../cowork/runner.js';
@@ -127,6 +145,10 @@ import { credentialChatInput } from './credential-chat.js';
 import { coworkActivityView } from './cowork-activity.js';
 import { BRAND_DIR, BRAND_FILES, CHARACTERS_DIR, CHARACTER_FILES, FONT_FILES, FONTS_DIR, VENDOR_THREE, VENDOR_THREE_CORE, isPreviewableMime, isTextLikeFile, mimeForFile, safeFileName } from './static-assets.js';
 import QRCode from 'qrcode';
+import { LocalLinkHub } from '../peer/local-link-hub.js';
+import { LocalLinkClient } from '../peer/local-link-client.js';
+import { LocalLinkExecutor } from '../peer/local-link-executor.js';
+import { validateCloudLinkUrl, type LocalLinkRpcResult } from '../peer/local-link-protocol.js';
 
 const PIK_OAUTH_STATE_COOKIE = 'pik_oauth_state';
 
@@ -469,6 +491,13 @@ export interface GituServerConfig {
   /** Trusted host facts for the authority check (mission activity, spend). A
    *  missing or incomplete context fails closed — the Chief then escalates. */
   chiefContext?: (request: CoworkRequest) => ChiefResolverContext | undefined;
+  /** Optional overrides for direct Cloud <-> Local link storage & workspace isolation. */
+  localLinkSettingsDir?: string;
+  localLinkWorkspaceDir?: string;
+  localLinkForbiddenDirs?: string[];
+  localLinkAutoStart?: boolean;
+  localLinkOpenUrl?: (url: string) => Promise<void>;
+  coworkStorePath?: string;
 }
 
 /**
@@ -558,6 +587,8 @@ export class GituServer {
   private readonly mobilePush: MobilePush;
   private readonly appAuth: AppAuth;
   private readonly chiefStore: ChiefStore;
+  private readonly localLinkHub: LocalLinkHub;
+  private readonly localLinkClient: LocalLinkClient;
   private readonly googleSignIn = new GoogleSignIn(undefined, nodePath.join(ensureGituHome().settings, 'google-sign-in.json'));
   private desktopSockets?: WebSocketServer;
   private readonly desktopAgents = new Map<WebSocket, string>();
@@ -882,6 +913,32 @@ export class GituServer {
     );
     this.mailConnections = config.mailConnections ?? new MailConnections();
     this.appHub = new ConnectionsHub(this.connectedApps, this.mailConnections);
+    const linkHome = ensureGituHome();
+    const linkSettingsDir = config.localLinkSettingsDir ?? linkHome.settings;
+    const linkWorkspaceDir = config.localLinkWorkspaceDir ?? linkHome.workspace;
+    const linkForbiddenDirs = config.localLinkForbiddenDirs ?? [linkHome.settings, linkHome.sessions];
+    this.localLinkHub = new LocalLinkHub(linkSettingsDir);
+    const linkExecutor = new LocalLinkExecutor({
+      getPolicy: () => this.localLinkClient.getPolicy(),
+      getDeviceName: () => this.localLinkClient.getDeviceName(),
+      getDefaultWorkspace: () => linkWorkspaceDir,
+      getForbiddenDirs: () => linkForbiddenDirs,
+      getActiveProjectPath: () => this.resolvedSelectedHostProject(),
+      listAgents: () =>
+        this.cowork()
+          .listAgents()
+          .map((a) => ({ id: a.id, name: a.name, ...(a.tagline ? { tagline: a.tagline } : {}) })),
+      askLocalAgent: (params) => this.askLocalAgentFromLink(params),
+      ...(config.localLinkOpenUrl ? { openUrlImpl: config.localLinkOpenUrl } : {}),
+    });
+    this.localLinkClient = new LocalLinkClient({
+      settingsDir: linkSettingsDir,
+      executor: linkExecutor,
+      listAgents: () =>
+        this.cowork()
+          .listAgents()
+          .map((a) => ({ id: a.id, name: a.name, ...(a.tagline ? { tagline: a.tagline } : {}) })),
+    });
     if (config.host && !['127.0.0.1', 'localhost', '::1'].includes(config.host) && !this.mobileAccess.enabled) {
       throw new Error('Remote listening requires AGENT_GITU_ACCESS_KEY (at least 32 characters).');
     }
@@ -1439,6 +1496,25 @@ export class GituServer {
     this.desktopSockets = desktopSockets;
     let lastDesktopRejection = 0;
     server.on('upgrade', (req, socket, head) => {
+      let upgradePath = '/';
+      try {
+        upgradePath = new URL(req.url ?? '/', 'http://localhost').pathname;
+      } catch {
+        upgradePath = '/';
+      }
+      if (upgradePath === '/api/local-link/ws') {
+        if (!AppAuth.local(req) && !this.appAuth.secure(req)) {
+          socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+          return;
+        }
+        const peer = this.localLinkHub.authenticateUpgrade(req);
+        if (!peer) {
+          socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+          return;
+        }
+        this.localLinkHub.handleUpgrade(req, socket, head, peer);
+        return;
+      }
       const reject = (code: number) => {
         // Report handshake failures without logging session cookies, credentials,
         // paths or untrusted header values. Limit repeated reconnect messages.
@@ -1513,6 +1589,9 @@ export class GituServer {
       this.sharedIndex(startupLock.repoRoot, startupLock.ignorePaths);
     }
     this.startCoworkLifecycle();
+    if (this.config.localLinkAutoStart !== false) {
+      this.localLinkClient.start();
+    }
     // Historical tasks often share a project. Detect it once during recovery:
     // each detection runs synchronous Git commands and otherwise blocks health
     // checks for minutes on a large registry. Normal requests detect afresh.
@@ -1627,6 +1706,8 @@ export class GituServer {
     this.scheduler?.stop();
     await this.waitForCodingCheckpoints([...this.sessions.keys()]).catch(() => undefined);
     await this.stopCoworkLifecycle();
+    this.localLinkClient.close();
+    this.localLinkHub.close();
     await Promise.allSettled([...this.serverBrowsers.values()].map(browser=>browser.close()));this.serverBrowsers.clear();
     this.coworkTools.clear();
     this.uploadStore?.close();this.uploadStore=undefined;
@@ -1849,7 +1930,7 @@ export class GituServer {
   // ------------------------------------------------------------- cowork mode
 
   private cowork(): CoworkStore {
-    if (!this.coworkStore) this.coworkStore = new CoworkStore(undefined, () => {
+    if (!this.coworkStore) this.coworkStore = new CoworkStore(this.config.coworkStorePath, () => {
       for (const id of this.coworkSubscribers.keys()) this.publishCowork(id);
     }, { maxFileBytes: () => workspaceFileLimit(), onNotification: id => this.publishCowork(id) });
     return this.coworkStore;
@@ -1995,7 +2076,7 @@ export class GituServer {
    *  architecture as the main agent (typed, lifecycle, visibility-isolated). */
   private coworkMemory(): CoworkMemory {
     if (!this.coworkMemoryStore) {
-      this.coworkMemoryStore = CoworkMemory.forWorkspace();
+      this.coworkMemoryStore = CoworkMemory.forWorkspace(this.config.localLinkWorkspaceDir);
       try {
         const nameById = new Map(this.cowork().listAgents().map((a) => [a.id, a.name]));
         const migrated = this.coworkMemoryStore.migrateLegacyFactFiles(nameById);
@@ -2135,6 +2216,511 @@ export class GituServer {
    * the teammate's workspace.
    */
   private coworkSubAgentRunner?: CoworkSubAgentRunner;
+  private inboxStore?: InboxStore;
+  private readonly inboxStreams = new Map<http.ServerResponse, { role: 'owner' | 'member'; memberId?: string }>();
+  private readonly inboxActiveTurns = new Set<string>();
+
+  private inbox(): InboxStore {
+    if (!this.inboxStore) {
+      this.inboxStore = new InboxStore(nodePath.join(ensureGituHome().settings, 'inbox.json'));
+    }
+    return this.inboxStore;
+  }
+
+  private publishInbox(roomId?: string): void {
+    const store = this.inbox();
+    const room = roomId ? store.getRoom(roomId) : undefined;
+    const payload = `event: inbox\ndata: ${JSON.stringify({ roomId: roomId ?? null, ts: Date.now() })}\n\n`;
+    for (const [stream, info] of this.inboxStreams) {
+      if (stream.writableEnded) {
+        this.inboxStreams.delete(stream);
+        continue;
+      }
+      if (info.role === 'member' && room && info.memberId && !room.memberIds.includes(info.memberId)) {
+        continue;
+      }
+      try {
+        stream.write(payload);
+      } catch {
+        this.inboxStreams.delete(stream);
+      }
+    }
+  }
+
+  private requestOriginUrl(req: http.IncomingMessage): string {
+    const proto = req.headers['x-forwarded-proto'] === 'https' || this.appAuth.secure(req) ? 'https' : 'http';
+    const host = String(req.headers['x-forwarded-host'] || req.headers['host'] || 'localhost').split(',')[0]!.trim();
+    return `${proto}://${host}`;
+  }
+
+  /**
+   * Collaborative Inbox routes (owner + Pikpam-invited human members).
+   * Mounted BEFORE the owner auth wall so invited humans can join via a
+   * Pikpam-verified ticket and access strictly their own Inbox rooms — never
+   * owner settings, vault, local link, or private Cowork chats.
+   */
+  private async handleInboxRoute(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: URL,
+    path: string,
+    method: string,
+  ): Promise<boolean> {
+    if (path !== '/inbox' && path !== '/inbox/join' && !path.startsWith('/api/inbox')) {
+      return false;
+    }
+
+    const store = this.inbox();
+    const isOwner = !this.appAuth.enabled || this.appAuth.authenticated(req);
+    const member = store.authenticateRequest(req);
+    const origin = this.requestOriginUrl(req);
+    const workspaceName = this.appAuth.account?.name
+      ? `${this.appAuth.account.name}'s Workspace`
+      : 'Agent Gitu Workspace';
+
+    // 1. Join via short-lived signed Pikpam handoff ticket
+    if (path === '/inbox/join' && method === 'GET') {
+      const ticket = (url.searchParams.get('ticket') ?? '').trim();
+      if (!ticket) {
+        res.writeHead(400, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+        res.end('<!doctype html><meta charset="utf-8"><title>Inbox Invite</title><p>Missing Pikpam invitation ticket.</p>');
+        return true;
+      }
+      const verified = await verifyPikpamWorkspaceTicket(ticket, origin);
+      if (!verified.ok) {
+        res.writeHead(401, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(`<!doctype html><meta charset="utf-8"><title>Inbox Invite</title><p>${verified.error}</p>`);
+        return true;
+      }
+      const invite = verified.inviteId ? store.getInvite(verified.inviteId) : undefined;
+      if (invite?.revokedAt) {
+        res.writeHead(403, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+        res.end('<!doctype html><meta charset="utf-8"><title>Inbox Invite</title><p>This invite link was revoked by the workspace owner.</p>');
+        return true;
+      }
+      const existingMember = store.getMemberByPikpamId(verified.userId);
+      if (existingMember?.status === 'revoked' && !invite) {
+        res.writeHead(403, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+        res.end('<!doctype html><meta charset="utf-8"><title>Inbox Access</title><p>Your access to this workspace was revoked by the owner.</p>');
+        return true;
+      }
+      const joined = store.upsertMemberFromPikpam({
+        pikpamUserId: verified.userId,
+        email: verified.email,
+        name: verified.name,
+        ...(invite ? {
+          allowedAgentIds: invite.defaultAgentIds,
+          toolPolicy: invite.toolPolicy,
+          customPerms: invite.customPerms,
+          budgetLimitUsd: invite.budgetLimitUsd,
+        } : {}),
+      });
+      if (invite) {
+        store.markInviteUsed(invite.id);
+        if (invite.roomId) {
+          store.ensureMemberInRoom(invite.roomId, joined.id);
+        } else {
+          store.ensureDmRoomForMember(joined, invite.defaultAgentIds);
+        }
+      } else if (store.listRooms(joined.id).length === 0) {
+        store.ensureDmRoomForMember(joined, joined.allowedAgentIds);
+      }
+      const session = store.createSession(joined.id);
+      const secureFlag = this.appAuth.secure(req) ? '; Secure' : '';
+      appendSetCookie(
+        res,
+        `${INBOX_MEMBER_COOKIE}=${session.token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${30 * 24 * 60 * 60}${secureFlag}`,
+      );
+      this.publishInbox();
+      res.writeHead(302, { location: '/inbox', 'cache-control': 'no-store' });
+      res.end();
+      return true;
+    }
+
+    // 2. Standalone /inbox shell (accessible to both Owner and Invited Members)
+    if (path === '/inbox' && method === 'GET') {
+      if (!isOwner && !member) {
+        res.writeHead(302, { location: '/auth', 'cache-control': 'no-store' });
+        res.end();
+        return true;
+      }
+      res.writeHead(200, {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'no-store',
+        'x-frame-options': 'DENY',
+        'content-security-policy': "frame-ancestors 'none'",
+      });
+      res.end(UI_HTML);
+      return true;
+    }
+
+    // 3. /api/inbox/* endpoints
+    res.setHeader('Cache-Control', 'no-store');
+    if (path === '/api/inbox/me' && method === 'GET') {
+      if (isOwner) {
+        this.sendJson(res, 200, {
+          authenticated: true,
+          role: 'owner',
+          ownerName: this.appAuth.account?.name ?? 'Owner',
+          workspaceName,
+          pikpamBaseUrl: resolvePikpamApiBase(),
+        });
+        return true;
+      }
+      if (member) {
+        this.sendJson(res, 200, {
+          authenticated: true,
+          role: 'member',
+          member: { id: member.id, name: member.name, email: member.email, allowedAgentIds: member.allowedAgentIds, toolPolicy: member.toolPolicy },
+          workspaceName,
+          pikpamBaseUrl: resolvePikpamApiBase(),
+        });
+        return true;
+      }
+      this.sendJson(res, 401, { authenticated: false, error: 'Sign in with Pikpam or an invite link to open Inbox.' });
+      return true;
+    }
+
+    if (path === '/api/inbox/logout' && method === 'POST') {
+      if (!this.isSameOrigin(req)) { this.sendJson(res, 403, { error: 'cross-origin request rejected' }); return true; }
+      store.destroySession(req);
+      appendSetCookie(res, `${INBOX_MEMBER_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
+      this.sendJson(res, 200, { ok: true });
+      return true;
+    }
+
+    if (!isOwner && !member) {
+      this.sendJson(res, 401, { error: 'Inbox authentication required.' });
+      return true;
+    }
+
+    if (method !== 'GET' && !this.isSameOrigin(req)) {
+      this.sendJson(res, 403, { error: 'cross-origin request rejected' });
+      return true;
+    }
+
+    // Live SSE stream for Inbox updates
+    if (path === '/api/inbox/stream' && method === 'GET') {
+      res.writeHead(200, {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-cache, no-transform',
+        connection: 'keep-alive',
+      });
+      res.write(`event: ready\ndata: ${JSON.stringify({ role: isOwner ? 'owner' : 'member' })}\n\n`);
+      const entry = isOwner ? { role: 'owner' as const } : { role: 'member' as const, memberId: member!.id };
+      this.inboxStreams.set(res, entry);
+      const keepAlive = setInterval(() => {
+        if (res.writableEnded) { clearInterval(keepAlive); this.inboxStreams.delete(res); return; }
+        res.write(': ping\n\n');
+      }, 25_000);
+      req.on('close', () => {
+        clearInterval(keepAlive);
+        this.inboxStreams.delete(res);
+      });
+      return true;
+    }
+
+    // Full Inbox state (strictly filtered for members)
+    if (path === '/api/inbox/state' && method === 'GET') {
+      const allAgents = this.cowork().listAgents().map((a) => ({
+        id: a.id,
+        name: a.name,
+        avatar: a.avatar,
+        tagline: a.tagline,
+      }));
+      if (isOwner) {
+        this.sendJson(res, 200, {
+          role: 'owner',
+          workspaceName,
+          workspaceUrl: origin,
+          pikpamBaseUrl: resolvePikpamApiBase(),
+          pikpamConfigured: Boolean(resolveOwnerPikpamKey()),
+          rooms: store.listRooms(),
+          members: store.listMembers(),
+          invites: store.listInvites(),
+          agents: allAgents,
+        });
+        return true;
+      }
+      const rooms = store.listRooms(member!.id);
+      const visibleAgentIds = new Set<string>([
+        ...member!.allowedAgentIds,
+        ...rooms.flatMap((r) => r.activeAgentIds),
+      ]);
+      const visibleMemberIds = new Set<string>(rooms.flatMap((r) => r.memberIds));
+      const directory = store
+        .listMembers()
+        .filter((m) => visibleMemberIds.has(m.id))
+        .map((m) => ({ id: m.id, name: m.name, email: m.id === member!.id ? m.email : undefined }));
+      this.sendJson(res, 200, {
+        role: 'member',
+        workspaceName,
+        pikpamBaseUrl: resolvePikpamApiBase(),
+        member: {
+          id: member!.id,
+          name: member!.name,
+          email: member!.email,
+          allowedAgentIds: member!.allowedAgentIds,
+          toolPolicy: member!.toolPolicy,
+        },
+        rooms,
+        members: directory,
+        agents: allAgents.filter((a) => visibleAgentIds.has(a.id)),
+      });
+      return true;
+    }
+
+    // Room messages (GET / POST)
+    const msgMatch = path.match(/^\/api\/inbox\/rooms\/([\w-]+)\/messages$/);
+    if (msgMatch) {
+      const roomId = msgMatch[1]!;
+      const room = store.getRoom(roomId);
+      if (!room) { this.sendJson(res, 404, { error: 'Inbox room not found.' }); return true; }
+      if (!isOwner && (!member || !room.memberIds.includes(member.id))) {
+        this.sendJson(res, 403, { error: 'You do not have access to this Inbox room.' });
+        return true;
+      }
+      if (method === 'GET') {
+        this.sendJson(res, 200, { room, messages: store.messages(roomId) });
+        return true;
+      }
+      if (method === 'POST') {
+        try {
+          const body = await this.readBody(req, 65_536);
+          const text = String(body['text'] ?? '').trim();
+          if (!text) { this.sendJson(res, 400, { error: 'Message text is required.' }); return true; }
+          const senderType = isOwner ? 'owner' : 'member';
+          const senderId = isOwner ? (this.appAuth.account?.id ?? 'owner') : member!.id;
+          const senderName = isOwner ? (this.appAuth.account?.name ?? 'Owner') : member!.name;
+          const allAgents = this.cowork().listAgents();
+          const responding = selectInboxRespondingAgents({
+            room,
+            text,
+            allAgents,
+            senderType,
+            member: isOwner ? undefined : member,
+          });
+          const saved = store.appendMessage(roomId, {
+            senderType,
+            senderId,
+            senderName,
+            text,
+            ...(responding.length ? { mentionedAgentIds: responding.map((a) => a.id) } : {}),
+          });
+          this.publishInbox(roomId);
+          // Trigger eligible active agents in the background so the HTTP post returns immediately.
+          for (const agent of responding) {
+            const turnKey = `${roomId}:${agent.id}`;
+            if (this.inboxActiveTurns.has(turnKey)) continue;
+            this.inboxActiveTurns.add(turnKey);
+            void runInboxAgentReply({
+              store,
+              room,
+              agent,
+              senderType,
+              member: isOwner ? undefined : member,
+              resolveLlm: (effectiveAgent) => this.coworkLlm(effectiveAgent),
+              toolContext: (effectiveAgent) => this.coworkToolContext(effectiveAgent),
+              onMessage: () => this.publishInbox(roomId),
+            })
+              .catch((err: unknown) => {
+                store.appendMessage(roomId, {
+                  senderType: 'system',
+                  senderId: 'system',
+                  senderName: 'System',
+                  text: `${agent.name} could not reply: ${(err as Error).message}`,
+                });
+                this.publishInbox(roomId);
+              })
+              .finally(() => {
+                this.inboxActiveTurns.delete(turnKey);
+              });
+          }
+          this.sendJson(res, 201, { message: saved, triggeredAgents: responding.map((a) => a.id) });
+        } catch (err) {
+          this.sendJson(res, 400, { error: (err as Error).message });
+        }
+        return true;
+      }
+    }
+
+    // ─── Owner-only Inbox management endpoints ───────────────────────────────
+    if (!isOwner) {
+      this.sendJson(res, 403, { error: 'Only the workspace owner can manage Inbox rooms, members, and invites.' });
+      return true;
+    }
+
+    if (path === '/api/inbox/rooms' && method === 'POST') {
+      try {
+        const body = await this.readBody(req, 32_768);
+        const kind = body['kind'] === 'group' ? 'group' : 'dm';
+        const title = String(body['title'] ?? '').trim();
+        const memberIds = Array.isArray(body['memberIds']) ? body['memberIds'].map(String) : [];
+        const activeAgentIds = Array.isArray(body['activeAgentIds']) ? body['activeAgentIds'].map(String) : [];
+        const agentTriggerMode: InboxAgentTriggerMode = body['agentTriggerMode'] === 'auto' ? 'auto' : kind === 'group' ? 'mention' : 'auto';
+        const toolPolicyOverride = typeof body['toolPolicyOverride'] === 'string'
+          ? (body['toolPolicyOverride'] as InboxToolPolicy)
+          : undefined;
+        const room = store.createRoom({
+          kind,
+          title,
+          memberIds,
+          activeAgentIds,
+          agentTriggerMode,
+          ...(toolPolicyOverride ? { toolPolicyOverride } : {}),
+        });
+        this.publishInbox(room.id);
+        this.sendJson(res, 201, { room });
+      } catch (err) {
+        this.sendJson(res, 400, { error: (err as Error).message });
+      }
+      return true;
+    }
+
+    const roomMatch = path.match(/^\/api\/inbox\/rooms\/([\w-]+)$/);
+    if (roomMatch) {
+      const roomId = roomMatch[1]!;
+      if (method === 'PATCH') {
+        try {
+          const body = await this.readBody(req, 32_768);
+          const patch: Parameters<InboxStore['updateRoom']>[1] = {};
+          if (typeof body['title'] === 'string') patch.title = body['title'];
+          if (Array.isArray(body['memberIds'])) patch.memberIds = body['memberIds'].map(String);
+          if (Array.isArray(body['activeAgentIds'])) patch.activeAgentIds = body['activeAgentIds'].map(String);
+          if (body['agentTriggerMode'] === 'mention' || body['agentTriggerMode'] === 'auto') {
+            patch.agentTriggerMode = body['agentTriggerMode'];
+          }
+          if ('toolPolicyOverride' in body) {
+            patch.toolPolicyOverride = typeof body['toolPolicyOverride'] === 'string' && body['toolPolicyOverride']
+              ? (body['toolPolicyOverride'] as InboxToolPolicy)
+              : undefined;
+          }
+          if (body['customPermsOverride'] && typeof body['customPermsOverride'] === 'object') {
+            patch.customPermsOverride = body['customPermsOverride'] as InboxCustomPerms;
+          }
+          const updated = store.updateRoom(roomId, patch);
+          if (!updated) { this.sendJson(res, 404, { error: 'Inbox room not found.' }); return true; }
+          this.publishInbox(roomId);
+          this.sendJson(res, 200, { room: updated });
+        } catch (err) {
+          this.sendJson(res, 400, { error: (err as Error).message });
+        }
+        return true;
+      }
+      if (method === 'DELETE') {
+        const removed = store.deleteRoom(roomId);
+        if (!removed) { this.sendJson(res, 404, { error: 'Inbox room not found.' }); return true; }
+        this.publishInbox();
+        this.sendJson(res, 200, { ok: true });
+        return true;
+      }
+    }
+
+    if (path === '/api/inbox/invites' && method === 'POST') {
+      try {
+        const body = await this.readBody(req, 32_768);
+        const scopeType = body['scopeType'] === 'dm' || body['scopeType'] === 'group' ? body['scopeType'] : 'workspace';
+        const roomId = typeof body['roomId'] === 'string' && body['roomId'].trim() ? body['roomId'].trim() : undefined;
+        const targetEmail = typeof body['targetEmail'] === 'string' && body['targetEmail'].trim() ? body['targetEmail'].trim() : undefined;
+        const defaultAgentIds = Array.isArray(body['defaultAgentIds']) ? body['defaultAgentIds'].map(String) : [];
+        const toolPolicy: InboxToolPolicy =
+          body['toolPolicy'] === 'chat_only' || body['toolPolicy'] === 'read_only' || body['toolPolicy'] === 'standard' || body['toolPolicy'] === 'custom'
+            ? body['toolPolicy']
+            : 'read_only';
+        const customPerms = body['customPerms'] && typeof body['customPerms'] === 'object'
+          ? (body['customPerms'] as InboxCustomPerms)
+          : undefined;
+        const maxUses = typeof body['maxUses'] === 'number' ? body['maxUses'] : 1;
+        const expiresInDays = typeof body['expiresInDays'] === 'number' && body['expiresInDays'] > 0 ? body['expiresInDays'] : 7;
+        const expiresAt = new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000).toISOString();
+        const workspaceUrl = typeof body['workspaceUrl'] === 'string' && body['workspaceUrl'].trim()
+          ? body['workspaceUrl'].trim()
+          : origin;
+
+        const invite = store.createInvite({
+          label: typeof body['label'] === 'string' ? body['label'] : undefined,
+          scopeType,
+          roomId,
+          targetEmail,
+          defaultAgentIds,
+          toolPolicy,
+          customPerms,
+          budgetLimitUsd: typeof body['budgetLimitUsd'] === 'number' && body['budgetLimitUsd'] > 0 ? body['budgetLimitUsd'] : undefined,
+          maxUses,
+          expiresAt,
+        });
+
+        try {
+          const pikpam = await createPikpamWorkspaceInvite({
+            workspaceUrl,
+            workspaceName,
+            inviteId: invite.id,
+            scopeType,
+            targetEmail,
+            maxUses,
+            expiresAt,
+          });
+          store.attachPikpamInvite(invite.id, pikpam.code, pikpam.inviteUrl);
+        } catch (err) {
+          store.revokeInvite(invite.id);
+          this.sendJson(res, 400, { error: (err as Error).message });
+          return true;
+        }
+
+        const fresh = store.getInvite(invite.id)!;
+        this.publishInbox();
+        this.sendJson(res, 201, { invite: fresh });
+      } catch (err) {
+        this.sendJson(res, 400, { error: (err as Error).message });
+      }
+      return true;
+    }
+
+    const revokeInviteMatch = path.match(/^\/api\/inbox\/invites\/([\w-]+)\/revoke$/);
+    if (revokeInviteMatch && method === 'POST') {
+      const invite = store.revokeInvite(revokeInviteMatch[1]!);
+      if (!invite) { this.sendJson(res, 404, { error: 'Invite not found.' }); return true; }
+      void revokePikpamWorkspaceInvite({ code: invite.code, inviteId: invite.id });
+      this.publishInbox();
+      this.sendJson(res, 200, { invite });
+      return true;
+    }
+
+    const memberMatch = path.match(/^\/api\/inbox\/members\/([\w-]+)$/);
+    if (memberMatch && method === 'PATCH') {
+      try {
+        const body = await this.readBody(req, 32_768);
+        const patch: Parameters<InboxStore['updateMember']>[1] = {};
+        if (typeof body['name'] === 'string') patch.name = body['name'];
+        if (body['status'] === 'active' || body['status'] === 'revoked') patch.status = body['status'];
+        if (Array.isArray(body['allowedAgentIds'])) patch.allowedAgentIds = body['allowedAgentIds'].map(String);
+        if (body['toolPolicy'] === 'chat_only' || body['toolPolicy'] === 'read_only' || body['toolPolicy'] === 'standard' || body['toolPolicy'] === 'custom') {
+          patch.toolPolicy = body['toolPolicy'];
+        }
+        if (body['customPerms'] && typeof body['customPerms'] === 'object') {
+          patch.customPerms = body['customPerms'] as InboxCustomPerms;
+        }
+        if ('budgetLimitUsd' in body) {
+          patch.budgetLimitUsd = typeof body['budgetLimitUsd'] === 'number' && body['budgetLimitUsd'] > 0
+            ? body['budgetLimitUsd']
+            : undefined;
+        }
+        const updated = store.updateMember(memberMatch[1]!, patch);
+        if (!updated) { this.sendJson(res, 404, { error: 'Member not found.' }); return true; }
+        if (updated.status === 'revoked') {
+          void revokePikpamWorkspaceMember({ workspaceUrl: origin, memberUserId: updated.pikpamUserId });
+        }
+        this.publishInbox();
+        this.sendJson(res, 200, { member: updated });
+      } catch (err) {
+        this.sendJson(res, 400, { error: (err as Error).message });
+      }
+      return true;
+    }
+
+    this.sendJson(res, 404, { error: 'Inbox endpoint not found.' });
+    return true;
+  }
 
   /**
    * The shared sub-agent layer: one manager and one runner per server, so a
@@ -2149,6 +2735,179 @@ export class GituServer {
       this.coworkSubAgentRunner.sweepOrphans();
     }
     return this.coworkSubAgentRunner;
+  }
+
+  /**
+   * Validate and resolve an optional provider/model/effort choice requested by
+   * a parent agent for a sub-agent. Fails closed if the provider is unknown or
+   * lacks usable credentials, while supporting "provider/model" shorthand and
+   * model-only lookups across configured providers.
+   */
+  private resolveSubAgentModel(request: SubAgentModelRequest, parentAgent: CoworkAgent): SubAgentModelResolution {
+    const specs = allProviderSpecs();
+    const findSpec = (raw: string | undefined) => {
+      if (!raw) return undefined;
+      const needle = raw.trim().toLowerCase();
+      return Object.values(specs).find((spec) => spec.id.toLowerCase() === needle);
+    };
+
+    let requestedProvider = request.provider?.trim();
+    let requestedModel = request.model?.trim();
+
+    // Support "provider/model" shorthand when provider is omitted and the prefix
+    // matches a known provider ID.
+    if (!requestedProvider && requestedModel && requestedModel.includes('/')) {
+      const slash = requestedModel.indexOf('/');
+      const prefix = requestedModel.slice(0, slash);
+      const rest = requestedModel.slice(slash + 1).trim();
+      const matched = findSpec(prefix);
+      if (matched && rest) {
+        requestedProvider = matched.id;
+        requestedModel = rest;
+      }
+    }
+
+    const parentEffective = this.resolveEffectiveCoworkModel(parentAgent);
+
+    // If only effort is overridden, inherit parent provider/model cleanly.
+    if (!requestedProvider && !requestedModel) {
+      return {
+        ok: true,
+        ...(parentEffective.provider ? { provider: parentEffective.provider } : {}),
+        ...(parentEffective.model ? { model: parentEffective.model } : {}),
+        ...(request.effort ? { effort: request.effort } : {}),
+      };
+    }
+
+    if (requestedProvider && !findSpec(requestedProvider)) {
+      const known = Object.values(specs)
+        .filter((spec) => Boolean(providerKey(spec)) || spec.id === parentEffective.provider)
+        .map((spec) => spec.id);
+      return {
+        ok: false,
+        error: `spawn_sub_agent refused: unknown provider "${requestedProvider}".${known.length ? ` Configured providers: ${known.join(', ')}.` : ''}`,
+      };
+    }
+
+    let targetProvider = findSpec(requestedProvider)?.id;
+    let targetModel = requestedModel;
+
+    // When only a model ID is given, check the parent's provider first, then
+    // search other configured providers for an exact model match.
+    if (!targetProvider && targetModel) {
+      const parentSpec = findSpec(parentEffective.provider);
+      const needle = targetModel.toLowerCase();
+      const matchesSpec = (spec: (typeof specs)[string]) =>
+        spec.defaultModel.toLowerCase() === needle || spec.models.some((m) => m.toLowerCase() === needle);
+      if (parentSpec && matchesSpec(parentSpec)) {
+        targetProvider = parentSpec.id;
+      } else {
+        const matchedConfigured = Object.values(specs).find((spec) => Boolean(providerKey(spec)) && matchesSpec(spec));
+        targetProvider = matchedConfigured?.id ?? parentEffective.provider;
+      }
+    }
+
+    // If a provider was requested without a model, use that provider's default model.
+    if (targetProvider && !targetModel) {
+      targetModel = findSpec(targetProvider)?.defaultModel;
+    }
+
+    // In test mode with an injected LLM stub, skip live credential validation
+    // while still preserving the validated provider/model/effort metadata.
+    if (this.config.llm) {
+      return {
+        ok: true,
+        ...(targetProvider ? { provider: targetProvider } : {}),
+        ...(targetModel ? { model: targetModel } : {}),
+        ...(request.effort ? { effort: request.effort } : {}),
+      };
+    }
+
+    try {
+      const resolved = resolveLlm({
+        provider: targetProvider,
+        model: targetModel,
+        workingDirectory: this.coworkToolContext(parentAgent).cwd,
+      });
+      return {
+        ok: true,
+        provider: resolved.providerId,
+        model: resolved.model,
+        ...(request.effort ? { effort: request.effort } : {}),
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        error: `spawn_sub_agent refused: cannot use model "${targetProvider ? `${targetProvider}/` : ''}${targetModel ?? ''}" — ${(err as Error).message}`,
+      };
+    }
+  }
+
+  /**
+   * Compact, credential-free summary of configured providers/models so agents
+   * can make informed model choices when spawning foreground or background
+   * sub-agents without blocking on network calls.
+   */
+  private availableSubAgentModelsSummary(): string | undefined {
+    const specs = allProviderSpecs();
+    const selected = readRuntimeSelection();
+    const rows: string[] = [];
+    for (const spec of Object.values(specs)) {
+      const configured = Boolean(providerKey(spec)) || (selected.provider !== undefined && spec.id === selected.provider);
+      if (!configured) continue;
+      const models = [...new Set([spec.defaultModel, ...spec.models].filter(Boolean))].slice(0, 6);
+      if (models.length === 0) continue;
+      rows.push(`- ${spec.id}: ${models.join(', ')}`);
+      if (rows.length >= 8) break;
+    }
+    if (rows.length === 0) return undefined;
+    return `AVAILABLE MODELS FOR SUB-AGENTS (configured providers; omit provider/model to inherit your own):\n${rows.join('\n')}`;
+  }
+
+  /**
+   * Wake the parent agent when a detached background sub-agent settles
+   * (completed, failed, evidence-gate rejected, or terminated).
+   */
+  private notifyBackgroundSubAgentOutcome(instance: SubAgentInstance, result: ToolResult): void {
+    const store = this.cowork();
+    if (!store.getConversation(instance.conversationId) || !store.getAgent(instance.parentAgentId)) return;
+    const modelLabel = instance.model || instance.provider
+      ? ` [${instance.provider ? `${instance.provider}/` : ''}${instance.model ?? 'default'}${instance.effort ? `, effort=${instance.effort}` : ''}]`
+      : '';
+    const instruction = result.ok
+      ? 'A background sub-agent finished. Inspect the result, verify any claims if needed, and report the outcome concisely to the user. This is a completion notification; do not restart completed work.'
+      : 'A background sub-agent did not complete. Report the failure or blocker concisely to the user (or retry with a different approach if appropriate).';
+    const text = `Background sub-agent "${instance.role}" (${instance.id}${modelLabel}) settled (${instance.status}):\n${result.output}\n\n${instruction}`;
+    const note = store.appendMessage(instance.conversationId, {
+      role: 'system',
+      via: 'agent',
+      text,
+      mentionedAgentIds: [instance.parentAgentId],
+      ...(instance.threadId ? { threadId: instance.threadId } : {}),
+    });
+    const mail = store.addInbox({
+      fromAgentId: instance.parentAgentId,
+      toAgentId: instance.parentAgentId,
+      conversationId: instance.conversationId,
+      text,
+    });
+    this.persistBudgets();
+    const active = this.coworkRuns.get(instance.conversationId);
+    if (this.stopping) {
+      this.publishCowork(instance.conversationId);
+      return;
+    }
+    if (active?.busy) {
+      active.live ??= new CoworkLiveMailbox();
+      active.live.add(note);
+    } else if (
+      this.dispatchAgentWake(instance.conversationId, instance.parentAgentId, text, 'agent', {
+        ...(instance.threadId ? { threadId: instance.threadId } : {}),
+      })
+    ) {
+      store.markInboxDelivered([mail.id]);
+    }
+    this.publishCowork(instance.conversationId);
   }
 
   private delegation(): CoworkDelegation {
@@ -2549,10 +3308,11 @@ export class GituServer {
    */
   private coworkMissionLlm(agent: CoworkAgent, account: BudgetAccount, onExhausted: () => void): LlmClient {
     const base = this.coworkLlm(agent);
-    const providerId = agent.provider ?? '';
-    const model = agent.model ?? '';
+    const { provider, model } = this.resolveEffectiveCoworkModel(agent);
+    const providerId = provider ?? '';
+    const modelId = model ?? '';
     return new UsageTrackingClient(base, (usage) => {
-      const cost = this.priceUsage(usage, providerId, model);
+      const cost = this.priceUsage(usage, providerId, modelId);
       if (!account.charge({ turns: 1, ...(cost !== undefined ? { costUsd: cost } : {}) })) onExhausted();
     });
   }
@@ -3061,7 +3821,7 @@ export class GituServer {
       if (action === 'delete_agent') return output({ removed: await this.removeManagedAgent(String(params['agentId'] ?? ''), chief.id) });
       if (action === 'delete_conversation') {
         const id = String(params['conversationId'] ?? ''); if (!store.getConversation(id)) throw Error('Conversation not found.');
-        const run = this.coworkRuns.get(id); if (run) { run.queue = []; run.abort.abort(new Error('Conversation deleted by chief.')); } this.delegation().cancel(id, 'Conversation deleted by chief.'); this.stopCoworkPoller(id); return output({ removed: store.deleteConversation(id) });
+        const run = this.coworkRuns.get(id); if (run) { run.queue = []; run.abort.abort(new Error('Conversation deleted by chief.')); } this.delegation().cancel(id, 'Conversation deleted by chief.'); this.coworkSubAgentRunner?.terminateConversationSubtree(id, 'Conversation deleted by chief.'); this.stopCoworkPoller(id); return output({ removed: store.deleteConversation(id) });
       }
       if (action === 'set_agent_model') {
         const agent = store.getAgent(String(params['agentId'] ?? '')); if (!agent) throw Error('Teammate not found in this workspace.');
@@ -3177,7 +3937,7 @@ export class GituServer {
     const key = this.coworkRuntimeKey(agent.id);
     const selectedHostProject = agent.useHostComputer ? this.resolvedSelectedHostProject() : undefined;
     const workspace = agent.useHostComputer
-      ? (selectedHostProject ?? ensureGituHome().workspace)
+      ? (selectedHostProject ?? this.config.localLinkWorkspaceDir ?? ensureGituHome().workspace)
       : nodePath.join(ensureGituHome().root, 'Cowork', 'profiles', agent.id);
     const targetKey = agent.useHostComputer
       ? `${selectedHostProject ? 'host-project' : 'host-default'}:${workspace}`
@@ -3200,7 +3960,7 @@ export class GituServer {
         appManagement: (params, actor) => this.manageApp(params, actor),
         guard,
         cwd: effectiveCwd,
-        skills: SkillStore.forProject(agent.useHostComputer ? effectiveCwd : ensureGituHome().workspace),
+        skills: SkillStore.forProject(agent.useHostComputer ? effectiveCwd : (this.config.localLinkWorkspaceDir ?? ensureGituHome().workspace)),
         mcp: McpManager.forProject(effectiveCwd),
         connections: this.connections,
         connectedApps: this.appHub,
@@ -3216,7 +3976,7 @@ export class GituServer {
         const current = this.cowork().getAgent(agent.id);
         if (!current?.useHostComputer) return [];
         const paths = [
-          ensureGituHome().workspace,
+          this.config.localLinkWorkspaceDir ?? ensureGituHome().workspace,
           ...this.mainAgentRepositories().map(repository => repository.path),
           ...(readRuntimeSelection().projectPath ? [readRuntimeSelection().projectPath!] : []),
         ];
@@ -3904,6 +4664,8 @@ export class GituServer {
   private async stopCoworkLifecycle(): Promise<void> {
     for (const response of this.coworkStreams) response.end();
     this.coworkStreams.clear();
+    for (const response of this.inboxStreams.keys()) response.end();
+    this.inboxStreams.clear();
     this.coworkSubscribers.clear();
     if (this.coworkTimer) clearInterval(this.coworkTimer);
     this.coworkTimer = undefined;
@@ -3920,6 +4682,7 @@ export class GituServer {
     this.coworkPollers.clear();
     for (const context of this.coworkTools.values()) context.mcp?.killAll();
     for (const run of this.coworkRuns.values()) { run.queue.length = 0; run.abort.abort(); }
+    this.coworkSubAgentRunner?.terminateAll('Application stopping.');
     await Promise.allSettled([...this.coworkComputers.values()].map((computer) => computer.stop()));
     for (const transport of this.cloudComputers.values()) transport.close();
     this.cloudComputers.clear();
@@ -4737,6 +5500,10 @@ export class GituServer {
           subAgents: this.subAgents(),
           subAgentLlm: (agent, account, onExhausted) => this.coworkMissionLlm(agent, account, onExhausted),
           budgetFor: ({ missionId, conversationId: scopeConversationId }) => this.delegationBudgetFor(missionId, scopeConversationId),
+          resolveSubAgentModel: (request, parentAgent) => this.resolveSubAgentModel(request, parentAgent),
+          availableSubAgentModels: () => this.availableSubAgentModelsSummary(),
+          onBackgroundSubAgentSettled: (instance, result) => this.notifyBackgroundSubAgentOutcome(instance, result),
+          localLink: this.localLinkHub.asBridge(),
           signal: abort.signal,
           onWorking: (agent) => {
             activeAgents.set(agent.id, agent.name);
@@ -4913,6 +5680,10 @@ export class GituServer {
           subAgents: this.subAgents(),
           subAgentLlm: (agent, account, onExhausted) => this.coworkMissionLlm(agent, account, onExhausted),
           budgetFor: ({ missionId, conversationId: scopeConversationId }) => this.delegationBudgetFor(missionId, scopeConversationId),
+          resolveSubAgentModel: (request, parentAgent) => this.resolveSubAgentModel(request, parentAgent),
+          availableSubAgentModels: () => this.availableSubAgentModelsSummary(),
+          onBackgroundSubAgentSettled: (instance, result) => this.notifyBackgroundSubAgentOutcome(instance, result),
+          localLink: this.localLinkHub.asBridge(),
           signal: abort.signal,
           onProgress: (progress) => {
             const current = this.coworkRuns.get(conversationId);
@@ -5069,7 +5840,7 @@ export class GituServer {
   }
 
   /** Wake one specific agent with an instruction (follow-ups, inbox mail). */
-  private dispatchAgentWake(conversationId: string, agentId: string, instruction: string, via: CoworkMessage['via'] = 'agent', opts: { learningReview?: boolean; triggerId?: string; onSettled?: (error?:Error)=>void; timeoutMs?:number } = {}): boolean {
+  private dispatchAgentWake(conversationId: string, agentId: string, instruction: string, via: CoworkMessage['via'] = 'agent', opts: { learningReview?: boolean; triggerId?: string; onSettled?: (error?:Error)=>void; timeoutMs?:number; threadId?: string } = {}): boolean {
     const store = this.cowork();
     const conversation = store.getConversation(conversationId);
     const agent = store.getAgent(agentId);
@@ -5077,7 +5848,7 @@ export class GituServer {
     if (opts.triggerId && store.messages(conversationId).some(message => message.id === opts.triggerId)) return true;
     const run = this.coworkRuns.get(conversationId);
     if (run?.busy) return false; // retried by the next autonomy tick where relevant
-    const trigger = store.appendMessage(conversationId, { id: opts.triggerId, role: 'system', via, text: instruction });
+    const trigger = store.appendMessage(conversationId, { id: opts.triggerId, role: 'system', via, text: instruction, ...(opts.threadId ? { threadId: opts.threadId } : {}) });
     if (opts.learningReview) {
       // Bound the set: an aborted review never consumes its marker.
       if (this.coworkReviewTriggers.size > 50) this.coworkReviewTriggers.clear();
@@ -5162,6 +5933,213 @@ export class GituServer {
       const key='schedule:'+conv.id+':'+JSON.stringify(schedule);
       this.proactivity().enqueue({kind:'schedule',sourceId:key,conversationId:conv.id,agentId:agent.id,instruction:`Scheduled task (every ${schedule.every}): ${schedule.goal}`},key);
     }
+  }
+
+  private async askLocalAgentFromLink(params: {
+    prompt: string;
+    agent?: string;
+    fromAgent?: string;
+    hopCount: number;
+    signal?: AbortSignal;
+  }): Promise<LocalLinkRpcResult> {
+    const store = this.cowork();
+    const agents = store.listAgents();
+    if (agents.length === 0) {
+      return { ok: false, error: 'No local agents are configured on this PC.' };
+    }
+    let target: CoworkAgent | undefined;
+    if (params.agent) {
+      const needle = params.agent.trim().toLowerCase();
+      target = agents.find((a) => a.id === params.agent || a.name.toLowerCase() === needle);
+      if (!target) {
+        return {
+          ok: false,
+          error: `No local agent matched "${params.agent}". Available: ${agents.map((a) => a.name).join(', ')}.`,
+        };
+      }
+    } else {
+      target = agents.find((a) => a.chiefOfStaff) ?? agents[0]!;
+    }
+
+    const conv =
+      store.listConversations().find((c) => c.kind === 'dm' && c.memberIds.length === 1 && c.memberIds[0] === target.id) ??
+      store.saveConversation({ kind: 'dm', memberIds: [target.id] });
+    const thread = store.addThread({
+      conversationId: conv.id,
+      title: 'Cloud Agent Link',
+      topic: 'Direct requests from linked Cloud Agent',
+    });
+    const fromLabel = params.fromAgent ? `Cloud Agent (@${params.fromAgent})` : 'Cloud Agent';
+    const trigger = store.appendMessage(conv.id, {
+      role: 'user',
+      via: 'agent',
+      from: fromLabel,
+      threadId: thread.id,
+      text: `[Direct request from ${fromLabel}]:\n${params.prompt}`,
+    });
+    this.publishCowork(conv.id);
+
+    const timeoutSignal = AbortSignal.timeout(85_000);
+    const signal = params.signal ? AbortSignal.any([params.signal, timeoutSignal]) : timeoutSignal;
+    const history = store.messages(conv.id, 0, thread.id).filter((m) => m.seq <= trigger.seq);
+    const turn = await runConversationTurn({
+      conversation: conv,
+      history,
+      trigger,
+      threadId: thread.id,
+      deps: {
+        forceAgentId: target.id,
+        agents: store.listAgents(),
+        connectedApps: this.appHub,
+        resolveLlm: (current) => this.coworkTrackedLlm(current, conv.id),
+        toolContext: (current) => this.coworkToolContext(current),
+        computerFor: (agentId, current) => this.coworkComputer(agentId, current),
+        delegation: this.delegation(),
+        withAgent: (current, work) => this.withCoworkAgent(current.id, signal, work),
+        store,
+        memory: this.coworkMemory(),
+        browser: Boolean(this.config.browser),
+        supportsImagesFor: (current) => this.coworkSupportsImages(current),
+        acquireHostBrowser: () => this.coworkBrowserLease.acquire(signal),
+        userContext: this.coworkUserContext(),
+        memoryFor: (current) => this.coworkMemoryFor(current),
+        autoLearn: false,
+        requireCompletionState: false,
+        recall: this.coworkRecallIndex(),
+        subAgents: this.subAgents(),
+        subAgentLlm: (current, account, onExhausted) => this.coworkMissionLlm(current, account, onExhausted),
+        budgetFor: ({ missionId, conversationId: scopeConvId }) => this.delegationBudgetFor(missionId, scopeConvId),
+        signal,
+        onMessage: () => {
+          this.publishCowork(conv.id);
+        },
+      },
+      append: (message) => {
+        const stored = store.appendMessage(conv.id, message);
+        this.publishCowork(conv.id);
+        return stored;
+      },
+    });
+    if (turn.error) {
+      return { ok: false, error: turn.error, output: turn.error };
+    }
+    const replyMsg = [...turn.messages].reverse().find((m) => m.role === 'agent' && m.text.trim());
+    const replyText = replyMsg?.text.trim() || '(no response from local agent)';
+    return {
+      ok: true,
+      output: replyText,
+      data: {
+        agentName: target.name,
+        conversationId: conv.id,
+        threadId: thread.id,
+      },
+    };
+  }
+
+  private resolveLocalLinkCloudUrl(req: http.IncomingMessage, bodyCloudUrl?: unknown): string | null {
+    const candidates = [
+      typeof bodyCloudUrl === 'string' ? bodyCloudUrl : '',
+      process.env['AGENT_GITU_PUBLIC_URL'] ?? '',
+      process.env['AGENT_GITU_PUBLIC_ORIGIN'] ?? '',
+      typeof req.headers.origin === 'string' ? req.headers.origin : '',
+      typeof req.headers.host === 'string'
+        ? `${this.appAuth.secure(req) ? 'https:' : 'http:'}//${req.headers.host}`
+        : '',
+    ];
+    for (const candidate of candidates) {
+      const validated = validateCloudLinkUrl(candidate);
+      if (validated) return validated.origin;
+    }
+    return null;
+  }
+
+  private async handleLocalLinkRoutes(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    path: string,
+    method: string,
+  ): Promise<boolean> {
+    res.setHeader('Cache-Control', 'no-store');
+    if (path === '/api/local-link/status' && method === 'GET') {
+      this.sendJson(res, 200, {
+        hub: this.localLinkHub.status(),
+        client: this.localLinkClient.status(),
+      });
+      return true;
+    }
+
+    if (!this.isSameOrigin(req)) {
+      this.sendJson(res, 403, { ok: false, error: 'Cross-origin request rejected.' });
+      return true;
+    }
+
+    try {
+      if (path === '/api/local-link/pair-code' && method === 'POST') {
+        const body = await this.readBody(req, 8192);
+        const cloudUrl = this.resolveLocalLinkCloudUrl(req, body['cloudUrl']);
+        if (!cloudUrl) {
+          this.sendJson(res, 400, { ok: false, error: 'Could not determine a valid Cloud Agent URL.' });
+          return true;
+        }
+        this.sendJson(res, 200, { ok: true, ...this.localLinkHub.createPairCode(cloudUrl) });
+        return true;
+      }
+
+      const peerMatch = path.match(/^\/api\/local-link\/peers\/([\w-]+)$/);
+      if (peerMatch && method === 'DELETE') {
+        const result = this.localLinkHub.revokePeer(decodeURIComponent(peerMatch[1]!));
+        this.sendJson(res, 200, {
+          ok: result.ok,
+          removed: result.removed,
+          hub: this.localLinkHub.status(),
+        });
+        return true;
+      }
+
+      if (path === '/api/local-link/test' && method === 'POST') {
+        const body = await this.readBody(req, 8192);
+        const peerId = typeof body['peerId'] === 'string' && body['peerId'].trim() ? body['peerId'].trim() : undefined;
+        const result = await this.localLinkHub.testPeer(peerId);
+        this.sendJson(res, 200, result);
+        return true;
+      }
+
+      if (path === '/api/local-link/connect' && method === 'POST') {
+        const body = await this.readBody(req, 8192);
+        const result = await this.localLinkClient.pairAndConnect({
+          bundle: typeof body['bundle'] === 'string' ? body['bundle'] : undefined,
+          cloudUrl: typeof body['cloudUrl'] === 'string' ? body['cloudUrl'] : undefined,
+          code: typeof body['code'] === 'string' ? body['code'] : undefined,
+          deviceName: typeof body['deviceName'] === 'string' ? body['deviceName'] : undefined,
+          policy:
+            body['policy'] && typeof body['policy'] === 'object' && !Array.isArray(body['policy'])
+              ? (body['policy'] as Record<string, unknown>)
+              : undefined,
+        });
+        this.sendJson(res, result.ok ? 200 : 400, result);
+        return true;
+      }
+
+      if (path === '/api/local-link/disconnect' && method === 'POST') {
+        const body = await this.readBody(req, 8192);
+        const client = this.localLinkClient.disconnect(body['clearConfig'] !== false);
+        this.sendJson(res, 200, { ok: true, client });
+        return true;
+      }
+
+      if (path === '/api/local-link/policy' && method === 'PATCH') {
+        const body = await this.readBody(req, 16_384);
+        const client = this.localLinkClient.updatePolicy(body);
+        this.sendJson(res, 200, { ok: true, client });
+        return true;
+      }
+    } catch (err) {
+      this.sendJson(res, 400, { ok: false, error: (err as Error).message });
+      return true;
+    }
+
+    this.sendJson(res, 404, { ok: false, error: 'Local link route not found.' });
+    return true;
   }
 
   /** All /api/cowork/* routes. Returns true when the request was handled. */
@@ -7365,6 +8343,34 @@ export class GituServer {
       }
       this.sendJson(res, 404, { error: 'Authentication route not found.' }); return;
     }
+    if (path === '/api/local-link/pair' && method === 'POST') {
+      res.setHeader('Cache-Control', 'no-store');
+      if (req.headers.origin !== undefined) {
+        this.sendJson(res, 403, { ok: false, error: 'Cross-origin pairing request rejected.' });
+        return;
+      }
+      if (!AppAuth.local(req) && !this.appAuth.secure(req)) {
+        this.sendJson(res, 403, { ok: false, error: 'Direct pairing requires HTTPS or loopback access.' });
+        return;
+      }
+      try {
+        const body = await this.readBody(req, 8192);
+        const result = this.localLinkHub.redeemPairCode(
+          {
+            code: body['code'],
+            deviceName: body['deviceName'],
+            platform: body['platform'],
+            hostname: body['hostname'],
+          },
+          req.socket.remoteAddress ?? 'unknown',
+        );
+        this.sendJson(res, result.ok ? 200 : result.status, result);
+      } catch (err) {
+        this.sendJson(res, 400, { ok: false, error: (err as Error).message });
+      }
+      return;
+    }
+    if (await this.handleInboxRoute(req, res, url, path, method)) return;
     if (this.appAuth.enabled && !this.appAuth.authenticated(req)) {
       if (path.startsWith('/api/')) this.sendJson(res, 401, { error: 'Unlock Agent Gitu to continue.', code: 'APP_LOCKED' });
       else { res.writeHead(302, { location: '/auth', 'cache-control': 'no-store' }); res.end(); }
@@ -8535,6 +9541,10 @@ export class GituServer {
         this.sendJson(res, 200, { ok: true, jobs: store.remove(cronMatch[1]) });
         return;
       }
+    }
+
+    if (path.startsWith('/api/local-link/')) {
+      if (await this.handleLocalLinkRoutes(req, res, path, method)) return;
     }
 
     if (path.startsWith('/api/cowork/')) {

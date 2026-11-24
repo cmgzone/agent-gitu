@@ -263,7 +263,8 @@ function AstryxApp() {
     editState.open ||
     profileState.open ||
     settingsState.open ||
-    cloudDialogOpen;
+    cloudDialogOpen ||
+    inboxOpen;
 
   if (!hasAnyOpen && !desktopCloudBridge && a2uiTargets.length === 0) {
     return null;

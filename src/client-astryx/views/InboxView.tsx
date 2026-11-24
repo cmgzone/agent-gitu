@@ -12,7 +12,7 @@ import { List, ListItem } from '@astryxdesign/core/List';
 import { StatusDot } from '@astryxdesign/core/StatusDot';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { Tab, TabList } from '@astryxdesign/core/TabList';
-import { Dialog } from '@astryxdesign/core/Dialog';
+import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 
 type InboxToolPolicy = 'chat_only' | 'read_only' | 'standard' | 'custom';
 type InboxTriggerMode = 'mention' | 'auto';
@@ -377,7 +377,7 @@ export function InboxView({
     <>
       <Layout
         content={
-          <LayoutContent maxWidth="xl" padding={5}>
+          <LayoutContent padding={5}>
             <VStack gap={4}>
               {/* Header */}
               <HStack hAlign="between" vAlign="center" wrap="wrap" gap={3}>
@@ -416,7 +416,7 @@ export function InboxView({
 
               {error ? (
                 <Card padding={3}>
-                  <Text color="danger" size="sm">{error}</Text>
+                  <Text size="sm" weight="semibold">{error}</Text>
                 </Card>
               ) : null}
               {notice ? (
@@ -430,12 +430,14 @@ export function InboxView({
 
               {isOwner ? (
                 <TabList
-                  selectedId={ownerTab}
-                  onSelectionChange={(id) => setOwnerTab(id as 'chat' | 'access' | 'invites')}
+                  value={ownerTab}
+                  onChange={(val) => setOwnerTab(val as 'chat' | 'access' | 'invites')}
+                  aria-label="Inbox sections"
+                  hasDivider
                 >
-                  <Tab id="chat" label="Rooms & Chat" />
-                  <Tab id="access" label={`Members & Access (${state?.members.length ?? 0})`} />
-                  <Tab id="invites" label={`Pikpam Invites (${state?.invites?.length ?? 0})`} />
+                  <Tab value="chat" label="Rooms & Chat" />
+                  <Tab value="access" label={`Members & Access (${state?.members.length ?? 0})`} />
+                  <Tab value="invites" label={`Pikpam Invites (${state?.invites?.length ?? 0})`} />
                 </TabList>
               ) : null}
 
@@ -461,12 +463,12 @@ export function InboxView({
                               <HStack hAlign="between" vAlign="center" wrap="wrap" gap={2}>
                                 <HStack gap={2} vAlign="center">
                                   <StatusDot
-                                    variant={m.status === 'revoked' ? 'danger' : 'success'}
+                                    variant={m.status === 'revoked' ? 'error' : 'success'}
                                     label={m.status === 'revoked' ? 'Revoked' : 'Active'}
                                   />
                                   <VStack gap={0}>
                                     <Text weight="semibold">{m.name}</Text>
-                                    <Text size="xs" color="secondary">{m.email}</Text>
+                                    <Text size="sm" color="secondary">{m.email}</Text>
                                   </VStack>
                                 </HStack>
                                 <HStack gap={2} vAlign="center" wrap="wrap">
@@ -490,7 +492,7 @@ export function InboxView({
                               </HStack>
                               <Divider />
                               <VStack gap={2}>
-                                <Text size="xs" color="secondary">
+                                <Text size="sm" color="secondary">
                                   Agents allowed for {m.name} (individual access):
                                 </Text>
                                 <HStack gap={3} wrap="wrap">
@@ -500,7 +502,7 @@ export function InboxView({
                                       <Switch
                                         key={a.id}
                                         label={a.name}
-                                        isSelected={enabled}
+                                        value={enabled}
                                         onChange={(checked) =>
                                           void handleUpdateMember(m.id, {
                                             allowedAgentIds: toggleId(m.allowedAgentIds ?? [], a.id, checked),
@@ -567,10 +569,10 @@ export function InboxView({
                 /* Main Rooms & Chat View */
                 <HStack gap={4} vAlign="start" wrap="wrap">
                   {/* Left: Room list */}
-                  <StackItem shrink={0}>
+                  <StackItem size="static">
                     <Card padding={3}>
                       <VStack gap={2}>
-                        <Text size="xs" color="secondary" weight="semibold">
+                        <Text size="sm" color="secondary" weight="semibold">
                           INBOX ROOMS ({state?.rooms.length ?? 0})
                         </Text>
                         {!state?.rooms.length ? (
@@ -602,7 +604,7 @@ export function InboxView({
                   </StackItem>
 
                   {/* Right: Active room conversation + owner controls */}
-                  <StackItem grow={1}>
+                  <StackItem size="fill">
                     {!selectedRoom ? (
                       <Card padding={6}>
                         <EmptyState
@@ -618,7 +620,7 @@ export function InboxView({
                             <HStack hAlign="between" vAlign="center" wrap="wrap" gap={2}>
                               <VStack gap={0}>
                                 <Heading level={3}>{selectedRoom.title}</Heading>
-                                <Text size="xs" color="secondary">
+                                <Text size="sm" color="secondary">
                                   Active agents:{' '}
                                   {activeAgentNames.length > 0 ? activeAgentNames.join(', ') : 'None (humans only)'}
                                   {' · '}
@@ -646,7 +648,7 @@ export function InboxView({
                               <>
                                 <Divider />
                                 <VStack gap={2}>
-                                  <Text size="xs" color="secondary">
+                                  <Text size="sm" color="secondary">
                                     Active agents in this room:
                                   </Text>
                                   <HStack gap={3} wrap="wrap">
@@ -654,14 +656,14 @@ export function InboxView({
                                       <Switch
                                         key={a.id}
                                         label={a.name}
-                                        isSelected={selectedRoom.activeAgentIds.includes(a.id)}
+                                        value={selectedRoom.activeAgentIds.includes(a.id)}
                                         onChange={(checked) => void handleToggleRoomAgent(selectedRoom, a.id, checked)}
                                       />
                                     ))}
                                   </HStack>
                                   {state?.members.length ? (
                                     <>
-                                      <Text size="xs" color="secondary">
+                                      <Text size="sm" color="secondary">
                                         Humans in this room:
                                       </Text>
                                       <HStack gap={3} wrap="wrap">
@@ -671,7 +673,7 @@ export function InboxView({
                                             <Switch
                                               key={m.id}
                                               label={m.name}
-                                              isSelected={selectedRoom.memberIds.includes(m.id)}
+                                              value={selectedRoom.memberIds.includes(m.id)}
                                               onChange={(checked) =>
                                                 void handleToggleRoomMember(selectedRoom, m.id, checked)
                                               }
@@ -720,7 +722,7 @@ export function InboxView({
                                             {msg.senderName}
                                           </Text>
                                         </HStack>
-                                        <Text size="xs" color="secondary">
+                                        <Text size="sm" color="secondary">
                                           {new Date(msg.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                         </Text>
                                       </HStack>
@@ -768,160 +770,203 @@ export function InboxView({
       />
 
       {/* Owner: New Room Dialog */}
-      <Dialog isOpen={newRoomOpen} onClose={() => setNewRoomOpen(false)} title="Create Inbox Room">
-        <VStack gap={3}>
-          <Selector
-            label="Room type"
-            value={newRoomKind}
-            options={[
-              { value: 'group', label: 'Group (humans + agents)' },
-              { value: 'dm', label: 'Individual Direct Inbox' },
-            ]}
-            onChange={(val) => {
-              const kind = val as 'group' | 'dm';
-              setNewRoomKind(kind);
-              setNewRoomTrigger(kind === 'group' ? 'mention' : 'auto');
-            }}
-          />
-          <TextInput
-            label="Room title"
-            placeholder="e.g. Product Launch Team"
-            value={newRoomTitle}
-            onChange={(val) => setNewRoomTitle(val)}
-          />
-          <Selector
-            label="Agent reply mode"
-            value={newRoomTrigger}
-            options={[
-              { value: 'mention', label: '@mention only (recommended for groups)' },
-              { value: 'auto', label: 'Auto-reply to messages' },
-            ]}
-            onChange={(val) => setNewRoomTrigger(val as InboxTriggerMode)}
-          />
-          {state?.agents.length ? (
-            <VStack gap={1}>
-              <Text size="xs" color="secondary">Activate agents:</Text>
-              <HStack gap={3} wrap="wrap">
-                {state.agents.map((a) => (
-                  <Switch
-                    key={a.id}
-                    label={a.name}
-                    isSelected={newRoomAgents.includes(a.id)}
-                    onChange={(checked) => setNewRoomAgents((prev) => toggleId(prev, a.id, checked))}
-                  />
-                ))}
+      <Dialog
+        isOpen={newRoomOpen}
+        onOpenChange={(open) => { if (!open) setNewRoomOpen(false); }}
+        purpose="info"
+        width={560}
+        maxHeight="85dvh"
+        padding={5}
+      >
+        <Layout
+          header={
+            <DialogHeader
+              hasDivider
+              title="Create Inbox Room"
+              onOpenChange={() => setNewRoomOpen(false)}
+            />
+          }
+          content={
+            <VStack gap={3}>
+              <Selector
+                label="Room type"
+                value={newRoomKind}
+                options={[
+                  { value: 'group', label: 'Group (humans + agents)' },
+                  { value: 'dm', label: 'Individual Direct Inbox' },
+                ]}
+                onChange={(val) => {
+                  const kind = val as 'group' | 'dm';
+                  setNewRoomKind(kind);
+                  setNewRoomTrigger(kind === 'group' ? 'mention' : 'auto');
+                }}
+              />
+              <TextInput
+                label="Room title"
+                placeholder="e.g. Product Launch Team"
+                value={newRoomTitle}
+                onChange={(val) => setNewRoomTitle(val)}
+              />
+              <Selector
+                label="Agent reply mode"
+                value={newRoomTrigger}
+                options={[
+                  { value: 'mention', label: '@mention only (recommended for groups)' },
+                  { value: 'auto', label: 'Auto-reply to messages' },
+                ]}
+                onChange={(val) => setNewRoomTrigger(val as InboxTriggerMode)}
+              />
+              {state?.agents.length ? (
+                <VStack gap={1}>
+                  <Text size="sm" color="secondary">Activate agents:</Text>
+                  <HStack gap={3} wrap="wrap">
+                    {state.agents.map((a) => (
+                      <Switch
+                        key={a.id}
+                        label={a.name}
+                        value={newRoomAgents.includes(a.id)}
+                        onChange={(checked) => setNewRoomAgents((prev) => toggleId(prev, a.id, checked))}
+                      />
+                    ))}
+                  </HStack>
+                </VStack>
+              ) : null}
+              {state?.members.filter((m) => m.status !== 'revoked').length ? (
+                <VStack gap={1}>
+                  <Text size="sm" color="secondary">Include invited humans:</Text>
+                  <HStack gap={3} wrap="wrap">
+                    {state.members
+                      .filter((m) => m.status !== 'revoked')
+                      .map((m) => (
+                        <Switch
+                          key={m.id}
+                          label={m.name}
+                          value={newRoomMembers.includes(m.id)}
+                          onChange={(checked) => setNewRoomMembers((prev) => toggleId(prev, m.id, checked))}
+                        />
+                      ))}
+                  </HStack>
+                </VStack>
+              ) : null}
+              <HStack hAlign="end" gap={2}>
+                <Button label="Cancel" variant="ghost" onClick={() => setNewRoomOpen(false)} />
+                <Button label="Create Room" variant="primary" isDisabled={!newRoomTitle.trim()} onClick={() => void handleCreateRoom()} />
               </HStack>
             </VStack>
-          ) : null}
-          {state?.members.filter((m) => m.status !== 'revoked').length ? (
-            <VStack gap={1}>
-              <Text size="xs" color="secondary">Include invited humans:</Text>
-              <HStack gap={3} wrap="wrap">
-                {state.members
-                  .filter((m) => m.status !== 'revoked')
-                  .map((m) => (
-                    <Switch
-                      key={m.id}
-                      label={m.name}
-                      isSelected={newRoomMembers.includes(m.id)}
-                      onChange={(checked) => setNewRoomMembers((prev) => toggleId(prev, m.id, checked))}
-                    />
-                  ))}
-              </HStack>
-            </VStack>
-          ) : null}
-          <HStack hAlign="end" gap={2}>
-            <Button label="Cancel" variant="ghost" onClick={() => setNewRoomOpen(false)} />
-            <Button label="Create Room" variant="primary" isDisabled={!newRoomTitle.trim()} onClick={() => void handleCreateRoom()} />
-          </HStack>
-        </VStack>
+          }
+        />
       </Dialog>
 
       {/* Owner: Invite Human Dialog */}
-      <Dialog isOpen={inviteOpen} onClose={() => setInviteOpen(false)} title="Invite Human via Pikpam">
-        <VStack gap={3}>
-          {!state?.pikpamConfigured ? (
-            <Text size="sm" color="danger">
-              Connect your Pikpam / PikRouter API key in Settings first so invite links can be tied to Pikpam accounts.
-            </Text>
-          ) : null}
-          <TextInput
-            label="Label (optional)"
-            placeholder="e.g. Sarah — Marketing"
-            value={inviteLabel}
-            onChange={(val) => setInviteLabel(val)}
-          />
-          <TextInput
-            label="Restrict to email (optional)"
-            placeholder="sarah@company.com"
-            value={inviteEmail}
-            onChange={(val) => setInviteEmail(val)}
-          />
-          <Selector
-            label="Assign to room (optional)"
-            value={inviteRoomId}
-            options={[
-              { value: '', label: 'Create a Direct Inbox automatically' },
-              ...(state?.rooms ?? []).map((r) => ({ value: r.id, label: `${r.title} (${r.kind})` })),
-            ]}
-            onChange={(val) => setInviteRoomId(String(val))}
-          />
-          <Selector
-            label="Agent tool policy for this human"
-            value={invitePolicy}
-            options={TOOL_POLICY_OPTIONS}
-            onChange={(val) => setInvitePolicy(val as InboxToolPolicy)}
-          />
-          <TextInput
-            label="Max uses"
-            value={inviteMaxUses}
-            onChange={(val) => setInviteMaxUses(val)}
-          />
-          {state?.agents.length ? (
-            <VStack gap={1}>
-              <Text size="xs" color="secondary">Allowed agents for this invite:</Text>
-              <HStack gap={3} wrap="wrap">
-                {state.agents.map((a) => (
-                  <Switch
-                    key={a.id}
-                    label={a.name}
-                    isSelected={inviteAgents.includes(a.id)}
-                    onChange={(checked) => setInviteAgents((prev) => toggleId(prev, a.id, checked))}
-                  />
-                ))}
+      <Dialog
+        isOpen={inviteOpen}
+        onOpenChange={(open) => { if (!open) setInviteOpen(false); }}
+        purpose="info"
+        width={580}
+        maxHeight="85dvh"
+        padding={5}
+      >
+        <Layout
+          header={
+            <DialogHeader
+              hasDivider
+              title="Invite Human via Pikpam"
+              onOpenChange={() => setInviteOpen(false)}
+            />
+          }
+          content={
+            <VStack gap={3}>
+              {!state?.pikpamConfigured ? (
+                <Text size="sm" weight="semibold">
+                  Connect your Pikpam / PikRouter API key in Settings first so invite links can be tied to Pikpam accounts.
+                </Text>
+              ) : null}
+              <TextInput
+                label="Label (optional)"
+                placeholder="e.g. Sarah — Marketing"
+                value={inviteLabel}
+                onChange={(val) => setInviteLabel(val)}
+              />
+              <TextInput
+                label="Restrict to email (optional)"
+                placeholder="sarah@company.com"
+                value={inviteEmail}
+                onChange={(val) => setInviteEmail(val)}
+              />
+              <Selector
+                label="Assign to room (optional)"
+                value={inviteRoomId}
+                options={[
+                  { value: '', label: 'Create a Direct Inbox automatically' },
+                  ...(state?.rooms ?? []).map((r) => ({ value: r.id, label: `${r.title} (${r.kind})` })),
+                ]}
+                onChange={(val) => setInviteRoomId(String(val))}
+              />
+              <Selector
+                label="Agent tool policy for this human"
+                value={invitePolicy}
+                options={TOOL_POLICY_OPTIONS}
+                onChange={(val) => setInvitePolicy(val as InboxToolPolicy)}
+              />
+              <TextInput
+                label="Max uses"
+                value={inviteMaxUses}
+                onChange={(val) => setInviteMaxUses(val)}
+              />
+              {state?.agents.length ? (
+                <VStack gap={1}>
+                  <Text size="sm" color="secondary">Allowed agents for this invite:</Text>
+                  <HStack gap={3} wrap="wrap">
+                    {state.agents.map((a) => (
+                      <Switch
+                        key={a.id}
+                        label={a.name}
+                        value={inviteAgents.includes(a.id)}
+                        onChange={(checked) => setInviteAgents((prev) => toggleId(prev, a.id, checked))}
+                      />
+                    ))}
+                  </HStack>
+                </VStack>
+              ) : null}
+
+              {latestInviteUrl ? (
+                <Card padding={3}>
+                  <VStack gap={2}>
+                    <Text size="sm" color="secondary">Share this Pikpam invite link:</Text>
+                    <Text type="code" size="sm">{latestInviteUrl}</Text>
+                    <HStack hAlign="end">
+                      <Button label="Copy Invite Link" size="sm" variant="primary" onClick={() => handleCopy(latestInviteUrl)} />
+                    </HStack>
+                  </VStack>
+                </Card>
+              ) : null}
+
+              <HStack hAlign="end" gap={2}>
+                <Button label="Close" variant="ghost" onClick={() => setInviteOpen(false)} />
+                <Button
+                  label={creatingInvite ? 'Generating…' : 'Generate Pikpam Link'}
+                  variant="primary"
+                  isDisabled={creatingInvite || !state?.pikpamConfigured}
+                  onClick={() => void handleCreateInvite()}
+                />
               </HStack>
             </VStack>
-          ) : null}
-
-          {latestInviteUrl ? (
-            <Card padding={3}>
-              <VStack gap={2}>
-                <Text size="xs" color="secondary">Share this Pikpam invite link:</Text>
-                <Text type="code" size="sm">{latestInviteUrl}</Text>
-                <HStack hAlign="end">
-                  <Button label="Copy Invite Link" size="sm" variant="primary" onClick={() => handleCopy(latestInviteUrl)} />
-                </HStack>
-              </VStack>
-            </Card>
-          ) : null}
-
-          <HStack hAlign="end" gap={2}>
-            <Button label="Close" variant="ghost" onClick={() => setInviteOpen(false)} />
-            <Button
-              label={creatingInvite ? 'Generating…' : 'Generate Pikpam Link'}
-              variant="primary"
-              isDisabled={creatingInvite || !state?.pikpamConfigured}
-              onClick={() => void handleCreateInvite()}
-            />
-          </HStack>
-        </VStack>
+          }
+        />
       </Dialog>
     </>
   );
 
   if (standalone) return content;
   return (
-    <Dialog isOpen onClose={() => onClose?.()} size="fullscreen" title="Collaborative Inbox">
+    <Dialog
+      isOpen
+      onOpenChange={(open) => { if (!open) onClose?.(); }}
+      purpose="info"
+      width={1040}
+      maxHeight="90dvh"
+      padding={4}
+    >
       {content}
     </Dialog>
   );

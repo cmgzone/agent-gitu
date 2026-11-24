@@ -1881,6 +1881,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
           '<button type="button" class="cw-tool-item" id="cwAgentsMenuBtn" aria-label="Agents" title="Agent switcher grid">' + cwIcon('users') + '<span>Agents</span></button>' +
           '<button type="button" class="cw-tool-item" id="cwGroupsMenuBtn" aria-label="Groups" title="Connected groups">' + cwIcon('users') + '<span>Groups</span></button>' +
           '<button type="button" class="cw-tool-item" id="cwInfoBtn" aria-label="Agent profile" title="Agent profile" aria-controls="cwChat" aria-pressed="false">' + cwIcon('user') + '<span>Profile</span></button>' +
+          '<button type="button" class="cw-tool-item" id="cwInboxMenuBtn" aria-label="Inbox" title="Collaborative Inbox (Humans & Agents)">' + cwIcon('chat') + '<span>Inbox</span></button>' +
           '<button type="button" class="cw-tool-item" id="cwConnectionsMenuBtn" aria-label="Connections" title="Connections">' + cwIcon('link') + '<span>Connections</span></button>' +
           '<button type="button" class="cw-tool-item" id="cwAssistantSettings" data-pa-settings aria-label="Personal assistant preferences" title="Personal assistant">' + cwIcon('crown') + '<span>Personal assistant</span></button>' +
           '<button type="button" class="cw-tool-item" id="cwChiefMenuBtn" aria-label="Chief of Staff authority and decision log" title="Chief of Staff">' + cwIcon('sliders') + '<span>Chief of Staff</span><span class="cw-tool-count" id="cwChiefRuleCount" hidden style="margin-left:auto;font-size:11px;font-weight:600;padding:1px 7px;border-radius:999px;background:var(--card2);border:1px solid var(--border);color:var(--muted)"></span></button>' +
@@ -1949,6 +1950,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     var agentsMenuBtn = $('cwAgentsMenuBtn'); if (agentsMenuBtn) agentsMenuBtn.onclick = function () { var tm = $('cwToolsMenu'); if (tm && typeof tm.hidePopover === 'function') try { tm.hidePopover(); } catch (e) {} if (typeof cwOpenAgentSwitcherModal === 'function') cwOpenAgentSwitcherModal(); };
     var groupsMenuBtn = $('cwGroupsMenuBtn'); if (groupsMenuBtn) groupsMenuBtn.onclick = function () { if (typeof wsOpen === 'function') wsOpen('cowork', 'Groups'); };
     var infoBtn = $('cwInfoBtn'); if (infoBtn) infoBtn.onclick = function () { cwOpenProfile(); };
+    var inboxMenuBtn = $('cwInboxMenuBtn'); if (inboxMenuBtn) inboxMenuBtn.onclick = function () { if (window.__gituAstryx && typeof window.__gituAstryx.openInbox === 'function') window.__gituAstryx.openInbox(); else window.location.assign('/inbox'); };
     var connMenuBtn = $('cwConnectionsMenuBtn'); if (connMenuBtn) connMenuBtn.onclick = function () { cwOpenConnections(); };
     var chiefMenuBtn = $('cwChiefMenuBtn');
     if (chiefMenuBtn) {

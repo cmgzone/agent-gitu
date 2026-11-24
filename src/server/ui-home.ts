@@ -30,31 +30,37 @@ export const HOME_CSS = String.raw`
   .home-sky .home-character,.home-sky .cw-plush.home-character { width:48px; height:48px; animation:none; flex:none; }
   .home-sky .home-brand h1 { font-size:32px; line-height:1.2; letter-spacing:-.04em; justify-content:flex-start; text-align:left; color:var(--text); }
   .home-sky .home-brand-copy { color:var(--muted); margin:5px 0 0; font-size:13px; }
-  .home-sidebar { position:fixed; inset:0 auto 0 0; z-index:12; width:256px; display:flex; flex-direction:column; padding:20px 12px 16px; border-right:1px solid var(--border); background:var(--sidebar); }
-  .home-sidebar-brand { display:flex; align-items:center; gap:10px; padding:0 8px; margin-bottom:18px; font-size:15px; font-weight:650; letter-spacing:-.02em; }
-  .home-sidebar-brand img { width:28px; height:28px; padding:4px; border-radius:var(--radius-inner, 8px); background:var(--dark); object-fit:contain; }
-  .home-sidebar #homeCollapse { width:28px; min-height:28px; padding:4px; margin-left:auto; justify-content:center; flex:none; }
-  .home-sidebar button { display:flex; align-items:center; gap:10px; width:100%; min-height:36px; padding:7px 10px; color:var(--muted); text-align:left; border-radius:var(--radius-inner, 8px); font-size:13.5px; font-weight:500; transition:background-color .14s ease,color .14s ease; }
-  .home-sidebar button svg { width:16px; height:16px; flex:none; }
+  .home-sidebar { position:fixed; inset:0 auto 0 0; z-index:12; width:248px; display:flex; flex-direction:column; padding:0; border-right:1px solid var(--border); background:var(--sidebar); }
+  .home-sidebar-brand { display:flex; align-items:center; gap:10px; padding:14px 14px 13px; border-bottom:1px solid var(--border); margin-bottom:10px; }
+  .home-sidebar-brand img { width:28px; height:28px; padding:4px; border-radius:var(--radius-inner, 8px); background:var(--dark); object-fit:contain; flex:none; }
+  .home-sidebar-brand-copy { display:grid; gap:1px; min-width:0; }
+  .home-sidebar-brand-title { font-size:14.5px; font-weight:650; letter-spacing:-.02em; color:var(--text); line-height:1.2; }
+  .home-sidebar-brand-sub { font-size:11px; font-weight:500; color:var(--muted); line-height:1.2; }
+  .home-sidebar-section-label { font-size:11px; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:var(--faint); padding:6px 10px 4px; margin:0; }
+  .home-sidebar-body { display:flex; flex-direction:column; flex:1; min-height:0; padding:0 10px; overflow:hidden; }
+  .home-sidebar #homeCollapse { width:28px; min-height:28px; padding:4px; margin-left:auto; justify-content:center; flex:none; border-radius:var(--radius-el, 10px); }
+  .home-sidebar button { display:flex; align-items:center; gap:10px; width:100%; min-height:36px; padding:7px 10px; color:var(--muted); text-align:left; border-radius:var(--radius-el, 10px); font-size:13.5px; font-weight:500; transition:background-color .14s ease,color .14s ease; }
+  .home-sidebar button svg { width:16px; height:16px; flex:none; color:var(--faint); transition:color .14s ease; }
   .home-sidebar button:hover { background:var(--hover); color:var(--text); }
-  .home-sidebar #cwPageSearch { background:var(--card)!important; border:1px solid var(--border)!important; border-radius:var(--radius-inner, 8px)!important; color:var(--muted); min-height:36px; padding:0 12px; margin-bottom:14px; font-size:12.5px; box-shadow:none; }
+  .home-sidebar button:hover svg { color:var(--text); }
+  .home-sidebar #cwPageSearch { background:var(--card)!important; border:1px solid var(--border)!important; border-radius:var(--radius-el, 10px)!important; color:var(--muted); min-height:34px; padding:0 10px; margin:0 0 10px; font-size:12.5px; box-shadow:none; }
   .home-sidebar #cwPageSearch:hover { border-color:var(--border2)!important; color:var(--text); }
-  .home-sidebar nav { display:grid; gap:4px; }
-  .home-agent-pill { margin-left:auto; padding:2px 7px; border-radius:var(--radius-full, 9999px); background:var(--hover); color:var(--text); font-size:11px; font-weight:550; max-width:96px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .home-sidebar nav { display:grid; gap:2px; }
+  .home-agent-pill { margin-left:auto; padding:2px 8px; border-radius:var(--radius-full, 9999px); background:var(--selection); color:var(--accent); font-size:11px; font-weight:600; max-width:96px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .home-agent-pill:empty { display:none; }
-  .home-groups { width:100%; margin-bottom:18px; }
-  .home-groups-heading { display:flex; align-items:center; justify-content:space-between; gap:6px; padding:0 4px; margin-bottom:6px; }
+  .home-groups { width:100%; margin-bottom:14px; }
+  .home-groups-heading { display:flex; align-items:center; justify-content:space-between; gap:6px; padding:0 2px; margin-bottom:4px; }
   .home-groups-heading h2 { margin:0; min-width:0; flex:1; }
-  .home-sidebar .home-groups-heading #homeGroupsNav { min-height:32px; padding:4px 8px; font-size:12px; font-weight:600; }
-  .home-sidebar .home-groups-heading #homeNewGroup { width:30px; min-height:30px; padding:6px; justify-content:center; flex:none; }
-  .home-group-list { display:grid; gap:3px; }
-  .home-sidebar .home-group-open { gap:8px; padding:7px 8px; min-height:34px; color:var(--text); }
-  .home-group-open.is-active { background:var(--selected); font-weight:600; }
+  .home-sidebar .home-groups-heading #homeGroupsNav { min-height:28px; padding:4px 8px; font-size:11px; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:var(--faint); }
+  .home-sidebar .home-groups-heading #homeNewGroup { width:28px; min-height:28px; padding:5px; justify-content:center; flex:none; }
+  .home-group-list { display:grid; gap:2px; }
+  .home-sidebar .home-group-open { gap:8px; padding:7px 10px; min-height:34px; color:var(--text); }
+  .home-group-open.is-active { background:var(--selection); color:var(--accent); font-weight:600; }
   .home-group-copy { display:grid; gap:2px; min-width:0; flex:1; }
-  .home-group-copy strong { font-size:12px; font-weight:550; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .home-group-copy small { font-size:10px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .home-group-empty { font-size:11.5px; color:var(--muted); margin:2px 8px 6px; line-height:1.45; }
-  .home-sidebar-foot { margin-top:auto; display:grid; gap:4px; padding-top:24px; }
+  .home-group-copy strong { font-size:12.5px; font-weight:550; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .home-group-copy small { font-size:10.5px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .home-group-empty { font-size:11.5px; color:var(--muted); margin:2px 10px 6px; line-height:1.45; }
+  .home-sidebar-foot { margin-top:auto; display:grid; gap:2px; padding:10px 10px 12px; border-top:1px solid var(--border); }
   .home-menu-trigger,.home-nav-backdrop { display:none; }
   .home-composer-wrap { width:min(760px,100%); margin:0; }
   .home-sky .composer-topline { padding:0 4px 10px; }
@@ -70,15 +76,15 @@ export const HOME_CSS = String.raw`
   #view .home-sky .composer .send:not(.stop):not(:disabled):hover { opacity:.88; }
   #view .home-sky .composer .send:disabled { background:var(--selected)!important; color:var(--faint); }
   .home-sky .home-plus-menu { box-shadow:var(--shadow-float); }
-  .home-sidebar-scroll { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; margin-top:20px; }
+  .home-sidebar-scroll { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; margin-top:14px; }
   .home-projects { width:100%; }
-  .home-project-heading { display:flex; align-items:center; justify-content:space-between; gap:6px; padding:0 4px; margin-bottom:6px; }
+  .home-project-heading { display:flex; align-items:center; justify-content:space-between; gap:6px; padding:0 2px; margin-bottom:4px; }
   .home-project-heading h2 { margin:0; min-width:0; }
-  .home-sidebar .home-project-heading #homeProjectsNav { min-height:32px; padding:4px 8px; font-size:12px; font-weight:600; }
-  .home-sidebar .home-project-heading #homeNewProject { width:30px; min-height:30px; padding:6px; justify-content:center; }
-  .home-project-list { display:grid; gap:3px; }
-  .home-project { display:flex; align-items:center; min-width:0; border-radius:var(--radius-inner, 8px); }
-  .home-project.is-current { background:var(--selected); font-weight:600; }
+  .home-sidebar .home-project-heading #homeProjectsNav { min-height:28px; padding:4px 8px; font-size:11px; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:var(--faint); }
+  .home-sidebar .home-project-heading #homeNewProject { width:28px; min-height:28px; padding:5px; justify-content:center; }
+  .home-project-list { display:grid; gap:2px; }
+  .home-project { display:flex; align-items:center; min-width:0; border-radius:var(--radius-el, 10px); }
+  .home-project.is-current { background:var(--selection); color:var(--accent); font-weight:600; }
   .home-sidebar .home-project-open { gap:9px; padding:10px 8px; flex:1; min-width:0; color:var(--text); }
   .home-project-icon { display:grid; place-items:center; flex:none; color:var(--muted); }
   .home-project.is-current .home-project-icon { color:var(--accent); }
@@ -366,7 +372,7 @@ export const HOME_WORKSPACE_JS = PROJECT_PREFERENCES_JS + String.raw`
     modal.querySelector('[data-project-action]').focus();
   }
   function homeNavigationHtml(agent) {
-    return '<button type="button" class="home-menu-trigger" id="homeMenu" aria-label="Open navigation" aria-expanded="false" aria-controls="homeSidebar">'+'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>'+'</button><div class="home-nav-backdrop" id="homeNavBackdrop" aria-hidden="true"></div><aside class="home-sidebar" id="homeSidebar" aria-label="Code navigation"><div class="home-sidebar-brand"><img src="/brand/agent-gitu-mark.svg" alt=""><span>Agent Gitu</span><button type="button" id="homeCollapse" aria-label="Collapse sidebar" aria-expanded="true" aria-controls="homeSidebar" title="Collapse sidebar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg></button></div><button type="button" id="cwPageSearch" aria-label="Search workspace" title="Search workspace">'+cwIcon('search')+'<span>Search workspace</span></button><nav aria-label="Code workspace">'+(S.active!=='home'?'<button type="button" id="homeNewChat">'+icon('pencil')+'<span>New task</span></button>':'')+'<button type="button" id="cwSessionsBtn" aria-label="Sessions" title="Sessions">'+cwIcon('chat')+'<span>Sessions</span></button><button type="button" id="homeAgentsBtn" aria-label="Agents" title="Switch agents (Grid)">'+cwIcon('users')+'<span>Agents</span><span class="home-agent-pill" id="homeSelectedAgentChip">'+(agent?esc(agent.name):'')+'</span></button><button type="button" id="homeGroupsBtn" aria-label="Groups" title="Connected groups">'+cwIcon('users')+'<span>Groups</span></button><button type="button" id="homeInboxBtn" aria-label="Inbox" title="Collaborative Inbox (Humans & Agents)">'+cwIcon('chat')+'<span>Inbox</span></button><button type="button" id="homeConnections" aria-label="Connections" title="Connections">'+cwIcon('link')+'<span>Connections</span></button></nav><div class="home-sidebar-scroll"><section class="home-groups" id="homeAgentGroupsSection" aria-labelledby="homeGroupsTitle"><div class="home-groups-heading"><h2 id="homeGroupsTitle"><button type="button" id="homeGroupsNav" aria-label="Groups" title="Connected groups">'+cwIcon('users')+'<span>Groups</span></button></h2><button type="button" id="homeNewGroup" aria-label="New group" title="New group">'+cwIcon('plus')+'</button></div><div class="home-group-list" id="homeAgentGroups"><p class="home-group-empty">Loading groups…</p></div></section><section class="home-projects" aria-labelledby="homeProjectsTitle"><div class="home-project-heading"><h2 id="homeProjectsTitle"><button type="button" id="homeProjectsNav" aria-label="Projects" title="Projects">'+cwIcon('folder')+'<span>Projects</span></button></h2><button type="button" id="homeNewProject" aria-label="New project" title="New project">'+cwIcon('plus')+'</button></div><div id="homeProjectCards"><p class="home-project-summary" role="status">Loading projects…</p></div><div class="home-projects-footer"><button type="button" id="homeViewProjects">View all projects</button><button type="button" id="homeArchivedProjects" aria-pressed="false">Archived &amp; hidden</button></div></section></div><div class="home-sidebar-foot"><button type="button" id="cwInfoBtn" aria-label="Profile" title="Profile">'+cwIcon('user')+'<span>Profile</span></button><button type="button" id="homeSettings" aria-label="Settings" title="Settings">'+icon('gear')+'<span>Settings</span></button></div></aside><div class="cw-page-nav"><nav class="cw-top-nav" aria-label="App modes"><button type="button" id="cwCurrentChat" aria-pressed="false"><span class="cw-chat-face" aria-hidden="true">'+(agent?cwAva(agent):'<span class="cw-ava"><img src="/characters/orb.png?v=opendots1" alt="" draggable="false"></span>')+'</span><span>Cowork</span></button><button type="button" id="cwHomeBtn" aria-pressed="true">'+cwIcon('home')+'<span>Code</span></button></nav></div>';
+    return '<button type="button" class="home-menu-trigger" id="homeMenu" aria-label="Open navigation" aria-expanded="false" aria-controls="homeSidebar">'+'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>'+'</button><div class="home-nav-backdrop" id="homeNavBackdrop" aria-hidden="true"></div><aside class="home-sidebar" id="homeSidebar" aria-label="Code navigation"><div class="home-sidebar-brand"><img src="/brand/agent-gitu-mark.svg" alt=""><div class="home-sidebar-brand-copy"><span class="home-sidebar-brand-title">Agent Gitu</span><span class="home-sidebar-brand-sub">Workspace</span></div><button type="button" id="homeCollapse" aria-label="Collapse sidebar" aria-expanded="true" aria-controls="homeSidebar" title="Collapse sidebar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg></button></div><div class="home-sidebar-body"><button type="button" id="cwPageSearch" aria-label="Search workspace" title="Search workspace">'+cwIcon('search')+'<span>Search workspace</span></button><p class="home-sidebar-section-label">Workspace</p><nav aria-label="Code workspace">'+(S.active!=='home'?'<button type="button" id="homeNewChat">'+icon('pencil')+'<span>New task</span></button>':'')+'<button type="button" id="cwSessionsBtn" aria-label="Sessions" title="Sessions">'+cwIcon('chat')+'<span>Sessions</span></button><button type="button" id="homeAgentsBtn" aria-label="Agents" title="Switch agents (Grid)">'+cwIcon('users')+'<span>Agents</span><span class="home-agent-pill" id="homeSelectedAgentChip">'+(agent?esc(agent.name):'')+'</span></button><button type="button" id="homeGroupsBtn" aria-label="Groups" title="Connected groups">'+cwIcon('users')+'<span>Groups</span></button><button type="button" id="homeInboxBtn" aria-label="Inbox" title="Collaborative Inbox (Humans & Agents)">'+cwIcon('chat')+'<span>Inbox</span></button><button type="button" id="homeConnections" aria-label="Connections" title="Connections">'+cwIcon('link')+'<span>Connections</span></button></nav><div class="home-sidebar-scroll"><section class="home-groups" id="homeAgentGroupsSection" aria-labelledby="homeGroupsTitle"><div class="home-groups-heading"><h2 id="homeGroupsTitle"><button type="button" id="homeGroupsNav" aria-label="Groups" title="Connected groups">'+cwIcon('users')+'<span>Groups</span></button></h2><button type="button" id="homeNewGroup" aria-label="New group" title="New group">'+cwIcon('plus')+'</button></div><div class="home-group-list" id="homeAgentGroups"><p class="home-group-empty">Loading groups…</p></div></section><section class="home-projects" aria-labelledby="homeProjectsTitle"><div class="home-project-heading"><h2 id="homeProjectsTitle"><button type="button" id="homeProjectsNav" aria-label="Projects" title="Projects">'+cwIcon('folder')+'<span>Projects</span></button></h2><button type="button" id="homeNewProject" aria-label="New project" title="New project">'+cwIcon('plus')+'</button></div><div id="homeProjectCards"><p class="home-project-summary" role="status">Loading projects…</p></div><div class="home-projects-footer"><button type="button" id="homeViewProjects">View all projects</button><button type="button" id="homeArchivedProjects" aria-pressed="false">Archived &amp; hidden</button></div></section></div></div><div class="home-sidebar-foot"><button type="button" id="cwInfoBtn" aria-label="Profile" title="Profile">'+cwIcon('user')+'<span>Profile</span></button><button type="button" id="homeSettings" aria-label="Settings" title="Settings">'+icon('gear')+'<span>Settings</span></button></div></aside><div class="cw-page-nav"><nav class="cw-top-nav" aria-label="App modes"><button type="button" id="cwCurrentChat" aria-pressed="false"><span class="cw-chat-face" aria-hidden="true">'+(agent?cwAva(agent):'<span class="cw-ava"><img src="/characters/orb.png?v=opendots1" alt="" draggable="false"></span>')+'</span><span>Cowork</span></button><button type="button" id="cwHomeBtn" aria-pressed="true">'+cwIcon('home')+'<span>Code</span></button></nav></div>';
   }
   function homeCloseNavigation() {
     var menu=$('homeMenu');if(!menu)return;var root=menu.closest('.home-sky');if(root)root.dataset.navOpen='false';menu.setAttribute('aria-expanded','false');menu.setAttribute('aria-label','Open navigation');

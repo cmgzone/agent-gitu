@@ -122,6 +122,7 @@ export interface ConnectedAppsResponse {
 
 export interface GituHostBridge {
   getState(): {
+    active?: string;
     settings: {
       theme?: string;
       startMode?: string;
@@ -186,6 +187,13 @@ export interface GituHostBridge {
   refreshCowork(force?: boolean): void;
   getThemeMode(): 'light' | 'dark';
   toggleThemeMode(): void;
+  openCowork?(): void;
+  openHome?(): void;
+  openRun?(runId: string, opts?: { chatish?: boolean; goal?: string; mode?: string; projectPath?: string }): void;
+  openWorkspaceSearch?(scope?: string, tab?: string): void;
+  newProject?(): void;
+  selectProject?(projectPath: string): void;
+  setTheme?(choice: 'light' | 'dark' | 'system'): void;
   getWorkspaceSettingItems(): WorkspaceSettingItem[];
   syncCodingPermissions?(): Promise<unknown>;
   sendChatAction?(text: string, sourceEl?: HTMLElement | null): boolean;

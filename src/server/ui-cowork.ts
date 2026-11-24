@@ -1235,6 +1235,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     cwEnsure().connectionsOpen = false;
     cwEnsure().connectionRevision = (cwEnsure().connectionRevision || 0) + 1;
     S.active = 'cowork';
+    try { window.dispatchEvent(new CustomEvent('gitu:view-change', { detail: { active: 'cowork' } })); } catch (e) {}
     document.body.classList.add('cowork');
     try { localStorage.setItem('hermes.cowork', 'open'); } catch (e) {}
     toggleMobileNav(false);

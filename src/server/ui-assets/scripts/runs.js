@@ -398,6 +398,7 @@
     var transition=captureChatTransition();if(S.active===runId)transition=null;
     document.body.classList.remove('cowork');
     S.active = runId;
+    try { window.dispatchEvent(new CustomEvent('gitu:view-change', { detail: { active: runId } })); } catch (e) {}
     S.supersedeNext = null;
     toggleMobileNav(false);
     closeToolPanel();

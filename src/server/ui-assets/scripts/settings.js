@@ -1222,6 +1222,16 @@
       if (typeof setTheme === 'function') setTheme(next);
       else document.documentElement.setAttribute('data-theme', next);
     };
+    host.openCowork = function () { if (typeof openCowork === 'function') openCowork(); };
+    host.openHome = function () { if (typeof openHome === 'function') openHome(); };
+    host.openRun = function (runId, opts) { if (typeof openRun === 'function') openRun(runId, opts); };
+    host.openWorkspaceSearch = function (scope, tab) { if (typeof wsOpen === 'function') wsOpen(scope, tab); };
+    host.newProject = function () { if (typeof newProject === 'function') newProject(); };
+    host.selectProject = function (projectPath) {
+      if (typeof homeSelectProject === 'function') homeSelectProject({ path: projectPath, name: basename(projectPath) });
+      else { S.settings.projectPath = projectPath; persist(); updateProjChip(); renderSidebar(); }
+    };
+    host.setTheme = function (choice) { if (typeof setTheme === 'function') setTheme(choice); };
     host.getWorkspaceSettingItems = function () {
       return (typeof WORKSPACE_SETTINGS !== 'undefined' ? WORKSPACE_SETTINGS : []).map(function (it) {
         return { id: it[0], icon: it[1], title: it[2], detail: it[3] };

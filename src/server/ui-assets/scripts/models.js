@@ -82,6 +82,7 @@
     var transition=captureChatTransition();if(S.active==='home')transition=null;
     document.body.classList.remove('cowork');
     S.active = 'home';
+    try { window.dispatchEvent(new CustomEvent('gitu:view-change', { detail: { active: 'home' } })); } catch (e) {}
     S.supersedeNext = null;
     toggleMobileNav(false);
     closeToolPanel();

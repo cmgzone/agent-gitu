@@ -4,14 +4,14 @@ import { plushCharacterHtml } from './ui-characters.js';
 export const HOME_CSS = String.raw`
   body:has(.home-sky) .sb,body:has(.home-sky) .topbar,body:has(.home-sky) .vresize,body:has(.home-sky) .side-fab,body:has(.home-sky) #mascotWrap,body:has(.home-sky) .mobile-nav-btn { display:none!important; }
   .home.home-sky { --home-sidebar-surface:var(--sidebar); position:relative; background:var(--bg); color:var(--text); padding:96px 36px 96px 284px; gap:28px; width:100%; justify-content:safe center; }
-  .home.home-sky::before, .run.run-chat.code-workspace::before { content:''; position:fixed; inset:10px 10px 10px 256px; background:var(--card); border:1px solid var(--border); border-radius:24px; box-shadow:var(--shadow); pointer-events:none; z-index:0; }
+  .home.home-sky::before, .run.run-chat.code-workspace::before { content:''; position:fixed; inset:8px 0 0 248px; background:var(--card2); border:1px solid var(--border); border-right:0; border-bottom:0; border-radius:20px 0 0 0; box-shadow:none; pointer-events:none; z-index:0; }
   .home.home-sky > .home-main { position:relative; z-index:1; margin:0; }
-  .run.run-chat.code-workspace { --home-sidebar-surface:var(--sidebar); position:relative; padding-left:256px; background:var(--bg); }
+  .run.run-chat.code-workspace { --home-sidebar-surface:var(--bg); position:relative; padding-left:248px; background:var(--bg); }
   .run.run-chat.code-workspace > .stream { position:relative; z-index:1; }
-  :root[data-theme=light] .run.run-chat.code-workspace { --home-sidebar-surface:var(--sidebar); background:var(--bg); }
-  .run.code-workspace .cw-page-nav { inset:18px auto auto calc(50% + 128px); transform:translateX(-50%); display:block; }
+  :root[data-theme=light] .run.run-chat.code-workspace { --home-sidebar-surface:var(--bg); background:var(--bg); }
+  .run.code-workspace .cw-page-nav { inset:18px auto auto calc(50% + 124px); transform:translateX(-50%); display:block; }
   .run.code-workspace #mainChatHistory { display:none; }
-  .run.code-workspace .home-sidebar { background:var(--sidebar); }
+  .run.code-workspace .home-sidebar { background:var(--bg); border-right:0; }
   .home-main { position:relative; width:min(760px,100%); display:flex; flex-direction:column; gap:28px; flex:none; }
   .home-sky .home-main > .home-brand { position:absolute; bottom:calc(100% + 28px); }
   :root[data-theme=light] .home.home-sky { --home-sidebar-surface:var(--sidebar); background:var(--bg); }

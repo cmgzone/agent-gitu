@@ -218,7 +218,7 @@ describe('Full-page workspace search', () => {
     context.appendEvent('run', { i: 1, text: 'continue — resuming this session' });
     expect(appendLive).not.toHaveBeenCalled(); expect(context.document.createElement).not.toHaveBeenCalled();
     context.appendEvent('run', { i: 2, text: 'user-msg continue' });
-    expect(userBubble).toHaveBeenCalledWith('continue', 'run');
+    expect(userBubble).toHaveBeenCalledWith('continue', 'run', null, undefined, 2);
     expect(appendLive).toHaveBeenCalledWith(stream, { text: 'continue' });
   });
 
@@ -251,6 +251,23 @@ describe('Full-page workspace search', () => {
     expect(COWORK_JS).not.toContain('id="cwRailResize"');
     expect(UI_HTML).not.toContain('id="homeOpenProject"');
     expect(() => new Script(UI_HTML.split('<script>')[1]!.split('</script>')[0]!)).not.toThrow();
+  });
+
+  it('resolves settings aliases and keeps hidden sections searchable but out of navigation', () => {
+    const f = fixture();
+    expect(f.context.wsResolveSettingId('connected-apps')).toBe('connections');
+    expect(f.context.wsResolveSettingId('custom-apis')).toBe('connections');
+    expect(f.context.wsResolveSettingId('general')).toBe('general');
+    const visible = f.context.wsSettingsSections(false).map((item: any) => item.id);
+    const all = f.context.wsSettingsSections(true);
+    expect(visible).not.toContain('developer');
+    expect(all.find((item: any) => item.id === 'developer')).toMatchObject({ hidden: true, group: 'More' });
+    expect(all.find((item: any) => item.id === 'connections')).toMatchObject({ aliases: ['connected-apps', 'apps', 'accounts', 'custom-apis'] });
+    const items = f.context.wsBuildItems('main', { runs: [], skills: [], jobs: [], agents: [], conversations: [] });
+    expect(items.find((item: any) => item.action === 'settings' && item.id === 'connections')).toMatchObject({ title: 'Connections' });
+    expect(items.find((item: any) => item.action === 'settings' && item.id === 'developer')).toBeTruthy();
+    expect(UI_HTML).toContain('window.gituPhoneQrSrc = gituPhoneQrSrc');
+    expect(UI_HTML).toContain('agentgitu://connect?server=');
   });
 
   it('renders compact schedule cards with collapsible automation instructions and metadata badges', () => {

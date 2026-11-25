@@ -19,7 +19,6 @@ import {
 import {AgentProfileView} from './views/AgentProfileView';
 import {AgentSwitcherDialog} from './views/AgentSwitcherDialog';
 import {CloudAgentDialog} from './views/CloudAgentDialog';
-import {CodeDashboardView} from './views/CodeDashboardView';
 import {DesktopAgentBar} from './views/DesktopAgentBar';
 import {EditAgentDialog} from './views/EditAgentDialog';
 import {InboxView} from './views/InboxView';
@@ -75,9 +74,6 @@ function AstryxApp() {
   const desktopCloudBridge = getDesktopCloudBridge();
   const [cloudDialogOpen, setCloudDialogOpen] = useState(false);
   const [inboxOpen, setInboxOpen] = useState(false);
-  const [activeView, setActiveView] = useState<string>(
-    () => getHostBridge()?.getState?.().active || 'cowork',
-  );
   const [cloudStatus, setCloudStatus] = useState<DesktopCloudState | null>(null);
   const [switchingMode, setSwitchingMode] = useState(false);
 
@@ -127,6 +123,7 @@ function AstryxApp() {
     setProfileState(prev => (prev.open ? {...prev, open: false} : prev));
     getHostBridge()?.onProfileClosed?.();
   }, []);
+
 
   useEffect(() => {
     if (!desktopCloudBridge) return;
@@ -237,16 +234,11 @@ function AstryxApp() {
 
   useEffect(() => {
     const syncView = () => {
-      const current = getHostBridge()?.getState?.().active;
-      if (current) {
-        setActiveView(current);
-        if (current === 'home') syncFromHost();
-      }
+      if (getHostBridge()?.getState?.().active === 'home') syncFromHost();
     };
     const onViewChange = (evt: Event) => {
       const detail = (evt as CustomEvent<{active?: string}>).detail;
       const next = detail?.active || getHostBridge()?.getState?.().active || 'cowork';
-      setActiveView(next);
       if (next === 'home') syncFromHost();
     };
     syncView();
@@ -281,16 +273,13 @@ function AstryxApp() {
   const profileAgent =
     agents.find(a => a.id === profileState.agentId) || agents[0] || null;
 
-  const showCodeDashboard = activeView === 'home';
-
   const hasAnyOpen =
     switcherOpen ||
     editState.open ||
     profileState.open ||
     settingsState.open ||
     cloudDialogOpen ||
-    inboxOpen ||
-    showCodeDashboard;
+    inboxOpen;
 
   if (!hasAnyOpen && !desktopCloudBridge && a2uiTargets.length === 0) {
     return null;
@@ -299,36 +288,7 @@ function AstryxApp() {
   return (
     <Theme theme={themes[defaultThemeSlug]} mode={themeMode}>
       <LayerProvider>
-        {showCodeDashboard ? (
-          <CodeDashboardView
-            themeMode={themeMode}
-            agents={agents}
-            activeAgentId={activeAgentId}
-            hasDesktopCloudSwitcher={Boolean(desktopCloudBridge)}
-            onOpenCloudAgents={() => setCloudDialogOpen(true)}
-            onOpenInbox={() => setInboxOpen(true)}
-            onOpenSettings={sec => {
-              syncFromHost();
-              const nextSec = sec || 'overview';
-              getHostBridge()?.setSettingSection(nextSec);
-              setSettingsState({open: true, section: nextSec});
-            }}
-            onOpenSwitcher={() => {
-              syncFromHost();
-              setSwitcherOpen(true);
-              refreshAgentsFromServer();
-            }}
-            onOpenProfile={targetId => {
-              syncFromHost();
-              const host = getHostBridge();
-              host?.onProfileOpened?.(targetId, 'personality');
-              setProfileState({open: true, agentId: targetId, section: 'personality'});
-              refreshAgentsFromServer();
-            }}
-          />
-        ) : null}
-
-        {desktopCloudBridge && !settingsState.open && !profileState.open && !showCodeDashboard ? (
+        {desktopCloudBridge && !settingsState.open && !profileState.open ? (
           <DesktopAgentBar
             cloudBridge={desktopCloudBridge}
             cloudStatus={cloudStatus}

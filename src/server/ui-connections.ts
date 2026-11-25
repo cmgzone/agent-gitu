@@ -45,19 +45,21 @@ export const UI_CONNECTIONS_JS = String.raw`
     var submitLabel = required.length === 1 && required[0] === 'token' ? 'Save key and continue' : 'Connect and continue';
     var div = document.createElement('div');
     div.className = 'qcard connection-card';
-    div.innerHTML = '<h3>' + (req.requestType === 'reauth' ? 'Update access to ' : 'Connect ') + esc(label) + '</h3>' +
-      '<div class="meta-line">' + (req.requestType === 'reauth' ? 'Your saved key needs to be replaced. Your other connection settings are already saved.' : esc(req.description || 'Access is needed to continue this task.')) + '</div>' +
+    div.innerHTML = '<div class="hint">Secure connection for this task</div><h3>' + (req.requestType === 'reauth' ? 'Update access to ' : 'Connect ') + esc(label) + ' to continue</h3>' +
+      '<div class="meta-line">' + (req.requestType === 'reauth' ? 'Your saved key needs to be replaced. Your other connection settings are already saved.' : esc(req.description || 'Access is needed to continue this task.')) + ' Manage saved integrations in Settings › Connections.</div>' +
       (req.requiredFor ? '<div class="hint">Needed for: ' + esc(req.requiredFor) + '</div>' : '') +
       '<form class="connection-form"><div class="connection-fields">' + primary + '</div>' +
       (required.indexOf('token') >= 0 ? '<div class="connection-secret-actions"><span class="hint">Saved securely on this device. Never sent to the model or task history.</span><button class="btn ghost" type="button" data-showconnectionkey aria-pressed="false">Show key</button></div>' : '') +
       (advanced ? '<details class="connection-details"><summary>Review connection settings</summary><div class="connection-fields">' + advanced + '</div></details>' : '') +
-      '<div class="connection-error" role="alert" hidden></div><div class="actions"><button type="submit" class="btn dark" data-saveconnection>' + submitLabel + '</button></div></form>';
+      '<div class="connection-error" role="alert" hidden></div><div class="actions"><button type="submit" class="btn dark" data-saveconnection>' + submitLabel + '</button><button type="button" class="btn ghost" data-connection-settings>Settings › Connections</button></div></form>';
     var working = $('working');
     if (working) stream.insertBefore(div, working); else stream.appendChild(div);
     stickScroll(stream, true);
     var form = div.querySelector('form');
     var save = div.querySelector('[data-saveconnection]');
     var error = div.querySelector('.connection-error');
+    var settingsButton = div.querySelector('[data-connection-settings]');
+    if (settingsButton) settingsButton.onclick = function () { if (typeof openSettings === 'function') openSettings('connections'); };
     var reveal = div.querySelector('[data-showconnectionkey]');
     if (reveal) reveal.onclick = function () {
       var token = div.querySelector('[data-connection-field="token"]');

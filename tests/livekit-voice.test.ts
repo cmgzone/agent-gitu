@@ -186,4 +186,77 @@ describe('LiveKit voice bridge', () => {
       rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   }, 20_000);
+
+  it('uses Pikpam Managed LiveKit API automatically when signed in with Pikpam and propagates credit errors', async () => {
+    const requests: Array<{ url: string; method: string; auth: string | null; body: Record<string, unknown> | null }> = [];
+    const mockFetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      const headers = new Headers(init?.headers);
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : null;
+      requests.push({ url, method, auth: headers.get('authorization'), body });
+
+      if (url.endsWith('/status') && method === 'GET') {
+        return new Response(JSON.stringify({
+          available: true,
+          wsUrl: 'wss://pikpam-livekit.livekit.cloud',
+          defaultAgentName: 'gitu-voice',
+          wallet: { spendableCredits: 120, eligible: true },
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url.endsWith('/token') && method === 'POST') {
+        return new Response(JSON.stringify({
+          token: 'pikpam-lk-jwt-token',
+          wsUrl: 'wss://pikpam-livekit.livekit.cloud',
+          roomName: body?.roomName,
+          livekitRoomName: `u_tenant123_${body?.roomName}`,
+          identity: body?.identity,
+          agentName: body?.agentName,
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url.includes('/rooms/') && method === 'DELETE') {
+        return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ error: 'Not found' }), { status: 404 });
+    });
+
+    secrets.keys.PIKROUTER_API_KEY = 'pikpam-jwt-secret-token';
+    const calls = new GituVoiceCalls(mockFetch as unknown as typeof fetch);
+
+    const resolved = await calls.resolveStatus();
+    expect(resolved.configured).toBe(true);
+    expect(resolved.mode).toBe('pikpam');
+    expect(resolved.url).toBe('wss://pikpam-livekit.livekit.cloud');
+    expect(resolved.agentName).toBe('gitu-voice');
+    expect(resolved.wallet?.eligible).toBe(true);
+
+    const started = await calls.start({ kind: 'cowork', conversationId: 'conv-1', agentId: 'chief' }, 'Chief');
+    expect(started.mode).toBe('pikpam');
+    expect(started.url).toBe('wss://pikpam-livekit.livekit.cloud');
+    expect(started.token).toBe('pikpam-lk-jwt-token');
+
+    const tokenReq = requests.find(r => r.url.endsWith('/token'));
+    expect(tokenReq?.auth).toBe('Bearer pikpam-jwt-secret-token');
+    expect(tokenReq?.body?.agentName).toBe('gitu-voice');
+    const agentMeta = JSON.parse(String(tokenReq?.body?.agentMetadata ?? '{}')) as { callId?: string; participantIdentity?: string };
+    expect(agentMeta.callId).toBe(started.callId);
+    expect(agentMeta.participantIdentity).toMatch(/^user-/);
+    expect(String(tokenReq?.body?.agentMetadata)).not.toContain('conv-1');
+
+    await calls.end(started.callId);
+    const deleteReq = requests.find(r => r.method === 'DELETE');
+    expect(deleteReq?.url).toContain('/rooms/u_tenant123_gitu-');
+
+    // Verify 402 INSUFFICIENT_CREDITS surfaces cleanly
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: 'Pikpam Realtime Voice requires at least 25 credits.', code: 'INSUFFICIENT_CREDITS' }), {
+        status: 402,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    await expect(calls.start({ kind: 'main' }, 'Coder')).rejects.toMatchObject({
+      statusCode: 402,
+      code: 'INSUFFICIENT_CREDITS',
+    });
+  });
 });

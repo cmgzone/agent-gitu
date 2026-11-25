@@ -25,6 +25,11 @@ apps/mobile/dist/
 apps/mobile/android/
 apps/mobile/ios/
 apps/mobile/google-services.json
+apps/android-native/app/google-services.json
+apps/android-native/local.properties
+apps/android-native/.gradle/
+apps/android-native/build/
+apps/android-native/app/build/
 *firebase-adminsdk*.json
 *.tsbuildinfo
 

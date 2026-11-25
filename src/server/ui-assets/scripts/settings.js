@@ -9,7 +9,7 @@
     }).then(function (saved) { S.settings.autoApprove = saved.access === 'full'; persist(); if (typeof updateCodingAccessControl === 'function') updateCodingAccessControl(); return saved; }).catch(function () {});
   }
   function openSettings(section) {
-    S.setSection = section || 'overview';
+    S.setSection = typeof resolveSettingsSection === 'function' ? resolveSettingsSection(section) : (section || 'overview');
     closeToolPanel();
     if (typeof window !== 'undefined' && window.__gituAstryx && typeof window.__gituAstryx.openSettings === 'function') {
       window.__gituAstryx.openSettings(S.setSection);
@@ -41,9 +41,23 @@
       .catch(function () { renderSettings(); });
   }
 
+  function settingsCatalog() {
+    if (typeof wsSettingsSections === 'function') return wsSettingsSections(true);
+    return (typeof WORKSPACE_SETTINGS !== 'undefined' ? WORKSPACE_SETTINGS : []).map(function (it) {
+      return { id: it[0], icon: it[1], title: it[2], detail: it[3], group: it[4] || 'More', keywords: it[5] || '', aliases: String(it[6] || '').split(',').map(function (v) { return v.trim(); }).filter(Boolean), hidden: it[7] === 'hidden' };
+    });
+  }
+  function resolveSettingsSection(id) {
+    if (typeof wsResolveSettingId === 'function') return wsResolveSettingId(id);
+    var raw = String(id || '').trim().toLowerCase();
+    if (!raw) return 'overview';
+    var match = settingsCatalog().find(function (it) { return it.id === raw || (it.aliases || []).indexOf(raw) >= 0; });
+    return match ? match.id : raw;
+  }
   function consoleSectionTitle(sec) {
-    var match = (typeof WORKSPACE_SETTINGS !== 'undefined' ? WORKSPACE_SETTINGS : []).find(function (it) { return it[0] === sec; });
-    return match ? match[2] : (sec === 'overview' ? 'Overview' : sec);
+    var resolved = resolveSettingsSection(sec);
+    var match = settingsCatalog().find(function (it) { return it.id === resolved; });
+    return match ? match.title : (resolved === 'overview' ? 'Overview' : resolved);
   }
   function syncConsoleAccountFooter() {
     var apply = function (acc, credits) {
@@ -68,7 +82,7 @@
     }
   }
   function renderSettings() {
-    var items = WORKSPACE_SETTINGS;
+    var catalog = settingsCatalog();
     if(S.setSection!=='connections'&&typeof cwCloseConnectionManager==='function')cwCloseConnectionManager();
     if (S._legacySetBodyTarget && document.body.contains(S._legacySetBodyTarget)) {
       renderSettingsBody(S._legacySetBodyTarget);
@@ -78,30 +92,19 @@
     var close=$('settingsClose');if(!close){settings.insertAdjacentHTML('afterbegin','<button class="settings-close" id="settingsClose" aria-label="Close settings">'+icon('x')+'</button><button class="settings-top-back" id="settingsDirectoryBack">'+icon('back')+'<span>All settings</span></button>');close=$('settingsClose');}
     close.onclick=closeSettings;$('settingsDirectoryBack').hidden=S.setSection==='overview';$('settingsDirectoryBack').onclick=function(){openSettings('overview');};
     if ($('settings')) $('settings').setAttribute('data-sec', S.setSection || 'overview');
-    var groups = [
-      ['Console', ['overview', 'general']],
-      ['AI & Integrations', ['providers', 'connections', 'agents', 'skills', 'mcp']],
-      ['Workspace & Safety', ['workspace', 'cron', 'cowork', 'permissions']]
-    ];
-    var SIDEBAR_HIDDEN = { project: true, files: true, developer: true };
-    var navItems = [['overview', 'layers', 'Overview']].concat(items);
-    var used = {};
+    var groups = ['Console', 'AI & Integrations', 'Workspace & Safety'];
     var navHtml =
       '<div class="setnav-brand">' +
         '<img src="/brand/agent-gitu-mark.svg" alt="">' +
         '<div class="setnav-brand-copy"><strong>Agent Gitu</strong><span>Cloud Console</span></div>' +
       '</div>' +
       '<button class="back" id="setBack">' + icon('search') + ' Search console…</button>' +
-      groups.map(function (grp) {
-        var groupItems = grp[1].map(function (id) { return navItems.find(function (it) { return it[0] === id; }); }).filter(Boolean);
+      groups.map(function (group) {
+        var groupItems = catalog.filter(function (it) { return !it.hidden && it.group === group; });
         if (!groupItems.length) return '';
-        return '<div class="sect">' + grp[0] + '</div>' + groupItems.map(function (it) {
-          used[it[0]] = true;
-          return '<button class="item ' + (S.setSection === it[0] ? 'active' : '') + '" data-sec="' + it[0] + '" aria-current="'+(S.setSection===it[0]?'page':'false')+'"><span class="ico">' + icon(it[1]) + '</span><span>' + it[2] + '</span></button>';
+        return '<div class="sect">' + esc(group) + '</div>' + groupItems.map(function (it) {
+          return '<button class="item ' + (S.setSection === it.id ? 'active' : '') + '" data-sec="' + it.id + '" aria-current="'+(S.setSection===it.id?'page':'false')+'"><span class="ico">' + icon(it.icon) + '</span><span>' + esc(it.title) + '</span></button>';
         }).join('');
-      }).join('') +
-      navItems.filter(function (it) { return !used[it[0]] && !SIDEBAR_HIDDEN[it[0]]; }).map(function (it) {
-        return '<button class="item ' + (S.setSection === it[0] ? 'active' : '') + '" data-sec="' + it[0] + '" aria-current="'+(S.setSection===it[0]?'page':'false')+'"><span class="ico">' + icon(it[1]) + '</span><span>' + it[2] + '</span></button>';
       }).join('') +
       '<div class="setnav-foot" id="setnavFoot">' +
         '<div class="setnav-account">' +
@@ -112,7 +115,7 @@
     $('setnav').innerHTML = navHtml;
     $('setBack').onclick = function(){wsOpen();};
     $('setnav').querySelectorAll('[data-sec]').forEach(function (el) {
-      el.onclick = function () { S.setSection = el.getAttribute('data-sec'); renderSettings(); };
+      el.onclick = function () { S.setSection = resolveSettingsSection(el.getAttribute('data-sec')); renderSettings(); };
     });
     var topbar = $('setTopbar');
     if (!topbar) {
@@ -156,7 +159,7 @@
         '<div class="setrow"><div class="grow"><div class="t">Spend ceiling</div><div class="d">Optional USD cap per run (leave blank for no automatic limit).</div></div><input type="text" id="gSpend" inputmode="decimal" placeholder="none" style="width:96px;background:var(--card2);border:1px solid var(--border2);color:var(--text);border-radius:8px;padding:6px 9px;font:inherit;font-size:13px"></div>' +
         '<div class="setrow"><div class="grow"><div class="t">Primary workspace</div><div class="d">Choose which workspace opens by default on launch.</div></div><select id="gStartMode"><option value="cowork">Cowork (Recommended)</option><option value="coding">Coding</option></select></div>' +
         '</div>';
-      b.insertAdjacentHTML('beforeend','<h2>Account</h2><div class="setcard" id="pikAccountSettings"><div class="setrow"><div class="grow"><div class="t">PikRouter account <span class="chip ok">main auth</span></div><div class="d" id="pikAccountDesc">Signed in with PikRouter. Routes AI requests and unlocks your workspace.</div></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn dark" id="pikAccountTopup">Top up credits</button><button class="btn ghost" id="pikAccountSwitch">Continue with Pikpam</button><button class="btn ghost" id="pikAccountLogout">Log out</button></div></div></div><div class="setcard" id="googleAccountSettings" style="margin-top:10px"><div class="setrow"><div class="grow"><div class="t">Google sign-in</div><div class="d">Checking configuration…</div></div></div></div>');
+      b.insertAdjacentHTML('beforeend','<h2>Account</h2><div class="setcard" id="pikAccountSettings"><div class="setrow"><div class="grow"><div class="t">Pikpam account <span class="chip ok">main auth</span></div><div class="d" id="pikAccountDesc">Signed in with Pikpam. Routes AI requests and unlocks your workspace.</div></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn dark" id="pikAccountTopup">Top up credits</button><button class="btn ghost" id="pikAccountSwitch">Switch Pikpam account</button><button class="btn ghost" id="pikAccountLogout">Sign out of workspace</button></div></div></div><div class="setcard" id="googleAccountSettings" style="margin-top:10px"><div class="setrow"><div class="grow"><div class="t">Google sign-in</div><div class="d">Checking configuration…</div></div></div></div>');
       if ($('pikAccountTopup')) $('pikAccountTopup').onclick = function () { openPikRouterTopup(); };
       if ($('pikAccountSwitch')) $('pikAccountSwitch').onclick = function () { startPikRouterOAuth('/callback'); };
       if ($('pikAccountLogout')) $('pikAccountLogout').onclick = async function () {
@@ -165,10 +168,10 @@
           try { localStorage.removeItem('auth_token'); } catch (e) {}
           await api('/api/auth/logout', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
           window.location.replace('/auth');
-        } catch (error) { toast((error && error.message) || 'Could not log out.', true); btn.disabled = false; }
+        } catch (error) { toast((error && error.message) || 'Could not sign out.', true); btn.disabled = false; }
       };
       if (window.ReactNativeWebView) {
-        b.insertAdjacentHTML('beforeend', '<h2>Sign out</h2><div class="setcard"><div class="setrow"><div class="grow"><div class="t">Log out of this phone</div><div class="d">Return to the server chooser. Saved conversation copies are removed from this device.</div></div><button class="btn ghost" id="gituAndroidLogout">Log out</button></div></div>');
+        b.insertAdjacentHTML('beforeend', '<h2>Sign out</h2><div class="setcard"><div class="setrow"><div class="grow"><div class="t">Sign out on this phone</div><div class="d">Return to the server chooser. Saved conversation copies are removed from this device.</div></div><button class="btn ghost" id="gituAndroidLogout">Sign out</button></div></div>');
         $('gituAndroidLogout').onclick = async function () {
           var button = this; button.disabled = true;
           try {
@@ -178,7 +181,7 @@
               if (key && (key.indexOf('hermes.cowork.offline.') === 0 || key.indexOf('gitu.offline.main-run.') === 0 || key === 'gitu.offline.main-run.active.v1')) localStorage.removeItem(key);
             }
             window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'gitu-logout' }));
-          } catch (error) { toast(error.message || 'Could not log out. Check the connection and retry.', true); button.disabled = false; }
+          } catch (error) { toast(error.message || 'Could not sign out. Check the connection and retry.', true); button.disabled = false; }
         };
       }
       api('/api/auth/status').then(function(status){
@@ -293,13 +296,14 @@
         refreshPush().catch(function () { if ($('androidPushStatus')) $('androidPushStatus').textContent = 'Could not read notification settings. Reopen Settings to retry.'; });
       }
       if (window.gituDesktop && typeof window.gituDesktop.phoneAccess === 'function') {
-        extraGrid.insertAdjacentHTML('beforeend', '<div class="setcard ws-grid-card" id="phoneAccessCard"><div class="setrow" style="border:0;padding:0"><div class="grow"><div class="t">Connect your Android phone</div><div class="d">Checking your Wi-Fi address…</div></div></div></div>');
+        extraGrid.insertAdjacentHTML('beforeend', '<div class="setcard ws-grid-card" id="phoneAccessCard"><div class="setrow" style="border:0;padding:0"><div class="grow"><div class="t">Connect your phone</div><div class="d">Checking your Wi-Fi address…</div></div></div></div>');
         var renderPhoneAccess = function (status) {
           var card = $('phoneAccessCard'); if (!card || S.setSection !== 'general') return;
           var addresses = status && status.addresses || [];
+          var phoneAddress = typeof window.gituPhoneAccessibleAddress === 'function' ? window.gituPhoneAccessibleAddress(addresses) : addresses[0];
           card.innerHTML = '<div class="setrow"><div class="grow"><div class="t">'+(status && status.enabled ? 'Phone access starts automatically' : 'Phone access is disabled')+'</div><div class="d">Connect both devices to the same Wi-Fi. Choose Local network in Android and sign in with your Gitu email and password.</div></div></div>' +
             addresses.map(function (address) { return '<div class="setrow"><div class="grow"><code style="overflow-wrap:anywhere">'+esc(address)+'</code></div></div>'; }).join('') +
-            (addresses[0] ? '<div class="setrow"><div class="grow"><div class="t">Scan to connect</div><div class="d">Point your phone camera at this code to open Agent Gitu with this address.</div></div><img alt="QR code to open Agent Gitu on your phone" src="/api/qr?text='+encodeURIComponent('agentgitu://connect?server='+encodeURIComponent(addresses[0]))+'" style="width:132px;height:132px;padding:8px;border-radius:12px;background:#fff;flex:none"></div>' : '') +
+            (phoneAddress ? '<div class="setrow"><div class="grow"><div class="t">Connect your phone</div><div class="d">Scan this code with your phone camera to open Agent Gitu there.</div></div><img alt="QR code to open Agent Gitu on your phone" src="'+(typeof window.gituPhoneQrSrc==='function'?window.gituPhoneQrSrc(phoneAddress):'/api/qr?text='+encodeURIComponent('agentgitu://connect?server='+encodeURIComponent(phoneAddress)))+'" style="width:132px;height:132px;padding:8px;border-radius:12px;background:#fff;flex:none"></div>' : '') +
             '<div class="setrow"><div class="grow"><div class="d">'+esc(status && status.pending ? 'Waiting for the Windows permission request…' : status && status.allowed ? 'Windows network permission is configured.' : status && status.message || 'No Wi-Fi address is available. Check your network connection.')+'</div><div class="d">Local HTTP sends passwords and workspace data unencrypted. Use trusted Wi-Fi.</div></div></div>' +
             (status && status.enabled ? '<div class="setrow"><button class="btn ghost" id="allowPhoneAccess">Allow Wi-Fi access</button><button class="btn ghost" id="refreshPhoneAccess">Refresh address</button></div>' : '');
           if ($('refreshPhoneAccess')) $('refreshPhoneAccess').onclick = function () { window.gituDesktop.phoneAccess().then(renderPhoneAccess).catch(function (error) { toast(error.message, true); }); };
@@ -388,7 +392,7 @@
         renderSettings();
       };
     } else if (S.setSection === 'connections') {
-      b.innerHTML = '<header class="connection-page-head"><h1>Connected app integrations</h1><p class="connection-intro">Authorize external SaaS toolkits for both the Cowork side (inbox, meetings, CRM) and the Coding side (repos, issues, deploys) via scoped OAuth.</p></header>' +
+      b.innerHTML = '<header class="connection-page-head"><h1>Connections</h1><p class="connection-intro">Connect apps, accounts, and custom APIs for your workspace. App access uses scoped sign-in; custom APIs use a saved key or token. Task-specific credential requests still appear in the conversation.</p></header>' +
         '<nav class="connection-manager-tabs" role="tablist" aria-label="Connection categories">' +
           '<button class="btn ghost" role="tab" data-connection-category="apps" aria-pressed="true">Apps &amp; accounts</button>' +
           '<button class="btn ghost" role="tab" data-connection-category="apis" aria-pressed="false">Custom APIs</button>' +
@@ -396,7 +400,7 @@
         '<section id="workspaceAppsPanel"></section>' +
         '<section id="workspaceApiPanel" hidden>' +
           '<div class="connection-api-heading">' +
-            '<div><h2>Custom APIs</h2><p class="connection-intro">Connect a service with its own API key or access token.</p></div>' +
+            '<div><h2>Saved custom APIs</h2><p class="connection-intro">Connect a service with its own API key or access token.</p></div>' +
             '<button class="btn dark" id="workspaceAddApi">Add connection</button>' +
           '</div>' +
           '<div class="setcard astryx-api-list" id="connectionsBody"><p class="astryx-loading-note" role="status">Loading saved APIs…</p></div>' +
@@ -505,11 +509,11 @@
             '<div class="keysec">' +
               (p.id === 'pikrouter'
                 ? '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;width:100%;margin-bottom:8px">' +
-                    '<button type="button" class="btn dark" id="pikOAuthBtn">' + (usable ? 'Reconnect with Pikpam' : 'Continue with Pikpam (Hosted Authorize &amp; Register)') + '</button>' +
-                    (usable ? '<button type="button" class="btn ghost" id="pikSignoutBtn">Sign out</button>' : '') +
+                    '<span class="chip ' + (usable ? 'ok' : 'bad') + '">' + (usable ? 'Pikpam connected' : 'Pikpam not connected') + '</span>' +
+                    '<button type="button" class="btn ghost" id="pikManageAccount">Manage account in General</button>' +
+                    (usable ? '<button type="button" class="btn ghost" id="pikDisconnectBtn">Disconnect PikRouter AI</button>' : '') +
                   '</div>' +
-                  (usable ? '<div class="meta" id="pikProviderBalance" style="margin:6px 0;font-weight:500;color:var(--text);display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span>Credits balance: ' + (typeof window !== 'undefined' && window.__pikRouterCredits && typeof window.__pikRouterCredits.balance === 'number' ? (window.__pikRouterCredits.available !== undefined ? window.__pikRouterCredits.available : window.__pikRouterCredits.balance) + ' credits (' + (window.__pikRouterCredits.creditRate || '100 Credits = $1.00 USD') + ')' : 'loading…') + '</span><button type="button" class="btn ghost" id="pikProviderTopup" style="padding:2px 8px;font-size:11px">Top up credits</button></div>' : '') +
-                  '<div class="hint">Authorize with Pikpam (pikpam.com) to configure your main default AI provider automatically.</div>' +
+                  '<div class="hint">Connect, switch accounts, top up, and sign out in Settings → General → Account. This page selects the default PikRouter model.</div>' +
                   '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;width:100%;margin-top:8px">' +
                     '<input type="password" id="keyin-' + i + '" placeholder="or paste pikrouter API key" style="margin:0;max-width:260px">' +
                     '<button class="btn ghost" data-savekey="' + i + '">Save key</button>' +
@@ -531,21 +535,20 @@
             '</div>' +
             '</div></div>';
         }).join('') || '<div class="meta">no providers available</div>';
-        var pikOAuth = $('pikOAuthBtn');
-        if (pikOAuth) pikOAuth.onclick = function () { startPikRouterOAuth('/callback'); };
-        var pikProvTopup = $('pikProviderTopup');
-        if (pikProvTopup) pikProvTopup.onclick = function () { openPikRouterTopup(); };
-        var pikSignout = $('pikSignoutBtn');
-        if (pikSignout) pikSignout.onclick = function () {
-          pikSignout.disabled = true;
+        var pikManageAccount = $('pikManageAccount');
+        if (pikManageAccount) pikManageAccount.onclick = function () { openSettings('general'); };
+        var pikDisconnect = $('pikDisconnectBtn');
+        if (pikDisconnect) pikDisconnect.onclick = function () {
+          if (!window.confirm('Disconnect PikRouter AI? Tasks that use it will stop until you reconnect in Settings › General.')) return;
+          pikDisconnect.disabled = true;
           api('/api/pikrouter/auth', { method: 'DELETE' }).then(function () {
-            toast('Signed out of PikRouter');
+            toast('PikRouter AI disconnected');
             return loadModelCatalog(true);
           }).then(function () {
             renderSettings();
           }).catch(function (e) {
-            pikSignout.disabled = false;
-            toast(((e && e.message) || 'Could not sign out of PikRouter'), true);
+            pikDisconnect.disabled = false;
+            toast(((e && e.message) || 'Could not disconnect PikRouter AI'), true);
           });
         };
         var cgSignin = $('chatgptSignin');
@@ -1184,12 +1187,14 @@
     host.toast = toast;
     host.persist = persist;
     host.setSettingSection = function (section) {
-      if (section !== 'connections' && typeof cwCloseConnectionManager === 'function') cwCloseConnectionManager();
-      S.setSection = section || 'overview';
+      var resolved = resolveSettingsSection(section);
+      if (resolved !== 'connections' && typeof cwCloseConnectionManager === 'function') cwCloseConnectionManager();
+      S.setSection = resolved;
     };
     host.renderLegacySettingsSection = function (section, target) {
-      if (section !== 'connections' && typeof cwCloseConnectionManager === 'function') cwCloseConnectionManager();
-      S.setSection = section || 'providers';
+      var resolved = resolveSettingsSection(section);
+      if (resolved !== 'connections' && typeof cwCloseConnectionManager === 'function') cwCloseConnectionManager();
+      S.setSection = resolved === 'overview' ? 'general' : resolved;
       S._legacySetBodyTarget = target || null;
       renderSettingsBody(target);
     };
@@ -1233,8 +1238,8 @@
     };
     host.setTheme = function (choice) { if (typeof setTheme === 'function') setTheme(choice); };
     host.getWorkspaceSettingItems = function () {
-      return (typeof WORKSPACE_SETTINGS !== 'undefined' ? WORKSPACE_SETTINGS : []).map(function (it) {
-        return { id: it[0], icon: it[1], title: it[2], detail: it[3] };
+      return settingsCatalog().map(function (it) {
+        return { id: it.id, icon: it.icon, title: it.title, detail: it.detail, group: it.group, keywords: it.keywords || '', aliases: it.aliases || [], hidden: !!it.hidden };
       });
     };
     host.syncCodingPermissions = syncCodingPermissions;

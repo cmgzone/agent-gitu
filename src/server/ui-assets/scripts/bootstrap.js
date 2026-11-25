@@ -326,8 +326,23 @@
       window.location.href = 'https://pikpam.com/oauth/topup?client_id=client_gitu_agent&redirect_uri=' + encodeURIComponent(redirectUri);
     });
   }
+  function gituPhoneAccessibleAddress(addresses) {
+    var list = Array.isArray(addresses) ? addresses.filter(Boolean) : [];
+    return list.filter(function (address) { return !/^https?:\/\/(?:127\.|localhost|\[::1\])/i.test(address); })[0] || list[0] || '';
+  }
+  function gituPhoneConnectLink(address) {
+    var value = String(address || '').trim();
+    return value ? 'agentgitu://connect?server=' + encodeURIComponent(value) : '';
+  }
+  function gituPhoneQrSrc(address) {
+    var link = gituPhoneConnectLink(address);
+    return link ? '/api/qr?text=' + encodeURIComponent(link) : '';
+  }
   window.startPikRouterOAuth = startPikRouterOAuth;
   window.openPikRouterTopup = openPikRouterTopup;
+  window.gituPhoneAccessibleAddress = gituPhoneAccessibleAddress;
+  window.gituPhoneConnectLink = gituPhoneConnectLink;
+  window.gituPhoneQrSrc = gituPhoneQrSrc;
   (function handlePikRouterOAuthCallbackOnLoad() {
     try {
       if (typeof window === 'undefined' || !window.location || !window.location.search) return;
@@ -340,7 +355,8 @@
         if (typeof setTimeout === 'function') {
           setTimeout(function () {
             if (typeof toast === 'function') toast('Returned from app authorization. Connection status refreshed.');
-            if (typeof openSettings === 'function') openSettings('connections');
+            if (typeof cwOpenConnections === 'function') cwOpenConnections();
+            else if (typeof openSettings === 'function') openSettings('connections');
           }, 0);
         }
       }

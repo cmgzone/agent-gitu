@@ -1,8 +1,10 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { AccessToken, AgentDispatchClient, RoomServiceClient } from 'livekit-server-sdk';
 import { loadStoredKeys, setStoredKey } from '../llm/keys.js';
 import type { LlmClient, LlmMessage } from '../llm/llm.js';
 import { extractLastJsonObject, requestLlmTurn } from '../llm/llm.js';
+
+export const DEFAULT_PIKPAM_VOICE_BASE_URL = 'https://pikpam.com/api/voice';
 
 export interface VoiceTarget {
   kind: 'main' | 'cowork'; runId?: string; conversationId?: string; threadId?: string;
@@ -11,11 +13,110 @@ export interface VoiceTarget {
 export interface VoiceContext { name: string; instructions: string; state: string; history: LlmMessage[]; busy: boolean; }
 export interface VoiceDecision { kind: 'question' | 'task' | 'steer' | 'queue' | 'stop'; reply: string; }
 export interface LiveKitConfiguration { url: string; apiKey: string; apiSecret: string; agentName: string; }
+export interface PikpamVoiceStatus {
+  available: boolean;
+  wsUrl: string;
+  defaultAgentName?: string;
+  pricing?: {
+    participantUsdPerMin?: number;
+    agentUsdPerMin?: number;
+    participantCreditsPerMin?: number;
+    agentCreditsPerMin?: number;
+    creditsPerUsd?: number;
+  };
+  wallet?: {
+    spendableCredits?: number;
+    eligible?: boolean;
+  };
+}
+export interface VoiceConfigSummary {
+  configured: boolean;
+  mode?: 'byok' | 'pikpam' | 'none';
+  url?: string;
+  agentName?: string;
+  pikpamConnected?: boolean;
+  pikpamAvailable?: boolean;
+  wallet?: PikpamVoiceStatus['wallet'];
+  pricing?: PikpamVoiceStatus['pricing'];
+}
 export interface VoiceCall {
   id: string; room: string; identity: string; target: VoiceTarget; name: string; expiresAt: number;
+  mode: 'byok' | 'pikpam';
+  pikpamToken?: string;
   responses: Map<string, Promise<Record<string, unknown>>>;
   history: LlmMessage[];
   greeted?: boolean;
+}
+
+export class VoiceProviderError extends Error {
+  constructor(
+    message: string,
+    readonly statusCode: number = 502,
+    readonly code: string = 'VOICE_ERROR',
+  ) {
+    super(message);
+    this.name = 'VoiceProviderError';
+  }
+}
+
+export function resolvePikpamVoiceToken(overrideToken?: string): string | undefined {
+  const direct = overrideToken?.trim();
+  if (direct) return direct;
+  const stored = loadStoredKeys();
+  const fromStored = (stored.PIKROUTER_API_KEY || stored.HERMES_PIKROUTER_API_KEY || stored.PIKROUTER_TOKEN || '').trim();
+  if (fromStored) return fromStored;
+  const fromEnv = (process.env.PIKROUTER_API_KEY || process.env.HERMES_PIKROUTER_API_KEY || process.env.PIKROUTER_TOKEN || '').trim();
+  return fromEnv || undefined;
+}
+
+export function pikpamVoiceBaseUrl(): string {
+  const explicitTokenUrl = (process.env.PIKPAM_VOICE_TOKEN_URL || '').trim();
+  if (explicitTokenUrl) return explicitTokenUrl.replace(/\/token\/?$/, '').replace(/\/+$/, '');
+  const explicitRoomsUrl = (process.env.PIKPAM_VOICE_ROOMS_URL || '').trim();
+  if (explicitRoomsUrl) return explicitRoomsUrl.replace(/\/rooms\/?$/, '').replace(/\/+$/, '');
+  const routerBase = (process.env.PIKROUTER_BASE_URL || '').trim();
+  if (routerBase) return `${routerBase.replace(/\/+$/, '')}/voice`;
+  return DEFAULT_PIKPAM_VOICE_BASE_URL;
+}
+
+async function fetchPikpamVoiceJson<T>(
+  endpoint: string,
+  token: string,
+  init: { method?: string; body?: unknown; timeoutMs?: number } = {},
+  fetcher: typeof fetch = fetch,
+): Promise<T> {
+  const response = await fetcher(endpoint, {
+    method: init.method ?? 'GET',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
+    signal: AbortSignal.timeout(init.timeoutMs ?? 15_000),
+  });
+  const text = await response.text();
+  let parsed: Record<string, unknown> = {};
+  try {
+    parsed = text ? JSON.parse(text) as Record<string, unknown> : {};
+  } catch {
+    // non-JSON body
+  }
+  if (!response.ok) {
+    const rawMsg = typeof parsed.error === 'string' && parsed.error.trim()
+      ? parsed.error.trim()
+      : typeof parsed.message === 'string' && parsed.message.trim()
+        ? parsed.message.trim()
+        : `Pikpam voice request failed (HTTP ${response.status}).`;
+    const code = typeof parsed.code === 'string' && parsed.code.trim()
+      ? parsed.code.trim()
+      : response.status === 402
+        ? 'INSUFFICIENT_CREDITS'
+        : response.status === 401
+          ? 'PIKPAM_AUTH_REQUIRED'
+          : `HTTP_${response.status}`;
+    throw new VoiceProviderError(rawMsg, response.status, code);
+  }
+  return parsed as T;
 }
 
 export function validateLiveKitConfiguration(input: Record<string, unknown>): LiveKitConfiguration {
@@ -39,14 +140,95 @@ export function liveKitConfiguration(): LiveKitConfiguration | undefined {
 
 export class GituVoiceCalls {
   private readonly calls = new Map<string, VoiceCall>();
+  private pikpamStatusCache?: { key: string; fetchedAt: number; data: PikpamVoiceStatus };
+
+  constructor(private readonly fetcher: typeof fetch = fetch) {}
+
   async configure(input: Record<string, unknown>): Promise<void> {
     const config = validateLiveKitConfiguration(input);
     await this.close();
     setStoredKey('GITU_LIVEKIT_CONFIG', JSON.stringify(config));
   }
-  status(): { configured: boolean; url?: string; agentName?: string } {
+  status(overridePikpamToken?: string): VoiceConfigSummary {
     const config = liveKitConfiguration();
-    return config ? { configured: true, url: config.url, agentName: config.agentName } : { configured: false };
+    if (config) return { configured: true, mode: 'byok', url: config.url, agentName: config.agentName };
+    const pikpamToken = resolvePikpamVoiceToken(overridePikpamToken);
+    if (pikpamToken) {
+      const agentName = (process.env.GITU_VOICE_AGENT_NAME || process.env.PIKPAM_VOICE_DEFAULT_AGENT || 'gitu-voice').trim();
+      return {
+        configured: true,
+        mode: 'pikpam',
+        url: (process.env.PIKPAM_VOICE_WS_URL || '').trim() || undefined,
+        agentName,
+        pikpamConnected: true,
+      };
+    }
+    return { configured: false, mode: 'none', pikpamConnected: false };
+  }
+  async resolveStatus(overridePikpamToken?: string): Promise<VoiceConfigSummary> {
+    const config = liveKitConfiguration();
+    if (config) return { configured: true, mode: 'byok', url: config.url, agentName: config.agentName };
+    const token = resolvePikpamVoiceToken(overridePikpamToken);
+    if (!token) return { configured: false, mode: 'none', pikpamConnected: false };
+
+    const status = await this.getPikpamStatus(token);
+    const agentName = (
+      process.env.GITU_VOICE_AGENT_NAME ||
+      process.env.PIKPAM_VOICE_DEFAULT_AGENT ||
+      status?.defaultAgentName ||
+      'gitu-voice'
+    ).trim();
+
+    if (status?.available) {
+      return {
+        configured: true,
+        mode: 'pikpam',
+        url: status.wsUrl || undefined,
+        agentName,
+        pikpamConnected: true,
+        pikpamAvailable: true,
+        wallet: status.wallet,
+        pricing: status.pricing,
+      };
+    }
+    if (status && !status.available) {
+      return {
+        configured: false,
+        mode: 'pikpam',
+        agentName,
+        pikpamConnected: true,
+        pikpamAvailable: false,
+        wallet: status.wallet,
+        pricing: status.pricing,
+      };
+    }
+    // If Pikpam status endpoint is temporarily unreachable, still report Pikpam configured
+    // so calls can attempt token minting and surface an actionable error if needed.
+    return {
+      configured: true,
+      mode: 'pikpam',
+      url: (process.env.PIKPAM_VOICE_WS_URL || '').trim() || undefined,
+      agentName,
+      pikpamConnected: true,
+    };
+  }
+  private async getPikpamStatus(token: string): Promise<PikpamVoiceStatus | undefined> {
+    const cacheKey = createHash('sha256').update(token).digest('hex').slice(0, 16);
+    if (this.pikpamStatusCache && this.pikpamStatusCache.key === cacheKey && Date.now() - this.pikpamStatusCache.fetchedAt < 15_000) {
+      return this.pikpamStatusCache.data;
+    }
+    try {
+      const data = await fetchPikpamVoiceJson<PikpamVoiceStatus>(
+        `${pikpamVoiceBaseUrl()}/status`,
+        token,
+        { method: 'GET', timeoutMs: 8_000 },
+        this.fetcher,
+      );
+      this.pikpamStatusCache = { key: cacheKey, fetchedAt: Date.now(), data };
+      return data;
+    } catch {
+      return undefined;
+    }
   }
   get(id: string): VoiceCall | undefined {
     const call = this.calls.get(id);
@@ -54,32 +236,121 @@ export class GituVoiceCalls {
     if (call) void this.end(id);
     return undefined;
   }
-  async start(target: VoiceTarget, name: string): Promise<{ callId: string; url: string; token: string; name: string }> {
-    const config = liveKitConfiguration();
-    if (!config) throw new Error('Connect your LiveKit Cloud project first.');
+  async start(
+    target: VoiceTarget,
+    name: string,
+    opts?: { pikpamToken?: string },
+  ): Promise<{ callId: string; url: string; token: string; name: string; mode?: 'byok' | 'pikpam' }> {
     for (const call of this.calls.values()) if (call.expiresAt <= Date.now()) await this.end(call.id);
-    if (this.calls.size >= 4) throw new Error('End an existing call before starting another.');
-    const id = randomUUID(), room = 'gitu-' + randomBytes(16).toString('hex'), identity = 'user-' + randomUUID();
-    const token = new AccessToken(config.apiKey, config.apiSecret, { identity, name: 'You', ttl: '15m' });
-    token.addGrant({ roomJoin: true, room, canPublish: true, canPublishData: true, canSubscribe: true, canUpdateOwnMetadata: false });
-    const host = config.url.replace(/^wss:/, 'https:');
-    const rooms = new RoomServiceClient(host, config.apiKey, config.apiSecret, { requestTimeout: 15 });
-    const dispatch = new AgentDispatchClient(host, config.apiKey, config.apiSecret, { requestTimeout: 15 });
-    await rooms.createRoom({ name: room, emptyTimeout: 60, maxParticipants: 2 });
-    try {
-      // Job metadata carries no Gitu credentials, tools, paths or conversation text.
-      await dispatch.createDispatch(room, config.agentName, { metadata: JSON.stringify({ participantIdentity: identity, callId: id }) });
-      this.calls.set(id, { id, room, identity, target: { ...target }, name, expiresAt: Date.now() + 60 * 60_000, responses: new Map(), history: [] });
-      return { callId: id, url: config.url, token: await token.toJwt(), name };
-    } catch {
-      await rooms.deleteRoom(room).catch(() => undefined);
-      throw new Error('Could not start the voice worker. Check your LiveKit credentials and deploy the gitu-voice worker.');
+    if (this.calls.size >= 4) throw new VoiceProviderError('End an existing call before starting another.', 429, 'TOO_MANY_CALLS');
+
+    const config = liveKitConfiguration();
+    if (config) {
+      const id = randomUUID(), room = 'gitu-' + randomBytes(16).toString('hex'), identity = 'user-' + randomUUID();
+      const token = new AccessToken(config.apiKey, config.apiSecret, { identity, name: 'You', ttl: '15m' });
+      token.addGrant({ roomJoin: true, room, canPublish: true, canPublishData: true, canSubscribe: true, canUpdateOwnMetadata: false });
+      const host = config.url.replace(/^wss:/, 'https:');
+      const rooms = new RoomServiceClient(host, config.apiKey, config.apiSecret, { requestTimeout: 15 });
+      const dispatch = new AgentDispatchClient(host, config.apiKey, config.apiSecret, { requestTimeout: 15 });
+      await rooms.createRoom({ name: room, emptyTimeout: 60, maxParticipants: 2 });
+      try {
+        // Job metadata carries no Gitu credentials, tools, paths or conversation text.
+        await dispatch.createDispatch(room, config.agentName, { metadata: JSON.stringify({ participantIdentity: identity, callId: id }) });
+        this.calls.set(id, { id, room, identity, mode: 'byok', target: { ...target }, name, expiresAt: Date.now() + 60 * 60_000, responses: new Map(), history: [] });
+        return { callId: id, url: config.url, token: await token.toJwt(), name, mode: 'byok' };
+      } catch {
+        await rooms.deleteRoom(room).catch(() => undefined);
+        throw new VoiceProviderError('Could not start the voice worker. Check your LiveKit credentials and deploy the gitu-voice worker.', 502, 'WORKER_DISPATCH_FAILED');
+      }
     }
+
+    const pikpamToken = resolvePikpamVoiceToken(opts?.pikpamToken);
+    if (!pikpamToken) {
+      throw new VoiceProviderError('Sign in with Pikpam for instant voice calling, or connect your own LiveKit Cloud project.', 400, 'VOICE_NOT_CONFIGURED');
+    }
+
+    const cachedStatus = await this.getPikpamStatus(pikpamToken);
+    const id = randomUUID();
+    const roomSlug = 'gitu-' + randomBytes(12).toString('hex');
+    const identity = 'user-' + randomUUID();
+    const agentName = (
+      process.env.GITU_VOICE_AGENT_NAME ||
+      process.env.PIKPAM_VOICE_DEFAULT_AGENT ||
+      cachedStatus?.defaultAgentName ||
+      'gitu-voice'
+    ).trim();
+
+    // Job metadata carries no Gitu credentials, tools, paths, or conversation text.
+    const agentMetadata = JSON.stringify({ participantIdentity: identity, callId: id });
+    const minted = await fetchPikpamVoiceJson<{
+      token?: string;
+      wsUrl?: string;
+      roomName?: string;
+      livekitRoomName?: string;
+      identity?: string;
+    }>(
+      `${pikpamVoiceBaseUrl()}/token`,
+      pikpamToken,
+      {
+        method: 'POST',
+        body: {
+          roomName: roomSlug,
+          identity,
+          participantName: 'You',
+          agentName,
+          agentMetadata,
+          canPublish: true,
+          canSubscribe: true,
+          canPublishData: true,
+          ttlMinutes: 15,
+        },
+        timeoutMs: 15_000,
+      },
+      this.fetcher,
+    );
+
+    if (!minted.token || !minted.wsUrl) {
+      throw new VoiceProviderError('Pikpam voice service did not return a LiveKit room token.', 502, 'PIKPAM_TOKEN_INVALID');
+    }
+
+    const trackedRoom = minted.livekitRoomName || minted.roomName || roomSlug;
+    this.calls.set(id, {
+      id,
+      room: trackedRoom,
+      identity: minted.identity || identity,
+      mode: 'pikpam',
+      pikpamToken,
+      target: { ...target },
+      name,
+      expiresAt: Date.now() + 60 * 60_000,
+      responses: new Map(),
+      history: [],
+    });
+
+    return {
+      callId: id,
+      url: minted.wsUrl,
+      token: minted.token,
+      name,
+      mode: 'pikpam',
+    };
   }
   async end(id: string): Promise<void> {
     const call = this.calls.get(id); this.calls.delete(id);
+    if (!call) return;
+    if (call.mode === 'pikpam') {
+      const token = call.pikpamToken || resolvePikpamVoiceToken();
+      if (!token) return;
+      await fetchPikpamVoiceJson(
+        `${pikpamVoiceBaseUrl()}/rooms/${encodeURIComponent(call.room)}`,
+        token,
+        { method: 'DELETE', timeoutMs: 10_000 },
+        this.fetcher,
+      ).catch(() => undefined);
+      return;
+    }
     const config = liveKitConfiguration();
-    if (!call || !config) return;
+    if (!config) return;
     await new RoomServiceClient(config.url.replace(/^wss:/, 'https:'), config.apiKey, config.apiSecret, { requestTimeout: 10 }).deleteRoom(call.room).catch(() => undefined);
   }
   async close(): Promise<void> { await Promise.allSettled([...this.calls.keys()].map(id => this.end(id))); }

@@ -42,7 +42,7 @@ export const CONNECTED_APPS_JS = String.raw`
     };
   }
   function cwAppSignInError(error,agentId) {
-    var message='Could not start sign-in. Open Connections to check this app’s setup and retry.';
+    var message='Could not start sign-in. Open Settings › Connections to check this app’s setup and retry.';
     try{var data=JSON.parse(error.message);if(data.code==='COMPOSIO_SETUP_REQUIRED'){cwOpenConnections(agentId);message=data.error;}else if(data.code==='APP_SIGN_IN_FAILED')message=data.error;}catch(e){}
     toast(message,true);
   }

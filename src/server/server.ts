@@ -104,7 +104,7 @@ import { CoworkStore, MAX_ARTIFACT_BYTES, type CoworkBudgetData, type CoworkConv
 import { CoworkMemory } from '../cowork/memory.js';
 import type { AgentPersonality, AgentRole } from '../cowork/profile-config.js';
 import { runConversationTurn, runMissionSession, answerCoworkQuestion, reviewCoworkLearning, mentionNames, renderReferencedMessages, subAgentBridgeFor, type CoworkProgress, type CoworkTriggerMedia } from '../cowork/runner.js';
-import { GituVoiceCalls, liveKitConfiguration, decideVoiceTurn, type VoiceCall, type VoiceTarget, type VoiceContext } from '../voice/livekit.js';
+import { GituVoiceCalls, VoiceProviderError, liveKitConfiguration, resolvePikpamVoiceToken, decideVoiceTurn, type VoiceCall, type VoiceTarget, type VoiceContext } from '../voice/livekit.js';
 import { LiveKitCloudWorker } from '../voice/cloud-worker.js';
 import { buildSystemPrompt } from '../agent/prompt.js';
 import { MemoryStore } from '../memory/memory-store.js';
@@ -8031,9 +8031,19 @@ export class GituServer {
   }
 
   private async handleVoiceApi(req: http.IncomingMessage, res: http.ServerResponse, path: string, method: string): Promise<void> {
+    const headerPikpamToken = typeof req.headers['x-pikpam-token'] === 'string'
+      ? req.headers['x-pikpam-token'].trim() || undefined
+      : undefined;
     try {
       if (path === '/api/voice/config') {
-        if (method === 'GET') { this.sendJson(res, 200, { ...this.voiceCalls.status(), worker: this.voiceWorker.status() }); return; }
+        if (method === 'GET') {
+          const status = await this.voiceCalls.resolveStatus(headerPikpamToken);
+          const worker = status.mode === 'pikpam' && status.configured
+            ? { phase: 'ready', message: 'Pikpam Managed Voice is ready.' }
+            : this.voiceWorker.status();
+          this.sendJson(res, 200, { ...status, worker });
+          return;
+        }
         if (method === 'PUT') {
           if (!AppAuth.local(req) && !this.appAuth.secure(req)) { this.sendJson(res, 403, { error: 'Save LiveKit credentials locally or over HTTPS.' }); return; }
           await this.voiceWorker.close();
@@ -8044,11 +8054,26 @@ export class GituServer {
       }
       if (path === '/api/voice/prepare' && method === 'POST') {
         const config = liveKitConfiguration();
-        if (!config) { this.sendJson(res, 400, { error: 'Connect your LiveKit project first.' }); return; }
-        void this.voiceWorker.ensure(config).catch(() => undefined);
-        this.sendJson(res, 202, this.voiceWorker.status()); return;
+        if (config) {
+          void this.voiceWorker.ensure(config).catch(() => undefined);
+          this.sendJson(res, 202, this.voiceWorker.status());
+          return;
+        }
+        if (resolvePikpamVoiceToken(headerPikpamToken)) {
+          this.sendJson(res, 200, { phase: 'ready', message: 'Pikpam Managed Voice is ready.' });
+          return;
+        }
+        this.sendJson(res, 400, { error: 'Sign in with Pikpam or connect your LiveKit project first.' });
+        return;
       }
-      if (path === '/api/voice/worker' && method === 'GET') { this.sendJson(res, 200, this.voiceWorker.status()); return; }
+      if (path === '/api/voice/worker' && method === 'GET') {
+        if (!liveKitConfiguration() && resolvePikpamVoiceToken(headerPikpamToken)) {
+          this.sendJson(res, 200, { phase: 'ready', message: 'Pikpam Managed Voice is ready.' });
+          return;
+        }
+        this.sendJson(res, 200, this.voiceWorker.status());
+        return;
+      }
       if (path === '/api/voice/calls' && method === 'POST') {
         const body = await this.readBody(req);
         const target: VoiceTarget = { kind: body.kind === 'cowork' ? 'cowork' : 'main' };
@@ -8056,7 +8081,7 @@ export class GituServer {
         const context = this.voiceContext(target);
         const config = liveKitConfiguration();
         if (config) await this.voiceWorker.ensure(config);
-        this.sendJson(res, 201, await this.voiceCalls.start(target, context.name)); return;
+        this.sendJson(res, 201, await this.voiceCalls.start(target, context.name, { pikpamToken: headerPikpamToken })); return;
       }
       const match = path.match(/^\/api\/voice\/calls\/([\w-]+)(?:\/(reply|end))?$/);
       if (match) {
@@ -8084,6 +8109,10 @@ export class GituServer {
       }
       this.sendJson(res, 404, { error: 'Voice route not found.' });
     } catch (error) {
+      if (error instanceof VoiceProviderError) {
+        this.sendJson(res, error.statusCode, { error: error.message, code: error.code });
+        return;
+      }
       const failure = error as { name?: string; code?: string; details?: { kind?: string }; cause?: { code?: string }; stack?: string };
       const rawCode = typeof failure.cause?.code === 'string' ? failure.cause.code : typeof failure.code === 'string' ? failure.code : failure.details?.kind ?? failure.name ?? 'UNKNOWN';
       const code = /^[a-zA-Z0-9_]{1,64}$/.test(rawCode) ? rawCode : 'UNKNOWN';

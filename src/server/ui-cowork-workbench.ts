@@ -280,7 +280,7 @@ export const COWORK_WORKBENCH_JS = String.raw`
     { cmd: '/compact', label: 'Compact Context', desc: 'Summarize and trim older context to save tokens' },
     { cmd: '/handoff', label: 'Handoff Task', desc: 'Delegate or hand off current context to another teammate' },
     { cmd: '/compare', label: 'Compare Teammates', desc: 'Ask two teammates to weigh in on this prompt' },
-    { cmd: '/connect', label: 'Connected Apps', desc: 'Open app connections and credentials' },
+    { cmd: '/connect', label: 'Connections', desc: 'Manage apps, accounts, and custom APIs' },
     { cmd: '/model', label: 'Switch Model', desc: 'Edit active teammate provider or model' }
   ];
 

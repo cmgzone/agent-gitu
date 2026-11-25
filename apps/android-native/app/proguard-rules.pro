@@ -1,0 +1,2 @@
+-keepattributes *Annotation*
+-keep class dev.agentgitu.mobile.data.model.** { *; }

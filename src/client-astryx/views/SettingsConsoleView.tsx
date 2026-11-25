@@ -36,23 +36,6 @@ import {
 } from '../components/AppIcons';
 import {LocalLinkSection} from './LocalLinkSection';
 
-interface NavGroup {
-  title: string;
-  items: string[];
-}
-
-const NAV_GROUPS: NavGroup[] = [
-  {title: 'Console', items: ['overview', 'general', 'local-link', 'developer']},
-  {
-    title: 'AI & Integrations',
-    items: ['providers', 'connections', 'agents', 'skills', 'mcp'],
-  },
-  {
-    title: 'Workspace & Safety',
-    items: ['workspace', 'permissions', 'cowork', 'cron', 'files'],
-  },
-];
-
 const NATIVE_SECTIONS = new Set([
   'overview',
   'general',
@@ -63,23 +46,12 @@ const NATIVE_SECTIONS = new Set([
   'developer',
 ]);
 
-const SECTION_TITLES: Record<string, string> = {
-  overview: 'Overview',
-  general: 'General',
-  'local-link': 'Local PC Link',
-  providers: 'Providers',
-  connections: 'Connections',
-  agents: 'Specialist agents',
-  skills: 'Skills',
-  mcp: 'MCP servers',
-  cron: 'Schedules',
-  workspace: 'Workspace',
-  permissions: 'Permissions',
-  cowork: 'Cowork',
-  files: 'Files & storage',
-  developer: 'Developer',
-  project: 'Project',
-};
+function sectionFallbackLabel(id: string): string {
+  return id
+    .split('-')
+    .map(part => (part ? part[0]!.toUpperCase() + part.slice(1) : part))
+    .join(' ');
+}
 
 export function SettingsConsoleView({
   isOpen,
@@ -117,12 +89,32 @@ export function SettingsConsoleView({
   }>({});
   const [savingAction, setSavingAction] = useState(false);
 
-  const activeSection = section || 'overview';
-  const isLegacySection = !NATIVE_SECTIONS.has(activeSection);
-
   const settingItems = useMemo(() => {
     return host?.getWorkspaceSettingItems() ?? [];
   }, [host, isOpen]);
+
+  const resolveSection = useCallback(
+    (id: string) => {
+      const raw = String(id || '').trim().toLowerCase();
+      if (!raw) return 'overview';
+      const match = settingItems.find(
+        item => item.id === raw || (item.aliases || []).includes(raw),
+      );
+      return match?.id || raw;
+    },
+    [settingItems],
+  );
+
+  const onSelect = useCallback(
+    (sec: string) => {
+      setOverviewQuery('');
+      onSelectSection(resolveSection(sec));
+    },
+    [onSelectSection, resolveSection],
+  );
+
+  const activeSection = resolveSection(section);
+  const isLegacySection = !NATIVE_SECTIONS.has(activeSection);
 
   const loadNativeData = useCallback(async () => {
     if (!host) return;
@@ -202,15 +194,30 @@ export function SettingsConsoleView({
     host.renderLegacySettingsSection(activeSection, container);
   }, [isOpen, activeSection, isLegacySection, host]);
 
+  const visibleSettingItems = useMemo(
+    () => settingItems.filter(it => !it.hidden),
+    [settingItems],
+  );
+
+  const navGroups = useMemo(() => {
+    const groups = ['Console', 'AI & Integrations', 'Workspace & Safety'] as const;
+    return groups
+      .map(title => ({
+        title,
+        items: visibleSettingItems.filter(it => (it.group || 'More') === title).map(it => it.id),
+      }))
+      .filter(group => group.items.length > 0);
+  }, [visibleSettingItems]);
+
   const filteredOverviewItems = useMemo(() => {
     const q = overviewQuery.trim().toLowerCase();
-    if (!q) return settingItems;
+    if (!q) return visibleSettingItems;
     return settingItems.filter(it =>
-      `${it.title} ${it.detail} ${it.keywords || ''}`
+      `${it.title} ${it.detail} ${it.keywords || ''} ${it.id}`
         .toLowerCase()
         .includes(q),
     );
-  }, [settingItems, overviewQuery]);
+  }, [settingItems, visibleSettingItems, overviewQuery]);
 
   if (!isOpen) return null;
 
@@ -341,6 +348,23 @@ export function SettingsConsoleView({
     }
   };
 
+  const signOutWorkspace = async () => {
+    try {
+      try {
+        localStorage.removeItem('auth_token');
+      } catch {
+        // Storage may be unavailable; the server session still ends below.
+      }
+      await host?.api('/api/auth/logout', {
+        method: 'POST',
+        headers: {'content-type': 'application/json'},
+        body: '{}',
+      });
+    } finally {
+      window.location.replace('/auth');
+    }
+  };
+
   const saveWorkspaceFolder = async (nextPath: string) => {
     if (!host) return;
     setSavingAction(true);
@@ -380,7 +404,7 @@ export function SettingsConsoleView({
 
       <StackItem size="fill">
         <VStack gap={3}>
-          {NAV_GROUPS.map(group => (
+          {navGroups.map(group => (
             <VStack key={group.title} gap={1}>
               <Text type="supporting" color="secondary">
                 {group.title}
@@ -388,13 +412,14 @@ export function SettingsConsoleView({
               <List density="compact" hasDividers={false} edge="flush">
                 {group.items.map(id => {
                   const IconComp = SETTING_ICONS[id] || Settings;
+                  const item = settingItems.find(entry => entry.id === id);
                   return (
                     <ListItem
                       key={id}
-                      label={SECTION_TITLES[id] || id}
+                      label={item?.title || sectionFallbackLabel(id)}
                       startContent={<AppIcon icon={IconComp} size="sm" />}
                       isSelected={activeSection === id}
-                      onClick={() => onSelectSection(id)}
+                      onClick={() => onSelect(id)}
                     />
                   );
                 })}
@@ -403,7 +428,6 @@ export function SettingsConsoleView({
           ))}
         </VStack>
       </StackItem>
-
       <Card variant="muted" padding={3}>
         <VStack gap={1}>
           <Heading level={6}>Agent Gitu Console</Heading>
@@ -438,7 +462,8 @@ export function SettingsConsoleView({
                 <Text color="secondary">Console</Text>
                 <Text color="secondary">/</Text>
                 <Heading level={5}>
-                  {SECTION_TITLES[activeSection] || activeSection}
+                  {settingItems.find(item => item.id === activeSection)?.title ||
+                    sectionFallbackLabel(activeSection)}
                 </Heading>
               </HStack>
 
@@ -488,10 +513,10 @@ export function SettingsConsoleView({
                 <Selector
                   label="Section"
                   value={activeSection}
-                  onChange={onSelectSection}
-                  options={Object.entries(SECTION_TITLES).map(([v, l]) => ({
-                    value: v,
-                    label: l,
+                  onChange={onSelect}
+                  options={visibleSettingItems.map(item => ({
+                    value: item.id,
+                    label: item.title,
                   }))}
                   width="100%"
                 />
@@ -685,11 +710,11 @@ export function SettingsConsoleView({
                     <Card padding={4}>
                       <VStack gap={3}>
                         <HStack hAlign="between" vAlign="center">
-                          <Heading level={4}>PikRouter Account</Heading>
+                          <Heading level={4}>Pikpam account</Heading>
                           <Badge variant="success" label="Active auth" />
                         </HStack>
                         <Text color="secondary">
-                          Routes AI requests and unlocks cloud models across all teammates.
+                          Routes AI requests and unlocks cloud models across all teammates. Providers only chooses the default model; account actions live here.
                         </Text>
                         <HStack gap={2} wrap="wrap">
                           <Button
@@ -699,7 +724,7 @@ export function SettingsConsoleView({
                             onClick={() => host?.openTopup()}
                           />
                           <Button
-                            label="Continue with Pikpam"
+                            label="Switch Pikpam account"
                             variant="secondary"
                             size="sm"
                             onClick={() => host?.startOAuth()}
@@ -712,6 +737,12 @@ export function SettingsConsoleView({
                               onClose();
                               host?.openSetupWizard?.();
                             }}
+                          />
+                          <Button
+                            label="Sign out of workspace"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => void signOutWorkspace()}
                           />
                         </HStack>
                       </VStack>

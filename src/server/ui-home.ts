@@ -67,6 +67,21 @@ export const HOME_CSS = String.raw`
   .home-group-copy strong { font-size:12.5px; font-weight:550; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .home-group-copy small { font-size:10.5px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .home-group-empty { font-size:11.5px; color:var(--muted); margin:2px 10px 6px; line-height:1.45; }
+  .home-session-dd { margin:0; }
+  .home-session-dd > summary { display:flex; align-items:center; gap:10px; width:100%; min-height:36px; padding:7px 10px; color:var(--muted); border-radius:var(--radius-el,10px); font-size:13.5px; font-weight:500; cursor:pointer; list-style:none; transition:background-color .14s ease,color .14s ease; }
+  .home-session-dd > summary::-webkit-details-marker { display:none; }
+  .home-session-dd > summary::after { content:'›'; margin-left:4px; color:var(--faint); transform:rotate(90deg); transition:transform .14s ease; }
+  .home-session-dd[open] > summary::after { transform:rotate(-90deg); }
+  .home-session-dd > summary:hover { background:var(--hover); color:var(--text); }
+  .home-session-dd > summary svg { width:16px; height:16px; flex:none; color:var(--faint); }
+  .home-session-count { margin-left:auto; font-size:10.5px; color:var(--faint); font-weight:600; }
+  .home-session-count:empty { display:none; }
+  .home-session-list { display:grid; gap:1px; max-height:240px; overflow:auto; padding:2px 0 6px 12px; }
+  .home-sidebar .home-session-row { display:flex; align-items:center; gap:8px; width:100%; min-height:30px; padding:5px 8px; border-radius:8px; color:var(--muted); font-size:12px; font-weight:500; text-align:left; }
+  .home-sidebar .home-session-row:hover { background:var(--hover); color:var(--text); }
+  .home-sidebar .home-session-row.is-active { background:var(--selection); color:var(--text); font-weight:600; }
+  .home-session-label { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .home-session-empty { padding:4px 8px 6px; font-size:11.5px; color:var(--faint); margin:0; line-height:1.45; }
   .home-sidebar-foot { margin-top:auto; display:grid; gap:2px; padding:10px 10px 12px; border-top:1px solid var(--border); }
   .home-menu-trigger,.home-nav-backdrop { display:none; }
   .home-composer-wrap { width:min(760px,100%); margin:0; }
@@ -152,9 +167,16 @@ export const HOME_CSS = String.raw`
     .home-sky[data-sidebar-collapsed=true] .home-sidebar { width:64px; padding-left:8px; padding-right:8px; }
     .home-sky[data-sidebar-collapsed=true] .home-sidebar-brand { padding:0; justify-content:center; min-height:28px; }
     .home-sky[data-sidebar-collapsed=true] .home-sidebar-brand img,
+    .home-sky[data-sidebar-collapsed=true] .home-sidebar-brand-copy,
+    .home-sky[data-sidebar-collapsed=true] .home-sidebar-section-label,
+    .home-sky[data-sidebar-collapsed=true] .home-sidebar-scroll,
+    .home-sky[data-sidebar-collapsed=true] #cwPageSearch > span,
     .home-sky[data-sidebar-collapsed=true] .home-sidebar-brand > span,
     .home-sky[data-sidebar-collapsed=true] .home-sidebar > button > span,
     .home-sky[data-sidebar-collapsed=true] .home-sidebar nav button > span,
+    .home-sky[data-sidebar-collapsed=true] .home-sidebar .home-session-dd > summary > span,
+    .home-sky[data-sidebar-collapsed=true] .home-sidebar .home-session-dd > summary::after,
+    .home-sky[data-sidebar-collapsed=true] .home-sidebar .home-session-list,
     .home-sky[data-sidebar-collapsed=true] .home-sidebar-foot button > span,
     .home-sky[data-sidebar-collapsed=true] #homeSelectedAgentChip,
     .home-sky[data-sidebar-collapsed=true] #homeGroupsNav > span,
@@ -330,11 +352,32 @@ export const HOME_WORKSPACE_JS = PROJECT_PREFERENCES_JS + String.raw`
     var latest=project.latest,stamp=latest&&(latest.updatedAt||latest.finishedAt||latest.startedAt),date=stamp?new Date(stamp):null;
     return date&&Number.isFinite(date.getTime())?date.toLocaleDateString(undefined,{month:'short',day:'numeric'}):'';
   }
+  function homeRenderSidebarSessions(sessions) {
+    var target=$('homeSessionList'),count=$('homeSessionCount');
+    if(!target)return;
+    var runs=(sessions||[]).slice().sort(function(a,b){return homeSessionStamp(b).localeCompare(homeSessionStamp(a));});
+    if(count)count.textContent=runs.length?String(runs.length):'';
+    var html=runs.length?runs.map(function(run){
+      var status=homeRunStatus(run);
+      return '<button type="button" class="home-session-row'+(S.active===run.runId?' is-active':'')+'" data-home-session="'+esc(run.runId)+'" aria-current="'+(S.active===run.runId)+'" title="'+esc(run.goal||'Untitled task')+' · '+esc(status.label)+'"><span class="home-chat-dot '+status.kind+'" aria-hidden="true"></span><span class="home-session-label">'+esc(sessionTitle(run.goal)||'Untitled task')+'</span></button>';
+    }).join(''):'<p class="home-session-empty">No sessions yet. Start a task to see it here.</p>';
+    if(target._markup===html)return;
+    target._markup=html;target.innerHTML=html;
+    target.querySelectorAll('[data-home-session]').forEach(function(button){
+      button.onclick=function(){
+        var run=runs.find(function(item){return item.runId===button.getAttribute('data-home-session');});
+        if(!run)return;
+        homeCloseNavigation();
+        openRun(run.runId,{chatish:run.mode==='chat',mode:run.mode,projectPath:run.projectPath});
+      };
+    });
+  }
   function homeRenderProjects(target,managed,sessions) {
     if(!target.isConnected)return;
     var cwState=cwEnsure(),selAgentId=cwState.selectedAgentId;
     var selAgent=selAgentId&&(cwState.agents||[]).find(function(agent){return agent.id===selAgentId;});
     var visibleSessions=selAgentId?sessions.filter(function(run){return !run.coworkTask||run.coworkTask.agentId===selAgentId;}):sessions;
+    homeRenderSidebarSessions(visibleSessions);
     var all=homeBuildProjects(managed,visibleSessions,homeSidebarPath(visibleSessions)),archived=!!S.codeArchiveView;
     var visible=all.filter(function(project){return archived?!!(project.preference.archived||project.preference.hidden):!(project.preference.archived||project.preference.hidden);});
     var pinned=visible.filter(function(project){return project.preference.pinned;}),recent=visible.filter(function(project){return !project.preference.pinned;});
@@ -381,7 +424,7 @@ export const HOME_WORKSPACE_JS = PROJECT_PREFERENCES_JS + String.raw`
     modal.querySelector('[data-project-action]').focus();
   }
   function homeNavigationHtml(agent) {
-    return '<button type="button" class="home-menu-trigger" id="homeMenu" aria-label="Open navigation" aria-expanded="false" aria-controls="homeSidebar">'+'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>'+'</button><div class="home-nav-backdrop" id="homeNavBackdrop" aria-hidden="true"></div><aside class="home-sidebar" id="homeSidebar" aria-label="Code navigation"><div class="home-sidebar-brand"><img src="/brand/agent-gitu-mark.svg" alt=""><div class="home-sidebar-brand-copy"><span class="home-sidebar-brand-title">Agent Gitu</span><span class="home-sidebar-brand-sub">Workspace</span></div><button type="button" id="homeCollapse" aria-label="Collapse sidebar" aria-expanded="true" aria-controls="homeSidebar" title="Collapse sidebar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg></button></div><div class="home-sidebar-body"><button type="button" id="cwPageSearch" aria-label="Search workspace" title="Search workspace">'+cwIcon('search')+'<span>Search workspace</span></button><p class="home-sidebar-section-label">Workspace</p><nav aria-label="Code workspace">'+(S.active!=='home'?'<button type="button" id="homeNewChat">'+icon('pencil')+'<span>New task</span></button>':'')+'<button type="button" id="cwSessionsBtn" aria-label="Sessions" title="Sessions">'+cwIcon('chat')+'<span>Sessions</span></button><button type="button" id="homeAgentsBtn" aria-label="Agents" title="Switch agents (Grid)">'+cwIcon('users')+'<span>Agents</span><span class="home-agent-pill" id="homeSelectedAgentChip">'+(agent?esc(agent.name):'')+'</span></button><button type="button" id="homeGroupsBtn" aria-label="Groups" title="Connected groups">'+cwIcon('users')+'<span>Groups</span></button><button type="button" id="homeInboxBtn" aria-label="Inbox" title="Collaborative Inbox (Humans & Agents)">'+cwIcon('chat')+'<span>Inbox</span></button><button type="button" id="homeConnections" aria-label="Connections" title="Connections">'+cwIcon('link')+'<span>Connections</span></button></nav><div class="home-sidebar-scroll"><section class="home-groups" id="homeAgentGroupsSection" aria-labelledby="homeGroupsTitle"><div class="home-groups-heading"><h2 id="homeGroupsTitle"><button type="button" id="homeGroupsNav" aria-label="Groups" title="Connected groups">'+cwIcon('users')+'<span>Groups</span></button></h2><button type="button" id="homeNewGroup" aria-label="New group" title="New group">'+cwIcon('plus')+'</button></div><div class="home-group-list" id="homeAgentGroups"><p class="home-group-empty">Loading groups…</p></div></section><section class="home-projects" aria-labelledby="homeProjectsTitle"><div class="home-project-heading"><h2 id="homeProjectsTitle"><button type="button" id="homeProjectsNav" aria-label="Projects" title="Projects">'+cwIcon('folder')+'<span>Projects</span></button></h2><button type="button" id="homeNewProject" aria-label="New project" title="New project">'+cwIcon('plus')+'</button></div><div id="homeProjectCards"><p class="home-project-summary" role="status">Loading projects…</p></div><div class="home-projects-footer"><button type="button" id="homeViewProjects">View all projects</button><button type="button" id="homeArchivedProjects" aria-pressed="false">Archived &amp; hidden</button></div></section></div></div><div class="home-sidebar-foot"><button type="button" id="cwInfoBtn" aria-label="Profile" title="Profile">'+cwIcon('user')+'<span>Profile</span></button><button type="button" id="homeSettings" aria-label="Settings" title="Settings">'+icon('gear')+'<span>Settings</span></button></div></aside><div class="cw-page-nav"><nav class="cw-top-nav" aria-label="App modes"><button type="button" id="cwCurrentChat" aria-pressed="false"><span class="cw-chat-face" aria-hidden="true">'+(agent?cwAva(agent):'<span class="cw-ava"><img src="/characters/orb.png?v=opendots1" alt="" draggable="false"></span>')+'</span><span>Cowork</span></button><button type="button" id="cwHomeBtn" aria-pressed="true">'+cwIcon('home')+'<span>Code</span></button></nav></div>';
+    return '<button type="button" class="home-menu-trigger" id="homeMenu" aria-label="Open navigation" aria-expanded="false" aria-controls="homeSidebar">'+'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>'+'</button><div class="home-nav-backdrop" id="homeNavBackdrop" aria-hidden="true"></div><aside class="home-sidebar" id="homeSidebar" aria-label="Code navigation"><div class="home-sidebar-brand"><img src="/brand/agent-gitu-mark.svg" alt=""><div class="home-sidebar-brand-copy"><span class="home-sidebar-brand-title">Agent Gitu</span><span class="home-sidebar-brand-sub">Workspace</span></div><button type="button" id="homeCollapse" aria-label="Collapse sidebar" aria-expanded="true" aria-controls="homeSidebar" title="Collapse sidebar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg></button></div><div class="home-sidebar-body"><button type="button" id="cwPageSearch" aria-label="Search workspace" title="Search workspace">'+cwIcon('search')+'<span>Search workspace</span></button><p class="home-sidebar-section-label">Workspace</p><nav aria-label="Code workspace">'+(S.active!=='home'?'<button type="button" id="homeNewChat">'+icon('pencil')+'<span>New task</span></button>':'')+'<details class="home-session-dd" id="homeSessionsDropdown"><summary id="cwSessionsBtn" aria-label="Sessions" title="Sessions">'+cwIcon('chat')+'<span>Sessions</span><span class="home-session-count" id="homeSessionCount"></span></summary><div class="home-session-list" id="homeSessionList"><p class="home-session-empty">Loading sessions…</p></div></details><button type="button" id="homeAgentsBtn" aria-label="Agents" title="Switch agents (Grid)">'+cwIcon('users')+'<span>Agents</span><span class="home-agent-pill" id="homeSelectedAgentChip">'+(agent?esc(agent.name):'')+'</span></button><button type="button" id="homeGroupsBtn" aria-label="Groups" title="Connected groups">'+cwIcon('users')+'<span>Groups</span></button><button type="button" id="homeInboxBtn" aria-label="Inbox" title="Collaborative Inbox (Humans & Agents)">'+cwIcon('chat')+'<span>Inbox</span></button><button type="button" id="homeConnections" aria-label="Connections" title="Connections">'+cwIcon('link')+'<span>Connections</span></button></nav><div class="home-sidebar-scroll"><section class="home-groups" id="homeAgentGroupsSection" aria-labelledby="homeGroupsTitle"><div class="home-groups-heading"><h2 id="homeGroupsTitle"><button type="button" id="homeGroupsNav" aria-label="Groups" title="Connected groups">'+cwIcon('users')+'<span>Groups</span></button></h2><button type="button" id="homeNewGroup" aria-label="New group" title="New group">'+cwIcon('plus')+'</button></div><div class="home-group-list" id="homeAgentGroups"><p class="home-group-empty">Loading groups…</p></div></section><section class="home-projects" aria-labelledby="homeProjectsTitle"><div class="home-project-heading"><h2 id="homeProjectsTitle"><button type="button" id="homeProjectsNav" aria-label="Projects" title="Projects">'+cwIcon('folder')+'<span>Projects</span></button></h2><button type="button" id="homeNewProject" aria-label="New project" title="New project">'+cwIcon('plus')+'</button></div><div id="homeProjectCards"><p class="home-project-summary" role="status">Loading projects…</p></div><div class="home-projects-footer"><button type="button" id="homeViewProjects">View all projects</button><button type="button" id="homeArchivedProjects" aria-pressed="false">Archived &amp; hidden</button></div></section></div></div><div class="home-sidebar-foot"><button type="button" id="cwInfoBtn" aria-label="Profile" title="Profile">'+cwIcon('user')+'<span>Profile</span></button><button type="button" id="homeSettings" aria-label="Settings" title="Settings">'+icon('gear')+'<span>Settings</span></button></div></aside><div class="cw-page-nav"><nav class="cw-top-nav" aria-label="App modes"><button type="button" id="cwCurrentChat" aria-pressed="false"><span class="cw-chat-face" aria-hidden="true">'+(agent?cwAva(agent):'<span class="cw-ava"><img src="/characters/orb.png?v=opendots1" alt="" draggable="false"></span>')+'</span><span>Cowork</span></button><button type="button" id="cwHomeBtn" aria-pressed="true">'+cwIcon('home')+'<span>Code</span></button></nav></div>';
   }
   function homeCloseNavigation() {
     var menu=$('homeMenu');if(!menu)return;var root=menu.closest('.home-sky');if(root)root.dataset.navOpen='false';menu.setAttribute('aria-expanded','false');menu.setAttribute('aria-label','Open navigation');
@@ -398,7 +441,6 @@ export const HOME_WORKSPACE_JS = PROJECT_PREFERENCES_JS + String.raw`
     root.addEventListener('keydown',function(event){if(root.dataset.navOpen==='true'&&event.key==='Escape'){event.preventDefault();close();menu.focus();}});
     root.addEventListener('focusout',function(event){if(root.dataset.navOpen==='true'&&event.relatedTarget&&!$('homeSidebar').contains(event.relatedTarget)&&event.relatedTarget!==menu)close();});
     $('homeProjectsNav').onclick=function(){close();wsOpen('main','Projects');};
-    $('cwSessionsBtn').onclick=function(){close();wsOpen('main','Sessions');};
     if($('homeAgentsBtn'))$('homeAgentsBtn').onclick=function(){homeCaptureDrafts();close();if(typeof cwOpenAgentSwitcherModal==='function')cwOpenAgentSwitcherModal();else wsOpen('cowork','Agents');};
     if($('homeGroupsBtn'))$('homeGroupsBtn').onclick=function(){close();wsOpen('main','Groups');};
     if($('homeInboxBtn'))$('homeInboxBtn').onclick=function(){homeCaptureDrafts();close();if(window.__gituAstryx&&typeof window.__gituAstryx.openInbox==='function')window.__gituAstryx.openInbox();else window.location.assign('/inbox');};

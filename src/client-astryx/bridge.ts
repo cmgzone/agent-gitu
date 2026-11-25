@@ -84,7 +84,10 @@ export interface WorkspaceSettingItem {
   title: string;
   detail: string;
   icon?: string;
+  group?: string;
   keywords?: string;
+  aliases?: string[];
+  hidden?: boolean;
 }
 
 export interface MemoryEntryItem {

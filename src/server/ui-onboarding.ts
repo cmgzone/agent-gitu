@@ -653,12 +653,12 @@ export const ONBOARDING_JS = String.raw`
           if (copy) copy.textContent = 'Use an address your phone can reach, such as your computer’s private network IP. In the desktop app, see Settings → General → Phone access.';
           return;
         }
-        var link = 'agentgitu://connect?server=' + encodeURIComponent(address);
+        var link = typeof window !== 'undefined' && typeof window.gituPhoneConnectLink === 'function' ? window.gituPhoneConnectLink(address) : 'agentgitu://connect?server=' + encodeURIComponent(address);
         image.hidden = false;
-        image.src = '/api/qr?text=' + encodeURIComponent(link);
+        image.src = typeof window !== 'undefined' && typeof window.gituPhoneQrSrc === 'function' ? window.gituPhoneQrSrc(address) : '/api/qr?text=' + encodeURIComponent(link);
         image.alt = 'QR code to open ' + address + ' in Agent Gitu';
         if (label) label.textContent = address;
-        if (copy) copy.textContent = 'Scan this code with your phone camera to open Agent Gitu there. Work stays on this server.';
+        if (copy) copy.textContent = 'Scan this code with your phone camera to open Agent Gitu there. Work stays on this server. Local HTTP is unencrypted; use trusted Wi-Fi.';
       };
       var pageLocation = typeof location !== 'undefined' ? location : null;
       var loopback = !pageLocation || /^(localhost|127\.0\.0\.1|\[::1\])$/i.test(pageLocation.hostname);
@@ -670,14 +670,14 @@ export const ONBOARDING_JS = String.raw`
       };
       phoneQr(phoneOrigin);
       loadPhoneAccess().then(function (status) {
-        var address = status && status.addresses && status.addresses[0];
+        var address = typeof window !== 'undefined' && typeof window.gituPhoneAccessibleAddress === 'function' ? window.gituPhoneAccessibleAddress(status && status.addresses) : status && status.addresses && status.addresses[0];
         if (address && $('setupPhoneQr')) phoneQr(address);
       }).catch(function () {});
       if ($('setupPhoneRefresh')) $('setupPhoneRefresh').onclick = function () {
         var button = this;
         button.disabled = true;
         loadPhoneAccess().then(function (status) {
-          var address = status && status.addresses && status.addresses[0];
+          var address = typeof window !== 'undefined' && typeof window.gituPhoneAccessibleAddress === 'function' ? window.gituPhoneAccessibleAddress(status && status.addresses) : status && status.addresses && status.addresses[0];
           phoneQr(address || phoneOrigin);
         }).catch(function () {
           phoneQr(phoneOrigin);

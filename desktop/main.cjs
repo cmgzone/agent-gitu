@@ -731,6 +731,28 @@ function createMainWindow() {
   const appUrl = `http://127.0.0.1:${boundPort}`;
   let currentUrl = appUrl;
   const themedWindow = mainWindow;
+  // Allow microphone/audio permissions for LiveKit voice calls on trusted local & cloud Agent Gitu origins.
+  try {
+    const ses = mainWindow.webContents.session;
+    ses.setPermissionCheckHandler((_wc, permission, requestingOrigin) => {
+      if (permission === 'media' || permission === 'audioCapture' || permission === 'microphone') {
+        try { return cloudAgentManager.isTrustedOrigin(new URL(requestingOrigin).origin); } catch { return false; }
+      }
+      return false;
+    });
+    ses.setPermissionRequestHandler((wc, permission, callback, details) => {
+      if (permission === 'media' || permission === 'audioCapture' || permission === 'microphone') {
+        const originUrl = (details && details.requestingUrl) || (wc && wc.getURL && wc.getURL()) || '';
+        try {
+          if (cloudAgentManager.isTrustedOrigin(new URL(originUrl).origin)) {
+            callback(true);
+            return;
+          }
+        } catch {}
+      }
+      callback(false);
+    });
+  } catch { /* best-effort permission wiring */ }
   require('./project-folder.cjs').registerProjectFolder(themedWindow.webContents, appUrl, (folderPath) => shell.openPath(folderPath));
   require('./app-sign-in.cjs').registerAppSignIn(themedWindow.webContents, (origin) => cloudAgentManager.isTrustedOrigin(origin), (url) => shell.openExternal(url));
   require('./app-sign-in.cjs').registerAuthBrowser(themedWindow.webContents, (origin) => cloudAgentManager.isTrustedOrigin(origin), (url) => shell.openExternal(url));

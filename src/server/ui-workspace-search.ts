@@ -1,3 +1,5 @@
+import { WORKSPACE_SETTINGS_CATALOG } from '../shared/workspace-settings.js';
+
 /** Full-page discovery keeps the live conversation mounted beneath it. */
 export const WORKSPACE_SEARCH_CSS = String.raw`
   :root { --brand-blue:#0064e0; --brand-on-blue:#fff; }
@@ -725,24 +727,43 @@ export const WORKSPACE_SEARCH_CSS = String.raw`
   }
 `;
 
+const WORKSPACE_SETTINGS_ROWS = JSON.stringify(
+  WORKSPACE_SETTINGS_CATALOG.map((item) => [
+    item.id,
+    item.icon,
+    item.title,
+    item.detail,
+    item.group,
+    item.keywords || '',
+    (item.aliases || []).join(','),
+    item.hidden ? 'hidden' : '',
+  ]),
+);
+
 export const WORKSPACE_SEARCH_JS = String.raw`
   var workspaceSearchState=null;
-  var WORKSPACE_SETTINGS=[
-    ['files','folder','Files & storage','Choose attachment size limits and manage file transfers'],
-    ['general','gear','General','Appearance, defaults, reasoning, and autonomy'],['local-link','link','Local PC Link','Direct Cloud-to-Local agent link (no Pikpam relay)'],['cowork','users','Cowork','Team preferences, learning, and skill approvals'],
-    ['providers','layers','Providers','Models, API keys, and provider accounts'],['connections','plug','Connections','Apps, accounts, and service permissions'],
-    ['permissions','shield','Permissions','Workspace access and action approvals'],['workspace','folder','Workspace','Project locations, files, and constraints'],
-    ['project','search','Project','Inspect your current project'],['agents','users','Specialist agents','Coding specialists and orchestration'],
-    ['skills','bolt','Skills','Find, create, and manage reusable skills'],['mcp','plug','MCP servers','Tools and server connections'],
-    ['cron','clock','Schedules','Scheduled tasks and recurring heartbeats'],['developer','gear','Developer','Diagnostics and development preferences']
-  ];
+  var WORKSPACE_SETTINGS=${WORKSPACE_SETTINGS_ROWS};
+  function wsResolveSettingId(id) {
+    var raw = String(id || '').trim().toLowerCase();
+    if (!raw) return 'overview';
+    var match = WORKSPACE_SETTINGS.find(function(item){ return item[0] === raw; });
+    if (match) return match[0];
+    match = WORKSPACE_SETTINGS.find(function(item){ return String(item[6] || '').split(',').map(function(v){ return v.trim(); }).filter(Boolean).indexOf(raw) >= 0; });
+    return match ? match[0] : raw;
+  }
+  function wsSettingsSections(includeHidden) {
+    return WORKSPACE_SETTINGS.filter(function(item){ return includeHidden || item[7] !== 'hidden'; }).map(function(item){
+      return { id:item[0], icon:item[1], title:item[2], detail:item[3], group:item[4] || 'More', keywords:item[5] || '', aliases:String(item[6] || '').split(',').map(function(v){ return v.trim(); }).filter(Boolean), hidden:item[7] === 'hidden' };
+    });
+  }
+  if (typeof window !== 'undefined') window.GITU_WORKSPACE_SETTINGS = wsSettingsSections(true);
   function wsNormalize(value) {return String(value||'').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase();}
   function wsIcon(name) {return icon(name)||cwIcon(name)||actionSvg(name);}
   function wsFilter(items,query,category) {
     var terms=wsNormalize(query).trim().split(/\s+/).filter(Boolean);
     return items.filter(function(item){var text=wsNormalize(item.title+' '+item.detail+' '+(item.keywords||''));return (!category||category==='all'||item.category===category)&&terms.every(function(term){return text.indexOf(term)>=0;});});
   }
-  function wsSettingsItems() {return WORKSPACE_SETTINGS.map(function(item){return {category:'Settings',title:item[2],detail:item[3],icon:item[1],action:'settings',id:item[0]};});}
+  function wsSettingsItems() {return wsSettingsSections(true).map(function(item){return {category:'Settings',title:item.title,detail:item.detail,icon:item.icon,action:'settings',id:item.id,keywords:item.keywords||''};});}
   function wsSelectedAgentId(data) {
     var cw=typeof cwEnsure==='function'?cwEnsure():{};
     var sel=cw.selectedAgentId;
@@ -801,9 +822,9 @@ export const WORKSPACE_SEARCH_JS = String.raw`
       item('Tools','New session','Start a fresh conversation with one or more teammates','plus','new-cowork-session');
       item('Tools','Create agent','Choose a character, purpose, personality, and tools','plus','new-agent');
       item('Tools','New group chat','Bring teammates together','users','new-group');
-      item('Tools','Connections','Manage apps and accounts for your team','plug','connections');
+      item('Tools','Connections','Manage apps, accounts, and custom APIs','plug','connections');
       item('Tools','Learning mode','Memory, team preferences, and skill approvals','bolt','settings','cowork');
-      item('Tools','Lock app','Require authentication before returning','lock','lock');
+      item('Tools','Sign out of workspace','End this session on this device and return to sign-in','lock','lock');
       item('Tools','Main agent','Return to your coding workspace','terminal','home');
       (data.agents||[]).forEach(function(agent){item('Agents',agent.name,agent.tagline||agent.description||'AI teammate','users','agent',agent.id,{agent:agent,aux:'profile',keywords:agent.description});});
       (data.conversations||[]).forEach(function(conv){
@@ -1099,7 +1120,7 @@ export const WORKSPACE_SEARCH_JS = String.raw`
     else if(item.action==='new-project')newProject();
     else if(item.action==='project'){homeSelectProject(item.project);openHome();}
     else if(item.action==='tool')openToolPanel(item.id);
-    else if(item.action==='settings')openSettings(item.id);
+    else if(item.action==='settings')openSettings(typeof wsResolveSettingId==='function'?wsResolveSettingId(item.id):item.id);
     else if(item.action==='skill'){S.skillQuery=item.id;openSettings('skills');}
     else if(item.action==='job')openSettings('cron');
     else if(item.action==='cowork')openCowork();
@@ -1128,7 +1149,7 @@ export const WORKSPACE_SEARCH_JS = String.raw`
     var rawModel=(S&&S.sel&&S.sel.model)||'';
     var modelLabel=rawModel?rawModel.replace(/^pikrouter::/i,''):'PikRouter default';
     var teamLabel=agents.length?agents.length+' '+(agents.length===1?'teammate':'teammates'):'No teammates yet';
-    body.innerHTML='<div class="ws-dir-head"><div><p class="ws-context" style="margin-bottom:6px;text-align:left">Console overview</p><h1 style="margin:0 0 4px;text-align:left">Workspace overview</h1><p class="ws-dir-sub" style="margin:0;text-align:left">Manage your workspace, AI models, connected apps, team capabilities, and security.</p></div><div class="ws-dir-head-actions"><button type="button" class="btn ghost" data-setting="providers">AI Providers</button><button type="button" class="btn dark" data-setting="connections">Connect apps</button></div></div>'+
+    body.innerHTML='<div class="ws-dir-head"><div><p class="ws-context" style="margin-bottom:6px;text-align:left">Console overview</p><h1 style="margin:0 0 4px;text-align:left">Workspace overview</h1><p class="ws-dir-sub" style="margin:0;text-align:left">Manage your workspace, AI models, connections, team capabilities, and security.</p></div><div class="ws-dir-head-actions"><button type="button" class="btn ghost" data-setting="providers">Providers</button><button type="button" class="btn dark" data-setting="connections">Connections</button></div></div>'+
       '<div class="ws-overview-kpis">'+
         '<button type="button" class="ws-kpi-card" data-setting="workspace"><span class="ws-kpi-head">'+icon('folder')+'<span>Active project</span></span><strong>'+esc(projLabel)+'</strong><small>Workspace →</small></button>'+
         '<button type="button" class="ws-kpi-card" data-setting="providers"><span class="ws-kpi-head">'+icon('layers')+'<span>Default model</span></span><strong>'+esc(modelLabel)+'</strong><small>Providers →</small></button>'+
@@ -1137,30 +1158,21 @@ export const WORKSPACE_SEARCH_JS = String.raw`
       '<label class="ws-search-field">'+icon('search')+'<input type="search" id="settingsDirectoryQuery" aria-label="Search settings" placeholder="Search settings, tools, and preferences…"></label><div id="settingsDirectoryResults"></div>';
     if(body.querySelectorAll)body.querySelectorAll('.ws-dir-head [data-setting], .ws-overview-kpis [data-setting]').forEach(function(button){button.onclick=function(){openSettings(button.dataset.setting);};});
     var input=$('settingsDirectoryQuery');
-    var SECTIONS=[
-      ['Core Console',['general','providers','connections']],
-      ['Team & Automation',['cowork','agents','skills','mcp','cron']],
-      ['Workspace & Access',['workspace','project','files','permissions','developer']]
-    ];
     function rowHtml(item){return '<div class="ws-result"><button class="ws-result-action" data-setting="'+item.id+'"><span class="ws-result-icon">'+icon(item.icon)+'</span><span class="ws-result-copy"><strong>'+esc(item.title)+'</strong><small>'+esc(item.detail)+'</small></span><span class="ws-row-chev" aria-hidden="true">&#8250;</span></button></div>';}
     function render(){
-      var q=(input.value||'').trim(),all=wsSettingsItems(),target=$('settingsDirectoryResults');
+      var q=(input.value||'').trim(),all=wsSettingsSections(true),target=$('settingsDirectoryResults');
       if(q){
-        var items=wsFilter(all,q,'all');
+        var items=wsFilter(all.map(function(item){return {category:'Settings',title:item.title,detail:item.detail,icon:item.icon,action:'settings',id:item.id,keywords:item.keywords||''};}),q,'all');
         target.innerHTML='<section class="ws-group"><h2>Preferences and tools</h2><div class="ws-result-list">'+items.map(rowHtml).join('')+'</div>'+(items.length?'':'<p class="ws-empty">No matching settings.</p>')+'</section>';
       }else{
-        var seen={};
-        var html=SECTIONS.map(function(group){
-          var list=group[1].map(function(id){return all.find(function(item){return item.id===id;});}).filter(Boolean);
-          list.forEach(function(item){seen[item.id]=true;});
-          return list.length?'<section class="ws-group"><h2>'+group[0]+'</h2><div class="ws-result-list">'+list.map(rowHtml).join('')+'</div></section>':'';
+        var groups=['Console','AI & Integrations','Workspace & Safety','More'];
+        target.innerHTML=groups.map(function(group){
+          var list=all.filter(function(item){ return !item.hidden && item.group===group; });
+          return list.length?'<section class="ws-group"><h2>'+group+'</h2><div class="ws-result-list">'+list.map(rowHtml).join('')+'</div></section>':'';
         }).join('');
-        var extras=all.filter(function(item){return !seen[item.id];});
-        if(extras.length)html+='<section class="ws-group"><h2>More</h2><div class="ws-result-list">'+extras.map(rowHtml).join('')+'</div></section>';
-        target.innerHTML=html||'<p class="ws-empty">No matching settings.</p>';
       }
       target.querySelectorAll('[data-setting]').forEach(function(button){button.onclick=function(){openSettings(button.dataset.setting);};});
     }
-    input.oninput=render;render();
+    input.oninput=render;render();input.focus({preventScroll:true});
   }
 `;

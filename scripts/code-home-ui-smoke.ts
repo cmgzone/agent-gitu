@@ -120,8 +120,9 @@ try {
     if ((await page.evaluate(() => (window as any).previewCalls)).at(-1)?.action !== 'settings') throw Error('Settings did not retain its action');
     if (width <= 800) await page.getByRole('button', { name: 'Open navigation', exact: true }).click();
     await page.locator('#cwSessionsBtn').click();
-    await page.getByRole('searchbox', { name: 'Search workspace', exact: true }).waitFor();
-    await page.getByRole('button', { name: 'Close search', exact: true }).click();
+    await page.locator('#homeSessionList').waitFor();
+    if (!(await page.locator('#homeSessionsDropdown').evaluate(element => (element as HTMLDetailsElement).open))) throw Error('Sessions dropdown did not open');
+    await page.locator('#cwSessionsBtn').click();
     if (width <= 800) await page.getByRole('button', { name: 'Open navigation', exact: true }).click();
     await page.getByRole('button', { name: 'Profile', exact: true }).click();
     if ((await page.evaluate(() => (window as any).previewCalls)).at(-1)?.kind !== 'profile') throw Error('Profile did not route to Cowork');

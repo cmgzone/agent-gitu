@@ -154,8 +154,8 @@ export const WORKSPACE_SEARCH_CSS = String.raw`
   .sb .foot { padding:10px 12px; background:var(--sidebar); }
   .project-chip { min-height:38px; border-radius:var(--radius-el,12px); border-color:var(--border); background:var(--card); }
   .sb .newbtn:focus-visible,.sb .navitem:focus-visible,.sb .proj:focus-visible,.sb .chat:focus-visible { outline-offset:1px; }
-  /* Pikpam Cloud Console tokens & layout for all non-Cowork-chat surfaces (Cowork chat #cw:not(.page-open) stays untouched). */
-  :root:not([data-theme="light"]) :is(.settings,.workspace-search,.home.home-sky,.code-workspace,.run.run-chat,.sb,.cw.page-open) {
+  /* Pikpam Cloud Console tokens for Settings and legacy sidebar; Code and Cowork share the exact same Pikpam Neutral tokens. */
+  :root:not([data-theme="light"]) :is(.settings,.workspace-search,.sb,.cw.page-open) {
     --bg:#09090b;
     --sidebar:#0b0c10;
     --card:#111318;
@@ -184,21 +184,16 @@ export const WORKSPACE_SEARCH_CSS = String.raw`
     --shadow:0 1px 2px rgba(0,0,0,.4);
     --shadow-float:0 16px 40px rgba(0,0,0,.6);
   }
-  :root:not([data-theme="light"]) .home.home-sky::before,
-  :root:not([data-theme="light"]) .run.run-chat.code-workspace::before {
-    background:radial-gradient(ellipse 68% 42% at 50% -6%,rgba(59,130,246,.07),transparent 72%);
+  :root:not([data-theme="light"]) .cw.page-open .cw-top-nav {
+    background:var(--card2); border:1px solid var(--border); box-shadow:none; backdrop-filter:none; -webkit-backdrop-filter:none;
   }
-  :root:not([data-theme="light"]) :is(.home-sky,.run-chat,.cw.page-open) .cw-top-nav {
-    background:#111318; border:1px solid rgba(255,255,255,.09); box-shadow:none; backdrop-filter:none; -webkit-backdrop-filter:none;
+  :root:not([data-theme="light"]) .cw.page-open .cw-top-nav button { color:var(--muted); }
+  :root:not([data-theme="light"]) .cw.page-open .cw-top-nav button:hover { color:var(--text); background:var(--hover)!important; }
+  :root:not([data-theme="light"]) .cw.page-open .cw-top-nav button[aria-pressed=true] {
+    background:#ffffff!important; color:#000000!important; box-shadow:none;
   }
-  :root:not([data-theme="light"]) :is(.home-sky,.run-chat,.cw.page-open) .cw-top-nav button { color:#9ca3af; }
-  :root:not([data-theme="light"]) :is(.home-sky,.run-chat,.cw.page-open) .cw-top-nav button:hover { color:#f4f4f5; background:#1a1e29!important; }
-  :root:not([data-theme="light"]) :is(.home-sky,.run-chat,.cw.page-open) .cw-top-nav button[aria-pressed=true] {
-    background:#1d222e!important; color:#ffffff!important; border:1px solid rgba(255,255,255,.11); box-shadow:none;
-  }
-  :root:not([data-theme="light"]) .home-cta-btn { background:#111318; border:1px solid rgba(255,255,255,.08); border-radius:12px; }
-  :root:not([data-theme="light"]) .home-cta-btn:hover { background:#161922; border-color:rgba(255,255,255,.16); }
-  :root:not([data-theme="light"]) :is(.home-sky,.run-chat) .composer { background:#111318; border:1px solid rgba(255,255,255,.11); box-shadow:0 8px 30px rgba(0,0,0,.35); }
+  :root:not([data-theme="light"]) .home-cta-btn { background:var(--card2); border:1px solid var(--border); border-radius:16px; }
+  :root:not([data-theme="light"]) .home-cta-btn:hover { background:var(--hover); border-color:var(--border2); }
   :root:not([data-theme="light"]) .cw.page-open { background:#09090b; }
   :root:not([data-theme="light"]) .cw.page-open .cw-profile-page { background:#09090b; }
   :root:not([data-theme="light"]) .cw.page-open .cw-sky-card { background:#141923; border:1px solid rgba(255,255,255,.10); border-radius:14px; box-shadow:none; }
@@ -856,55 +851,28 @@ export const WORKSPACE_SEARCH_JS = String.raw`
     if(mode==='main')(data.jobs||[]).forEach(function(job){item('Schedules',job.goal,'Every '+job.every,'clock','job',job.id,{job:job});});
     return items;
   }
-  function wsClose(refocus) {
-    var state=workspaceSearchState;if(!state)return;
-    workspaceSearchState=null;clearTimeout(state.timer);clearTimeout(state.refreshTimer);state.revision++;
+  function wsClose() {
     var page=$('workspaceSearch');if(page)page.remove();
-    state.surfaces.forEach(function(surface){if(surface.node.isConnected)surface.node.inert=surface.inert;});
-    document.body.classList.remove('workspace-search-open');document.title=state.title;
-    if(refocus!==false&&state.focus&&state.focus.isConnected&&state.focus.focus)state.focus.focus({preventScroll:true});
+    workspaceSearchState=null;
   }
   function wsOpen(mode,category) {
-    if(workspaceSearchState){$('workspaceSearchInput').focus();return;}
     if(typeof cwSaveDraft==='function')cwSaveDraft();
-    var state={mode:mode||((S.active==='cowork')?'cowork':'main'),query:'',category:category||'all',items:[],hits:[],limit:8,loading:true,failures:[],revision:0,timer:null,focus:document.activeElement,title:document.title,surfaces:[]};
-    ['shell','settings'].forEach(function(name){var node=name==='shell'?document.querySelector('.shell'):$('settings');if(node){state.surfaces.push({node:node,inert:node.inert});node.inert=true;}});
-    workspaceSearchState=state;document.title='Search — Gitu';document.body.classList.add('workspace-search-open');
-    var page=document.createElement('section');page.id='workspaceSearch';page.className='workspace-search';page.setAttribute('role','dialog');page.setAttribute('aria-modal','true');page.setAttribute('aria-labelledby','workspaceSearchTitle');
-    page.innerHTML='<button class="workspace-search-close" id="workspaceSearchClose" aria-label="Close search">'+icon('x')+'</button><main class="workspace-search-main"><h1 id="workspaceSearchTitle" class="cw-visually-hidden">Search '+(state.mode==='cowork'?'Cowork':'main agent')+'</h1><p class="ws-context">'+(state.mode==='cowork'?'Your team, tools, and conversations':'Your projects, tools, and conversations')+'</p><label class="ws-search-field">'+icon('search')+'<input id="workspaceSearchInput" type="search" autocomplete="off" placeholder="'+(state.mode==='cowork'?'Search agents, chats, skills, and tools…':'Search sessions, skills, schedules, and tools…')+'" aria-label="Search workspace"><kbd>Esc</kbd></label><div class="ws-filters" id="workspaceSearchFilters" aria-label="Search categories"></div><p class="ws-status" id="workspaceSearchStatus" role="status" aria-live="polite"></p><div id="workspaceSearchResults"></div></main>';
-    document.body.appendChild(page);$('workspaceSearchClose').onclick=function(){wsClose();};
-    var input=$('workspaceSearchInput');input.oninput=function(){state.query=input.value;state.limit=8;state.hits=[];state.recallFailed=false;state.revision++;clearTimeout(state.timer);wsRender(state);if(state.mode==='cowork'&&state.query.trim().length>=2)state.timer=setTimeout(function(){wsRecall(state);},300);};
-    page.onkeydown=function(event){if(event.key==='Escape'){event.preventDefault();event.stopPropagation();wsClose();return;}
-      if(event.key==='ArrowDown'&&event.target===input){var first=page.querySelector('.ws-result-action');if(first){event.preventDefault();first.focus();}}
-      if(event.key==='Tab'){var controls=Array.from(page.querySelectorAll('button:not(:disabled),input'));var first=controls[0],last=controls[controls.length-1];if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}}
-    };
-    if(page.animate&&!chatMotionReduced())page.animate([{opacity:0,filter:'blur(5px)'},{opacity:1,filter:'blur(0)'}],{duration:280,easing:'cubic-bezier(.16,1,.3,1)'});
-    input.focus({preventScroll:true});wsRender(state);wsLoad(state);
-  }
-  async function wsLoad(state) {
-    var loadRevision=state.loadRevision=(state.loadRevision||0)+1;
-    var routes=state.mode==='cowork'?[['agents','/api/cowork/agents'],['conversations','/api/cowork/conversations']]:[['runs','/api/runs'],['projects','/api/projects'],['skills','/api/skills'],['jobs','/api/cron'],['agents','/api/cowork/agents'],['conversations','/api/cowork/conversations']];
-    var results=await Promise.allSettled(routes.map(function(route){return api(route[1]);}));if(workspaceSearchState!==state||state.loadRevision!==loadRevision)return;
-    var data={},previousFailures=state.failures;state.failures=[];results.forEach(function(result,index){var key=routes[index][0];if(result.status==='rejected'){if(state.mode==='cowork'||(key!=='agents'&&key!=='conversations'))state.failures.push(key);return;}var value=result.value||{};
-      if(key==='agents'){data.agents=value.agents||[];data.skills=data.skills||value.availableSkills||[];var cw=cwEnsure();cw.agents=data.agents;if(value.availableSkills)cw.skills=value.availableSkills;}
-      else if(key==='runs')data.runs=Array.isArray(value)?value:[];
-      else {data[key]=value[key]||[];if(key==='conversations')data.followUps=value.followUps||[];}
-    });
-    if(Array.isArray(data.conversations))cwEnsure().convs=data.conversations;
-    state.rawData=data;
-    var items=wsBuildItems(state.mode,data,state),changed=state.loading||JSON.stringify(items)!==JSON.stringify(state.items)||JSON.stringify(previousFailures)!==JSON.stringify(state.failures);
-    state.items=items;state.loading=false;if(changed)wsRender(state);wsScheduleRefresh(state);
-  }
-  function wsScheduleRefresh(state) {
-    if(state.mode!=='cowork'||workspaceSearchState!==state)return;
-    clearTimeout(state.refreshTimer);
-    state.refreshTimer=setTimeout(function(){if(workspaceSearchState!==state)return;if(state.category==='Schedules')wsLoad(state);else wsScheduleRefresh(state);},10000);
-  }
-  async function wsRecall(state) {
-    var revision=state.revision,query=state.query.trim();
-    try{var data=await api('/api/cowork/search?q='+encodeURIComponent(query)+'&limit=20');if(workspaceSearchState!==state||state.revision!==revision)return;
-      state.hits=(data.hits||[]).map(function(hit){return {category:'Messages',title:hit.conversationTitle||'Conversation',detail:hit.snippet||'',icon:'chat',action:'conversation',id:hit.conversationId,threadId:hit.threadId};});wsRender(state);
-    }catch(e){if(workspaceSearchState===state&&state.revision===revision){state.recallFailed=true;wsRender(state);}}
+    var targetMode=mode||((typeof S!=='undefined'&&S&&S.active==='cowork')?'cowork':'main');
+    if(category==='Schedules'){if(typeof openSettings==='function')openSettings('cron');return;}
+    if(category==='Skills'){if(typeof openSettings==='function')openSettings('skills');return;}
+    if(category==='Settings'){if(typeof openSettings==='function')openSettings('overview');return;}
+    if(category==='Agents'){if(typeof cwOpenAgentSwitcherModal==='function')cwOpenAgentSwitcherModal();else if(typeof openSettings==='function')openSettings('cowork');return;}
+    if(category==='Projects'){var skyP=typeof document!=='undefined'&&document.querySelector&&document.querySelector('.home-sky');if(skyP&&skyP.dataset)skyP.dataset.navOpen='true';var viewAll=$('homeViewProjects');if(viewAll&&typeof viewAll.click==='function')viewAll.click();return;}
+    if(category==='Groups'){
+      if(targetMode==='cowork'&&typeof cwSessionsModal==='function'){cwSessionsModal('groups');return;}
+      var skyG=typeof document!=='undefined'&&document.querySelector&&document.querySelector('.home-sky');if(skyG&&skyG.dataset)skyG.dataset.navOpen='true';
+      var gBtn=$('homeGroupsBtn');if(gBtn&&typeof gBtn.click==='function'){gBtn.click();return;}
+    }
+    if(targetMode==='cowork'&&typeof cwSessionsModal==='function'){cwSessionsModal(category==='Groups'?'groups':'sessions');return;}
+    var sky=typeof document!=='undefined'&&document.querySelector&&document.querySelector('.home-sky');if(sky&&sky.dataset)sky.dataset.navOpen='true';
+    var dd=$('homeSessionsDropdown');if(dd)dd.open=true;
+    var sInput=$('homeSidebarSearch');if(sInput&&typeof sInput.focus==='function'){sInput.focus({preventScroll:true});return;}
+    if(typeof openSettings==='function')openSettings('overview');
   }
   function wsParseGoalText(goal,fallbackTitle){
     var text=String(goal||'').trim();
@@ -1033,85 +1001,6 @@ export const WORKSPACE_SEARCH_JS = String.raw`
     '</div>';
   }
 
-  function wsRender(state) {
-    if(workspaceSearchState!==state)return;
-    var filters=state.mode==='cowork'?['all','Sessions','Groups','Threads','Agents','Tools','Skills','Schedules','Activity','Settings','Messages']:['all','Sessions','Groups','Projects','Tools','Skills','Schedules','Settings'];
-    $('workspaceSearchFilters').innerHTML=filters.map(function(filter){return '<button data-ws-filter="'+filter+'" aria-pressed="'+(state.category===filter)+'">'+(filter==='all'?'All':filter)+'</button>';}).join('');
-    $('workspaceSearchFilters').querySelectorAll('[data-ws-filter]').forEach(function(button){button.onclick=function(){state.category=button.dataset.wsFilter;state.limit=30;wsRender(state);var next=$('workspaceSearchFilters').querySelector('[data-ws-filter="'+state.category+'"]');if(next)next.focus();if(state.mode==='cowork'&&state.category==='Schedules')wsLoad(state);};});
-    var base=wsFilter(state.items,state.query,state.category),hits=(!state.category||state.category==='all'||state.category==='Messages')?state.hits:[],items=base.concat(hits);
-    state.rendered=items;
-    var groups=new Map();items.forEach(function(item,index){if(!groups.has(item.category))groups.set(item.category,[]);groups.get(item.category).push({item:item,index:index});});
-    var order=state.mode==='cowork'?['Tools','Sessions','Groups','Threads','Agents','Messages','Activity','Skills','Schedules','Settings']:['Tools','Sessions','Groups','Projects','Skills','Schedules','Settings'];
-    var activeAgent=wsSelectedAgent(state.rawData);
-    var scopeStatus=(activeAgent&&(state.category==='Sessions'||state.category==='Groups'))?(!state.showAllAgents?(state.category==='Groups'?'Showing groups connected to '+activeAgent.name:'Showing sessions for '+activeAgent.name):'Showing all '+(state.category==='Groups'?'groups':'sessions')):'';
-    $('workspaceSearchStatus').textContent=state.loading?'Loading your workspace…':state.failures.length?'Some '+state.failures.join(', ')+' could not load. You can retry.':state.recallFailed?'Message search is unavailable. Other results are still available.':state.query?items.length+' result'+(items.length===1?'':'s'):scopeStatus;
-    var limit=(!state.query&&state.category==='all')?Math.min(state.limit||8,4):(state.limit||8);
-    var html=order.filter(function(group){return groups.has(group);}).map(function(group){var rows=groups.get(group);return '<section class="ws-group" data-ws-group="'+group+'"><h2>'+group+'<span>'+rows.length+'</span></h2><div class="ws-result-list" data-ws-group="'+group+'">'+rows.slice(0,limit).map(function(row){var item=row.item;return group==='Schedules'?wsScheduleCardHtml(row,item):'<div class="ws-result"><button class="ws-result-action" data-ws-result="'+row.index+'"><span class="ws-result-icon" aria-hidden="true">'+(item.agent?cwAva(item.agent):wsIcon(item.icon))+'</span><span class="ws-result-copy"><strong>'+esc(item.title)+'</strong><small>'+esc(item.detail)+'</small></span></button>'+(item.aux?'<button class="ws-aux" data-ws-aux="'+row.index+'" aria-label="'+esc(item.aux==='profile'?'Profile for '+item.title:'Delete session '+item.title)+'">'+(item.aux==='profile'?'Profile':actionSvg('trash'))+'</button>':'')+'</div>';}).join('')+'</div>'+(rows.length>limit?'<button class="ws-more" data-ws-more="'+group+'">Show '+(rows.length-limit)+' more</button>':'')+'</section>';}).join('');
-    if(!items.length&&!state.loading){
-      var emptyMsg='No matches. Try a session title, agent name, skill, or setting.';
-      if(state.mode==='cowork'&&state.category==='Schedules'&&!state.query)emptyMsg=state.failures.includes('conversations')?'Schedules could not load. Retry loading.':'No scheduled tasks yet. Ask a teammate to schedule a reminder, or use Schedule in the chat’s + menu.';
-      else if(state.category==='Groups'&&!state.query)emptyMsg=(activeAgent&&!state.showAllAgents)?('No groups connected to '+esc(activeAgent.name)+' yet.'):'No groups created yet.';
-      else if(state.category==='Sessions'&&!state.query&&activeAgent&&!state.showAllAgents)emptyMsg='No sessions for '+esc(activeAgent.name)+' yet. Start a new session or view all sessions.';
-      html='<div class="ws-empty">'+emptyMsg+'</div>';
-    }
-    var actionBtns='';
-    if(state.category==='Sessions'&&(state.mode==='cowork'||activeAgent))actionBtns+='<button class="btn dark" id="workspaceSearchNewSession">'+icon('plus')+'New session</button>';
-    if(state.category==='Groups')actionBtns+='<button class="btn dark" id="workspaceSearchNewGroup">'+icon('plus')+'New group</button>';
-    if(activeAgent&&(state.category==='Sessions'||state.category==='Groups'))actionBtns+='<button type="button" class="ws-scope-toggle" id="workspaceSearchScopeToggle">'+(state.showAllAgents?esc('Only '+activeAgent.name):'Show all')+'</button>';
-    if(actionBtns)html='<div class="ws-actions-bar">'+actionBtns+'</div>'+html;
-    if(state.failures.length)html='<button class="btn" id="workspaceSearchRetry">'+icon('retry')+'Retry loading</button>'+html;
-    var target=$('workspaceSearchResults');target.innerHTML=html;
-    target.querySelectorAll('[data-ws-result]').forEach(function(button){button.onclick=function(){wsActivate(state.rendered[Number(button.dataset.wsResult)]);};});
-    target.querySelectorAll('[data-ws-more]').forEach(function(button){button.onclick=function(){state.limit+=30;wsRender(state);};});
-    target.querySelectorAll('[data-ws-aux]').forEach(function(button){button.onclick=function(){var item=state.rendered[Number(button.dataset.wsAux)];if(item.aux==='profile')wsActivate({action:'profile',id:item.id});else if(item.aux==='delete-conversation')wsDeleteConversation(state,item,button);else wsDeleteRun(state,item,button);};});
-    target.querySelectorAll('[data-ws-sc-toggle]').forEach(function(button){
-      button.onclick=function(event){
-        event.stopPropagation();event.preventDefault();
-        var card=button.closest('.ws-schedule-card');if(!card)return;
-        var inst=card.querySelector('.ws-sc-instructions');if(!inst)return;
-        var expanded=button.getAttribute('aria-expanded')==='true';
-        var next=!expanded;
-        button.setAttribute('aria-expanded',String(next));
-        button.classList.toggle('expanded',next);
-        var label=button.querySelector('.ws-sc-toggle-label');
-        if(label)label.textContent=next?'Hide instructions':'View instructions';
-        var chevron=button.querySelector('.ws-sc-chevron');
-        if(chevron)chevron.textContent=next?'▾':'▸';
-        if(next){
-          inst.hidden=false;inst.style.maxHeight='0px';inst.style.opacity='0';
-          void inst.offsetHeight;
-          inst.style.maxHeight=Math.min(inst.scrollHeight+30,320)+'px';
-          inst.style.opacity='1';
-        } else {
-          inst.style.maxHeight='0px';inst.style.opacity='0';
-          setTimeout(function(){if(button.getAttribute('aria-expanded')==='false')inst.hidden=true;},240);
-        }
-      };
-    });
-    if($('workspaceSearchNewSession'))$('workspaceSearchNewSession').onclick=function(){wsActivate({action:'new-cowork-session'});};
-    if($('workspaceSearchNewGroup'))$('workspaceSearchNewGroup').onclick=function(){wsActivate({action:'new-group',agentId:activeAgent&&activeAgent.id});};
-    if($('workspaceSearchScopeToggle'))$('workspaceSearchScopeToggle').onclick=function(){state.showAllAgents=!state.showAllAgents;state.items=wsBuildItems(state.mode,state.rawData||{runs:[],conversations:cwEnsure().convs||[],agents:cwEnsure().agents||[]},state);wsRender(state);};
-    if($('workspaceSearchRetry'))$('workspaceSearchRetry').onclick=function(){state.loading=true;wsRender(state);wsLoad(state);};
-  }
-  function wsDeleteRun(state,item,button) {
-    if(button.dataset.confirmDelete!=='true'){button.dataset.confirmDelete='true';button.textContent='Delete?';button.setAttribute('aria-label','Confirm deleting '+item.title);return;}
-    button.disabled=true;api('/api/runs/'+encodeURIComponent(item.id),{method:'DELETE'}).then(function(){
-      if(S.active===item.id){wsClose(false);openHome();return;}if(workspaceSearchState!==state)return;
-      state.items=state.items.filter(function(result){return result.action!=='run'||result.id!==item.id;});renderSidebar();wsRender(state);wsLoad(state);
-    }).catch(function(error){if(button.isConnected){button.disabled=false;button.dataset.confirmDelete='false';button.textContent='Retry';}toast(error.message,true);});
-  }
-  function wsDeleteConversation(state,item,button) {
-    if(button.disabled)return;
-    if(button.dataset.confirmDelete!=='true'){button.dataset.confirmDelete='true';button.textContent='Delete?';button.setAttribute('aria-label','Confirm deleting session '+item.title+' and all its threads and messages');return;}
-    button.disabled=true;
-    return cwDeleteSession(item.id).then(function(){
-      if(typeof homeRenderSidebarAgentState==='function')homeRenderSidebarAgentState();
-      if(workspaceSearchState!==state)return;
-      if(state.rawData&&Array.isArray(state.rawData.conversations))state.rawData.conversations=state.rawData.conversations.filter(function(c){return c.id!==item.id;});
-      state.items=state.items.filter(function(result){return !(['conversation','conversation-schedule'].includes(result.action)&&result.id===item.id)&&!(result.action==='followup'&&result.conversationId===item.id);});
-      state.hits=state.hits.filter(function(result){return result.id!==item.id;});wsRender(state);wsLoad(state);
-    }).catch(function(error){if(button.isConnected){button.disabled=false;button.dataset.confirmDelete='false';button.textContent='Retry';}toast(error.message,true);});
-  }
   function wsActivate(item) {
     if(!item)return;wsClose(false);
     if($('settings')&&!$('settings').hidden)closeSettings();

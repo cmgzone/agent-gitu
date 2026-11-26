@@ -81,8 +81,7 @@ describe('Shared main-agent chat and Home motion', () => {
     expect(f.context.openHome).toHaveBeenCalledOnce();
     expect(f.elements.follow.focus).toHaveBeenCalledWith({ preventScroll: true });
     expect(f.context.cwEnterWorkspace).toHaveBeenCalledWith('profile', 'gitu');
-    expect(f.context.wsOpen.mock.calls).toEqual([['main'], ['main']]);
-    expect(f.context.toggleMobileNav).not.toHaveBeenCalled();
+    expect(f.context.toggleMobileNav).toHaveBeenCalledTimes(2);
     expect(f.context.openToolPanel).toHaveBeenCalledWith('state');
     expect(f.context.api).not.toHaveBeenCalled();
   });

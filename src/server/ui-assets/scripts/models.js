@@ -110,7 +110,7 @@
       '<div class="thumbs" id="thumbs" hidden></div>' +
       '<div class="composer-bar">' + controlsHtml() + '<button class="send" id="send" title="Start task" aria-label="Start task"' + (S.modelsLoaded && hasAnyProviderKey() ? '' : ' disabled') + '>&#8593;</button></div></div></div>' +
       '</main></div>';
-    $('cwHomeBtn').onclick=function(){$('goal').focus();};$('cwCurrentChat').onclick=function(){cwEnterWorkspace('chat',cwEnsure().selectedAgentId);};$('cwInfoBtn').onclick=function(){homeCloseNavigation();var agent=cwProfileAgent()||cwEnsure().agents[0];cwEnterWorkspace(agent?'profile':'new',agent&&agent.id);};$('homeSettings').onclick=function(){homeCloseNavigation();openSettings('overview');};$('cwPageSearch').onclick=function(){homeCloseNavigation();wsOpen('main');};homeBindNavigation();homeLoadProjects();homeLoadProfile();
+    $('cwHomeBtn').onclick=function(){$('goal').focus();};$('cwCurrentChat').onclick=function(){cwEnterWorkspace('chat',cwEnsure().selectedAgentId);};$('cwInfoBtn').onclick=function(){homeCloseNavigation();var agent=cwProfileAgent()||cwEnsure().agents[0];cwEnterWorkspace(agent?'profile':'new',agent&&agent.id);};$('homeSettings').onclick=function(){homeCloseNavigation();openSettings('overview');};homeBindNavigation();homeLoadProjects();homeLoadProfile();
     var ta = $('goal');
     ta.value = S.draft;
     ta.addEventListener('input', function () { homeSaveDraft(ta.value); ta.style.height = 'auto'; ta.style.height = Math.min(180, ta.scrollHeight) + 'px'; });

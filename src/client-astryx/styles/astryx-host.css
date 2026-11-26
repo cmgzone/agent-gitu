@@ -65,8 +65,408 @@ body:has(.gitu-astryx-dashboard-host) #mascotWrap {
   -webkit-app-region: no-drag;
 }
 
+/* ---- Unified Cowork-style Inbox shell ---- */
+.gitu-inbox-shell {
+  background: var(--bg, var(--color-background-body));
+  padding: 10px;
+  box-sizing: border-box;
+}
+
+.gitu-inbox-canvas {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  background: var(--card, var(--color-background-card));
+  border: 1px solid var(--border, var(--color-border));
+  border-radius: 24px;
+  box-shadow: var(--shadow, var(--shadow-low));
+  overflow: hidden;
+}
+
+.gitu-inbox-canvas[data-chat-active='true']::before,
+.gitu-inbox-canvas[data-chat-active='true']::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.gitu-inbox-canvas[data-chat-active='true']::before {
+  top: 0;
+  height: 64px;
+  background: linear-gradient(to bottom, var(--card, var(--color-background-card)), transparent);
+}
+
+.gitu-inbox-canvas[data-chat-active='true']::after {
+  bottom: 0;
+  height: 164px;
+  background: linear-gradient(to top, var(--card, var(--color-background-card)) 52%, transparent);
+}
+
+.gitu-inbox-topbar {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 10;
+  height: 0;
+  pointer-events: none;
+}
+
+.gitu-inbox-left-slot {
+  position: absolute;
+  left: 12px;
+  top: calc(12px + env(safe-area-inset-top, 0px));
+  pointer-events: auto;
+}
+
+.gitu-inbox-right-slot {
+  position: absolute;
+  right: 12px;
+  top: calc(12px + env(safe-area-inset-top, 0px));
+  pointer-events: auto;
+}
+
+.gitu-inbox-circle-btn {
+  width: 36px !important;
+  height: 36px !important;
+  min-width: 36px !important;
+  min-height: 36px !important;
+  padding: 0 !important;
+  border-radius: var(--radius-full, 9999px) !important;
+  border: 1px solid var(--border, var(--color-border)) !important;
+  background: var(--card, var(--color-background-card)) !important;
+  color: var(--muted, var(--color-text-secondary)) !important;
+  box-shadow: var(--shadow, var(--shadow-low)) !important;
+}
+
+.gitu-inbox-circle-btn:hover {
+  background: var(--hover, var(--color-overlay-hover)) !important;
+  border-color: var(--border2, var(--color-border-emphasized)) !important;
+  color: var(--text, var(--color-text-primary)) !important;
+}
+
+.gitu-inbox-mode-wrap {
+  position: absolute;
+  top: calc(12px + env(safe-area-inset-top, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  pointer-events: auto;
+  max-width: calc(100% - 104px);
+}
+
+.gitu-inbox-mode-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--border, var(--color-border));
+  border-radius: var(--radius-full, 9999px);
+  background: var(--card2, var(--color-background-muted));
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.gitu-inbox-mode-nav::-webkit-scrollbar {
+  display: none;
+}
+
+.gitu-inbox-mode-btn {
+  min-height: 34px !important;
+  padding: 0 14px !important;
+  border-radius: var(--radius-full, 9999px) !important;
+  border: 0 !important;
+  background: transparent !important;
+  color: var(--muted, var(--color-text-secondary)) !important;
+  font-size: 12.5px !important;
+  font-weight: 500 !important;
+  white-space: nowrap;
+}
+
+.gitu-inbox-mode-btn:hover {
+  background: var(--hover, var(--color-overlay-hover)) !important;
+  color: var(--text, var(--color-text-primary)) !important;
+}
+
+.gitu-inbox-mode-btn[aria-pressed='true'] {
+  background: var(--dark, var(--color-text-primary)) !important;
+  color: var(--bg, var(--color-background-body)) !important;
+  font-weight: 600 !important;
+}
+
+.gitu-inbox-member-pill {
+  padding: 6px 14px;
+  border-radius: var(--radius-full, 9999px);
+  border: 1px solid var(--border, var(--color-border));
+  background: var(--card2, var(--color-background-muted));
+}
+
+.gitu-inbox-msgs {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  overflow-y: auto;
+  scrollbar-width: none;
+  padding: calc(88px + env(safe-area-inset-top, 0px)) max(24px, calc((100% - 660px) / 2)) calc(176px + env(safe-area-inset-bottom, 0px));
+  box-sizing: border-box;
+}
+
+.gitu-inbox-msgs::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.gitu-inbox-row {
+  min-width: 0;
+}
+
+.gitu-inbox-row.is-me {
+  align-self: flex-end;
+  max-width: 82%;
+}
+
+.gitu-inbox-row.is-other {
+  align-self: flex-start;
+  max-width: min(100%, 540px);
+}
+
+.gitu-inbox-row[data-grouped='true'] {
+  margin-top: -6px;
+}
+
+.gitu-inbox-avatar-slot[data-hidden='true'] {
+  visibility: hidden;
+  height: 0;
+  overflow: hidden;
+}
+
+.gitu-inbox-bubble {
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.gitu-inbox-bubble.is-me {
+  background: var(--selected, var(--color-accent-muted));
+  border: 1px solid var(--border, var(--color-border));
+  border-radius: 20px;
+  border-bottom-right-radius: 6px;
+  padding: 10px 15px;
+}
+
+.gitu-inbox-bubble.is-other {
+  background: var(--card2, var(--color-background-surface));
+  border: 1px solid var(--border, var(--color-border));
+  border-radius: 18px;
+  border-top-left-radius: 6px;
+  padding: 12px 16px;
+  box-shadow: var(--shadow, var(--shadow-low));
+}
+
+.gitu-inbox-bubble.is-private {
+  border-style: dashed;
+  border-color: var(--color-accent-primary);
+  background: var(--color-background-card);
+}
+
+.gitu-inbox-composer[data-private='true'] {
+  border-color: var(--color-accent-primary);
+  border-style: dashed;
+  background: var(--color-background-card);
+}
+
+.gitu-inbox-msg-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.55;
+}
+
+.gitu-inbox-sys {
+  align-self: center;
+  padding: 4px 12px;
+  border-radius: var(--radius-full, 9999px);
+  background: var(--card2, var(--color-background-muted));
+  border: 1px solid var(--border, var(--color-border));
+}
+
+.gitu-inbox-composer-wrap {
+  position: absolute;
+  inset: auto 0 0;
+  z-index: 3;
+  padding: 12px max(24px, calc((100% - 660px) / 2)) calc(16px + env(safe-area-inset-bottom, 0px));
+  pointer-events: none;
+  box-sizing: border-box;
+}
+
+.gitu-inbox-composer-wrap > * {
+  pointer-events: auto;
+}
+
+.gitu-inbox-pill-btn {
+  min-height: 28px !important;
+  height: 28px !important;
+  padding: 0 10px !important;
+  border-radius: var(--radius-full, 9999px) !important;
+  border: 1px solid var(--border, var(--color-border)) !important;
+  background: var(--card2, var(--color-background-muted)) !important;
+  color: var(--text, var(--color-text-primary)) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+}
+
+.gitu-inbox-pill-btn:hover {
+  border-color: var(--border2, var(--color-border-emphasized)) !important;
+  background: var(--hover, var(--color-overlay-hover)) !important;
+}
+
+.gitu-inbox-pill-btn[data-alert='true'] {
+  border-color: var(--color-accent-primary) !important;
+  background: var(--color-accent-muted) !important;
+  color: var(--color-text-primary) !important;
+}
+
+.gitu-inbox-thinking {
+  align-self: flex-start;
+  padding: 6px 12px;
+  border-radius: var(--radius-full, 9999px);
+  background: var(--card2, var(--color-background-muted));
+  border: 1px solid var(--border, var(--color-border));
+}
+
+.gitu-inbox-note-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+.gitu-inbox-composer {
+  border: 1.5px solid var(--border2, var(--color-border-emphasized));
+  border-radius: var(--radius-chat, 28px);
+  background: var(--card2, var(--color-background-muted));
+  box-shadow: var(--shadow-float, var(--shadow-med));
+  padding: 8px 10px 8px 14px;
+  transition: background-color 180ms ease, border-color 180ms ease;
+}
+
+.gitu-inbox-composer:focus-within {
+  background: var(--card, var(--color-background-card));
+  border-color: var(--dark, var(--color-text-primary));
+}
+
+.gitu-inbox-composer textarea {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  outline: none !important;
+  resize: none !important;
+  min-height: 36px !important;
+  max-height: 148px !important;
+  padding: 6px 0 !important;
+}
+
+.gitu-inbox-composer [class*='astryx-text-area'],
+.gitu-inbox-composer [data-astryx-field] {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.gitu-inbox-send-btn {
+  width: 32px !important;
+  height: 32px !important;
+  min-width: 32px !important;
+  min-height: 32px !important;
+  padding: 0 !important;
+  border-radius: var(--radius-full, 9999px) !important;
+  background: var(--dark, var(--color-text-primary)) !important;
+  color: var(--bg, var(--color-background-body)) !important;
+  border: 0 !important;
+  flex: none;
+}
+
+.gitu-inbox-send-btn:disabled {
+  opacity: 0.35;
+}
+
+.gitu-inbox-hero {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  padding: 88px 24px 48px;
+  box-sizing: border-box;
+}
+
+.gitu-inbox-admin-scroll {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  overflow-y: auto;
+  padding: calc(88px + env(safe-area-inset-top, 0px)) max(24px, calc((100% - 760px) / 2)) 48px;
+  box-sizing: border-box;
+}
+
+.gitu-inbox-cowork-face {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+  display: block;
+}
+
 @media (max-width: 720px) {
   .gitu-desktop-agent-bar {
     display: none;
+  }
+
+  .gitu-inbox-shell {
+    padding: 0;
+  }
+
+  .gitu-inbox-canvas {
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .gitu-inbox-canvas[data-chat-active='true']::before,
+  .gitu-inbox-canvas[data-chat-active='true']::after {
+    display: none;
+  }
+
+  .gitu-inbox-left-slot {
+    left: 8px;
+    top: calc(10px + env(safe-area-inset-top, 0px));
+  }
+
+  .gitu-inbox-right-slot {
+    right: 8px;
+    top: calc(10px + env(safe-area-inset-top, 0px));
+  }
+
+  .gitu-inbox-mode-wrap {
+    top: calc(10px + env(safe-area-inset-top, 0px));
+    max-width: calc(100% - 96px);
+  }
+
+  .gitu-inbox-mode-btn {
+    padding: 0 10px !important;
+    font-size: 12px !important;
+  }
+
+  .gitu-inbox-msgs {
+    padding: calc(76px + env(safe-area-inset-top, 0px)) 16px calc(164px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .gitu-inbox-composer-wrap {
+    padding: 8px 12px calc(12px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .gitu-inbox-row.is-me {
+    max-width: 92%;
+  }
+
+  .gitu-inbox-admin-scroll {
+    padding: calc(76px + env(safe-area-inset-top, 0px)) 16px 36px;
   }
 }

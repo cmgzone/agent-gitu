@@ -64,19 +64,30 @@ import { CoworkSubAgents, CoworkSubAgentRunner, type SubAgentModelRequest, type 
 import {
   INBOX_MEMBER_COOKIE,
   InboxStore,
+  sanitizeInboxRoomForMember,
+  sanitizeInboxTaskForMember,
   type InboxAgentTriggerMode,
   type InboxCustomPerms,
   type InboxMember,
+  type InboxMessageVisibility,
+  type InboxNoteKind,
+  type InboxNotesVisibility,
+  type InboxTaskKind,
+  type InboxTaskStatus,
   type InboxToolPolicy,
 } from '../cowork/inbox-store.js';
 import {
+  buildCoworkInboxAwareness,
   createPikpamWorkspaceInvite,
   resolveOwnerPikpamKey,
   resolvePikpamApiBase,
   revokePikpamWorkspaceInvite,
   revokePikpamWorkspaceMember,
   runInboxAgentReply,
+  runInboxSilentWatch,
+  runInboxSubAgent,
   selectInboxRespondingAgents,
+  summarizeInboxMeeting,
   verifyPikpamWorkspaceTicket,
 } from '../cowork/inbox-runtime.js';
 import type { CodingEvent } from '../coding/events.js';
@@ -2219,6 +2230,7 @@ export class GituServer {
   private inboxStore?: InboxStore;
   private readonly inboxStreams = new Map<http.ServerResponse, { role: 'owner' | 'member'; memberId?: string }>();
   private readonly inboxActiveTurns = new Set<string>();
+  private readonly inboxWatchingRooms = new Set<string>();
 
   private inbox(): InboxStore {
     if (!this.inboxStore) {
@@ -2227,13 +2239,112 @@ export class GituServer {
     return this.inboxStore;
   }
 
-  private publishInbox(roomId?: string): void {
+  private inboxActiveAgentIdsForRoom(roomId: string): string[] {
+    const prefix = `${roomId}:`;
+    const active: string[] = [];
+    for (const key of this.inboxActiveTurns) {
+      if (key.startsWith(prefix)) active.push(key.slice(prefix.length));
+    }
+    return active;
+  }
+
+  private async startInboxCodingRun(input: {
+    roomId: string;
+    taskId: string;
+    title: string;
+    goal: string;
+    projectPath?: string;
+    mode?: 'agent' | 'fast';
+    agent?: CoworkAgent;
+  }): Promise<{ runId: string; projectPath?: string }> {
+    const requestedPath = input.projectPath?.trim() || this.projectRoot() || this.config.cwd;
+    const mode = input.mode === 'fast' ? 'fast' : 'agent';
+    let llm = this.config.llm;
+    let resolvedInfo: { providerId: string; model: string; toolMode?: 'auto' | 'native' | 'structured_text' | 'text' } | undefined;
+    if (!llm) {
+      const resolved = resolveLlm({
+        provider: input.agent?.provider,
+        model: input.agent?.model,
+        workingDirectory: requestedPath,
+      });
+      llm = resolved.client;
+      resolvedInfo = { providerId: resolved.providerId, model: resolved.model, toolMode: resolved.toolMode };
+    }
+    const autoApprove = codingAutoApprove(undefined);
+    const autonomy = resolveAutonomy(loadWorkspaceSettings().autonomy);
+    const session: RunSession = {
+      runId: shortId('run'),
+      goal: input.goal,
+      status: 'running',
+      startedAt: nowIso(),
+      taskId: undefined,
+      provider: resolvedInfo?.providerId ?? input.agent?.provider,
+      model: resolvedInfo?.model ?? input.agent?.model,
+      actionProtocolMode: resolvedInfo?.toolMode,
+      requestedProvider: resolvedInfo?.providerId ?? input.agent?.provider,
+      requestedModel: resolvedInfo?.model ?? input.agent?.model,
+      activeProvider: resolvedInfo?.providerId ?? input.agent?.provider,
+      activeModel: resolvedInfo?.model ?? input.agent?.model,
+      projectPath: requestedPath,
+      taggedFolders: [],
+      writableFolders: [],
+      mode,
+      autoApprove,
+      events: [],
+      nativeFrames: [],
+      subscribers: new Set(),
+      approvals: new Map(),
+      files: [],
+    };
+    this.sessions.set(session.runId, session);
+    this.saveRegistry();
+    this.pushEvent(session, `user-msg ${input.goal}`);
+    this.recordOwnerDeployment(session, input.goal);
+
+    const store = this.inbox();
+    void this.executeRun(session, llm, {
+      goal: input.goal,
+      mode,
+      review: false,
+      projectPath: requestedPath,
+      autoApprove,
+      autoLearn: true,
+      model: resolvedInfo?.model ?? input.agent?.model,
+      actionProtocolMode: resolvedInfo?.toolMode,
+      autonomy,
+    }).finally(() => {
+      const finished = this.sessions.get(session.runId);
+      const status = finished?.status;
+      const summary =
+        finished?.report?.summary?.trim() ||
+        finished?.error?.trim() ||
+        (status === 'completed'
+          ? 'Code run completed.'
+          : status
+            ? `Code run finished (${status}).`
+            : 'Code run finished.');
+      const nextTaskStatus: InboxTaskStatus =
+        status === 'completed' ? 'done' : status === 'running' ? 'in_progress' : 'todo';
+      store.updateTask(input.roomId, input.taskId, {
+        status: nextTaskStatus,
+        delegationSummary: summary.slice(0, 1400),
+      });
+      this.publishInbox(input.roomId);
+    });
+
+    return { runId: session.runId, projectPath: requestedPath };
+  }
+
+  private publishInbox(roomId?: string, opts?: { ownerOnly?: boolean }): void {
     const store = this.inbox();
     const room = roomId ? store.getRoom(roomId) : undefined;
     const payload = `event: inbox\ndata: ${JSON.stringify({ roomId: roomId ?? null, ts: Date.now() })}\n\n`;
     for (const [stream, info] of this.inboxStreams) {
       if (stream.writableEnded) {
         this.inboxStreams.delete(stream);
+        continue;
+      }
+      if (opts?.ownerOnly && info.role !== 'owner') {
         continue;
       }
       if (info.role === 'member' && room && info.memberId && !room.memberIds.includes(info.memberId)) {
@@ -2429,20 +2540,45 @@ export class GituServer {
         tagline: a.tagline,
       }));
       if (isOwner) {
+        const roomsWithMeta = store.listRooms().map((r) => {
+          const notes = store.listNotes(r.id);
+          const tasks = store.listTasks(r.id);
+          return {
+            ...r,
+            notesVisibility: r.notesVisibility ?? 'owner_only',
+            noteCount: notes.length,
+            openTaskCount: tasks.filter((t) => t.status !== 'done').length,
+            pendingApprovalCount: tasks.filter((t) => t.status === 'pending_approval').length,
+            activeAgentTurnIds: this.inboxActiveAgentIdsForRoom(r.id),
+            watching: this.inboxWatchingRooms.has(r.id),
+          };
+        });
+        const projects = listProjects().map((p) => ({ name: p.name, path: p.path }));
         this.sendJson(res, 200, {
           role: 'owner',
           workspaceName,
           workspaceUrl: origin,
           pikpamBaseUrl: resolvePikpamApiBase(),
           pikpamConfigured: Boolean(resolveOwnerPikpamKey()),
-          rooms: store.listRooms(),
+          rooms: roomsWithMeta,
           members: store.listMembers(),
           invites: store.listInvites(),
           agents: allAgents,
+          projects,
         });
         return true;
       }
-      const rooms = store.listRooms(member!.id);
+      const rooms = store.listRooms(member!.id).map((r) => {
+        const shared = (r.notesVisibility ?? 'owner_only') === 'shared_readonly';
+        return {
+          ...sanitizeInboxRoomForMember(r),
+          noteCount: shared ? store.listNotes(r.id).length : 0,
+          openTaskCount: shared
+            ? store.listTasks(r.id).filter((t) => t.status !== 'done' && t.status !== 'pending_approval').length
+            : 0,
+          activeAgentTurnIds: this.inboxActiveAgentIdsForRoom(r.id),
+        };
+      });
       const visibleAgentIds = new Set<string>([
         ...member!.allowedAgentIds,
         ...rooms.flatMap((r) => r.activeAgentIds),
@@ -2470,6 +2606,49 @@ export class GituServer {
       return true;
     }
 
+    // Room notes & tasks workspace (owner always gets full private pad; invited member only gets read-only view when room.notesVisibility === 'shared_readonly')
+    const workspaceMatch = path.match(/^\/api\/inbox\/rooms\/([\w-]+)\/workspace$/);
+    if (workspaceMatch && method === 'GET') {
+      const roomId = workspaceMatch[1]!;
+      const room = store.getRoom(roomId);
+      if (!room) { this.sendJson(res, 404, { error: 'Inbox room not found.' }); return true; }
+      if (!isOwner && (!member || !room.memberIds.includes(member.id))) {
+        this.sendJson(res, 403, { error: 'You do not have access to this Inbox room.' });
+        return true;
+      }
+      const visibility: InboxNotesVisibility = room.notesVisibility ?? 'owner_only';
+      if (isOwner) {
+        const tasks = store.listTasks(roomId).map((t) => ({
+          ...t,
+          ...(t.codeRunId ? { codeRunStatus: this.sessions.get(t.codeRunId)?.status } : {}),
+        }));
+        this.sendJson(res, 200, {
+          notesVisibility: visibility,
+          projectPath: room.projectPath ?? null,
+          notes: store.listNotes(roomId),
+          tasks,
+        });
+        return true;
+      }
+      if (visibility !== 'shared_readonly') {
+        this.sendJson(res, 200, {
+          notesVisibility: 'owner_only',
+          notes: [],
+          tasks: [],
+        });
+        return true;
+      }
+      this.sendJson(res, 200, {
+        notesVisibility: 'shared_readonly',
+        notes: store.listNotes(roomId),
+        tasks: store
+          .listTasks(roomId)
+          .filter((t) => t.status !== 'pending_approval')
+          .map(sanitizeInboxTaskForMember),
+      });
+      return true;
+    }
+
     // Room messages (GET / POST)
     const msgMatch = path.match(/^\/api\/inbox\/rooms\/([\w-]+)\/messages$/);
     if (msgMatch) {
@@ -2481,7 +2660,12 @@ export class GituServer {
         return true;
       }
       if (method === 'GET') {
-        this.sendJson(res, 200, { room, messages: store.messages(roomId) });
+        this.sendJson(res, 200, {
+          room: isOwner ? room : sanitizeInboxRoomForMember(room),
+          messages: store.messages(roomId, { includeOwnerOnly: isOwner }),
+          activeAgentTurnIds: this.inboxActiveAgentIdsForRoom(roomId),
+          ...(isOwner ? { watching: this.inboxWatchingRooms.has(roomId) } : {}),
+        });
         return true;
       }
       if (method === 'POST') {
@@ -2492,6 +2676,10 @@ export class GituServer {
           const senderType = isOwner ? 'owner' : 'member';
           const senderId = isOwner ? (this.appAuth.account?.id ?? 'owner') : member!.id;
           const senderName = isOwner ? (this.appAuth.account?.name ?? 'Owner') : member!.name;
+          // Only the owner may send private owner_only whispers; guests are always public.
+          const visibility: InboxMessageVisibility =
+            isOwner && body['visibility'] === 'owner_only' ? 'owner_only' : 'public';
+          const isPrivateWhisper = visibility === 'owner_only';
           const allAgents = this.cowork().listAgents();
           const responding = selectInboxRespondingAgents({
             room,
@@ -2499,15 +2687,16 @@ export class GituServer {
             allAgents,
             senderType,
             member: isOwner ? undefined : member,
+            visibility,
           });
           const saved = store.appendMessage(roomId, {
             senderType,
             senderId,
             senderName,
             text,
+            ...(isPrivateWhisper ? { visibility: 'owner_only' } : {}),
             ...(responding.length ? { mentionedAgentIds: responding.map((a) => a.id) } : {}),
           });
-          this.publishInbox(roomId);
           // Trigger eligible active agents in the background so the HTTP post returns immediately.
           for (const agent of responding) {
             const turnKey = `${roomId}:${agent.id}`;
@@ -2519,9 +2708,15 @@ export class GituServer {
               agent,
               senderType,
               member: isOwner ? undefined : member,
+              visibility,
+              allAgents,
+              ownerName: this.appAuth.account?.name ?? 'Owner',
               resolveLlm: (effectiveAgent) => this.coworkLlm(effectiveAgent),
               toolContext: (effectiveAgent) => this.coworkToolContext(effectiveAgent),
-              onMessage: () => this.publishInbox(roomId),
+              startCodingRun: (opts) => this.startInboxCodingRun(opts),
+              onMessage: () => this.publishInbox(roomId, { ownerOnly: isPrivateWhisper }),
+              onWorkspaceChange: (rid) =>
+                this.publishInbox(rid, { ownerOnly: (room.notesVisibility ?? 'owner_only') === 'owner_only' }),
             })
               .catch((err: unknown) => {
                 store.appendMessage(roomId, {
@@ -2529,14 +2724,47 @@ export class GituServer {
                   senderId: 'system',
                   senderName: 'System',
                   text: `${agent.name} could not reply: ${(err as Error).message}`,
+                  ...(isPrivateWhisper ? { visibility: 'owner_only' } : {}),
                 });
-                this.publishInbox(roomId);
+                this.publishInbox(roomId, { ownerOnly: isPrivateWhisper });
               })
               .finally(() => {
                 this.inboxActiveTurns.delete(turnKey);
+                this.publishInbox(roomId, { ownerOnly: isPrivateWhisper });
               });
           }
-          this.sendJson(res, 201, { message: saved, triggeredAgents: responding.map((a) => a.id) });
+
+          // Silent Watch mode: when no public reply was triggered, let the room's
+          // watching agent quietly observe and save notes/decisions/tasks/coding proposals.
+          let silentWatchTriggered = false;
+          if (!isPrivateWhisper && room.agentTriggerMode === 'watch' && responding.length === 0) {
+            const watcher = allAgents.find((a) => room.activeAgentIds.includes(a.id));
+            if (watcher && !this.inboxWatchingRooms.has(roomId)) {
+              silentWatchTriggered = true;
+              this.inboxWatchingRooms.add(roomId);
+              void runInboxSilentWatch({
+                store,
+                room,
+                agent: watcher,
+                latestMessage: saved,
+                resolveLlm: (effectiveAgent) => this.coworkLlm(effectiveAgent),
+                onWorkspaceChange: (rid) =>
+                  this.publishInbox(rid, { ownerOnly: (room.notesVisibility ?? 'owner_only') === 'owner_only' }),
+              })
+                .catch(() => undefined)
+                .finally(() => {
+                  this.inboxWatchingRooms.delete(roomId);
+                  this.publishInbox(roomId, { ownerOnly: true });
+                });
+            }
+          }
+
+          this.publishInbox(roomId, { ownerOnly: isPrivateWhisper });
+          this.sendJson(res, 201, {
+            message: saved,
+            triggeredAgents: responding.map((a) => a.id),
+            ...(silentWatchTriggered ? { silentWatch: true } : {}),
+          });
         } catch (err) {
           this.sendJson(res, 400, { error: (err as Error).message });
         }
@@ -2546,7 +2774,7 @@ export class GituServer {
 
     // ─── Owner-only Inbox management endpoints ───────────────────────────────
     if (!isOwner) {
-      this.sendJson(res, 403, { error: 'Only the workspace owner can manage Inbox rooms, members, and invites.' });
+      this.sendJson(res, 403, { error: 'Only the workspace owner can manage Inbox rooms, members, notes, tasks, and invites.' });
       return true;
     }
 
@@ -2557,9 +2785,21 @@ export class GituServer {
         const title = String(body['title'] ?? '').trim();
         const memberIds = Array.isArray(body['memberIds']) ? body['memberIds'].map(String) : [];
         const activeAgentIds = Array.isArray(body['activeAgentIds']) ? body['activeAgentIds'].map(String) : [];
-        const agentTriggerMode: InboxAgentTriggerMode = body['agentTriggerMode'] === 'auto' ? 'auto' : kind === 'group' ? 'mention' : 'auto';
+        const agentTriggerMode: InboxAgentTriggerMode =
+          body['agentTriggerMode'] === 'auto'
+            ? 'auto'
+            : body['agentTriggerMode'] === 'watch'
+              ? 'watch'
+              : kind === 'group'
+                ? 'mention'
+                : 'auto';
         const toolPolicyOverride = typeof body['toolPolicyOverride'] === 'string'
           ? (body['toolPolicyOverride'] as InboxToolPolicy)
+          : undefined;
+        const notesVisibility: InboxNotesVisibility =
+          body['notesVisibility'] === 'shared_readonly' ? 'shared_readonly' : 'owner_only';
+        const projectPath = typeof body['projectPath'] === 'string' && body['projectPath'].trim()
+          ? body['projectPath'].trim()
           : undefined;
         const room = store.createRoom({
           kind,
@@ -2567,6 +2807,8 @@ export class GituServer {
           memberIds,
           activeAgentIds,
           agentTriggerMode,
+          notesVisibility,
+          ...(projectPath ? { projectPath } : {}),
           ...(toolPolicyOverride ? { toolPolicyOverride } : {}),
         });
         this.publishInbox(room.id);
@@ -2587,7 +2829,11 @@ export class GituServer {
           if (typeof body['title'] === 'string') patch.title = body['title'];
           if (Array.isArray(body['memberIds'])) patch.memberIds = body['memberIds'].map(String);
           if (Array.isArray(body['activeAgentIds'])) patch.activeAgentIds = body['activeAgentIds'].map(String);
-          if (body['agentTriggerMode'] === 'mention' || body['agentTriggerMode'] === 'auto') {
+          if (
+            body['agentTriggerMode'] === 'mention' ||
+            body['agentTriggerMode'] === 'auto' ||
+            body['agentTriggerMode'] === 'watch'
+          ) {
             patch.agentTriggerMode = body['agentTriggerMode'];
           }
           if ('toolPolicyOverride' in body) {
@@ -2597,6 +2843,14 @@ export class GituServer {
           }
           if (body['customPermsOverride'] && typeof body['customPermsOverride'] === 'object') {
             patch.customPermsOverride = body['customPermsOverride'] as InboxCustomPerms;
+          }
+          if (body['notesVisibility'] === 'owner_only' || body['notesVisibility'] === 'shared_readonly') {
+            patch.notesVisibility = body['notesVisibility'];
+          }
+          if ('projectPath' in body) {
+            patch.projectPath = typeof body['projectPath'] === 'string' && body['projectPath'].trim()
+              ? body['projectPath'].trim()
+              : undefined;
           }
           const updated = store.updateRoom(roomId, patch);
           if (!updated) { this.sendJson(res, 404, { error: 'Inbox room not found.' }); return true; }
@@ -2611,6 +2865,341 @@ export class GituServer {
         const removed = store.deleteRoom(roomId);
         if (!removed) { this.sendJson(res, 404, { error: 'Inbox room not found.' }); return true; }
         this.publishInbox();
+        this.sendJson(res, 200, { ok: true });
+        return true;
+      }
+    }
+
+    // Owner: Summarize meeting & extract tasks
+    const summarizeMatch = path.match(/^\/api\/inbox\/rooms\/([\w-]+)\/summarize$/);
+    if (summarizeMatch && method === 'POST') {
+      const roomId = summarizeMatch[1]!;
+      const room = store.getRoom(roomId);
+      if (!room) { this.sendJson(res, 404, { error: 'Inbox room not found.' }); return true; }
+      try {
+        const body = await this.readBody(req, 16_384).catch(() => ({} as Record<string, unknown>));
+        const focus = typeof body['focus'] === 'string' ? body['focus'].trim() : undefined;
+        const firstActiveAgent =
+          room.activeAgentIds
+            .map((id) => this.cowork().getAgent(id))
+            .find((a): a is CoworkAgent => Boolean(a)) ?? this.cowork().listAgents()[0];
+        const llm = firstActiveAgent
+          ? this.coworkLlm(firstActiveAgent)
+          : this.config.llm ?? resolveLlm({ workingDirectory: room.projectPath ?? this.projectRoot() ?? this.config.cwd }).client;
+        const result = await summarizeInboxMeeting({
+          store,
+          room,
+          llm,
+          authorId: firstActiveAgent?.id ?? 'owner',
+          authorName: firstActiveAgent?.name ?? (this.appAuth.account?.name ?? 'Meeting Assistant'),
+          focus,
+        });
+        this.publishInbox(roomId);
+        this.sendJson(res, 201, {
+          note: result.note,
+          createdTasks: result.createdTasks,
+          tasks: result.allTasks,
+        });
+      } catch (err) {
+        this.sendJson(res, 400, { error: (err as Error).message });
+      }
+      return true;
+    }
+
+    // Owner: Room Notes CRUD + Share to Chat
+    const notesRootMatch = path.match(/^\/api\/inbox\/rooms\/([\w-]+)\/notes$/);
+    if (notesRootMatch && method === 'POST') {
+      const roomId = notesRootMatch[1]!;
+      try {
+        const body = await this.readBody(req, 65_536);
+        const kindRaw = String(body['kind'] ?? 'note');
+        const kind: InboxNoteKind = kindRaw === 'summary' || kindRaw === 'decision' ? kindRaw : 'note';
+        const note = store.addNote(roomId, {
+          kind,
+          title: String(body['title'] ?? ''),
+          content: String(body['content'] ?? ''),
+          createdByType: 'owner',
+          createdById: this.appAuth.account?.id ?? 'owner',
+          createdByName: this.appAuth.account?.name ?? 'Owner',
+        });
+        this.publishInbox(roomId);
+        this.sendJson(res, 201, { note });
+      } catch (err) {
+        this.sendJson(res, 400, { error: (err as Error).message });
+      }
+      return true;
+    }
+
+    const noteShareMatch = path.match(/^\/api\/inbox\/rooms\/([\w-]+)\/notes\/([\w-]+)\/share$/);
+    if (noteShareMatch && method === 'POST') {
+      const [, roomId, noteId] = noteShareMatch;
+      const room = store.getRoom(roomId!);
+      const note = store.getNote(roomId!, noteId!);
+      if (!room || !note) { this.sendJson(res, 404, { error: 'Note not found.' }); return true; }
+      try {
+        const body = await this.readBody(req, 65_536).catch(() => ({} as Record<string, unknown>));
+        const customText = typeof body['text'] === 'string' && body['text'].trim() ? body['text'].trim() : '';
+        const includeTasks = body['includeTasks'] === true;
+        let shareText = customText || `**${note.title}**\n\n${note.content}`;
+        if (!customText && includeTasks) {
+          const openTasks = store
+            .listTasks(roomId!)
+            .filter((t) => t.status !== 'done' && t.status !== 'pending_approval');
+          if (openTasks.length > 0) {
+            const checklist = openTasks
+              .map((t) => `- [ ] ${t.title}${t.assignee ? ` (${t.assignee})` : ''}`)
+              .join('\n');
+            shareText += `\n\n**Next Steps**\n${checklist}`;
+          }
+        }
+        const message = store.appendMessage(roomId!, {
+          senderType: 'owner',
+          senderId: this.appAuth.account?.id ?? 'owner',
+          senderName: this.appAuth.account?.name ?? 'Owner',
+          text: shareText,
+        });
+        const updatedNote = store.updateNote(roomId!, noteId!, {
+          sharedToChat: true,
+          sharedMessageId: message.id,
+        });
+        this.publishInbox(roomId!);
+        this.sendJson(res, 201, { message, note: updatedNote });
+      } catch (err) {
+        this.sendJson(res, 400, { error: (err as Error).message });
+      }
+      return true;
+    }
+
+    const noteItemMatch = path.match(/^\/api\/inbox\/rooms\/([\w-]+)\/notes\/([\w-]+)$/);
+    if (noteItemMatch) {
+      const [, roomId, noteId] = noteItemMatch;
+      if (method === 'PATCH') {
+        try {
+          const body = await this.readBody(req, 65_536);
+          const patch: Parameters<InboxStore['updateNote']>[2] = {};
+          if (body['kind'] === 'note' || body['kind'] === 'summary' || body['kind'] === 'decision') {
+            patch.kind = body['kind'];
+          }
+          if (typeof body['title'] === 'string') patch.title = body['title'];
+          if (typeof body['content'] === 'string') patch.content = body['content'];
+          const updated = store.updateNote(roomId!, noteId!, patch);
+          if (!updated) { this.sendJson(res, 404, { error: 'Note not found.' }); return true; }
+          this.publishInbox(roomId!);
+          this.sendJson(res, 200, { note: updated });
+        } catch (err) {
+          this.sendJson(res, 400, { error: (err as Error).message });
+        }
+        return true;
+      }
+      if (method === 'DELETE') {
+        const removed = store.deleteNote(roomId!, noteId!);
+        if (!removed) { this.sendJson(res, 404, { error: 'Note not found.' }); return true; }
+        this.publishInbox(roomId!);
+        this.sendJson(res, 200, { ok: true });
+        return true;
+      }
+    }
+
+    // Owner: Room Tasks CRUD + Delegate to Code / Delegate Sub-Agent
+    const tasksRootMatch = path.match(/^\/api\/inbox\/rooms\/([\w-]+)\/tasks$/);
+    if (tasksRootMatch && method === 'POST') {
+      const roomId = tasksRootMatch[1]!;
+      const room = store.getRoom(roomId);
+      if (!room) { this.sendJson(res, 404, { error: 'Inbox room not found.' }); return true; }
+      try {
+        const body = await this.readBody(req, 32_768);
+        const kindRaw = String(body['kind'] ?? 'action');
+        const kind: InboxTaskKind = kindRaw === 'coding' || kindRaw === 'research' ? kindRaw : 'action';
+        const statusRaw = String(body['status'] ?? 'todo');
+        const status: InboxTaskStatus =
+          statusRaw === 'in_progress' || statusRaw === 'done' || statusRaw === 'pending_approval'
+            ? statusRaw
+            : 'todo';
+        const projectPath =
+          typeof body['projectPath'] === 'string' && body['projectPath'].trim()
+            ? body['projectPath'].trim()
+            : kind === 'coding'
+              ? room.projectPath
+              : undefined;
+        const task = store.addTask(roomId, {
+          title: String(body['title'] ?? ''),
+          description: typeof body['description'] === 'string' ? body['description'] : undefined,
+          kind,
+          status,
+          assignee: typeof body['assignee'] === 'string' ? body['assignee'] : undefined,
+          projectPath,
+          requestedByType: 'owner',
+          requestedByName: this.appAuth.account?.name ?? 'Owner',
+        });
+        this.publishInbox(roomId);
+        this.sendJson(res, 201, { task });
+      } catch (err) {
+        this.sendJson(res, 400, { error: (err as Error).message });
+      }
+      return true;
+    }
+
+    const delegateCodeMatch = path.match(/^\/api\/inbox\/rooms\/([\w-]+)\/tasks\/([\w-]+)\/delegate-code$/);
+    if (delegateCodeMatch && method === 'POST') {
+      const [, roomId, taskId] = delegateCodeMatch;
+      const room = store.getRoom(roomId!);
+      const task = store.getTask(roomId!, taskId!);
+      if (!room || !task) { this.sendJson(res, 404, { error: 'Task not found.' }); return true; }
+      try {
+        const body = await this.readBody(req, 32_768).catch(() => ({} as Record<string, unknown>));
+        const projectPath =
+          (typeof body['projectPath'] === 'string' && body['projectPath'].trim()) ||
+          task.projectPath ||
+          room.projectPath ||
+          undefined;
+        const mode = body['mode'] === 'fast' ? 'fast' : 'agent';
+        const goal =
+          (typeof body['goal'] === 'string' && body['goal'].trim()) ||
+          [task.title, task.description].filter(Boolean).join('\n\n');
+        const firstAgent =
+          room.activeAgentIds
+            .map((id) => this.cowork().getAgent(id))
+            .find((a): a is CoworkAgent => Boolean(a)) ?? this.cowork().listAgents()[0];
+        const started = await this.startInboxCodingRun({
+          roomId: roomId!,
+          taskId: taskId!,
+          title: task.title,
+          goal,
+          projectPath,
+          mode,
+          agent: firstAgent,
+        });
+        const updated = store.updateTask(roomId!, taskId!, {
+          kind: 'coding',
+          status: 'in_progress',
+          codeRunId: started.runId,
+          ...(started.projectPath ? { projectPath: started.projectPath } : {}),
+        });
+        this.publishInbox(roomId!);
+        this.sendJson(res, 202, {
+          task: updated,
+          runId: started.runId,
+          projectPath: started.projectPath,
+        });
+      } catch (err) {
+        this.sendJson(res, 400, { error: (err as Error).message });
+      }
+      return true;
+    }
+
+    const delegateSubMatch = path.match(/^\/api\/inbox\/rooms\/([\w-]+)\/tasks\/([\w-]+)\/delegate-subagent$/);
+    if (delegateSubMatch && method === 'POST') {
+      const [, roomId, taskId] = delegateSubMatch;
+      const room = store.getRoom(roomId!);
+      const task = store.getTask(roomId!, taskId!);
+      if (!room || !task) { this.sendJson(res, 404, { error: 'Task not found.' }); return true; }
+      try {
+        const body = await this.readBody(req, 32_768).catch(() => ({} as Record<string, unknown>));
+        const role = (typeof body['role'] === 'string' && body['role'].trim()) || 'research-specialist';
+        const objective =
+          (typeof body['objective'] === 'string' && body['objective'].trim()) ||
+          [task.title, task.description].filter(Boolean).join('\n\n');
+        const saveAsNote = body['saveAsNote'] !== false;
+        const firstAgent =
+          room.activeAgentIds
+            .map((id) => this.cowork().getAgent(id))
+            .find((a): a is CoworkAgent => Boolean(a)) ?? this.cowork().listAgents()[0];
+        const parentAgent: CoworkAgent = firstAgent ?? {
+          id: 'inbox-helper',
+          name: 'Meeting Assistant',
+          avatar: { color: '#6b7280', shape: 'orb' },
+          tagline: 'Inbox specialist',
+          systemPrompt: '',
+          skills: [],
+          allowShell: false,
+          allowWrites: false,
+          allowConfig: false,
+          useHostComputer: false,
+          chiefOfStaff: false,
+          createdAt: nowIso(),
+        };
+        store.updateTask(roomId!, taskId!, { status: 'in_progress', subAgentRole: role });
+        this.publishInbox(roomId!);
+        const subRes = await runInboxSubAgent({
+          room,
+          parentAgent,
+          role,
+          objective,
+          senderType: 'owner',
+          allowReadTools: Boolean(firstAgent),
+          resolveLlm: (ag) =>
+            firstAgent
+              ? this.coworkLlm(ag)
+              : this.config.llm ?? resolveLlm({ workingDirectory: room.projectPath ?? this.projectRoot() ?? this.config.cwd }).client,
+          toolContext: firstAgent ? (ag) => this.coworkToolContext(ag) : undefined,
+        });
+        let savedNote;
+        if (subRes.ok && saveAsNote) {
+          savedNote = store.addNote(roomId!, {
+            kind: 'note',
+            title: `Sub-agent (${subRes.role}): ${task.title}`,
+            content: subRes.report,
+            createdByType: 'agent',
+            createdById: parentAgent.id,
+            createdByName: `${parentAgent.name} · ${subRes.role}`,
+          });
+        }
+        const updated = store.updateTask(roomId!, taskId!, {
+          status: subRes.ok ? 'done' : 'todo',
+          subAgentRole: subRes.role,
+          delegationSummary: subRes.report.slice(0, 1400),
+        });
+        this.publishInbox(roomId!);
+        this.sendJson(res, 200, { task: updated, report: subRes.report, ...(savedNote ? { note: savedNote } : {}) });
+      } catch (err) {
+        store.updateTask(roomId!, taskId!, { status: 'todo' });
+        this.publishInbox(roomId!);
+        this.sendJson(res, 400, { error: (err as Error).message });
+      }
+      return true;
+    }
+
+    const taskItemMatch = path.match(/^\/api\/inbox\/rooms\/([\w-]+)\/tasks\/([\w-]+)$/);
+    if (taskItemMatch) {
+      const [, roomId, taskId] = taskItemMatch;
+      if (method === 'PATCH') {
+        try {
+          const body = await this.readBody(req, 32_768);
+          const patch: Parameters<InboxStore['updateTask']>[2] = {};
+          if (typeof body['title'] === 'string') patch.title = body['title'];
+          if ('description' in body) {
+            patch.description = typeof body['description'] === 'string' ? body['description'] : undefined;
+          }
+          if (body['kind'] === 'action' || body['kind'] === 'coding' || body['kind'] === 'research') {
+            patch.kind = body['kind'];
+          }
+          if (
+            body['status'] === 'pending_approval' ||
+            body['status'] === 'todo' ||
+            body['status'] === 'in_progress' ||
+            body['status'] === 'done'
+          ) {
+            patch.status = body['status'];
+          }
+          if ('assignee' in body) {
+            patch.assignee = typeof body['assignee'] === 'string' ? body['assignee'] : undefined;
+          }
+          if ('projectPath' in body) {
+            patch.projectPath = typeof body['projectPath'] === 'string' ? body['projectPath'] : undefined;
+          }
+          const updated = store.updateTask(roomId!, taskId!, patch);
+          if (!updated) { this.sendJson(res, 404, { error: 'Task not found.' }); return true; }
+          this.publishInbox(roomId!);
+          this.sendJson(res, 200, { task: updated });
+        } catch (err) {
+          this.sendJson(res, 400, { error: (err as Error).message });
+        }
+        return true;
+      }
+      if (method === 'DELETE') {
+        const removed = store.deleteTask(roomId!, taskId!);
+        if (!removed) { this.sendJson(res, 404, { error: 'Task not found.' }); return true; }
+        this.publishInbox(roomId!);
         this.sendJson(res, 200, { ok: true });
         return true;
       }
@@ -5493,6 +6082,7 @@ export class GituServer {
           acquireHostBrowser: () => this.coworkBrowserLease.acquire(abort.signal),
           userContext: this.coworkUserContext(),
           memoryFor: (agent) => this.coworkMemoryFor(agent),
+          inboxAwarenessFor: (agent) => buildCoworkInboxAwareness(this.inbox(), agent),
           autoLearn,
           requireCompletionState: this.config.coworkCompletionProtocol !== 'legacy',
           learningReview: isLearningReview,
@@ -5672,6 +6262,7 @@ export class GituServer {
           acquireHostBrowser: () => this.coworkBrowserLease.acquire(abort.signal),
           userContext: this.coworkUserContext(),
           memoryFor: (a) => this.coworkMemoryFor(a),
+          inboxAwarenessFor: (a) => buildCoworkInboxAwareness(this.inbox(), a),
           // Missions are already bounded autonomous sessions (not chat turns):
           // they reflect after a completed session in both reactive and
           // proactive modes, and never when learning is off.
@@ -6003,6 +6594,7 @@ export class GituServer {
         acquireHostBrowser: () => this.coworkBrowserLease.acquire(signal),
         userContext: this.coworkUserContext(),
         memoryFor: (current) => this.coworkMemoryFor(current),
+        inboxAwarenessFor: (current) => buildCoworkInboxAwareness(this.inbox(), current),
         autoLearn: false,
         requireCompletionState: false,
         recall: this.coworkRecallIndex(),

@@ -158,6 +158,7 @@ class GituApiClientTest {
         assertEquals("/api/voice/calls", startReq.path)
         assertEquals("pikpam-jwt-123", startReq.getHeader("X-Pikpam-Token"))
         val startBody = startReq.body.readUtf8()
+        assertTrue(startBody.contains("conv_9"))
         assertTrue(startBody.contains("\"kind\":\"cowork\""))
         assertTrue("Voice call must omit threadId=main", !startBody.contains("threadId"))
 
@@ -168,5 +169,59 @@ class GituApiClientTest {
         val endReq = server.takeRequest()
         assertEquals("DELETE", endReq.method)
         assertEquals("/api/voice/calls/call_123", endReq.path)
+    }
+
+    @Test
+    fun inboxWorkspaceWhisperWatchAndDelegationEndpointsMatchServer() = runTest {
+        server.enqueue(
+            MockResponse().setBody(
+                """{"notesVisibility":"owner_only","projectPath":"/work/acme","notes":[{"id":"n1","roomId":"r1","kind":"summary","title":"Kickoff","content":"Ship Friday","createdByType":"agent","createdByName":"Nova"}],"tasks":[{"id":"t1","roomId":"r1","title":"Build checkout","kind":"coding","status":"pending_approval","requestedByType":"member","requestedByName":"Sarah"}]}""",
+            ),
+        )
+        server.enqueue(MockResponse().setResponseCode(201).setBody("""{"message":{"id":"m1"}}"""))
+        server.enqueue(MockResponse().setBody("""{"room":{"id":"r1","agentTriggerMode":"watch"}}"""))
+        server.enqueue(
+            MockResponse().setResponseCode(201).setBody(
+                """{"note":{"id":"n2","roomId":"r1","kind":"summary","title":"Meeting Summary","content":"Done"},"createdTasks":[{"id":"t2","roomId":"r1","title":"Deploy","kind":"action","status":"todo"}],"tasks":[]}""",
+            ),
+        )
+        server.enqueue(
+            MockResponse().setResponseCode(202).setBody(
+                """{"runId":"run_99","projectPath":"/work/acme","task":{"id":"t1","roomId":"r1","title":"Build checkout","kind":"coding","status":"in_progress","codeRunId":"run_99"}}""",
+            ),
+        )
+        server.enqueue(MockResponse().setResponseCode(201).setBody("""{"message":{"id":"m2"}}"""))
+
+        val client = GituApiClient(server.url("").toString().trimEnd('/'))
+        val ws = client.inboxWorkspace("r1")
+        assertEquals("owner_only", ws.notesVisibility)
+        assertEquals(1, ws.notes.size)
+        assertEquals("pending_approval", ws.tasks.first().status)
+
+        client.sendInboxMessage("r1", "Keep floor at 8k", visibility = "owner_only")
+        client.updateInboxRoom("r1", agentTriggerMode = "watch", notesVisibility = "shared_readonly")
+        val sum = client.summarizeInboxMeeting("r1")
+        assertEquals("Meeting Summary", sum.note?.title)
+        assertEquals(1, sum.createdTasks.size)
+
+        val codeRes = client.delegateInboxTaskCode("r1", "t1")
+        assertEquals("run_99", codeRes.runId)
+
+        client.shareInboxNote("r1", "n2", text = "Recap for Sarah", includeTasks = true)
+
+        val r1 = server.takeRequest()
+        assertEquals("/api/inbox/rooms/r1/workspace", r1.path)
+        val r2 = server.takeRequest()
+        assertEquals("/api/inbox/rooms/r1/messages", r2.path)
+        assertTrue(r2.body.readUtf8().contains(""""visibility":"owner_only""""))
+        val r3 = server.takeRequest()
+        assertEquals("PATCH", r3.method)
+        assertTrue(r3.body.readUtf8().contains(""""agentTriggerMode":"watch""""))
+        val r4 = server.takeRequest()
+        assertEquals("/api/inbox/rooms/r1/summarize", r4.path)
+        val r5 = server.takeRequest()
+        assertEquals("/api/inbox/rooms/r1/tasks/t1/delegate-code", r5.path)
+        val r6 = server.takeRequest()
+        assertEquals("/api/inbox/rooms/r1/notes/n2/share", r6.path)
     }
 }

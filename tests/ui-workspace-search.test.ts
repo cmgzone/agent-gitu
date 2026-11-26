@@ -81,81 +81,44 @@ describe('Full-page workspace search', () => {
     expect(f.context.cwOpenConv).toHaveBeenCalledWith('paused', null);
   });
 
-  it('loads saved agent reminders through the conversation API and removes them once delivered', async () => {
-    const f = fixture(), state: any = { mode: 'cowork', items: [], failures: [], query: '', category: 'Schedules', limit: 8, loading: true };
-    f.context.workspaceSearchState = state; f.context.wsRender = vi.fn();
-    let followUps: any[] = [{ id: 'future', conversationId: 'chat', agentId: 'agent', note: 'Check the result later', dueAt: '2099-10-12T08:00:00Z' }];
-    f.context.api.mockImplementation((route: string) => Promise.resolve(route.endsWith('/agents') ? { agents: [{ id: 'agent', name: 'Gitu' }] } : { conversations: [{ id: 'chat', title: 'Launch' }], followUps }));
-    await f.context.wsLoad(state);
-    expect(state.items.find((item: any) => item.id === 'future').category).toBe('Schedules');
-    f.context.wsRender.mockClear(); await f.context.wsLoad(state);
-    expect(f.context.wsRender).not.toHaveBeenCalled();
-    followUps = []; await f.context.wsLoad(state);
-    expect(state.items.some((item: any) => item.id === 'future')).toBe(false); expect(f.context.wsRender).toHaveBeenCalledOnce();
-  });
+  it('routes wsOpen directly to Settings, Sidebar, or Cowork sessions dialog without mounting a full-screen search page', () => {
+    const f = fixture();
+    f.context.cwSessionsModal = vi.fn();
+    f.context.cwOpenAgentSwitcherModal = vi.fn();
+    f.elements.homeSidebarSearch = { focus: vi.fn() };
+    f.elements.homeSessionsDropdown = { open: false };
+    f.elements.homeViewProjects = { click: vi.fn() };
+    f.elements.homeGroupsBtn = { click: vi.fn() };
 
-  it('refreshes an open schedule view and stops refreshing after search closes', async () => {
-    const f = fixture(), state: any = { mode: 'cowork', items: [], failures: [], category: 'Schedules', surfaces: [] };
-    f.context.workspaceSearchState = state; f.context.wsLoad = vi.fn();
-    f.context.wsScheduleRefresh(state);
-    const [refresh, delay] = f.context.setTimeout.mock.calls.at(-1);
-    expect(delay).toBe(10000); refresh(); expect(f.context.wsLoad).toHaveBeenCalledWith(state);
-    f.context.wsLoad.mockClear(); f.context.wsClose(); refresh();
-    expect(f.context.wsLoad).not.toHaveBeenCalled(); expect(f.context.clearTimeout).toHaveBeenCalledWith(state.refreshTimer);
-  });
-
-  it('distinguishes an empty schedule list from failed loading', () => {
-    const f = fixture(), state: any = { mode: 'cowork', items: [], hits: [], failures: [], category: 'Schedules', query: '', limit: 8, loading: false };
-    f.context.workspaceSearchState = state; f.context.wsRender(state);
-    expect(f.elements.workspaceSearchResults.innerHTML).toContain('No scheduled tasks yet');
-    state.failures = ['conversations']; f.context.wsRender(state);
-    expect(f.elements.workspaceSearchResults.innerHTML).toContain('Schedules could not load');
-    expect(f.elements.workspaceSearchResults.innerHTML).not.toContain('No scheduled tasks yet');
-  });
-
-  it('opens search without stopping the live conversation or discarding a draft, and restores focus and inert state', async () => {
-    const f = fixture(); f.elements.settings.inert = true; f.context.api.mockResolvedValue({});
     f.context.wsOpen('main');
-    expect(f.page.setAttribute).toHaveBeenCalledWith('aria-modal', 'true');
-    expect(f.shell.inert).toBe(true);
     expect(f.context.cwSaveDraft).toHaveBeenCalledOnce();
-    expect(f.context.stopStreams).not.toHaveBeenCalled(); expect(f.context.cwStopPoll).not.toHaveBeenCalled();
-    expect(f.state.draft).toBe('Keep my draft'); expect(f.state.active).toBe('main-run');
-    expect(f.elements.workspaceSearchInput.focus).toHaveBeenCalledWith({ preventScroll: true });
-    const event = { key: 'Escape', preventDefault: vi.fn(), stopPropagation: vi.fn() };
-    f.page.onkeydown(event);
-    expect(event.stopPropagation).toHaveBeenCalledOnce(); expect(f.shell.inert).toBe(false);
-    expect(f.elements.settings.inert).toBe(true); expect(f.focus.focus).toHaveBeenCalledOnce();
-    expect(f.context.document.title).toBe('Chat — Gitu');
-    await Promise.resolve();
-  });
+    expect(f.elements.homeSessionsDropdown.open).toBe(true);
+    expect(f.elements.homeSidebarSearch.focus).toHaveBeenCalledWith({ preventScroll: true });
+    expect(f.elements.workspaceSearch).toBeUndefined();
 
-  it('keeps successful data usable on partial failures and ignores responses after closing the page', async () => {
-    const f = fixture(), state: any = { mode: 'main', items: [], failures: [], query: '', category: 'all', limit: 8 };
-    f.context.workspaceSearchState = state; f.context.wsRender = vi.fn();
-    f.context.api.mockImplementation((path: string) => path === '/api/skills' ? Promise.reject(new Error('offline')) : Promise.resolve(path === '/api/runs' ? [{ runId: 'one', goal: 'A real session', projectPath: '/work/alpha' }] : {}));
-    await f.context.wsLoad(state);
-    expect(state.failures).toEqual(['skills']); expect(state.items.some((item: any) => item.id === 'one')).toBe(true);
-    const resolvers: ((value: any) => void)[] = [];
-    f.context.api.mockImplementation(() => new Promise((resolve) => { resolvers.push(resolve); }));
-    const loading = f.context.wsLoad(state); f.context.workspaceSearchState = null;
-    resolvers.forEach((resolve, index) => resolve(index === 0 ? [{ runId: 'late', goal: 'Late response' }] : {}));
-    await loading;
-    expect(state.items.some((item: any) => item.id === 'late')).toBe(false);
-  });
+    f.context.wsOpen('main', 'Schedules');
+    expect(f.context.openSettings).toHaveBeenCalledWith('cron');
 
-  it('rejects stale recall results and keeps searchable text escaped', async () => {
-    const f = fixture(), state: any = { mode: 'cowork', query: 'sources', revision: 1, category: 'all', items: [], hits: [], limit: 8, failures: [] };
-    f.context.workspaceSearchState = state;
-    let finish: (value: any) => void = () => {};
-    f.context.api.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
-    const recall = f.context.wsRecall(state); state.revision++;
-    finish({ hits: [{ conversationId: 'chat', snippet: 'Old sources' }] }); await recall;
-    expect(state.hits).toEqual([]);
-    state.items = [{ category: 'Sessions', title: '<script>bad</script>', detail: '<img onerror=bad>', icon: 'chat', action: 'conversation', id: 'safe' }]; state.query = '';
-    f.context.wsRender(state);
-    expect(f.elements.workspaceSearchResults.innerHTML).not.toContain('<script>');
-    expect(f.elements.workspaceSearchResults.innerHTML).toContain('&lt;img onerror=bad>');
+    f.context.wsOpen('main', 'Skills');
+    expect(f.context.openSettings).toHaveBeenCalledWith('skills');
+
+    f.context.wsOpen('main', 'Settings');
+    expect(f.context.openSettings).toHaveBeenCalledWith('overview');
+
+    f.context.wsOpen('cowork', 'Agents');
+    expect(f.context.cwOpenAgentSwitcherModal).toHaveBeenCalledOnce();
+
+    f.context.wsOpen('main', 'Projects');
+    expect(f.elements.homeViewProjects.click).toHaveBeenCalledOnce();
+
+    f.context.wsOpen('main', 'Groups');
+    expect(f.elements.homeGroupsBtn.click).toHaveBeenCalledOnce();
+
+    f.context.wsOpen('cowork', 'Sessions');
+    expect(f.context.cwSessionsModal).toHaveBeenCalledWith('sessions');
+
+    f.context.wsOpen('cowork', 'Groups');
+    expect(f.context.cwSessionsModal).toHaveBeenCalledWith('groups');
   });
 
   it('routes results through existing workflows without automatically creating or sending anything', () => {
@@ -169,42 +132,6 @@ describe('Full-page workspace search', () => {
     f.context.wsActivate({ action: 'new-session' }); expect(f.context.openHome).toHaveBeenCalledOnce();
     f.context.wsActivate({ action: 'now', card: { kind: 'request', id: 'approval' } }); expect(f.context.cwNowAction).toHaveBeenCalledWith('request', 'approval');
     expect(f.context.api).not.toHaveBeenCalled();
-  });
-
-  it('requires an explicit second click to delete a session', () => {
-    const f = fixture(), button: any = { dataset: {}, textContent: '', setAttribute: vi.fn() };
-    f.context.wsDeleteRun({}, { id: 'run', title: 'My session' }, button);
-    expect(f.context.api).not.toHaveBeenCalled(); expect(button.textContent).toBe('Delete?');
-  });
-
-  it('opens Cowork session management with a creation control even when there are no sessions', async () => {
-    const f = fixture(); f.context.api.mockResolvedValue({});
-    f.context.wsOpen('cowork', 'Sessions');
-    expect(f.context.workspaceSearchState.category).toBe('Sessions');
-    expect(f.elements.workspaceSearchResults.innerHTML).toContain('id="workspaceSearchNewSession"');
-    await Promise.resolve();
-  });
-
-  it('confirms Cowork deletion, removes session search results, and refreshes the list', async () => {
-    const f = fixture(), button: any = { isConnected: true, dataset: {}, textContent: '', setAttribute: vi.fn() };
-    const state = { items: [{ action: 'conversation', id: 'chat' }, { action: 'conversation-schedule', id: 'chat' }, { action: 'conversation', id: 'keep' }], hits: [{ id: 'chat' }, { id: 'keep' }] };
-    f.context.workspaceSearchState = state; f.context.wsRender = vi.fn(); f.context.wsLoad = vi.fn();
-    f.context.cwDeleteSession.mockResolvedValue(undefined);
-    f.context.wsDeleteConversation(state, { id: 'chat', title: 'Research' }, button);
-    expect(f.context.cwDeleteSession).not.toHaveBeenCalled(); expect(button.textContent).toBe('Delete?');
-    await f.context.wsDeleteConversation(state, { id: 'chat', title: 'Research' }, button);
-    expect(f.context.cwDeleteSession).toHaveBeenCalledExactlyOnceWith('chat');
-    expect(state.items).toEqual([{ action: 'conversation', id: 'keep' }]); expect(state.hits).toEqual([{ id: 'keep' }]);
-    expect(f.context.wsLoad).toHaveBeenCalledWith(state);
-  });
-
-  it('keeps Cowork results and restores the delete button after an API failure', async () => {
-    const f = fixture(), button: any = { isConnected: true, disabled: false, dataset: { confirmDelete: 'true' }, setAttribute: vi.fn() };
-    const state = { items: [{ action: 'conversation', id: 'chat' }], hits: [] };
-    f.context.workspaceSearchState = state; f.context.cwDeleteSession.mockRejectedValue(new Error('offline'));
-    await f.context.wsDeleteConversation(state, { id: 'chat', title: 'Research' }, button);
-    expect(state.items).toHaveLength(1); expect(button.disabled).toBe(false); expect(button.dataset.confirmDelete).toBe('false');
-    expect(f.context.toast).toHaveBeenCalledWith('offline', true);
   });
 
   it('hides transport resume notices while preserving user messages that say continue', () => {
@@ -272,48 +199,37 @@ describe('Full-page workspace search', () => {
 
   it('renders compact schedule cards with collapsible automation instructions and metadata badges', () => {
     const f = fixture();
-    const state: any = {
-      mode: 'cowork',
-      items: [
-        {
-          category: 'Schedules',
-          id: 'sc-1',
-          title: 'Morning Sync',
-          detail: 'Active · Every 1d · Team',
-          action: 'conversation-schedule',
-          icon: 'calendar',
-          schedule: {
-            enabled: true,
-            every: '1d',
-            goal: 'Morning Sync\nCheck blockers and report status across all active repos.'
-          },
-          conversation: { id: 'conv-1', title: 'Team' }
+    const items = [
+      {
+        category: 'Schedules',
+        id: 'sc-1',
+        title: 'Morning Sync',
+        detail: 'Active · Every 1d · Team',
+        action: 'conversation-schedule',
+        icon: 'calendar',
+        schedule: {
+          enabled: true,
+          every: '1d',
+          goal: 'Morning Sync\nCheck blockers and report status across all active repos.'
         },
-        {
-          category: 'Schedules',
-          id: 'sc-2',
-          title: 'Nightly Audit',
-          detail: 'Paused · Every 3h · Security',
-          action: 'conversation-schedule',
-          icon: 'calendar',
-          schedule: {
-            enabled: false,
-            every: '3h',
-            goal: 'Run dependency vulnerability scan and alert on CVEs.'
-          },
-          conversation: { id: 'conv-2', title: 'Security' }
-        }
-      ],
-      hits: [],
-      failures: [],
-      category: 'Schedules',
-      query: '',
-      limit: 8,
-      loading: false
-    };
-    f.context.workspaceSearchState = state;
-    f.context.wsRender(state);
-    const html = f.elements.workspaceSearchResults.innerHTML;
+        conversation: { id: 'conv-1', title: 'Team' }
+      },
+      {
+        category: 'Schedules',
+        id: 'sc-2',
+        title: 'Nightly Audit',
+        detail: 'Paused · Every 3h · Security',
+        action: 'conversation-schedule',
+        icon: 'calendar',
+        schedule: {
+          enabled: false,
+          every: '3h',
+          goal: 'Run dependency vulnerability scan and alert on CVEs.'
+        },
+        conversation: { id: 'conv-2', title: 'Security' }
+      }
+    ];
+    const html = items.map((item, index) => f.context.wsScheduleCardHtml({ index }, item)).join('');
 
     // Compact card structure
     expect(html).toContain('class="ws-result ws-schedule-card"');
@@ -344,35 +260,22 @@ describe('Full-page workspace search', () => {
 
   it('renders one-time follow-up schedule cards with due date badges', () => {
     const f = fixture();
-    const state: any = {
-      mode: 'cowork',
-      items: [
-        {
-          category: 'Schedules',
-          id: 'reminder-1',
-          title: 'Follow up on PR review',
-          detail: 'One-time · Engineer · Code Review',
-          action: 'followup',
-          icon: 'clock',
-          followUp: {
-            id: 'reminder-1',
-            note: 'Please verify the unit tests pass on CI and merge the PR.',
-            dueAt: '2099-01-01T10:00:00Z'
-          },
-          agent: { name: 'Engineer' },
-          conversation: { title: 'Code Review' }
-        }
-      ],
-      hits: [],
-      failures: [],
+    const item = {
       category: 'Schedules',
-      query: '',
-      limit: 8,
-      loading: false
+      id: 'reminder-1',
+      title: 'Follow up on PR review',
+      detail: 'One-time · Engineer · Code Review',
+      action: 'followup',
+      icon: 'clock',
+      followUp: {
+        id: 'reminder-1',
+        note: 'Please verify the unit tests pass on CI and merge the PR.',
+        dueAt: '2099-01-01T10:00:00Z'
+      },
+      agent: { name: 'Engineer' },
+      conversation: { title: 'Code Review' }
     };
-    f.context.workspaceSearchState = state;
-    f.context.wsRender(state);
-    const html = f.elements.workspaceSearchResults.innerHTML;
+    const html = f.context.wsScheduleCardHtml({ index: 0 }, item);
 
     expect(html).toContain('Engineer reminder · Code Review');
     expect(html).toContain('class="ws-sc-badge active"');

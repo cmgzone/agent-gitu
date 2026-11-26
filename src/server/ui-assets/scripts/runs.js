@@ -428,8 +428,7 @@
     var runProjectName=homeProjectName(homeSidebarPath());
     $('view').innerHTML =
       '<div class="run run-chat home-sky code-workspace">' + homeNavigationHtml(cwProfileAgent()) + '<div class="run-main">' +
-      '<button type="button" class="chat-shell-button" id="mainChatHistory" aria-label="Search sessions and tools" title="Search">'+cwIcon('search')+'</button>' +
-      '<button type="button" class="chat-shell-button" id="mainChatDetails" aria-label="Open task details" title="Task details">'+cwIcon('panel')+'</button>' +
+      '<button type="button" class="chat-shell-button" id="mainChatHistory" aria-label="Projects and sessions" title="Projects and sessions">'+cwIcon('search')+'</button>' +
       '<details class="approach-panel" id="approachPanel"><summary title="Show the agent’s approach and verification updates"><span class="approach-title">Approach</span><span class="approach-count" id="approachCount"></span><span class="approach-latest" id="approachLatest"></span><span class="approach-status" id="approachStatus"></span></summary><ol class="approach-log" id="approachLog" aria-label="Approach updates" tabindex="0"></ol><p class="approach-note" id="approachEmpty">A brief explanation of the next action appears as the agent works.</p><p class="approach-note" id="approachHistory" hidden></p><p class="approach-note">Progress summaries · hypotheses remain unverified until checked.</p></details>' +
       '<nav class="stage-dot-rail" id="stageDotRail" aria-label="Session stages" hidden></nav><div class="stage-rail-tip" id="stageRailTip" role="tooltip" hidden></div>' +
       '<div class="stream" id="stream" role="region" aria-label="Agent activity" tabindex="0"><details class="coding-checkpoints" id="runCheckpoints"><summary>Checkpoints &amp; rollback</summary><div id="runCheckpointList" style="padding:0 14px 10px"></div></details></div>' +

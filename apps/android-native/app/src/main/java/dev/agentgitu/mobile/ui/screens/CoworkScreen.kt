@@ -70,6 +70,10 @@ fun CoworkScreen(
     var editingTeammate by remember { mutableStateOf<Teammate?>(null) }
     var showCreateTeammate by remember { mutableStateOf(false) }
     var showNewChatDialog by remember { mutableStateOf(false) }
+    var showNewInboxRoomDialog by remember { mutableStateOf(false) }
+    var showInboxInviteDialog by remember { mutableStateOf(false) }
+    var showInboxMembersSheet by remember { mutableStateOf(false) }
+    var showInboxInvitesSheet by remember { mutableStateOf(false) }
     var showSearch by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var filter by remember { mutableStateOf(HubFilter.ALL) }
@@ -122,7 +126,14 @@ fun CoworkScreen(
             },
             onSearchChange = { searchQuery = it },
             onOpenRoster = { showRoster = true },
-            onNewChat = { showNewChatDialog = true },
+            onNewChat = {
+                if (filter == HubFilter.INBOX) showNewInboxRoomDialog = true
+                else showNewChatDialog = true
+            },
+            onNewInboxRoom = { showNewInboxRoomDialog = true },
+            onInviteInbox = { showInboxInviteDialog = true },
+            onOpenInboxMembers = { showInboxMembersSheet = true },
+            onOpenInboxInvites = { showInboxInvitesSheet = true },
         )
     }
 
@@ -134,6 +145,46 @@ fun CoworkScreen(
                 showNewChatDialog = false
                 vm.createConversation(memberIds, title, chiefId)
             },
+        )
+    }
+
+    if (showNewInboxRoomDialog) {
+        CreateInboxRoomDialog(
+            state = state,
+            vm = vm,
+            onDismiss = { showNewInboxRoomDialog = false },
+        )
+    }
+
+    if (showInboxInviteDialog) {
+        CreateInboxInviteDialog(
+            state = state,
+            vm = vm,
+            onDismiss = { showInboxInviteDialog = false },
+        )
+    }
+
+    if (showInboxMembersSheet) {
+        InboxMembersSheet(
+            state = state,
+            vm = vm,
+            onInviteClick = {
+                showInboxMembersSheet = false
+                showInboxInviteDialog = true
+            },
+            onDismiss = { showInboxMembersSheet = false },
+        )
+    }
+
+    if (showInboxInvitesSheet) {
+        InboxInvitesSheet(
+            state = state,
+            vm = vm,
+            onCreateClick = {
+                showInboxInvitesSheet = false
+                showInboxInviteDialog = true
+            },
+            onDismiss = { showInboxInvitesSheet = false },
         )
     }
 
@@ -165,6 +216,10 @@ private fun CoworkHubContent(
     onSearchChange: (String) -> Unit,
     onOpenRoster: () -> Unit,
     onNewChat: () -> Unit,
+    onNewInboxRoom: () -> Unit,
+    onInviteInbox: () -> Unit,
+    onOpenInboxMembers: () -> Unit,
+    onOpenInboxInvites: () -> Unit,
 ) {
     val s = LocalStitchPalette.current
     val hostLabel = remember(state.serverUrl, state.connectedAgentName) {
@@ -418,17 +473,69 @@ private fun CoworkHubContent(
                 }
             }
 
+            // Owner Inbox Hub Controls (New Room · Invite Human · Members · Invites)
+            if (filter == HubFilter.INBOX && state.inboxState?.role != "member") {
+                item(key = "inbox_actions") {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        InboxChipPill(
+                            label = "New Room",
+                            selected = true,
+                            icon = Icons.Default.Add,
+                            onClick = onNewInboxRoom,
+                        )
+                        InboxChipPill(
+                            label = "Invite Human",
+                            selected = false,
+                            icon = Icons.Default.PersonAdd,
+                            onClick = onInviteInbox,
+                        )
+                        InboxChipPill(
+                            label = "Members (${state.inboxState?.members?.size ?: 0})",
+                            selected = false,
+                            icon = Icons.Default.Shield,
+                            onClick = onOpenInboxMembers,
+                        )
+                        InboxChipPill(
+                            label = "Invites (${state.inboxState?.invites?.size ?: 0})",
+                            selected = false,
+                            icon = Icons.Default.Link,
+                            onClick = onOpenInboxInvites,
+                        )
+                    }
+                }
+            }
+
             // Separated Thread Cards
             if (filteredConvs.isEmpty() && filteredInboxRooms.isEmpty()) {
                 item(key = "empty_hub") {
                     StitchCard(modifier = Modifier.fillMaxWidth()) {
-                        Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text("No conversations here yet", style = MaterialTheme.typography.titleMedium, color = s.onSurface)
+                        Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text(
-                                "Tap the compose button above or any teammate avatar to start a Cowork thread.",
+                                text = if (filter == HubFilter.INBOX) "No Inbox rooms yet" else "No conversations here yet",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = s.onSurface,
+                            )
+                            Text(
+                                text = if (filter == HubFilter.INBOX) {
+                                    "Create a shared Inbox room to collaborate with clients and AI teammates, take private notes, and delegate coding tasks."
+                                } else {
+                                    "Tap the compose button above or any teammate avatar to start a Cowork thread."
+                                },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = s.onSurfaceVariant,
                             )
+                            if (filter == HubFilter.INBOX && state.inboxState?.role != "member") {
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    StitchPrimaryButton(text = "New Room", icon = Icons.Default.Add, onClick = onNewInboxRoom)
+                                    StitchSecondaryButton(text = "Invite", icon = Icons.Default.PersonAdd, onClick = onInviteInbox)
+                                }
+                            }
                         }
                     }
                 }
@@ -525,18 +632,44 @@ private fun CoworkHubContent(
                                     .background(s.surfaceContainer),
                                 contentAlignment = Alignment.Center,
                             ) {
-                                Icon(Icons.Default.Group, contentDescription = null, tint = s.onSurfaceVariant, modifier = Modifier.size(22.dp))
+                                Icon(
+                                    imageVector = if (room.agentTriggerMode == "watch") Icons.Default.Visibility else Icons.Default.Group,
+                                    contentDescription = null,
+                                    tint = s.onSurfaceVariant,
+                                    modifier = Modifier.size(22.dp),
+                                )
                             }
                             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                ) {
+                                    Text(
+                                        text = room.title.ifBlank { "Shared Room" },
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = s.onSurface,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        if (room.pendingApprovalCount > 0) {
+                                            StitchBadge(
+                                                text = "${room.pendingApprovalCount} approval",
+                                                tone = BadgeTone.WARNING,
+                                            )
+                                        } else if (room.agentTriggerMode == "watch") {
+                                            StitchBadge(text = "Watch", tone = BadgeTone.PRIMARY)
+                                        }
+                                    }
+                                }
                                 Text(
-                                    text = room.title.ifBlank { "Shared Room" },
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = s.onSurface,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                Text(
-                                    text = "Shared Inbox • ${room.memberIds.size} collaborators • Tool policy: ${room.toolPolicyOverride ?: "default"}",
+                                    text = buildString {
+                                        append("Shared Inbox • ${room.memberIds.size} guests • ${room.activeAgentIds.size} agents")
+                                        val items = room.noteCount + room.openTaskCount
+                                        if (items > 0) append(" • $items notes/tasks")
+                                    },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = s.onSurfaceVariant,
                                     maxLines = 2,

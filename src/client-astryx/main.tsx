@@ -247,11 +247,13 @@ function AstryxApp() {
   }, [syncFromHost]);
 
   useEffect(() => {
-    if (!profileState.open && !settingsState.open) return;
+    if (!profileState.open && !settingsState.open && !inboxOpen) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       if (editState.open || switcherOpen || cloudDialogOpen) return;
-      if (profileState.open) {
+      if (inboxOpen) {
+        setInboxOpen(false);
+      } else if (profileState.open) {
         closeProfile();
       } else if (settingsState.open) {
         closeSettings();
@@ -288,7 +290,7 @@ function AstryxApp() {
   return (
     <Theme theme={themes[defaultThemeSlug]} mode={themeMode}>
       <LayerProvider>
-        {desktopCloudBridge && !settingsState.open && !profileState.open ? (
+        {desktopCloudBridge && !settingsState.open && !profileState.open && !inboxOpen ? (
           <DesktopAgentBar
             cloudBridge={desktopCloudBridge}
             cloudStatus={cloudStatus}
@@ -453,7 +455,22 @@ function AstryxApp() {
           />
         ) : null}
         {inboxOpen ? (
-          <InboxView onClose={() => setInboxOpen(false)} />
+          <InboxView
+            onClose={() => setInboxOpen(false)}
+            onSwitchToCowork={() => {
+              setInboxOpen(false);
+              getHostBridge()?.openCowork?.();
+            }}
+            onSwitchToCode={() => {
+              setInboxOpen(false);
+              getHostBridge()?.openHome?.();
+            }}
+            onOpenSettings={() => {
+              setInboxOpen(false);
+              getHostBridge()?.setSettingSection('overview');
+              setSettingsState({open: true, section: 'overview'});
+            }}
+          />
         ) : null}
         <A2uiPortalHost targets={a2uiTargets} />
       </LayerProvider>
@@ -462,7 +479,18 @@ function AstryxApp() {
 }
 
 function StandaloneInboxApp() {
-  const [themeMode] = useState<'light' | 'dark'>(() => readDomThemeMode());
+  const [themeMode, setThemeMode] = useState<'light' | 'dark'>(() =>
+    readDomThemeMode(),
+  );
+  useEffect(() => {
+    const syncTheme = () => setThemeMode(readDomThemeMode());
+    const observer = new MutationObserver(syncTheme);
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme'],
+    });
+    return () => observer.disconnect();
+  }, []);
   const theme = themes[defaultThemeSlug];
   return (
     <Theme theme={theme} mode={themeMode}>

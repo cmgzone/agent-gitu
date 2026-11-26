@@ -670,17 +670,35 @@ class GituApiClient(
 
     suspend fun inboxState(): InboxStateResponse = request("/api/inbox/state")
 
-    suspend fun inboxMessages(roomId: String): List<InboxMessage> =
-        request<InboxMessagesResponse>("/api/inbox/rooms/${encodeQuery(roomId)}/messages").messages
+    suspend fun inboxMessagesResponse(roomId: String): InboxMessagesResponse =
+        request("/api/inbox/rooms/${encodeQuery(roomId)}/messages")
 
-    suspend fun sendInboxMessage(roomId: String, text: String): JsonElement =
+    suspend fun inboxMessages(roomId: String): List<InboxMessage> =
+        inboxMessagesResponse(roomId).messages
+
+    suspend fun sendInboxMessage(
+        roomId: String,
+        text: String,
+        visibility: String = "public",
+    ): JsonElement =
         request(
             "/api/inbox/rooms/${encodeQuery(roomId)}/messages",
             method = "POST",
-            body = buildJsonObject { put("text", text) },
+            body = buildJsonObject {
+                put("text", text)
+                if (visibility == "owner_only") put("visibility", "owner_only")
+            },
         )
 
-    suspend fun createInboxRoom(title: String, kind: String = "group", agentIds: List<String> = emptyList()): JsonElement =
+    suspend fun createInboxRoom(
+        title: String,
+        kind: String = "group",
+        agentIds: List<String> = emptyList(),
+        memberIds: List<String> = emptyList(),
+        agentTriggerMode: String = if (kind == "group") "mention" else "auto",
+        notesVisibility: String = "owner_only",
+        projectPath: String? = null,
+    ): InboxCreateRoomResponse =
         request(
             "/api/inbox/rooms",
             method = "POST",
@@ -688,17 +706,229 @@ class GituApiClient(
                 put("title", title)
                 put("kind", kind)
                 put("activeAgentIds", JsonArray(agentIds.map { JsonPrimitive(it) }))
+                if (memberIds.isNotEmpty()) put("memberIds", JsonArray(memberIds.map { JsonPrimitive(it) }))
+                put("agentTriggerMode", agentTriggerMode)
+                put("notesVisibility", notesVisibility)
+                if (!projectPath.isNullOrBlank()) put("projectPath", projectPath.trim())
             },
         )
 
-    suspend fun createInboxInvite(label: String, scopeType: String = "workspace", toolPolicy: String = "read_only"): JsonElement =
+    suspend fun updateInboxRoom(
+        roomId: String,
+        title: String? = null,
+        memberIds: List<String>? = null,
+        activeAgentIds: List<String>? = null,
+        agentTriggerMode: String? = null,
+        toolPolicyOverride: String? = null,
+        clearToolPolicyOverride: Boolean = false,
+        notesVisibility: String? = null,
+        projectPath: String? = null,
+        clearProjectPath: Boolean = false,
+    ): JsonElement =
+        request(
+            "/api/inbox/rooms/${encodeQuery(roomId)}",
+            method = "PATCH",
+            body = buildJsonObject {
+                if (title != null) put("title", title)
+                if (memberIds != null) put("memberIds", JsonArray(memberIds.map { JsonPrimitive(it) }))
+                if (activeAgentIds != null) put("activeAgentIds", JsonArray(activeAgentIds.map { JsonPrimitive(it) }))
+                if (agentTriggerMode != null) put("agentTriggerMode", agentTriggerMode)
+                if (clearToolPolicyOverride) put("toolPolicyOverride", "")
+                else if (toolPolicyOverride != null) put("toolPolicyOverride", toolPolicyOverride)
+                if (notesVisibility != null) put("notesVisibility", notesVisibility)
+                if (clearProjectPath) put("projectPath", "")
+                else if (projectPath != null) put("projectPath", projectPath)
+            },
+        )
+
+    suspend fun deleteInboxRoom(roomId: String): JsonElement =
+        request(
+            "/api/inbox/rooms/${encodeQuery(roomId)}",
+            method = "DELETE",
+        )
+
+    suspend fun inboxWorkspace(roomId: String): InboxWorkspaceResponse =
+        request("/api/inbox/rooms/${encodeQuery(roomId)}/workspace")
+
+    suspend fun summarizeInboxMeeting(
+        roomId: String,
+        focus: String? = null,
+    ): InboxSummarizeResponse {
+        val raw = executeRawJson(
+            path = "/api/inbox/rooms/${encodeQuery(roomId)}/summarize",
+            method = "POST",
+            body = buildJsonObject {
+                if (!focus.isNullOrBlank()) put("focus", focus.trim())
+            },
+            readTimeoutSeconds = 90L,
+        )
+        return json.decodeFromString(raw)
+    }
+
+    suspend fun addInboxNote(
+        roomId: String,
+        kind: String,
+        title: String,
+        content: String,
+    ): JsonElement =
+        request(
+            "/api/inbox/rooms/${encodeQuery(roomId)}/notes",
+            method = "POST",
+            body = buildJsonObject {
+                put("kind", kind)
+                put("title", title)
+                put("content", content)
+            },
+        )
+
+    suspend fun deleteInboxNote(roomId: String, noteId: String): JsonElement =
+        request(
+            "/api/inbox/rooms/${encodeQuery(roomId)}/notes/${encodeQuery(noteId)}",
+            method = "DELETE",
+        )
+
+    suspend fun shareInboxNote(
+        roomId: String,
+        noteId: String,
+        text: String? = null,
+        includeTasks: Boolean = false,
+    ): JsonElement =
+        request(
+            "/api/inbox/rooms/${encodeQuery(roomId)}/notes/${encodeQuery(noteId)}/share",
+            method = "POST",
+            body = buildJsonObject {
+                if (!text.isNullOrBlank()) put("text", text.trim())
+                put("includeTasks", includeTasks)
+            },
+        )
+
+    suspend fun addInboxTask(
+        roomId: String,
+        title: String,
+        description: String? = null,
+        kind: String = "action",
+        assignee: String? = null,
+        projectPath: String? = null,
+    ): JsonElement =
+        request(
+            "/api/inbox/rooms/${encodeQuery(roomId)}/tasks",
+            method = "POST",
+            body = buildJsonObject {
+                put("title", title)
+                if (!description.isNullOrBlank()) put("description", description.trim())
+                put("kind", kind)
+                if (!assignee.isNullOrBlank()) put("assignee", assignee.trim())
+                if (!projectPath.isNullOrBlank()) put("projectPath", projectPath.trim())
+            },
+        )
+
+    suspend fun updateInboxTask(
+        roomId: String,
+        taskId: String,
+        status: String? = null,
+        title: String? = null,
+        kind: String? = null,
+        assignee: String? = null,
+    ): JsonElement =
+        request(
+            "/api/inbox/rooms/${encodeQuery(roomId)}/tasks/${encodeQuery(taskId)}",
+            method = "PATCH",
+            body = buildJsonObject {
+                if (status != null) put("status", status)
+                if (title != null) put("title", title)
+                if (kind != null) put("kind", kind)
+                if (assignee != null) put("assignee", assignee)
+            },
+        )
+
+    suspend fun deleteInboxTask(roomId: String, taskId: String): JsonElement =
+        request(
+            "/api/inbox/rooms/${encodeQuery(roomId)}/tasks/${encodeQuery(taskId)}",
+            method = "DELETE",
+        )
+
+    suspend fun delegateInboxTaskCode(
+        roomId: String,
+        taskId: String,
+        projectPath: String? = null,
+        mode: String = "agent",
+    ): InboxDelegateCodeResponse =
+        request(
+            "/api/inbox/rooms/${encodeQuery(roomId)}/tasks/${encodeQuery(taskId)}/delegate-code",
+            method = "POST",
+            body = buildJsonObject {
+                if (!projectPath.isNullOrBlank()) put("projectPath", projectPath.trim())
+                put("mode", mode)
+            },
+        )
+
+    suspend fun delegateInboxTaskSubAgent(
+        roomId: String,
+        taskId: String,
+        role: String = "research-specialist",
+        saveAsNote: Boolean = true,
+    ): InboxDelegateSubAgentResponse {
+        val raw = executeRawJson(
+            path = "/api/inbox/rooms/${encodeQuery(roomId)}/tasks/${encodeQuery(taskId)}/delegate-subagent",
+            method = "POST",
+            body = buildJsonObject {
+                put("role", role)
+                put("saveAsNote", saveAsNote)
+            },
+            readTimeoutSeconds = 90L,
+        )
+        return json.decodeFromString(raw)
+    }
+
+    suspend fun createInboxInvite(
+        label: String,
+        scopeType: String = "workspace",
+        toolPolicy: String = "read_only",
+        roomId: String? = null,
+        targetEmail: String? = null,
+        defaultAgentIds: List<String> = emptyList(),
+        maxUses: Int = 1,
+        expiresInDays: Int = 7,
+    ): InboxCreateInviteResponse =
         request(
             "/api/inbox/invites",
             method = "POST",
             body = buildJsonObject {
-                put("label", label)
-                put("scopeType", scopeType)
+                if (label.isNotBlank()) put("label", label)
+                put("scopeType", if (!roomId.isNullOrBlank()) "group" else scopeType)
+                if (!roomId.isNullOrBlank()) put("roomId", roomId)
+                if (!targetEmail.isNullOrBlank()) put("targetEmail", targetEmail.trim())
+                if (defaultAgentIds.isNotEmpty()) {
+                    put("defaultAgentIds", JsonArray(defaultAgentIds.map { JsonPrimitive(it) }))
+                }
                 put("toolPolicy", toolPolicy)
+                put("maxUses", maxUses.coerceAtLeast(1))
+                put("expiresInDays", expiresInDays.coerceAtLeast(1))
+            },
+        )
+
+    suspend fun revokeInboxInvite(inviteId: String): JsonElement =
+        request(
+            "/api/inbox/invites/${encodeQuery(inviteId)}/revoke",
+            method = "POST",
+            body = buildJsonObject {},
+        )
+
+    suspend fun updateInboxMember(
+        memberId: String,
+        status: String? = null,
+        toolPolicy: String? = null,
+        allowedAgentIds: List<String>? = null,
+    ): JsonElement =
+        request(
+            "/api/inbox/members/${encodeQuery(memberId)}",
+            method = "PATCH",
+            body = buildJsonObject {
+                if (status != null) put("status", status)
+                if (toolPolicy != null) put("toolPolicy", toolPolicy)
+                if (allowedAgentIds != null) {
+                    put("allowedAgentIds", JsonArray(allowedAgentIds.map { JsonPrimitive(it) }))
+                }
             },
         )
 

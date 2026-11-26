@@ -1841,7 +1841,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     cwApplyCharacterTheme();
     if (!conv) {
       chat.innerHTML =
-        '<button class="workspace-search-trigger" id="cwPageSearch" aria-label="Search agents and tools" title="Search">'+cwIcon('search')+'</button>'+cwPageNavHtml('chat',cwProfileAgent())+
+        cwPageNavHtml('chat',cwProfileAgent())+
         '<div class="cw-hero">' +
           '<span class="cw-hero-ico">' + cwIcon('users') + '</span>' +
           '<h1>Your team, in one place</h1>' +
@@ -1865,10 +1865,11 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     var headAva = headAgent ? cwAva(headAgent) : '<span class="cw-ava">'+cwAvaImg({shape:'dot-orb',color:'#ff6b57'})+'</span>';
     chat.innerHTML =
       '<div class="cw-chat-head">' +
-        '<button class="cw-info-toggle" id="cwBack" aria-label="Search agents and tools" title="Search">' + cwIcon('search') + '</button>' +
+        '<button class="cw-info-toggle" id="cwBack" aria-label="Sessions and groups" title="Sessions and groups">' + cwIcon('chat') + '</button>' +
         '<nav class="cw-top-nav" aria-label="App modes">' +
           '<button type="button" id="cwCurrentChat" aria-label="Cowork mode" title="Cowork mode" aria-pressed="true"><span class="cw-chat-face" id="cwChatAvatar" aria-hidden="true">' + headAva + '</span><span>Cowork</span></button>' +
           '<button type="button" id="cwHomeBtn" aria-label="Code mode" title="Code mode">' + cwIcon('home') + '<span>Code</span></button>' +
+          '<button type="button" id="cwInboxBtn" aria-label="Inbox mode" title="Collaborative Inbox">' + cwIcon('users') + '<span>Inbox</span></button>' +
         '</nav>' +
         '<div class="cw-team-strip" id="cwTeamStrip" hidden aria-live="polite" aria-label="Team collaboration"></div>' +
         '<div class="cw-visually-hidden"><span id="cwChatTitle">' + esc(activeThread ? activeThread.title : conv.title) + '</span>' +
@@ -1884,6 +1885,9 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
           '<button type="button" class="cw-tool-item" id="cwInfoBtn" aria-label="Agent profile" title="Agent profile" aria-controls="cwChat" aria-pressed="false">' + cwIcon('user') + '<span>Profile</span></button>' +
           '<button type="button" class="cw-tool-item" id="cwInboxMenuBtn" aria-label="Inbox" title="Collaborative Inbox (Humans & Agents)">' + cwIcon('chat') + '<span>Inbox</span></button>' +
           '<button type="button" class="cw-tool-item" id="cwConnectionsMenuBtn" aria-label="Connections" title="Connections">' + cwIcon('link') + '<span>Connections</span></button>' +
+          '<button type="button" class="cw-tool-item" id="cwSkillsMenuBtn" aria-label="Skills" title="Reusable agent skills">' + cwIcon('bolt') + '<span>Skills</span></button>' +
+          '<button type="button" class="cw-tool-item" id="cwScheduledMenuBtn" aria-label="Scheduled" title="Scheduled tasks and reminders">' + cwIcon('clock') + '<span>Scheduled</span></button>' +
+          '<button type="button" class="cw-tool-item" id="cwSettingsMenuBtn" aria-label="Settings" title="Workspace settings">' + cwIcon('sliders') + '<span>Settings</span></button>' +
           '<button type="button" class="cw-tool-item" id="cwAssistantSettings" data-pa-settings aria-label="Personal assistant preferences" title="Personal assistant">' + cwIcon('crown') + '<span>Personal assistant</span></button>' +
           '<button type="button" class="cw-tool-item" id="cwChiefMenuBtn" aria-label="Chief of Staff authority and decision log" title="Chief of Staff">' + cwIcon('sliders') + '<span>Chief of Staff</span><span class="cw-tool-count" id="cwChiefRuleCount" hidden style="margin-left:auto;font-size:11px;font-weight:600;padding:1px 7px;border-radius:999px;background:var(--card2);border:1px solid var(--border);color:var(--muted)"></span></button>' +
           cwSessionNavHtml() +
@@ -1949,10 +1953,13 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       });
     }
     var agentsMenuBtn = $('cwAgentsMenuBtn'); if (agentsMenuBtn) agentsMenuBtn.onclick = function () { var tm = $('cwToolsMenu'); if (tm && typeof tm.hidePopover === 'function') try { tm.hidePopover(); } catch (e) {} if (typeof cwOpenAgentSwitcherModal === 'function') cwOpenAgentSwitcherModal(); };
-    var groupsMenuBtn = $('cwGroupsMenuBtn'); if (groupsMenuBtn) groupsMenuBtn.onclick = function () { if (typeof wsOpen === 'function') wsOpen('cowork', 'Groups'); };
+    var groupsMenuBtn = $('cwGroupsMenuBtn'); if (groupsMenuBtn) groupsMenuBtn.onclick = function () { if (typeof cwSessionsModal === 'function') cwSessionsModal('groups'); else if (typeof cwGroupModal === 'function') cwGroupModal(); };
     var infoBtn = $('cwInfoBtn'); if (infoBtn) infoBtn.onclick = function () { cwOpenProfile(); };
     var inboxMenuBtn = $('cwInboxMenuBtn'); if (inboxMenuBtn) inboxMenuBtn.onclick = function () { if (window.__gituAstryx && typeof window.__gituAstryx.openInbox === 'function') window.__gituAstryx.openInbox(); else window.location.assign('/inbox'); };
     var connMenuBtn = $('cwConnectionsMenuBtn'); if (connMenuBtn) connMenuBtn.onclick = function () { cwOpenConnections(); };
+    var skillsMenuBtn = $('cwSkillsMenuBtn'); if (skillsMenuBtn) skillsMenuBtn.onclick = function () { if (typeof openSettings === 'function') openSettings('skills'); };
+    var schedMenuBtn = $('cwScheduledMenuBtn'); if (schedMenuBtn) schedMenuBtn.onclick = function () { if (typeof openSettings === 'function') openSettings('cron'); };
+    var setMenuBtn = $('cwSettingsMenuBtn'); if (setMenuBtn) setMenuBtn.onclick = function () { if (typeof openSettings === 'function') openSettings('overview'); };
     var chiefMenuBtn = $('cwChiefMenuBtn');
     if (chiefMenuBtn) {
       chiefMenuBtn.onclick = function () {
@@ -1977,7 +1984,16 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     cwSyncPanels();
     cwRenderWidgets();
     var back = $('cwBack');
-    if (back) back.onclick = function () { wsOpen('cowork'); };
+    if (back) back.onclick = function () {
+      var root = $('cw'), rail = root && root.querySelector ? root.querySelector('.cw-rail') : null;
+      if (rail) {
+        if (window.innerWidth <= 720) root.classList.add('rail-open');
+        else { cw.railCollapsed = false; cwSavePanelPreferences(); }
+        cwSyncPanels();
+      } else if (typeof cwSessionsModal === 'function') {
+        cwSessionsModal('sessions');
+      }
+    };
     var input = $('cwInput');
     cwRestoreDraft(input);
     cwRenderWidgetIntent();

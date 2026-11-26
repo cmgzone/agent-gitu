@@ -36,7 +36,10 @@ export const COWORK_NOW_CSS = String.raw`
   .cw .cw-chat-head { position:absolute; inset:0 0 auto; height:0; display:block; padding:0; border:0; background:transparent; box-shadow:none; backdrop-filter:none; pointer-events:none; }
   .cw .cw-chat-head .cw-persona-status { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; background:transparent; border:0; box-shadow:none; backdrop-filter:none; -webkit-backdrop-filter:none; }
   .cw .cw-chat-head .cw-persona-status > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .cw .cw-chat-head #cwBack { position:absolute; left:12px; top:calc(12px + env(safe-area-inset-top, 0px)); }
+  .cw .cw-chat-head #cwBack { position:absolute; left:12px; top:calc(12px + env(safe-area-inset-top, 0px)); display:inline-flex; align-items:center; justify-content:center; width:36px; height:36px; padding:0; border:1px solid var(--border); border-radius:50%; background:var(--card); color:var(--muted); cursor:pointer; pointer-events:auto; box-shadow:var(--shadow); transition:background .18s ease,color .18s ease,border-color .18s ease,transform .14s cubic-bezier(.16,1,.3,1); }
+  .cw .cw-chat-head #cwBack:hover { color:var(--text); border-color:var(--border2); background:var(--hover); }
+  .cw .cw-chat-head #cwBack:active { transform:scale(.96); }
+  .cw .cw-chat-head #cwBack svg { width:16px; height:16px; }
   .cw .cw-chat-head .cw-tools-toggle { position:absolute; right:12px; top:calc(12px + env(safe-area-inset-top, 0px)); display:inline-flex; align-items:center; justify-content:center; width:36px; height:36px; padding:0; border:1px solid var(--border); border-radius:50%; background:var(--card); color:var(--muted); cursor:pointer; pointer-events:auto; box-shadow:var(--shadow); transition:background .18s ease,color .18s ease,border-color .18s ease,transform .14s cubic-bezier(.16,1,.3,1); }
   .cw .cw-chat-head .cw-tools-toggle:hover { color:var(--text); border-color:var(--border2); background:var(--hover); }
   .cw .cw-chat-head .cw-tools-toggle:active { transform:scale(.96); }
@@ -100,10 +103,10 @@ export const COWORK_NOW_CSS = String.raw`
 
 export const COWORK_NOW_JS = String.raw`
   function cwBindTopNav() {
-    var home=$('cwHomeBtn'),chat=$('cwCurrentChat');
+    var home=$('cwHomeBtn'),chat=$('cwCurrentChat'),inbox=$('cwInboxBtn');
     if(home)home.onclick=cwExit;
-    var search=$('cwPageSearch');if(search)search.onclick=function(){wsOpen('cowork');};
-    var sessions=$('cwSessionsBtn');if(sessions)sessions.onclick=function(){wsOpen('cowork','Sessions');};
+    if(inbox)inbox.onclick=function(){if(typeof cwSaveDraft==='function')cwSaveDraft();if(typeof window!=='undefined'&&window.__gituAstryx&&typeof window.__gituAstryx.openInbox==='function')window.__gituAstryx.openInbox();else if(typeof window!=='undefined')window.location.assign('/inbox');};
+    var sessions=$('cwSessionsBtn');if(sessions)sessions.onclick=function(){if(typeof cwSessionsModal==='function')cwSessionsModal('sessions');};
     var createSession=$('cwNewSessionBtn');if(createSession)createSession.onclick=cwNewSessionModal;
     var profile=$('cwInfoBtn');if(profile)profile.onclick=function(){cwOpenProfile();};
     if(chat)chat.onclick=function(){

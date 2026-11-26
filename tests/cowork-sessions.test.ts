@@ -97,9 +97,9 @@ describe('Cowork session controls', () => {
 
   it('connects the visible session controls to creation and session management', () => {
     const f = fixture(), elements: Record<string, any> = { cwSessionsBtn: {}, cwNewSessionBtn: {} };
-    f.context.$ = (id: string) => elements[id]; f.context.wsOpen = vi.fn();
+    f.context.$ = (id: string) => elements[id]; f.context.cwSessionsModal = vi.fn();
     new Script(COWORK_NOW_JS).runInContext(f.context); f.context.cwBindTopNav();
-    elements.cwSessionsBtn.onclick(); expect(f.context.wsOpen).toHaveBeenCalledWith('cowork', 'Sessions');
+    elements.cwSessionsBtn.onclick(); expect(f.context.cwSessionsModal).toHaveBeenCalledWith('sessions');
     elements.cwNewSessionBtn.onclick(); expect(f.modal.innerHTML).toContain('Create session');
     expect(f.context.cwSessionNavHtml()).toContain('aria-label="New session"');
   });

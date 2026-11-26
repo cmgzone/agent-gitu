@@ -197,7 +197,7 @@ export const COWORK_DASHBOARD_JS = String.raw`
   }
   function cwPageNavHtml(active,agent) {
     var inCowork=Boolean(document.body&&document.body.classList&&document.body.classList.contains('cowork'));
-    return (active!=='chat'?'<button class="workspace-search-trigger" id="cwPageSearch" aria-label="Search workspace" title="Search">'+cwIcon('search')+'</button>':'')+'<div class="cw-page-nav"><nav class="cw-top-nav" aria-label="App modes"><button type="button" id="cwCurrentChat" aria-pressed="'+inCowork+'"><span class="cw-chat-face" aria-hidden="true">'+(agent?cwAva(agent):'<span class="cw-ava"><img src="/characters/blue.png?v=opendots1" alt="" draggable="false"></span>')+'</span><span>Cowork</span></button><button type="button" id="cwHomeBtn" aria-pressed="'+(!inCowork)+'">'+cwIcon('home')+'<span>Code</span></button></nav></div>';
+    return '<div class="cw-page-nav"><nav class="cw-top-nav" aria-label="App modes"><button type="button" id="cwCurrentChat" aria-pressed="'+inCowork+'"><span class="cw-chat-face" aria-hidden="true">'+(agent?cwAva(agent):'<span class="cw-ava"><img src="/characters/blue.png?v=opendots1" alt="" draggable="false"></span>')+'</span><span>Cowork</span></button><button type="button" id="cwHomeBtn" aria-pressed="'+(!inCowork)+'">'+cwIcon('home')+'<span>Code</span></button><button type="button" id="cwInboxBtn" aria-pressed="false">'+cwIcon('users')+'<span>Inbox</span></button></nav></div>';
   }
   function cwProfileAgent() { var cw=cwEnsure(),conv=cwActiveConv();return cwAgentById((cw.profileOpen?cw.profileAgentId:cw.connectionsOpen?cw.connectionsAgentId:cw.selectedAgentId)||(conv&&(conv.chiefId||conv.memberIds[0]))); }
   function cwOpenProfile(agentId,section) {

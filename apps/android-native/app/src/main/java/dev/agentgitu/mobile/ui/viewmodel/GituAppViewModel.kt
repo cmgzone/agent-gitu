@@ -114,6 +114,13 @@ data class AppUiState(
     val inboxState: InboxStateResponse? = null,
     val selectedInboxRoomId: String? = null,
     val inboxMessages: List<InboxMessage> = emptyList(),
+    val inboxActiveAgentTurnIds: List<String> = emptyList(),
+    val inboxWatching: Boolean = false,
+    val inboxWorkspace: InboxWorkspaceResponse? = null,
+    val inboxWorkspaceLoading: Boolean = false,
+    val inboxSummarizing: Boolean = false,
+    val inboxDelegatingTaskId: String? = null,
+    val latestInboxInviteUrl: String = "",
 
     // Settings
     val homeInfo: HomeInfo? = null,
@@ -1376,60 +1383,406 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun refreshInboxWorkspace(roomId: String? = _uiState.value.selectedInboxRoomId) {
+        val client = api ?: return
+        val targetRoomId = roomId ?: return
+        viewModelScope.launch {
+            runCatching { client.inboxWorkspace(targetRoomId) }
+                .onSuccess { ws ->
+                    if (_uiState.value.selectedInboxRoomId == targetRoomId) {
+                        _uiState.update { it.copy(inboxWorkspace = ws, inboxWorkspaceLoading = false) }
+                    }
+                }
+        }
+    }
+
     fun openInboxRoom(roomId: String) {
         inboxPollJob?.cancel()
-        _uiState.update { it.copy(selectedInboxRoomId = roomId, inboxMessages = emptyList()) }
+        _uiState.update {
+            it.copy(
+                selectedInboxRoomId = roomId,
+                inboxMessages = emptyList(),
+                inboxActiveAgentTurnIds = emptyList(),
+                inboxWatching = false,
+                inboxWorkspace = null,
+                inboxWorkspaceLoading = true,
+            )
+        }
         val client = api ?: return
         inboxPollJob = viewModelScope.launch {
             while (isActive) {
-                runCatching { client.inboxMessages(roomId) }
-                    .onSuccess { msgs -> _uiState.update { it.copy(inboxMessages = msgs) } }
-                delay(3_000L)
+                runCatching { client.inboxMessagesResponse(roomId) }
+                    .onSuccess { res ->
+                        _uiState.update {
+                            it.copy(
+                                inboxMessages = res.messages,
+                                inboxActiveAgentTurnIds = res.activeAgentTurnIds,
+                                inboxWatching = res.watching,
+                            )
+                        }
+                    }
+                runCatching { client.inboxWorkspace(roomId) }
+                    .onSuccess { ws ->
+                        _uiState.update { it.copy(inboxWorkspace = ws, inboxWorkspaceLoading = false) }
+                    }
+                    .onFailure {
+                        _uiState.update { it.copy(inboxWorkspaceLoading = false) }
+                    }
+                runCatching { client.inboxState() }
+                    .onSuccess { state -> _uiState.update { it.copy(inboxState = state) } }
+                delay(2_500L)
             }
         }
     }
 
     fun closeInboxRoom() {
         inboxPollJob?.cancel()
-        _uiState.update { it.copy(selectedInboxRoomId = null) }
+        _uiState.update {
+            it.copy(
+                selectedInboxRoomId = null,
+                inboxActiveAgentTurnIds = emptyList(),
+                inboxWatching = false,
+                inboxWorkspace = null,
+                inboxWorkspaceLoading = false,
+            )
+        }
         refreshInbox()
     }
 
-    fun sendInboxMessage(text: String) {
+    fun sendInboxMessage(text: String, privateWhisper: Boolean = false) {
         val client = api ?: return
         val roomId = _uiState.value.selectedInboxRoomId ?: return
         if (text.isBlank()) return
+        val visibility = if (privateWhisper) "owner_only" else "public"
         viewModelScope.launch {
-            runCatching { client.sendInboxMessage(roomId, text.trim()) }
+            runCatching { client.sendInboxMessage(roomId, text.trim(), visibility = visibility) }
                 .onSuccess {
-                    runCatching { client.inboxMessages(roomId) }
-                        .onSuccess { msgs -> _uiState.update { it.copy(inboxMessages = msgs) } }
+                    runCatching { client.inboxMessagesResponse(roomId) }
+                        .onSuccess { res ->
+                            _uiState.update {
+                                it.copy(
+                                    inboxMessages = res.messages,
+                                    inboxActiveAgentTurnIds = res.activeAgentTurnIds,
+                                    inboxWatching = res.watching,
+                                )
+                            }
+                        }
+                    refreshInboxWorkspace(roomId)
                 }
                 .onFailure { handleApiError(it) }
         }
     }
 
-    fun createInboxRoom(title: String, agentIds: List<String>) {
+    fun createInboxRoom(
+        title: String,
+        agentIds: List<String>,
+        kind: String = "group",
+        memberIds: List<String> = emptyList(),
+        agentTriggerMode: String = if (kind == "group") "mention" else "auto",
+        notesVisibility: String = "owner_only",
+        projectPath: String? = null,
+        openImmediately: Boolean = true,
+    ) {
         val client = api ?: return
         if (title.isBlank()) return
         viewModelScope.launch {
-            runCatching { client.createInboxRoom(title.trim(), "group", agentIds) }
-                .onSuccess {
+            runCatching {
+                client.createInboxRoom(
+                    title = title.trim(),
+                    kind = kind,
+                    agentIds = agentIds,
+                    memberIds = memberIds,
+                    agentTriggerMode = agentTriggerMode,
+                    notesVisibility = notesVisibility,
+                    projectPath = projectPath,
+                )
+            }
+                .onSuccess { res ->
                     _uiState.update { it.copy(bannerMessage = "Inbox room created.") }
+                    refreshInbox()
+                    val createdId = res.room?.id
+                    if (openImmediately && !createdId.isNullOrBlank()) {
+                        openInboxRoom(createdId)
+                    }
+                }
+                .onFailure { handleApiError(it) }
+        }
+    }
+
+    fun updateInboxRoom(
+        roomId: String,
+        title: String? = null,
+        memberIds: List<String>? = null,
+        activeAgentIds: List<String>? = null,
+        agentTriggerMode: String? = null,
+        toolPolicyOverride: String? = null,
+        clearToolPolicyOverride: Boolean = false,
+        notesVisibility: String? = null,
+        projectPath: String? = null,
+        clearProjectPath: Boolean = false,
+    ) {
+        val client = api ?: return
+        viewModelScope.launch {
+            runCatching {
+                client.updateInboxRoom(
+                    roomId = roomId,
+                    title = title,
+                    memberIds = memberIds,
+                    activeAgentIds = activeAgentIds,
+                    agentTriggerMode = agentTriggerMode,
+                    toolPolicyOverride = toolPolicyOverride,
+                    clearToolPolicyOverride = clearToolPolicyOverride,
+                    notesVisibility = notesVisibility,
+                    projectPath = projectPath,
+                    clearProjectPath = clearProjectPath,
+                )
+            }
+                .onSuccess {
+                    refreshInbox()
+                    refreshInboxWorkspace(roomId)
+                }
+                .onFailure { handleApiError(it) }
+        }
+    }
+
+    fun deleteInboxRoom(roomId: String) {
+        val client = api ?: return
+        viewModelScope.launch {
+            runCatching { client.deleteInboxRoom(roomId) }
+                .onSuccess {
+                    _uiState.update { it.copy(bannerMessage = "Inbox room deleted.") }
+                    if (_uiState.value.selectedInboxRoomId == roomId) {
+                        closeInboxRoom()
+                    } else {
+                        refreshInbox()
+                    }
+                }
+                .onFailure { handleApiError(it) }
+        }
+    }
+
+    fun summarizeInboxMeeting(roomId: String, focus: String? = null, onComplete: (() -> Unit)? = null) {
+        val client = api ?: return
+        if (_uiState.value.inboxSummarizing) return
+        _uiState.update { it.copy(inboxSummarizing = true) }
+        viewModelScope.launch {
+            runCatching { client.summarizeInboxMeeting(roomId, focus) }
+                .onSuccess { res ->
+                    val count = res.createdTasks.size
+                    val msg = if (count > 0) {
+                        "Meeting summarized & $count task${if (count == 1) "" else "s"} saved (owner-private until shared)."
+                    } else {
+                        "Meeting summarized (owner-private until shared)."
+                    }
+                    _uiState.update { it.copy(inboxSummarizing = false, bannerMessage = msg) }
+                    refreshInboxWorkspace(roomId)
+                    refreshInbox()
+                    onComplete?.invoke()
+                }
+                .onFailure { err ->
+                    _uiState.update { it.copy(inboxSummarizing = false) }
+                    handleApiError(err)
+                }
+        }
+    }
+
+    fun addInboxNote(roomId: String, kind: String, title: String, content: String) {
+        val client = api ?: return
+        if (content.isBlank()) return
+        viewModelScope.launch {
+            runCatching { client.addInboxNote(roomId, kind, title.trim(), content.trim()) }
+                .onSuccess {
+                    refreshInboxWorkspace(roomId)
                     refreshInbox()
                 }
                 .onFailure { handleApiError(it) }
         }
     }
 
-    fun createInboxInvite(label: String, toolPolicy: String) {
+    fun deleteInboxNote(roomId: String, noteId: String) {
         val client = api ?: return
         viewModelScope.launch {
-            runCatching { client.createInboxInvite(label.trim(), "workspace", toolPolicy) }
+            runCatching { client.deleteInboxNote(roomId, noteId) }
                 .onSuccess {
-                    _uiState.update { it.copy(bannerMessage = "Invite created.") }
+                    refreshInboxWorkspace(roomId)
                     refreshInbox()
                 }
+                .onFailure { handleApiError(it) }
+        }
+    }
+
+    fun shareInboxNote(roomId: String, noteId: String, text: String, includeTasks: Boolean = false) {
+        val client = api ?: return
+        viewModelScope.launch {
+            runCatching { client.shareInboxNote(roomId, noteId, text = text, includeTasks = includeTasks) }
+                .onSuccess {
+                    _uiState.update { it.copy(bannerMessage = "Summary shared to room chat.") }
+                    runCatching { client.inboxMessagesResponse(roomId) }
+                        .onSuccess { res ->
+                            _uiState.update {
+                                it.copy(
+                                    inboxMessages = res.messages,
+                                    inboxActiveAgentTurnIds = res.activeAgentTurnIds,
+                                    inboxWatching = res.watching,
+                                )
+                            }
+                        }
+                    refreshInboxWorkspace(roomId)
+                }
+                .onFailure { handleApiError(it) }
+        }
+    }
+
+    fun addInboxTask(roomId: String, title: String, description: String?, kind: String, assignee: String?) {
+        val client = api ?: return
+        if (title.isBlank()) return
+        viewModelScope.launch {
+            runCatching { client.addInboxTask(roomId, title.trim(), description, kind, assignee) }
+                .onSuccess {
+                    refreshInboxWorkspace(roomId)
+                    refreshInbox()
+                }
+                .onFailure { handleApiError(it) }
+        }
+    }
+
+    fun updateInboxTaskStatus(roomId: String, taskId: String, status: String) {
+        val client = api ?: return
+        viewModelScope.launch {
+            runCatching { client.updateInboxTask(roomId, taskId, status = status) }
+                .onSuccess {
+                    refreshInboxWorkspace(roomId)
+                    refreshInbox()
+                }
+                .onFailure { handleApiError(it) }
+        }
+    }
+
+    fun deleteInboxTask(roomId: String, taskId: String) {
+        val client = api ?: return
+        viewModelScope.launch {
+            runCatching { client.deleteInboxTask(roomId, taskId) }
+                .onSuccess {
+                    refreshInboxWorkspace(roomId)
+                    refreshInbox()
+                }
+                .onFailure { handleApiError(it) }
+        }
+    }
+
+    fun delegateInboxTaskCode(roomId: String, taskId: String) {
+        val client = api ?: return
+        if (_uiState.value.inboxDelegatingTaskId != null) return
+        _uiState.update { it.copy(inboxDelegatingTaskId = taskId) }
+        viewModelScope.launch {
+            runCatching { client.delegateInboxTaskCode(roomId, taskId) }
+                .onSuccess { res ->
+                    _uiState.update {
+                        it.copy(
+                            inboxDelegatingTaskId = null,
+                            bannerMessage = "Delegated privately to Code (${res.runId}). Tap Open in Code to track.",
+                        )
+                    }
+                    refreshInboxWorkspace(roomId)
+                    refreshInbox()
+                    refreshAgentWorkspace()
+                }
+                .onFailure { err ->
+                    _uiState.update { it.copy(inboxDelegatingTaskId = null) }
+                    handleApiError(err)
+                }
+        }
+    }
+
+    fun delegateInboxTaskSubAgent(roomId: String, taskId: String) {
+        val client = api ?: return
+        if (_uiState.value.inboxDelegatingTaskId != null) return
+        _uiState.update { it.copy(inboxDelegatingTaskId = taskId) }
+        viewModelScope.launch {
+            runCatching { client.delegateInboxTaskSubAgent(roomId, taskId) }
+                .onSuccess {
+                    _uiState.update {
+                        it.copy(
+                            inboxDelegatingTaskId = null,
+                            bannerMessage = "Sub-agent finished and saved findings to Notes.",
+                        )
+                    }
+                    refreshInboxWorkspace(roomId)
+                    refreshInbox()
+                }
+                .onFailure { err ->
+                    _uiState.update { it.copy(inboxDelegatingTaskId = null) }
+                    handleApiError(err)
+                }
+        }
+    }
+
+    fun openInboxCodeRun(runId: String) {
+        closeInboxRoom()
+        selectTab(MainTab.CODING)
+        openRun(runId)
+    }
+
+    fun createInboxInvite(
+        label: String,
+        toolPolicy: String,
+        roomId: String? = null,
+        targetEmail: String? = null,
+        defaultAgentIds: List<String> = emptyList(),
+        maxUses: Int = 1,
+    ) {
+        val client = api ?: return
+        viewModelScope.launch {
+            runCatching {
+                client.createInboxInvite(
+                    label = label.trim(),
+                    scopeType = if (!roomId.isNullOrBlank()) "group" else "workspace",
+                    toolPolicy = toolPolicy,
+                    roomId = roomId,
+                    targetEmail = targetEmail,
+                    defaultAgentIds = defaultAgentIds,
+                    maxUses = maxUses,
+                )
+            }
+                .onSuccess { res ->
+                    _uiState.update {
+                        it.copy(
+                            latestInboxInviteUrl = res.invite?.pikpamInviteUrl.orEmpty(),
+                            bannerMessage = "Pikpam invite link created.",
+                        )
+                    }
+                    refreshInbox()
+                }
+                .onFailure { handleApiError(it) }
+        }
+    }
+
+    fun clearLatestInboxInviteUrl() {
+        _uiState.update { it.copy(latestInboxInviteUrl = "") }
+    }
+
+    fun revokeInboxInvite(inviteId: String) {
+        val client = api ?: return
+        viewModelScope.launch {
+            runCatching { client.revokeInboxInvite(inviteId) }
+                .onSuccess {
+                    _uiState.update { it.copy(bannerMessage = "Invite revoked.") }
+                    refreshInbox()
+                }
+                .onFailure { handleApiError(it) }
+        }
+    }
+
+    fun updateInboxMember(
+        memberId: String,
+        status: String? = null,
+        toolPolicy: String? = null,
+        allowedAgentIds: List<String>? = null,
+    ) {
+        val client = api ?: return
+        viewModelScope.launch {
+            runCatching { client.updateInboxMember(memberId, status, toolPolicy, allowedAgentIds) }
+                .onSuccess { refreshInbox() }
                 .onFailure { handleApiError(it) }
         }
     }

@@ -5,7 +5,47 @@ import type { IncomingMessage } from 'node:http';
 import type { CoworkAgent } from './store.js';
 
 export type InboxToolPolicy = 'chat_only' | 'read_only' | 'standard' | 'custom';
-export type InboxAgentTriggerMode = 'mention' | 'auto';
+export type InboxAgentTriggerMode = 'mention' | 'auto' | 'watch';
+export type InboxMessageVisibility = 'public' | 'owner_only';
+export type InboxNotesVisibility = 'owner_only' | 'shared_readonly';
+export type InboxNoteKind = 'note' | 'summary' | 'decision';
+export type InboxTaskKind = 'action' | 'coding' | 'research';
+export type InboxTaskStatus = 'pending_approval' | 'todo' | 'in_progress' | 'done';
+
+export interface InboxRoomNote {
+  id: string;
+  roomId: string;
+  kind: InboxNoteKind;
+  title: string;
+  content: string;
+  createdByType: 'owner' | 'agent';
+  createdById: string;
+  createdByName: string;
+  sharedToChat?: boolean;
+  sharedMessageId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface InboxRoomTask {
+  id: string;
+  roomId: string;
+  title: string;
+  description?: string;
+  kind: InboxTaskKind;
+  status: InboxTaskStatus;
+  assignee?: string;
+  projectPath?: string;
+  requestedByType: 'owner' | 'member' | 'agent';
+  requestedByName: string;
+  /** Private Code run ID once delegated (strictly owner-only). */
+  codeRunId?: string;
+  /** Latest outcome summary from a coding run or research sub-agent. */
+  delegationSummary?: string;
+  subAgentRole?: string;
+  createdAt: string;
+  updatedAt: string;
+}
 
 export interface InboxCustomPerms {
   allowShell?: boolean;
@@ -60,6 +100,10 @@ export interface InboxRoom {
   agentTriggerMode: InboxAgentTriggerMode;
   toolPolicyOverride?: InboxToolPolicy;
   customPermsOverride?: InboxCustomPerms;
+  /** Visibility of room notes, summaries, and saved tasks. Defaults to owner_only. */
+  notesVisibility?: InboxNotesVisibility;
+  /** Optional linked workspace project path for coding delegations from this room. */
+  projectPath?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -72,6 +116,8 @@ export interface InboxMessage {
   senderId: string;
   senderName: string;
   text: string;
+  /** 'owner_only' messages are private owner <-> agent whispers, never sent to invited guests. */
+  visibility?: InboxMessageVisibility;
   mentionedAgentIds?: string[];
   ts: string;
 }
@@ -89,6 +135,8 @@ interface InboxData {
   invites: InboxInvite[];
   rooms: InboxRoom[];
   messages: Record<string, InboxMessage[]>;
+  notes: Record<string, InboxRoomNote[]>;
+  tasks: Record<string, InboxRoomTask[]>;
   sessions: StoredMemberSession[];
 }
 
@@ -98,8 +146,44 @@ const EMPTY_DATA: InboxData = {
   invites: [],
   rooms: [],
   messages: {},
+  notes: {},
+  tasks: {},
   sessions: [],
 };
+
+/**
+ * Strip owner-private workspace metadata from a room before returning it to
+ * invited members (e.g. linked local project paths and silent watch mode
+ * never leave the owner view).
+ */
+export function sanitizeInboxRoomForMember(room: InboxRoom): InboxRoom {
+  const { projectPath: _hiddenPath, ...rest } = room;
+  return {
+    ...rest,
+    agentTriggerMode: room.agentTriggerMode === 'watch' ? 'mention' : room.agentTriggerMode,
+    notesVisibility: room.notesVisibility ?? 'owner_only',
+  };
+}
+
+/**
+ * Strip private coding run IDs, local project paths, and internal delegation
+ * output from a task when a room's notes/tasks are explicitly shared read-only.
+ */
+export function sanitizeInboxTaskForMember(task: InboxRoomTask): InboxRoomTask {
+  return {
+    id: task.id,
+    roomId: task.roomId,
+    title: task.title,
+    ...(task.description ? { description: task.description } : {}),
+    kind: task.kind,
+    status: task.status === 'pending_approval' ? 'todo' : task.status,
+    ...(task.assignee ? { assignee: task.assignee } : {}),
+    requestedByType: task.requestedByType,
+    requestedByName: task.requestedByName,
+    createdAt: task.createdAt,
+    updatedAt: task.updatedAt,
+  };
+}
 
 export const INBOX_MEMBER_COOKIE = 'gitu_inbox_member';
 const MEMBER_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -194,6 +278,8 @@ export class InboxStore {
         invites: [],
         rooms: [],
         messages: {},
+        notes: {},
+        tasks: {},
         sessions: [],
       };
       return this.cache;
@@ -206,10 +292,12 @@ export class InboxStore {
         invites: Array.isArray(parsed.invites) ? parsed.invites : [],
         rooms: Array.isArray(parsed.rooms) ? parsed.rooms : [],
         messages: parsed.messages && typeof parsed.messages === 'object' ? parsed.messages : {},
+        notes: parsed.notes && typeof parsed.notes === 'object' ? parsed.notes : {},
+        tasks: parsed.tasks && typeof parsed.tasks === 'object' ? parsed.tasks : {},
         sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
       };
     } catch {
-      this.cache = { ...EMPTY_DATA, members: [], invites: [], rooms: [], messages: {}, sessions: [] };
+      this.cache = { ...EMPTY_DATA, members: [], invites: [], rooms: [], messages: {}, notes: {}, tasks: {}, sessions: [] };
     }
     return this.cache;
   }
@@ -385,6 +473,8 @@ export class InboxStore {
     agentTriggerMode?: InboxAgentTriggerMode;
     toolPolicyOverride?: InboxToolPolicy;
     customPermsOverride?: InboxCustomPerms;
+    notesVisibility?: InboxNotesVisibility;
+    projectPath?: string;
   }): InboxRoom {
     const data = this.load();
     const now = new Date().toISOString();
@@ -397,18 +487,34 @@ export class InboxStore {
       agentTriggerMode: input.agentTriggerMode ?? (input.kind === 'group' ? 'mention' : 'auto'),
       ...(input.toolPolicyOverride ? { toolPolicyOverride: input.toolPolicyOverride } : {}),
       ...(input.customPermsOverride ? { customPermsOverride: input.customPermsOverride } : {}),
+      notesVisibility: input.notesVisibility ?? 'owner_only',
+      ...(input.projectPath?.trim() ? { projectPath: input.projectPath.trim() } : {}),
       createdAt: now,
       updatedAt: now,
     };
     data.rooms.push(room);
     data.messages[room.id] = [];
+    data.notes[room.id] = [];
+    data.tasks[room.id] = [];
     this.save();
     return room;
   }
 
   updateRoom(
     id: string,
-    patch: Partial<Pick<InboxRoom, 'title' | 'memberIds' | 'activeAgentIds' | 'agentTriggerMode' | 'toolPolicyOverride' | 'customPermsOverride'>>,
+    patch: Partial<
+      Pick<
+        InboxRoom,
+        | 'title'
+        | 'memberIds'
+        | 'activeAgentIds'
+        | 'agentTriggerMode'
+        | 'toolPolicyOverride'
+        | 'customPermsOverride'
+        | 'notesVisibility'
+        | 'projectPath'
+      >
+    >,
   ): InboxRoom | undefined {
     const room = this.getRoom(id);
     if (!room) return undefined;
@@ -418,6 +524,12 @@ export class InboxStore {
     if (patch.agentTriggerMode !== undefined) room.agentTriggerMode = patch.agentTriggerMode;
     if ('toolPolicyOverride' in patch) room.toolPolicyOverride = patch.toolPolicyOverride;
     if ('customPermsOverride' in patch) room.customPermsOverride = patch.customPermsOverride;
+    if (patch.notesVisibility === 'owner_only' || patch.notesVisibility === 'shared_readonly') {
+      room.notesVisibility = patch.notesVisibility;
+    }
+    if ('projectPath' in patch) {
+      room.projectPath = patch.projectPath?.trim() || undefined;
+    }
     room.updatedAt = new Date().toISOString();
     this.save();
     return room;
@@ -428,6 +540,8 @@ export class InboxStore {
     const before = data.rooms.length;
     data.rooms = data.rooms.filter((r) => r.id !== id);
     delete data.messages[id];
+    delete data.notes[id];
+    delete data.tasks[id];
     if (data.rooms.length === before) return false;
     this.save();
     return true;
@@ -470,8 +584,11 @@ export class InboxStore {
 
   // ─── Messages ──────────────────────────────────────────────────────────────
 
-  messages(roomId: string): InboxMessage[] {
-    return [...(this.load().messages[roomId] ?? [])];
+  messages(roomId: string, opts?: { includeOwnerOnly?: boolean }): InboxMessage[] {
+    const includeOwnerOnly = opts?.includeOwnerOnly !== false;
+    const list = this.load().messages[roomId] ?? [];
+    if (includeOwnerOnly) return [...list];
+    return list.filter((m) => m.visibility !== 'owner_only');
   }
 
   appendMessage(
@@ -491,6 +608,7 @@ export class InboxStore {
       senderId: input.senderId,
       senderName: input.senderName,
       text: input.text,
+      ...(input.visibility === 'owner_only' ? { visibility: 'owner_only' } : {}),
       ...(input.mentionedAgentIds?.length ? { mentionedAgentIds: input.mentionedAgentIds } : {}),
       ts: new Date().toISOString(),
     };
@@ -498,6 +616,191 @@ export class InboxStore {
     room.updatedAt = message.ts;
     this.save();
     return message;
+  }
+
+  // ─── Room Notes & Summaries ────────────────────────────────────────────────
+
+  listNotes(roomId: string): InboxRoomNote[] {
+    return [...(this.load().notes[roomId] ?? [])].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  getNote(roomId: string, noteId: string): InboxRoomNote | undefined {
+    return (this.load().notes[roomId] ?? []).find((n) => n.id === noteId);
+  }
+
+  addNote(
+    roomId: string,
+    input: {
+      kind?: InboxNoteKind;
+      title: string;
+      content: string;
+      createdByType: 'owner' | 'agent';
+      createdById: string;
+      createdByName: string;
+    },
+  ): InboxRoomNote {
+    const data = this.load();
+    const room = data.rooms.find((r) => r.id === roomId);
+    if (!room) throw new Error('Inbox room not found.');
+    const content = input.content.trim();
+    if (!content) throw new Error('Note content is required.');
+    const now = new Date().toISOString();
+    const note: InboxRoomNote = {
+      id: makeId('int'),
+      roomId,
+      kind: input.kind === 'summary' || input.kind === 'decision' ? input.kind : 'note',
+      title: input.title.trim() || (input.kind === 'summary' ? 'Meeting Summary' : 'Meeting Note'),
+      content,
+      createdByType: input.createdByType,
+      createdById: input.createdById,
+      createdByName: input.createdByName,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const list = (data.notes[roomId] ??= []);
+    list.push(note);
+    room.updatedAt = now;
+    this.save();
+    return note;
+  }
+
+  updateNote(
+    roomId: string,
+    noteId: string,
+    patch: Partial<Pick<InboxRoomNote, 'kind' | 'title' | 'content' | 'sharedToChat' | 'sharedMessageId'>>,
+  ): InboxRoomNote | undefined {
+    const note = this.getNote(roomId, noteId);
+    if (!note) return undefined;
+    if (patch.kind === 'note' || patch.kind === 'summary' || patch.kind === 'decision') note.kind = patch.kind;
+    if (patch.title !== undefined) note.title = patch.title.trim() || note.title;
+    if (patch.content !== undefined && patch.content.trim()) note.content = patch.content.trim();
+    if (typeof patch.sharedToChat === 'boolean') note.sharedToChat = patch.sharedToChat;
+    if (patch.sharedMessageId !== undefined) note.sharedMessageId = patch.sharedMessageId;
+    note.updatedAt = new Date().toISOString();
+    this.save();
+    return note;
+  }
+
+  deleteNote(roomId: string, noteId: string): boolean {
+    const data = this.load();
+    const list = data.notes[roomId];
+    if (!list) return false;
+    const before = list.length;
+    data.notes[roomId] = list.filter((n) => n.id !== noteId);
+    if (data.notes[roomId].length === before) return false;
+    this.save();
+    return true;
+  }
+
+  // ─── Room Tasks & Delegations ──────────────────────────────────────────────
+
+  listTasks(roomId: string): InboxRoomTask[] {
+    return [...(this.load().tasks[roomId] ?? [])].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  getTask(roomId: string, taskId: string): InboxRoomTask | undefined {
+    return (this.load().tasks[roomId] ?? []).find((t) => t.id === taskId);
+  }
+
+  addTask(
+    roomId: string,
+    input: {
+      title: string;
+      description?: string;
+      kind?: InboxTaskKind;
+      status?: InboxTaskStatus;
+      assignee?: string;
+      projectPath?: string;
+      requestedByType: 'owner' | 'member' | 'agent';
+      requestedByName: string;
+      codeRunId?: string;
+      delegationSummary?: string;
+      subAgentRole?: string;
+    },
+  ): InboxRoomTask {
+    const data = this.load();
+    const room = data.rooms.find((r) => r.id === roomId);
+    if (!room) throw new Error('Inbox room not found.');
+    const title = input.title.trim();
+    if (!title) throw new Error('Task title is required.');
+    const now = new Date().toISOString();
+    const task: InboxRoomTask = {
+      id: makeId('itk'),
+      roomId,
+      title,
+      ...(input.description?.trim() ? { description: input.description.trim() } : {}),
+      kind: input.kind === 'coding' || input.kind === 'research' ? input.kind : 'action',
+      status:
+        input.status === 'pending_approval' || input.status === 'in_progress' || input.status === 'done'
+          ? input.status
+          : 'todo',
+      ...(input.assignee?.trim() ? { assignee: input.assignee.trim() } : {}),
+      ...(input.projectPath?.trim() ? { projectPath: input.projectPath.trim() } : {}),
+      requestedByType: input.requestedByType,
+      requestedByName: input.requestedByName,
+      ...(input.codeRunId ? { codeRunId: input.codeRunId } : {}),
+      ...(input.delegationSummary?.trim() ? { delegationSummary: input.delegationSummary.trim() } : {}),
+      ...(input.subAgentRole?.trim() ? { subAgentRole: input.subAgentRole.trim() } : {}),
+      createdAt: now,
+      updatedAt: now,
+    };
+    const list = (data.tasks[roomId] ??= []);
+    list.push(task);
+    room.updatedAt = now;
+    this.save();
+    return task;
+  }
+
+  updateTask(
+    roomId: string,
+    taskId: string,
+    patch: Partial<
+      Pick<
+        InboxRoomTask,
+        | 'title'
+        | 'description'
+        | 'kind'
+        | 'status'
+        | 'assignee'
+        | 'projectPath'
+        | 'codeRunId'
+        | 'delegationSummary'
+        | 'subAgentRole'
+      >
+    >,
+  ): InboxRoomTask | undefined {
+    const task = this.getTask(roomId, taskId);
+    if (!task) return undefined;
+    if (patch.title !== undefined) task.title = patch.title.trim() || task.title;
+    if ('description' in patch) task.description = patch.description?.trim() || undefined;
+    if (patch.kind === 'action' || patch.kind === 'coding' || patch.kind === 'research') task.kind = patch.kind;
+    if (
+      patch.status === 'pending_approval' ||
+      patch.status === 'todo' ||
+      patch.status === 'in_progress' ||
+      patch.status === 'done'
+    ) {
+      task.status = patch.status;
+    }
+    if ('assignee' in patch) task.assignee = patch.assignee?.trim() || undefined;
+    if ('projectPath' in patch) task.projectPath = patch.projectPath?.trim() || undefined;
+    if ('codeRunId' in patch) task.codeRunId = patch.codeRunId || undefined;
+    if ('delegationSummary' in patch) task.delegationSummary = patch.delegationSummary?.trim() || undefined;
+    if ('subAgentRole' in patch) task.subAgentRole = patch.subAgentRole?.trim() || undefined;
+    task.updatedAt = new Date().toISOString();
+    this.save();
+    return task;
+  }
+
+  deleteTask(roomId: string, taskId: string): boolean {
+    const data = this.load();
+    const list = data.tasks[roomId];
+    if (!list) return false;
+    const before = list.length;
+    data.tasks[roomId] = list.filter((t) => t.id !== taskId);
+    if (data.tasks[roomId].length === before) return false;
+    this.save();
+    return true;
   }
 
   // ─── Member Sessions ───────────────────────────────────────────────────────

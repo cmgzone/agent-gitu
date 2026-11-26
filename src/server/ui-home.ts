@@ -3,41 +3,57 @@ import { plushCharacterHtml } from './ui-characters.js';
 // Compact home navigation with the same locally bundled Cowork companion.
 export const HOME_CSS = String.raw`
   body:has(.home-sky) .sb,body:has(.home-sky) .topbar,body:has(.home-sky) .vresize,body:has(.home-sky) .side-fab,body:has(.home-sky) #mascotWrap,body:has(.home-sky) .mobile-nav-btn { display:none!important; }
-  .home.home-sky { --home-sidebar-surface:var(--sidebar); position:relative; background:var(--bg); color:var(--text); padding:96px 36px 96px 284px; gap:28px; width:100%; justify-content:safe center; }
-  .home.home-sky::before, .run.run-chat.code-workspace::before { content:''; position:fixed; inset:8px 0 0 248px; background:var(--card2); border:1px solid var(--border); border-right:0; border-bottom:0; border-radius:20px 0 0 0; box-shadow:none; pointer-events:none; z-index:0; }
+  /* Share Cowork's exact calm framed-sheet design language across Code Home and Code Runs. */
+  .home.home-sky { --home-sidebar-surface:var(--sidebar); position:relative; background:var(--bg); color:var(--text); padding:96px 36px 96px 36px; gap:28px; width:100%; justify-content:safe center; }
+  .home.home-sky::before { content:''; position:fixed; inset:10px; background:var(--card); border:1px solid var(--border); border-radius:24px; box-shadow:var(--shadow); pointer-events:none; z-index:0; }
   .home.home-sky > .home-main { position:relative; z-index:1; margin:0; }
-  .run.run-chat.code-workspace { --home-sidebar-surface:var(--bg); position:relative; padding-left:248px; background:var(--bg); }
-  .run.run-chat.code-workspace > .run-main { padding-top:calc(64px + env(safe-area-inset-top, 0px)); }
-  .run.run-chat.code-workspace > .run-main > .stream { position:relative; z-index:1; padding-top:16px; scroll-padding-top:16px; }
-  :root[data-theme=light] .run.run-chat.code-workspace { --home-sidebar-surface:var(--bg); background:var(--bg); }
-  .run.code-workspace .cw-page-nav { inset:calc(12px + env(safe-area-inset-top, 0px)) auto auto calc(50% + 124px); transform:translateX(-50%); display:block; z-index:11; }
+  .run.run-chat.code-workspace { --home-sidebar-surface:var(--sidebar); position:relative; padding:10px; background:var(--bg); }
+  .run.run-chat.code-workspace::before { display:none; content:none; }
+  .run.run-chat.code-workspace > .run-main { background:var(--card); border:1px solid var(--border); border-radius:24px; box-shadow:var(--shadow); overflow:hidden; padding-top:0; }
+  .run.run-chat.code-workspace > .run-main > .stream { position:relative; z-index:1; }
+  :root[data-theme=light] .run.run-chat.code-workspace { --home-sidebar-surface:var(--sidebar); background:var(--bg); }
+  .run.code-workspace .cw-page-nav { position:fixed; inset:calc(22px + env(safe-area-inset-top, 0px)) auto auto 50%; transform:translateX(-50%); display:flex; justify-content:center; pointer-events:none; z-index:14; }
   .run.code-workspace .coding-checkpoints { margin:0 0 16px; }
   .run.code-workspace #mainChatHistory { display:none; }
-  .run.code-workspace .home-sidebar { background:var(--bg); border-right:0; }
-  .home-main { position:relative; width:min(760px,100%); display:flex; flex-direction:column; gap:28px; flex:none; }
-  .home-sky .home-main > .home-brand { position:absolute; bottom:calc(100% + 28px); }
+  .home-main { position:relative; width:min(680px,100%); display:flex; flex-direction:column; gap:24px; flex:none; }
+  .home-sky .home-main > .home-brand { position:static; }
   :root[data-theme=light] .home.home-sky { --home-sidebar-surface:var(--sidebar); background:var(--bg); }
-  .home-sky .cw-page-nav { position:fixed; top:calc(12px + env(safe-area-inset-top, 0px)); left:calc(50% + 128px); transform:translateX(-50%); z-index:11; display:flex; justify-content:center; pointer-events:none; }
-  .home-sky .cw-top-nav { position:static; transform:none; display:inline-flex; align-items:center; gap:3px; padding:4px; border-radius:var(--radius-full, 9999px); pointer-events:auto; width:auto; max-width:none; background:var(--card2); border:1px solid var(--border); box-shadow:none; }
+  .home-sky .cw-page-nav { position:fixed; top:calc(22px + env(safe-area-inset-top, 0px)); left:50%; transform:translateX(-50%); z-index:14; display:flex; justify-content:center; pointer-events:none; }
+  .home-sky .cw-top-nav { position:static; transform:none; display:inline-flex; align-items:center; gap:2px; padding:4px; border-radius:var(--radius-full, 9999px); pointer-events:auto; width:auto; max-width:none; background:var(--card2); border:1px solid var(--border); box-shadow:none; }
   :root[data-theme=dark] .home-sky .cw-top-nav { background:var(--card2); border-color:var(--border); box-shadow:none; }
-  .home-sky .cw-top-nav button { display:inline-flex; align-items:center; justify-content:center; gap:7px; min-height:34px; padding:0 16px; border:0; border-radius:var(--radius-full, 9999px); background:transparent; color:var(--muted); font:inherit; font-size:12.5px; font-weight:500; cursor:pointer; white-space:nowrap; user-select:none; transition:background-color .18s ease,color .18s ease,box-shadow .18s ease,transform .14s cubic-bezier(.16,1,.3,1); }
+  .home-sky .cw-top-nav button { display:inline-flex; align-items:center; justify-content:center; gap:7px; min-height:34px; padding:0 14px; border:0; border-radius:var(--radius-full, 9999px); background:transparent; color:var(--muted); font:inherit; font-size:12.5px; font-weight:500; cursor:pointer; white-space:nowrap; user-select:none; transition:background-color .18s ease,color .18s ease,box-shadow .18s ease,transform .14s cubic-bezier(.16,1,.3,1); }
   .home-sky .cw-top-nav button > span:not(.cw-chat-face) { display:inline!important; }
   .home-sky .cw-top-nav button:hover { background:var(--hover)!important; color:var(--text); }
   .home-sky .cw-top-nav button:active { transform:scale(.96); }
   .home-sky .cw-top-nav button[aria-pressed=true] { background:var(--dark)!important; color:var(--bg)!important; font-weight:600; box-shadow:none; }
   .home-sky .cw-top-nav button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
   .home-sky .cw-top-nav button > svg { width:16px; height:16px; flex:none; }
-  :is(.home-sky,.run-chat) .cw-top-nav .cw-chat-face { display:inline-flex!important; align-items:center; justify-content:center; flex:none; width:22px; height:22px; }
-  :is(.home-sky,.run-chat) .cw-top-nav .cw-chat-face .cw-ava { position:relative; width:22px!important; height:22px!important; border-radius:6px!important; overflow:hidden!important; display:inline-flex; align-items:center; justify-content:center; background:transparent!important; box-shadow:none!important; }
+  :is(.home-sky,.run-chat) .cw-top-nav .cw-chat-face { display:inline-flex!important; align-items:center; justify-content:center; flex:none; width:26px; height:26px; }
+  :is(.home-sky,.run-chat) .cw-top-nav .cw-chat-face .cw-ava { position:relative; width:26px!important; height:26px!important; border-radius:8px!important; overflow:visible!important; display:inline-flex; align-items:center; justify-content:center; background:transparent!important; box-shadow:none!important; }
   :is(.home-sky,.run-chat) .cw-top-nav .cw-chat-face .cw-ava .cw-plush { width:100%; height:100%; display:flex; align-items:center; justify-content:center; transform:none; }
   :is(.home-sky,.run-chat) .cw-top-nav .cw-chat-face .cw-ava img { position:relative!important; width:100%!important; height:100%!important; max-width:100%!important; left:0!important; top:0!important; object-fit:contain!important; transform:none!important; }
   :is(.home-sky,.run-chat) .cw-top-nav .cw-chat-face .cw-ava svg.cw-blink-overlay { position:absolute!important; inset:0!important; width:100%!important; height:100%!important; }
-  .home-sky .home-brand { width:min(760px,100%); margin:0; padding:0; text-align:left; }
-  .home-sky .home-brand-lockup { flex-direction:row; justify-content:flex-start; gap:14px; }
-  .home-sky .home-character,.home-sky .cw-plush.home-character { width:48px; height:48px; animation:none; flex:none; }
-  .home-sky .home-brand h1 { font-size:32px; line-height:1.2; letter-spacing:-.04em; justify-content:flex-start; text-align:left; color:var(--text); }
-  .home-sky .home-brand-copy { color:var(--muted); margin:5px 0 0; font-size:13px; }
-  .home-sidebar { position:fixed; inset:0 auto 0 0; z-index:12; width:248px; display:flex; flex-direction:column; padding:0; border-right:1px solid var(--border); background:var(--sidebar); }
+  /* Top-left Sessions/Projects drawer trigger & top-right Tools popover matching Cowork pixel-for-pixel */
+  .home-menu-trigger { position:fixed; top:calc(22px + env(safe-area-inset-top, 0px)); left:22px; z-index:14; display:inline-flex; align-items:center; justify-content:center; width:36px; height:36px; padding:0; border:1px solid var(--border); border-radius:50%; background:var(--card); color:var(--muted); cursor:pointer; box-shadow:var(--shadow); transition:background .18s ease,color .18s ease,border-color .18s ease,transform .14s cubic-bezier(.16,1,.3,1); }
+  .home-menu-trigger:hover { color:var(--text); border-color:var(--border2); background:var(--hover); }
+  .home-menu-trigger:active { transform:scale(.96); }
+  .home-menu-trigger:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  .home-menu-trigger svg { width:16px; height:16px; }
+  .code-tools-toggle { position:fixed; top:calc(22px + env(safe-area-inset-top, 0px)); right:22px; z-index:14; display:inline-flex; align-items:center; justify-content:center; width:36px; height:36px; padding:0; border:1px solid var(--border); border-radius:50%; background:var(--card); color:var(--muted); cursor:pointer; box-shadow:var(--shadow); transition:background .18s ease,color .18s ease,border-color .18s ease,transform .14s cubic-bezier(.16,1,.3,1); }
+  .code-tools-toggle:hover { color:var(--text); border-color:var(--border2); background:var(--hover); }
+  .code-tools-toggle:active { transform:scale(.96); }
+  .code-tools-toggle:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  .code-tools-toggle svg { width:17px; height:17px; }
+  .home-sky .home-brand { width:min(680px,100%); margin:0; padding:0; text-align:center; }
+  .home-sky .home-brand-lockup { flex-direction:column; justify-content:center; align-items:center; gap:12px; }
+  .home-sky .home-character,.home-sky .cw-plush.home-character { width:64px; height:64px; animation:none; flex:none; }
+  .home-sky .home-brand h1 { font-size:28px; line-height:1.2; letter-spacing:-.035em; justify-content:center; text-align:center; color:var(--text); font-weight:600; }
+  .home-sky .home-brand-copy { color:var(--muted); margin:6px 0 0; font-size:13.5px; text-align:center; }
+  /* Slide-over navigation drawer (closed by default on desktop & mobile so Code matches Cowork's calm canvas). */
+  .home-sidebar { display:none; position:fixed; inset:10px auto 10px 10px; z-index:50; width:min(296px, 86vw); flex-direction:column; padding:0; border:1px solid var(--border); border-radius:20px; background:var(--sidebar); box-shadow:var(--shadow-float); overflow:hidden; }
+  .home-nav-backdrop { display:none; }
+  .home-sky[data-nav-open=true] .home-sidebar { display:flex; }
+  .home-sky[data-nav-open=true] .home-nav-backdrop { display:block; position:fixed; inset:0; background:var(--overlay); backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px); z-index:49; }
   .home-sidebar-brand { display:flex; align-items:center; gap:10px; padding:14px 14px 13px; border-bottom:1px solid var(--border); margin-bottom:10px; }
   .home-sidebar-brand img { width:28px; height:28px; padding:4px; border-radius:var(--radius-inner, 8px); background:var(--dark); object-fit:contain; flex:none; }
   .home-sidebar-brand-copy { display:grid; gap:1px; min-width:0; }
@@ -45,13 +61,25 @@ export const HOME_CSS = String.raw`
   .home-sidebar-brand-sub { font-size:11px; font-weight:500; color:var(--muted); line-height:1.2; }
   .home-sidebar-section-label { font-size:11px; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:var(--faint); padding:6px 10px 4px; margin:0; }
   .home-sidebar-body { display:flex; flex-direction:column; flex:1; min-height:0; padding:0 10px; overflow:hidden; }
-  .home-sidebar #homeCollapse { width:28px; min-height:28px; padding:4px; margin-left:auto; justify-content:center; flex:none; border-radius:var(--radius-el, 10px); }
-  .home-sidebar button { display:flex; align-items:center; gap:10px; width:100%; min-height:36px; padding:7px 10px; color:var(--muted); text-align:left; border-radius:var(--radius-el, 10px); font-size:13.5px; font-weight:500; transition:background-color .14s ease,color .14s ease; }
+  .home-sidebar #homeCollapse { width:28px; min-height:28px; padding:4px; margin-left:auto; justify-content:center; flex:none; border-radius:var(--radius-full, 9999px); }
+  .home-sidebar button { display:flex; align-items:center; gap:10px; width:100%; min-height:36px; padding:7px 12px; color:var(--muted); text-align:left; border-radius:var(--radius-full, 9999px); font-size:13px; font-weight:500; transition:background-color .14s ease,color .14s ease; }
   .home-sidebar button svg { width:16px; height:16px; flex:none; color:var(--faint); transition:color .14s ease; }
   .home-sidebar button:hover { background:var(--hover); color:var(--text); }
   .home-sidebar button:hover svg { color:var(--text); }
-  .home-sidebar #cwPageSearch { background:var(--card)!important; border:1px solid var(--border)!important; border-radius:var(--radius-el, 10px)!important; color:var(--muted); min-height:34px; padding:0 10px; margin:0 0 10px; font-size:12.5px; box-shadow:none; }
-  .home-sidebar #cwPageSearch:hover { border-color:var(--border2)!important; color:var(--text); }
+  .home-sidebar-search { display:flex; align-items:center; gap:8px; background:var(--card)!important; border:1px solid var(--border2)!important; border-radius:var(--radius-full, 9999px)!important; color:var(--muted); min-height:36px; padding:0 12px; margin:0 0 10px; font-size:12.5px; box-shadow:var(--shadow); }
+  .home-sidebar-search:focus-within { border-color:var(--accent)!important; color:var(--text); }
+  .home-sidebar-search svg { width:15px; height:15px; flex:none; color:var(--faint); }
+  .home-sidebar-search input[type="search"] { flex:1; min-width:0; border:0!important; background:transparent!important; color:var(--text); font:inherit; font-size:12.5px; padding:6px 0!important; min-height:28px!important; outline:none; box-shadow:none!important; }
+  .home-sidebar-hits { display:grid; gap:2px; margin:0 0 10px; padding:4px; border:1px solid var(--border); border-radius:14px; background:var(--card); max-height:180px; overflow:auto; }
+  .home-sidebar-hits[hidden] { display:none!important; }
+  .home-sidebar-hit { display:grid; gap:2px; padding:6px 10px!important; min-height:0!important; border-radius:10px!important; font-size:11.5px!important; }
+  .home-sidebar-hit strong { font-size:12px; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .home-sidebar-hit small { font-size:11px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .home-session-toolbar { display:flex; align-items:center; justify-content:space-between; gap:4px; padding:2px 4px 4px 12px; }
+  .home-sidebar .home-session-toolbar button { width:auto; min-height:26px; padding:3px 9px; font-size:11px; border-radius:999px; gap:4px; }
+  .home-session-item { display:flex; align-items:center; gap:2px; min-width:0; }
+  .home-sidebar .home-session-del { width:auto; min-height:26px; padding:2px 6px; font-size:10.5px; color:var(--faint); flex:none; border-radius:999px; justify-content:center; }
+  .home-sidebar .home-session-del:hover { color:var(--err,#f87171); background:var(--hover); }
   .home-sidebar nav { display:grid; gap:2px; }
   .home-agent-pill { margin-left:auto; padding:2px 8px; border-radius:var(--radius-full, 9999px); background:var(--selection); color:var(--accent); font-size:11px; font-weight:600; max-width:96px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .home-agent-pill:empty { display:none; }
@@ -68,7 +96,7 @@ export const HOME_CSS = String.raw`
   .home-group-copy small { font-size:10.5px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .home-group-empty { font-size:11.5px; color:var(--muted); margin:2px 10px 6px; line-height:1.45; }
   .home-session-dd { margin:0; }
-  .home-session-dd > summary { display:flex; align-items:center; gap:10px; width:100%; min-height:36px; padding:7px 10px; color:var(--muted); border-radius:var(--radius-el,10px); font-size:13.5px; font-weight:500; cursor:pointer; list-style:none; transition:background-color .14s ease,color .14s ease; }
+  .home-session-dd > summary { display:flex; align-items:center; gap:10px; width:100%; min-height:36px; padding:7px 12px; color:var(--muted); border-radius:var(--radius-full, 9999px); font-size:13px; font-weight:500; cursor:pointer; list-style:none; transition:background-color .14s ease,color .14s ease; }
   .home-session-dd > summary::-webkit-details-marker { display:none; }
   .home-session-dd > summary::after { content:'›'; margin-left:4px; color:var(--faint); transform:rotate(90deg); transition:transform .14s ease; }
   .home-session-dd[open] > summary::after { transform:rotate(-90deg); }
@@ -77,39 +105,40 @@ export const HOME_CSS = String.raw`
   .home-session-count { margin-left:auto; font-size:10.5px; color:var(--faint); font-weight:600; }
   .home-session-count:empty { display:none; }
   .home-session-list { display:grid; gap:1px; max-height:240px; overflow:auto; padding:2px 0 6px 12px; }
-  .home-sidebar .home-session-row { display:flex; align-items:center; gap:8px; width:100%; min-height:30px; padding:5px 8px; border-radius:8px; color:var(--muted); font-size:12px; font-weight:500; text-align:left; }
+  .home-sidebar .home-session-row { display:flex; align-items:center; gap:8px; width:100%; min-height:30px; padding:5px 10px; border-radius:999px; color:var(--muted); font-size:12px; font-weight:500; text-align:left; }
   .home-sidebar .home-session-row:hover { background:var(--hover); color:var(--text); }
-  .home-sidebar .home-session-row.is-active { background:var(--selection); color:var(--text); font-weight:600; }
+  .home-sidebar .home-session-row.is-active { background:var(--selected); color:var(--text); font-weight:600; }
   .home-session-label { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .home-session-empty { padding:4px 8px 6px; font-size:11.5px; color:var(--faint); margin:0; line-height:1.45; }
   .home-sidebar-foot { margin-top:auto; display:grid; gap:2px; padding:10px 10px 12px; border-top:1px solid var(--border); }
-  .home-menu-trigger,.home-nav-backdrop { display:none; }
-  .home-composer-wrap { width:min(760px,100%); margin:0; }
-  .home-sky .composer-topline { padding:0 4px 10px; }
-  .home-project-label { font-size:12px; color:var(--muted); flex:none; }
+  .home-composer-wrap { width:min(680px,100%); margin:0; }
+  .home-sky .composer-topline { padding:0 6px 8px; }
+  .home-project-label { display:none; }
   .home-attachment-policy { margin:0 10px 6px; color:var(--muted); font-size:11px; line-height:1.5; }
-  .home-sky .composer-workspace { color:var(--text); max-width:100%; min-width:0; flex:0 1 auto; gap:8px; font-size:12px; }
-  .home-sky .composer-workspace::after { content:'⌄'; color:var(--muted); margin-left:3px; }
-  .home-sky .composer { width:100%; padding:12px 14px; border:1.5px solid var(--border2); border-radius:var(--radius-chat, 28px); background:var(--card2); box-shadow:var(--shadow-float); transition:background-color .18s ease,border-color .18s ease,box-shadow .18s ease; }
+  .home-sky .composer-workspace { display:inline-flex; align-items:center; gap:6px; height:28px; padding:0 10px; border-radius:999px; border:1px solid var(--border); background:var(--card2); color:var(--text); max-width:min(260px,100%); min-width:0; flex:0 1 auto; font-size:12px; font-weight:600; box-shadow:none; transition:border-color .15s, background .15s; }
+  .home-sky .composer-workspace:hover { border-color:var(--border2); background:var(--hover); }
+  .home-sky .composer-workspace svg { width:14px; height:14px; color:var(--accent); flex:none; }
+  .home-sky .composer-workspace::after { content:'▾'; color:var(--muted); font-size:10px; margin-left:1px; }
+  .home-sky .composer { width:100%; padding:10px 12px; border:1.5px solid var(--border2); border-radius:var(--radius-chat, 28px); background:var(--card2); box-shadow:var(--shadow-float); transition:background-color .18s ease,border-color .18s ease,box-shadow .18s ease; }
   .home-sky .composer:focus-within { background:var(--card); border-color:var(--dark); box-shadow:var(--shadow-float); }
-  .home-sky .composer textarea { min-height:72px; padding:8px 10px; font-size:15px; }
+  .home-sky .composer textarea { min-height:58px; padding:8px 8px; font-size:14.5px; }
   .home-sky .composer-bar { padding:4px; gap:8px; align-items:center; }
-  #view .home-sky .composer .send { display:inline-flex; align-items:center; justify-content:center; padding:0; width:34px; height:34px; border-radius:var(--radius-full, 9999px); flex:none; }
+  #view .home-sky .composer .send { display:inline-flex; align-items:center; justify-content:center; padding:0; width:32px; height:32px; border-radius:var(--radius-full, 9999px); flex:none; }
   #view .home-sky .composer .send:not(.stop):not(:disabled) { background:var(--dark)!important; color:var(--bg)!important; }
   #view .home-sky .composer .send:not(.stop):not(:disabled):hover { opacity:.88; }
-  #view .home-sky .composer .send.stop { background:var(--err)!important; color:#fff!important; }
+  #view .home-sky .composer .send.stop { background:var(--err-dim)!important; color:var(--err)!important; border:1px solid var(--err-border)!important; }
   #view .home-sky .composer .send:disabled { background:var(--selected)!important; color:var(--faint)!important; }
   .home-sky .home-plus-menu { box-shadow:var(--shadow-float); }
-  .home-sidebar-scroll { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; margin-top:14px; }
+  .home-sidebar-scroll { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; margin-top:12px; }
   .home-projects { width:100%; }
   .home-project-heading { display:flex; align-items:center; justify-content:space-between; gap:6px; padding:0 2px; margin-bottom:4px; }
   .home-project-heading h2 { margin:0; min-width:0; }
   .home-sidebar .home-project-heading #homeProjectsNav { min-height:28px; padding:4px 8px; font-size:11px; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:var(--faint); }
   .home-sidebar .home-project-heading #homeNewProject { width:28px; min-height:28px; padding:5px; justify-content:center; }
   .home-project-list { display:grid; gap:2px; }
-  .home-project { display:flex; align-items:center; min-width:0; border-radius:var(--radius-el, 10px); }
-  .home-project.is-current { background:var(--selection); color:var(--accent); font-weight:600; }
-  .home-sidebar .home-project-open { gap:9px; padding:10px 8px; flex:1; min-width:0; color:var(--text); }
+  .home-project { display:flex; align-items:center; min-width:0; border-radius:12px; }
+  .home-project.is-current { background:var(--selected); color:var(--text); font-weight:600; }
+  .home-sidebar .home-project-open { gap:9px; padding:9px 8px; flex:1; min-width:0; color:var(--text); border-radius:12px; }
   .home-project-icon { display:grid; place-items:center; flex:none; color:var(--muted); }
   .home-project.is-current .home-project-icon { color:var(--accent); }
   .home-sidebar .home-project-expand,.home-sidebar .home-project-options { width:24px; min-height:32px; padding:5px 3px; flex:none; justify-content:center; }
@@ -125,7 +154,7 @@ export const HOME_CSS = String.raw`
   .home-project-status.running { color:var(--accent); background:color-mix(in srgb,var(--accent) 12%,transparent); }
   .home-project-chats { padding:3px 0 8px 17px; }
   .home-project-chats[hidden] { display:none; }
-  .home-sidebar .home-project-chat { min-height:32px; padding:6px 8px; gap:7px; font-size:11px; }
+  .home-sidebar .home-project-chat { min-height:32px; padding:6px 10px; gap:7px; font-size:11.5px; border-radius:999px; }
   .home-project-chat > span:not(.home-chat-dot) { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; flex:1; }
   .home-project-chat small { font-size:9px; flex:none; }
   .home-project-chat.is-active { background:var(--selected); color:var(--text); }
@@ -154,74 +183,33 @@ export const HOME_CSS = String.raw`
   .home-project-empty { padding:12px 8px; color:var(--muted); line-height:1.5; }
   .home-project-empty strong { display:block; color:var(--text); margin-bottom:6px; font-size:12px; }
   .home-project-empty p { margin:0; font-size:12px; }
-  @media(min-width:801px) and (max-height:800px) {
-    .home-main { gap:24px; }
-    .home-sky .composer textarea { min-height:56px; }
+  @media(min-width:721px) and (max-height:800px) {
+    .home-main { gap:20px; }
+    .home-sky .composer textarea { min-height:52px; }
   }
-  @media(min-width:801px) {
-    .home-sky[data-sidebar-collapsed=true] { padding-left:100px; }
-    .home-sky[data-sidebar-collapsed=true]::before, .run.code-workspace[data-sidebar-collapsed=true]::before { left:72px; }
-    .run.code-workspace[data-sidebar-collapsed=true] { padding-left:72px; }
-    .run.code-workspace[data-sidebar-collapsed=true] .cw-page-nav { left:calc(50% + 36px); }
-    .home-sky[data-sidebar-collapsed=true] .cw-page-nav { left:calc(50% + 36px); }
-    .home-sky[data-sidebar-collapsed=true] .home-sidebar { width:64px; padding-left:8px; padding-right:8px; }
-    .home-sky[data-sidebar-collapsed=true] .home-sidebar-brand { padding:0; justify-content:center; min-height:28px; }
-    .home-sky[data-sidebar-collapsed=true] .home-sidebar-brand img,
-    .home-sky[data-sidebar-collapsed=true] .home-sidebar-brand-copy,
-    .home-sky[data-sidebar-collapsed=true] .home-sidebar-section-label,
-    .home-sky[data-sidebar-collapsed=true] .home-sidebar-scroll,
-    .home-sky[data-sidebar-collapsed=true] #cwPageSearch > span,
-    .home-sky[data-sidebar-collapsed=true] .home-sidebar-brand > span,
-    .home-sky[data-sidebar-collapsed=true] .home-sidebar > button > span,
-    .home-sky[data-sidebar-collapsed=true] .home-sidebar nav button > span,
-    .home-sky[data-sidebar-collapsed=true] .home-sidebar .home-session-dd > summary > span,
-    .home-sky[data-sidebar-collapsed=true] .home-sidebar .home-session-dd > summary::after,
-    .home-sky[data-sidebar-collapsed=true] .home-sidebar .home-session-list,
-    .home-sky[data-sidebar-collapsed=true] .home-sidebar-foot button > span,
-    .home-sky[data-sidebar-collapsed=true] #homeSelectedAgentChip,
-    .home-sky[data-sidebar-collapsed=true] #homeGroupsNav > span,
-    .home-sky[data-sidebar-collapsed=true] #homeAgentGroups,
-    .home-sky[data-sidebar-collapsed=true] #homeNewGroup,
-    .home-sky[data-sidebar-collapsed=true] #homeProjectsNav > span,
-    .home-sky[data-sidebar-collapsed=true] #homeProjectCards,
-    .home-sky[data-sidebar-collapsed=true] #homeNewProject,
-    .home-sky[data-sidebar-collapsed=true] .home-projects-footer { display:none; }
-    .home-sky[data-sidebar-collapsed=true] #homeCollapse { margin:0; }
-    .home-sky[data-sidebar-collapsed=true] #homeCollapse svg { transform:rotate(180deg); }
-    .home-sky[data-sidebar-collapsed=true] .home-sidebar button { justify-content:center; padding-left:0; padding-right:0; }
-    .home-sky[data-sidebar-collapsed=true] .home-project-heading { padding:0; }
-    .home-sky[data-sidebar-collapsed=true] .home-project-heading h2 { width:100%; }
-  }
-  @media(max-width:800px) {
-    .home.home-sky::before, .run.run-chat.code-workspace::before { inset:8px; border-radius:20px; }
-    .run.run-chat.code-workspace { padding-left:0; }
-    .run.code-workspace .cw-page-nav { left:50%; top:calc(12px + env(safe-area-inset-top, 0px)); }
-    .run.code-workspace .home-sidebar { background:var(--home-sidebar-surface); }
-    .home.home-sky { padding:94px 20px; gap:24px; }
-    .home-sky .cw-page-nav { left:50%; top:calc(12px + env(safe-area-inset-top, 0px)); }
-    .home-sky .cw-top-nav { width:auto; max-width:calc(100vw - 112px); }
-    .home-menu-trigger { position:fixed; top:calc(14px + env(safe-area-inset-top, 0px)); left:12px; z-index:14; display:grid; place-items:center; width:36px; height:36px; border-radius:8px; color:var(--text); }
-    .home-menu-trigger svg { width:20px; height:20px; }
-    .home-sidebar { display:none; inset:0 auto 0 0; width:min(280px,84vw); max-height:100dvh; overflow:auto; border-right:1px solid var(--border); border-radius:0 16px 16px 0; padding:16px 12px 12px; background:var(--home-sidebar-surface); z-index:50; box-shadow:var(--shadow-float); }
-    .home-sidebar-brand { margin-bottom:20px; }
-    .home-sidebar #homeCollapse { display:none; }
-    .home-sidebar-foot { padding-top:16px; margin-top:16px; border-top:1px solid var(--border); }
-    .home-sky[data-nav-open=true] .home-sidebar { display:flex; }
-    .home-sky[data-nav-open=true] .home-nav-backdrop { display:block; position:fixed; inset:0; background:var(--overlay); z-index:49; }
+  @media(max-width:720px) {
+    .home.home-sky::before { inset:0; border-radius:0; border:0; box-shadow:none; }
+    .run.run-chat.code-workspace { padding:0; }
+    .run.run-chat.code-workspace > .run-main { border:0; border-radius:0; box-shadow:none; }
+    .run.code-workspace .cw-page-nav, .home-sky .cw-page-nav { left:50%; top:calc(10px + env(safe-area-inset-top, 0px)); }
+    .home.home-sky { padding:88px 16px 32px; gap:22px; }
+    .home-sky .cw-top-nav { width:auto; max-width:calc(100vw - 104px); overflow-x:auto; scrollbar-width:none; }
+    .home-sky .cw-top-nav::-webkit-scrollbar { display:none; width:0; height:0; }
+    .home-menu-trigger { top:calc(10px + env(safe-area-inset-top, 0px)); left:8px; }
+    .code-tools-toggle { top:calc(10px + env(safe-area-inset-top, 0px)); right:8px; }
+    .home-sidebar { inset:0 auto 0 0; width:min(300px,86vw); max-height:100dvh; border-radius:0 20px 20px 0; border-left:0; border-top:0; border-bottom:0; }
   }
   @media(max-width:480px) {
-    .home.home-sky { padding:94px 16px; gap:22px; }
-    .home-sky .home-brand h1 { font-size:26px; }
-    .home-sky .home-brand-copy { font-size:12px; }
-    .home-sky .home-character,.home-sky .cw-plush.home-character { width:40px; height:40px; }
-    .home-sky .home-brand-lockup { gap:10px; }
-    .home-sky .cw-top-nav { width:auto; max-width:calc(100vw - 112px); gap:2px; padding:3px; }
+    .home.home-sky { padding:84px 14px 24px; gap:20px; }
+    .home-sky .home-brand h1 { font-size:24px; }
+    .home-sky .home-brand-copy { font-size:12.5px; }
+    .home-sky .home-character,.home-sky .cw-plush.home-character { width:48px; height:48px; }
+    .home-sky .cw-top-nav { max-width:calc(100vw - 96px); gap:2px; padding:3px; }
     .home-sky .cw-top-nav button { padding:0 10px; min-height:32px; font-size:11.5px; gap:5px; }
     .home-sky .cw-top-nav button > span:not(.cw-chat-face) { display:inline!important; }
   }
   @media(max-height:600px) {
-    .home.home-sky { justify-content:flex-start; padding-top:96px; padding-bottom:24px; }
-    .home-sky .home-main > .home-brand { position:static; }
+    .home.home-sky { justify-content:flex-start; padding-top:88px; padding-bottom:24px; }
   }
   .home > .home-cta { order: -1; width: min(540px, 100%); align-self: center; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .home-cta-btn { --cta-accent: var(--accent); display: flex; align-items: center; gap: 12px; min-width: 0; padding: 13px 15px; border: 1px solid var(--border); border-radius: 18px; background: var(--card2); color: var(--text); text-align: left; cursor: pointer; transition: background .18s ease, border-color .18s ease, transform .18s ease; }
@@ -262,9 +250,12 @@ export const HOME_WORKSPACE_JS = PROJECT_PREFERENCES_JS + String.raw`
     return agents.find(function(agent){return agent.id===cw.selectedAgentId;})||agents[0]||null;
   }
   function homeConnectedGroups(agentId) {
-    var cw=cwEnsure();
+    var cw=cwEnsure(),q=String((typeof S!=='undefined'&&S&&S.homeSidebarFilter)||'').trim().toLowerCase();
     return (cw.convs||[]).filter(function(conv){
-      return conv&&conv.kind==='group'&&(!agentId||(Array.isArray(conv.memberIds)&&conv.memberIds.indexOf(agentId)>=0));
+      if(!conv||conv.kind!=='group')return false;
+      if(agentId&&(!Array.isArray(conv.memberIds)||conv.memberIds.indexOf(agentId)<0))return false;
+      if(q&&String(conv.title||'Group chat').toLowerCase().indexOf(q)<0)return false;
+      return true;
     });
   }
   function homeRenderSidebarAgentState() {
@@ -353,14 +344,36 @@ export const HOME_WORKSPACE_JS = PROJECT_PREFERENCES_JS + String.raw`
     return date&&Number.isFinite(date.getTime())?date.toLocaleDateString(undefined,{month:'short',day:'numeric'}):'';
   }
   function homeRenderSidebarSessions(sessions) {
-    var target=$('homeSessionList'),count=$('homeSessionCount');
+    var target=$('homeSessionList'),count=$('homeSessionCount'),scopeBtn=$('homeSessionsScopeBtn');
     if(!target)return;
-    var runs=(sessions||[]).slice().sort(function(a,b){return homeSessionStamp(b).localeCompare(homeSessionStamp(a));});
-    if(count)count.textContent=runs.length?String(runs.length):'';
-    var html=runs.length?runs.map(function(run){
+    var cw=cwEnsure(),selAgent=homeSelectedAgent(),selId=selAgent?selAgent.id:(cw.selectedAgentId||'');
+    var showAll=Boolean(S.homeShowAllSessions);
+    if(scopeBtn){
+      scopeBtn.hidden=!selAgent;
+      scopeBtn.textContent=showAll&&selAgent?('Only '+selAgent.name):'Show all';
+    }
+    var q=String(S.homeSidebarFilter||'').trim().toLowerCase();
+    var convs=(cw.convs||[]).filter(function(conv){
+      if(!conv||conv.kind==='group')return false;
+      if(selId&&!showAll&&(!Array.isArray(conv.memberIds)||conv.memberIds.indexOf(selId)<0))return false;
+      if(q&&String(conv.title||'Conversation').toLowerCase().indexOf(q)<0)return false;
+      return true;
+    });
+    var runs=(sessions||[]).filter(function(run){
+      if(q&&String((run&&run.goal)||'').toLowerCase().indexOf(q)<0&&String((run&&run.project)||'').toLowerCase().indexOf(q)<0)return false;
+      return true;
+    }).slice().sort(function(a,b){return homeSessionStamp(b).localeCompare(homeSessionStamp(a));});
+    var total=convs.length+runs.length;
+    if(count)count.textContent=total?String(total):'';
+    var convHtml=convs.map(function(conv){
+      var isAct=S.active==='cowork'&&cw.active===conv.id;
+      return '<div class="home-session-item"><button type="button" class="home-session-row'+(isAct?' is-active':'')+'" data-home-conv="'+esc(conv.id)+'" title="'+esc(conv.title||'Conversation')+'"><span class="home-chat-dot idle" aria-hidden="true"></span><span class="home-session-label">'+esc(conv.title||'Conversation')+'</span></button><button type="button" class="home-session-del" data-home-del-conv="'+esc(conv.id)+'" aria-label="Delete session '+esc(conv.title||'Conversation')+'" title="Delete session">&times;</button></div>';
+    }).join('');
+    var runHtml=runs.map(function(run){
       var status=homeRunStatus(run);
-      return '<button type="button" class="home-session-row'+(S.active===run.runId?' is-active':'')+'" data-home-session="'+esc(run.runId)+'" aria-current="'+(S.active===run.runId)+'" title="'+esc(run.goal||'Untitled task')+' · '+esc(status.label)+'"><span class="home-chat-dot '+status.kind+'" aria-hidden="true"></span><span class="home-session-label">'+esc(sessionTitle(run.goal)||'Untitled task')+'</span></button>';
-    }).join(''):'<p class="home-session-empty">No sessions yet. Start a task to see it here.</p>';
+      return '<div class="home-session-item"><button type="button" class="home-session-row'+(S.active===run.runId?' is-active':'')+'" data-home-session="'+esc(run.runId)+'" aria-current="'+(S.active===run.runId)+'" title="'+esc(run.goal||'Untitled task')+' · '+esc(status.label)+'"><span class="home-chat-dot '+status.kind+'" aria-hidden="true"></span><span class="home-session-label">'+esc(sessionTitle(run.goal)||'Untitled task')+'</span></button><button type="button" class="home-session-del" data-home-del-run="'+esc(run.runId)+'" aria-label="Delete session '+esc(sessionTitle(run.goal)||'Untitled task')+'" title="Delete session">&times;</button></div>';
+    }).join('');
+    var html=(convHtml||runHtml)?(convHtml+runHtml):'<p class="home-session-empty">'+(q?'No matching sessions.':'No sessions yet. Start a task to see it here.')+'</p>';
     if(target._markup===html)return;
     target._markup=html;target.innerHTML=html;
     target.querySelectorAll('[data-home-session]').forEach(function(button){
@@ -371,17 +384,64 @@ export const HOME_WORKSPACE_JS = PROJECT_PREFERENCES_JS + String.raw`
         openRun(run.runId,{chatish:run.mode==='chat',mode:run.mode,projectPath:run.projectPath});
       };
     });
+    target.querySelectorAll('[data-home-conv]').forEach(function(button){
+      button.onclick=function(){
+        var id=button.getAttribute('data-home-conv');
+        if(!id)return;
+        homeCloseNavigation();
+        cwEnterWorkspace('conv',selId||null,id);
+      };
+    });
+    target.querySelectorAll('[data-home-del-run]').forEach(function(button){
+      button.onclick=function(event){
+        event.stopPropagation();
+        var id=button.getAttribute('data-home-del-run');
+        if(button.dataset.confirmDelete!=='true'){button.dataset.confirmDelete='true';button.textContent='Delete?';return;}
+        button.disabled=true;
+        api('/api/runs/'+encodeURIComponent(id),{method:'DELETE'}).then(function(){
+          if(S.active===id)openHome();
+          else homeLoadProjects();
+          if(typeof renderSidebar==='function')renderSidebar();
+        }).catch(function(err){button.disabled=false;button.dataset.confirmDelete='false';button.textContent='×';if(typeof toast==='function')toast(err.message,true);});
+      };
+    });
+    target.querySelectorAll('[data-home-del-conv]').forEach(function(button){
+      button.onclick=function(event){
+        event.stopPropagation();
+        var id=button.getAttribute('data-home-del-conv');
+        if(button.dataset.confirmDelete!=='true'){button.dataset.confirmDelete='true';button.textContent='Delete?';return;}
+        button.disabled=true;
+        var del=typeof cwDeleteSession==='function'?cwDeleteSession(id):api('/api/cowork/conversations/'+encodeURIComponent(id),{method:'DELETE'});
+        Promise.resolve(del).then(function(){
+          cw.convs=(cw.convs||[]).filter(function(c){return c.id!==id;});
+          target._markup=null;
+          homeRefreshSidebarProjects();
+          homeRenderSidebarAgentState();
+        }).catch(function(err){button.disabled=false;button.dataset.confirmDelete='false';button.textContent='×';if(typeof toast==='function')toast(err.message,true);});
+      };
+    });
   }
   function homeRenderProjects(target,managed,sessions) {
     if(!target.isConnected)return;
     var cwState=cwEnsure(),selAgentId=cwState.selectedAgentId;
     var selAgent=selAgentId&&(cwState.agents||[]).find(function(agent){return agent.id===selAgentId;});
-    var visibleSessions=selAgentId?sessions.filter(function(run){return !run.coworkTask||run.coworkTask.agentId===selAgentId;}):sessions;
+    var visibleSessions=(selAgentId&&!S.homeShowAllSessions)?sessions.filter(function(run){return !run.coworkTask||run.coworkTask.agentId===selAgentId;}):sessions;
     homeRenderSidebarSessions(visibleSessions);
     var all=homeBuildProjects(managed,visibleSessions,homeSidebarPath(visibleSessions)),archived=!!S.codeArchiveView;
-    var visible=all.filter(function(project){return archived?!!(project.preference.archived||project.preference.hidden):!(project.preference.archived||project.preference.hidden);});
+    var q=String(S.homeSidebarFilter||'').trim().toLowerCase();
+    var visible=all.filter(function(project){
+      var inView=archived?!!(project.preference.archived||project.preference.hidden):!(project.preference.archived||project.preference.hidden);
+      if(!inView)return false;
+      if(!q)return true;
+      return String(project.name||'').toLowerCase().indexOf(q)>=0||String(project.path||'').toLowerCase().indexOf(q)>=0||(project.sessions||[]).some(function(s){return String(s.goal||'').toLowerCase().indexOf(q)>=0;});
+    });
     var pinned=visible.filter(function(project){return project.preference.pinned;}),recent=visible.filter(function(project){return !project.preference.pinned;});
-    var projects=archived?visible:pinned.concat(recent.slice(0,4));
+    var projects=(archived||S.codeShowAllProjects||q)?visible:pinned.concat(recent.slice(0,4));
+    var viewAllBtn=$('homeViewProjects');
+    if(viewAllBtn){
+      viewAllBtn.setAttribute('aria-pressed',String(!!S.codeShowAllProjects));
+      viewAllBtn.textContent=S.codeShowAllProjects?'Show fewer projects':'View all projects';
+    }
     var focused=typeof document!=='undefined'&&document.activeElement,focusKey=focused&&target.contains&&target.contains(focused)?focused.getAttribute('data-home-focus'):null;
     var html=projects.length?'<div class="home-project-list">'+projects.map(function(project,index){
       var pref=project.preference,expanded=pref.expanded===undefined?project.current:!!pref.expanded,current=project.current,groupId='homeProjectChats-'+index;
@@ -424,30 +484,121 @@ export const HOME_WORKSPACE_JS = PROJECT_PREFERENCES_JS + String.raw`
     modal.querySelector('[data-project-action]').focus();
   }
   function homeNavigationHtml(agent) {
-    return '<button type="button" class="home-menu-trigger" id="homeMenu" aria-label="Open navigation" aria-expanded="false" aria-controls="homeSidebar">'+'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>'+'</button><div class="home-nav-backdrop" id="homeNavBackdrop" aria-hidden="true"></div><aside class="home-sidebar" id="homeSidebar" aria-label="Code navigation"><div class="home-sidebar-brand"><img src="/brand/agent-gitu-mark.svg" alt=""><div class="home-sidebar-brand-copy"><span class="home-sidebar-brand-title">Agent Gitu</span><span class="home-sidebar-brand-sub">Workspace</span></div><button type="button" id="homeCollapse" aria-label="Collapse sidebar" aria-expanded="true" aria-controls="homeSidebar" title="Collapse sidebar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg></button></div><div class="home-sidebar-body"><button type="button" id="cwPageSearch" aria-label="Search workspace" title="Search workspace">'+cwIcon('search')+'<span>Search workspace</span></button><p class="home-sidebar-section-label">Workspace</p><nav aria-label="Code workspace">'+(S.active!=='home'?'<button type="button" id="homeNewChat">'+icon('pencil')+'<span>New task</span></button>':'')+'<details class="home-session-dd" id="homeSessionsDropdown"><summary id="cwSessionsBtn" aria-label="Sessions" title="Sessions">'+cwIcon('chat')+'<span>Sessions</span><span class="home-session-count" id="homeSessionCount"></span></summary><div class="home-session-list" id="homeSessionList"><p class="home-session-empty">Loading sessions…</p></div></details><button type="button" id="homeAgentsBtn" aria-label="Agents" title="Switch agents (Grid)">'+cwIcon('users')+'<span>Agents</span><span class="home-agent-pill" id="homeSelectedAgentChip">'+(agent?esc(agent.name):'')+'</span></button><button type="button" id="homeGroupsBtn" aria-label="Groups" title="Connected groups">'+cwIcon('users')+'<span>Groups</span></button><button type="button" id="homeInboxBtn" aria-label="Inbox" title="Collaborative Inbox (Humans & Agents)">'+cwIcon('chat')+'<span>Inbox</span></button><button type="button" id="homeConnections" aria-label="Connections" title="Connections">'+cwIcon('link')+'<span>Connections</span></button></nav><div class="home-sidebar-scroll"><section class="home-groups" id="homeAgentGroupsSection" aria-labelledby="homeGroupsTitle"><div class="home-groups-heading"><h2 id="homeGroupsTitle"><button type="button" id="homeGroupsNav" aria-label="Groups" title="Connected groups">'+cwIcon('users')+'<span>Groups</span></button></h2><button type="button" id="homeNewGroup" aria-label="New group" title="New group">'+cwIcon('plus')+'</button></div><div class="home-group-list" id="homeAgentGroups"><p class="home-group-empty">Loading groups…</p></div></section><section class="home-projects" aria-labelledby="homeProjectsTitle"><div class="home-project-heading"><h2 id="homeProjectsTitle"><button type="button" id="homeProjectsNav" aria-label="Projects" title="Projects">'+cwIcon('folder')+'<span>Projects</span></button></h2><button type="button" id="homeNewProject" aria-label="New project" title="New project">'+cwIcon('plus')+'</button></div><div id="homeProjectCards"><p class="home-project-summary" role="status">Loading projects…</p></div><div class="home-projects-footer"><button type="button" id="homeViewProjects">View all projects</button><button type="button" id="homeArchivedProjects" aria-pressed="false">Archived &amp; hidden</button></div></section></div></div><div class="home-sidebar-foot"><button type="button" id="cwInfoBtn" aria-label="Profile" title="Profile">'+cwIcon('user')+'<span>Profile</span></button><button type="button" id="homeSettings" aria-label="Settings" title="Settings">'+icon('gear')+'<span>Settings</span></button></div></aside><div class="cw-page-nav"><nav class="cw-top-nav" aria-label="App modes"><button type="button" id="cwCurrentChat" aria-pressed="false"><span class="cw-chat-face" aria-hidden="true">'+(agent?cwAva(agent):'<span class="cw-ava"><img src="/characters/orb.png?v=opendots1" alt="" draggable="false"></span>')+'</span><span>Cowork</span></button><button type="button" id="cwHomeBtn" aria-pressed="true">'+cwIcon('home')+'<span>Code</span></button></nav></div>';
+    var inRun=S.active!=='home'&&S.active!=='cowork';
+    return '<button type="button" class="home-menu-trigger" id="homeMenu" aria-label="Projects and sessions" title="Projects and sessions" aria-expanded="false" aria-controls="homeSidebar">'+cwIcon('chat')+'</button>' +
+      '<div class="home-nav-backdrop" id="homeNavBackdrop" aria-hidden="true"></div>' +
+      '<aside class="home-sidebar" id="homeSidebar" aria-label="Code navigation">' +
+        '<div class="home-sidebar-brand"><img src="/brand/agent-gitu-mark.svg" alt=""><div class="home-sidebar-brand-copy"><span class="home-sidebar-brand-title">Agent Gitu</span><span class="home-sidebar-brand-sub">Code workspace</span></div><button type="button" id="homeCollapse" aria-label="Close drawer" title="Close drawer">'+cwIcon('close')+'</button></div>' +
+        '<div class="home-sidebar-body">' +
+          '<label class="home-sidebar-search" for="homeSidebarSearch">'+cwIcon('search')+'<input type="search" id="homeSidebarSearch" autocomplete="off" placeholder="Filter chats, groups, projects…" aria-label="Filter sidebar"></label>' +
+          '<div class="home-sidebar-hits" id="homeSidebarHits" hidden></div>' +
+          '<p class="home-sidebar-section-label">Workspace</p>' +
+          '<nav aria-label="Code workspace">' +
+            (inRun?'<button type="button" id="homeNewChat">'+icon('pencil')+'<span>New task</span></button>':'') +
+            '<details class="home-session-dd" id="homeSessionsDropdown" open><summary id="cwSessionsBtn" aria-label="Sessions" title="Sessions">'+cwIcon('chat')+'<span>Sessions</span><span class="home-session-count" id="homeSessionCount"></span></summary><div class="home-session-toolbar"><button type="button" id="homeNewSessionBtn">'+cwIcon('plus')+'<span>New session</span></button><button type="button" id="homeSessionsScopeBtn">Show all</button></div><div class="home-session-list" id="homeSessionList"><p class="home-session-empty">Loading sessions…</p></div></details>' +
+            '<button type="button" id="homeAgentsBtn" aria-label="Agents" title="Switch agents (Grid)">'+cwIcon('users')+'<span>Agents</span><span class="home-agent-pill" id="homeSelectedAgentChip">'+(agent?esc(agent.name):'')+'</span></button>' +
+            '<button type="button" id="homeGroupsBtn" aria-label="Groups" title="Connected groups">'+cwIcon('users')+'<span>Groups</span></button>' +
+            '<button type="button" id="homeInboxBtn" aria-label="Inbox" title="Collaborative Inbox (Humans & Agents)">'+cwIcon('chat')+'<span>Inbox</span></button>' +
+            '<button type="button" id="homeConnections" aria-label="Connections" title="Connections">'+cwIcon('link')+'<span>Connections</span></button>' +
+            '<button type="button" id="homeBrowserBtn" aria-label="Browser" title="Browse websites with the main agent">'+icon('globe')+'<span>Browser</span></button>' +
+            '<button type="button" id="homeGitBtn" aria-label="Git" title="Review changes, branches, and commits">'+icon('branch')+'<span>Git</span></button>' +
+            (inRun?'<button type="button" id="homeTaskDetailsBtn" aria-label="Task details" title="Plan, approvals, verification, and progress">'+icon('layers')+'<span>Task details</span></button><button type="button" id="homeFilesBtn" aria-label="Files and details" title="Artifacts and changed files for this session">'+icon('folder')+'<span>Files &amp; details</span></button>':'') +
+            '<button type="button" id="homeSkillsBtn" aria-label="Skills" title="Reusable agent skills">'+icon('bolt')+'<span>Skills</span></button>' +
+            '<button type="button" id="homeScheduledBtn" aria-label="Scheduled" title="Scheduled tasks and reminders">'+icon('clock')+'<span>Scheduled</span></button>' +
+          '</nav>' +
+          '<div class="home-sidebar-scroll">' +
+            '<section class="home-groups" id="homeAgentGroupsSection" aria-labelledby="homeGroupsTitle"><div class="home-groups-heading"><h2 id="homeGroupsTitle"><button type="button" id="homeGroupsNav" aria-label="Groups" title="Connected groups">'+cwIcon('users')+'<span>Groups</span></button></h2><button type="button" id="homeNewGroup" aria-label="New group" title="New group">'+cwIcon('plus')+'</button></div><div class="home-group-list" id="homeAgentGroups"><p class="home-group-empty">Loading groups…</p></div></section>' +
+            '<section class="home-projects" aria-labelledby="homeProjectsTitle"><div class="home-project-heading"><h2 id="homeProjectsTitle"><button type="button" id="homeProjectsNav" aria-label="Projects" title="Projects">'+cwIcon('folder')+'<span>Projects</span></button></h2><button type="button" id="homeNewProject" aria-label="New project" title="New project">'+cwIcon('plus')+'</button></div><div id="homeProjectCards"><p class="home-project-summary" role="status">Loading projects…</p></div><div class="home-projects-footer"><button type="button" id="homeViewProjects">View all projects</button><button type="button" id="homeArchivedProjects" aria-pressed="false">Archived &amp; hidden</button></div></section>' +
+          '</div>' +
+        '</div>' +
+        '<div class="home-sidebar-foot"><button type="button" id="cwInfoBtn" aria-label="Profile" title="Profile">'+cwIcon('user')+'<span>Profile</span></button><button type="button" id="homeSettings" aria-label="Settings" title="Settings">'+icon('gear')+'<span>Settings</span></button></div>' +
+      '</aside>' +
+      '<div class="cw-page-nav"><nav class="cw-top-nav" aria-label="App modes">' +
+        '<button type="button" id="cwCurrentChat" aria-label="Cowork mode" title="Cowork mode" aria-pressed="false"><span class="cw-chat-face" aria-hidden="true">'+(agent?cwAva(agent):'<span class="cw-ava"><img src="/characters/orb.png?v=opendots1" alt="" draggable="false"></span>')+'</span><span>Cowork</span></button>' +
+        '<button type="button" id="cwHomeBtn" aria-label="Code mode" title="Code mode" aria-pressed="true">'+cwIcon('home')+'<span>Code</span></button>' +
+        '<button type="button" id="cwInboxBtn" aria-label="Inbox mode" title="Collaborative Inbox" aria-pressed="false">'+cwIcon('users')+'<span>Inbox</span></button>' +
+      '</nav></div>' +
+      '<button type="button" class="code-tools-toggle" id="codeToolsBtn" aria-label="Tools and activities" title="Tools and activities" popovertarget="codeToolsMenu">'+cwIcon('dots')+'</button>' +
+      '<div class="cw-message-menu cw-tools-menu" id="codeToolsMenu" popover="auto" aria-label="Code workspace tools">' +
+        (inRun?'<button type="button" class="cw-tool-item" id="codeNewTaskMenuBtn">'+icon('pencil')+'<span>New task</span></button>':'') +
+        (inRun?'<button type="button" class="cw-tool-item" id="mainChatDetails">'+icon('layers')+'<span>Task details</span></button><button type="button" class="cw-tool-item" id="codeFilesMenuBtn">'+icon('folder')+'<span>Files &amp; details</span></button>':'') +
+        '<button type="button" class="cw-tool-item" id="codeBrowserMenuBtn">'+icon('globe')+'<span>Browser</span></button>' +
+        '<button type="button" class="cw-tool-item" id="codeGitMenuBtn">'+icon('branch')+'<span>Git</span></button>' +
+        '<button type="button" class="cw-tool-item" id="codeAgentsMenuBtn">'+cwIcon('users')+'<span>Agents</span></button>' +
+        '<button type="button" class="cw-tool-item" id="codeGroupsMenuBtn">'+cwIcon('users')+'<span>Groups</span></button>' +
+        '<button type="button" class="cw-tool-item" id="codeProfileMenuBtn">'+cwIcon('user')+'<span>Profile</span></button>' +
+        '<button type="button" class="cw-tool-item" id="codeConnectionsMenuBtn">'+cwIcon('link')+'<span>Connections</span></button>' +
+        '<button type="button" class="cw-tool-item" id="codeSkillsMenuBtn">'+cwIcon('bolt')+'<span>Skills</span></button>' +
+        '<button type="button" class="cw-tool-item" id="codeScheduledMenuBtn">'+cwIcon('clock')+'<span>Scheduled</span></button>' +
+        '<button type="button" class="cw-tool-item" id="codeSettingsMenuBtn">'+cwIcon('sliders')+'<span>Settings</span></button>' +
+      '</div>';
   }
   function homeCloseNavigation() {
-    var menu=$('homeMenu');if(!menu)return;var root=menu.closest('.home-sky');if(root)root.dataset.navOpen='false';menu.setAttribute('aria-expanded','false');menu.setAttribute('aria-label','Open navigation');
+    var menu=$('homeMenu');if(!menu)return;var root=menu.closest('.home-sky');if(root)root.dataset.navOpen='false';menu.setAttribute('aria-expanded','false');menu.setAttribute('aria-label','Projects and sessions');
   }
   function homeBindNavigation() {
     var root=document.querySelector('.home-sky'),menu=$('homeMenu');
     var collapse=$('homeCollapse');
-    function setCollapsed(value){root.dataset.sidebarCollapsed=String(value);collapse.setAttribute('aria-expanded',String(!value));collapse.setAttribute('aria-label',value?'Expand sidebar':'Collapse sidebar');collapse.title=value?'Expand sidebar':'Collapse sidebar';}
-    try{setCollapsed(localStorage.getItem('gitu-code-sidebar-collapsed')==='true');}catch(e){setCollapsed(false);}
-    collapse.onclick=function(){var value=root.dataset.sidebarCollapsed!=='true';setCollapsed(value);try{localStorage.setItem('gitu-code-sidebar-collapsed',String(value));}catch(e){/* Navigation stays usable without storage. */}};
     function close(){homeCloseNavigation();}
-    menu.onclick=function(){var open=root.dataset.navOpen!=='true';root.dataset.navOpen=String(open);menu.setAttribute('aria-expanded',String(open));menu.setAttribute('aria-label',open?'Close navigation':'Open navigation');if(open)$('cwPageSearch').focus();};
+    if(collapse)collapse.onclick=function(){close();if(menu&&menu.focus)menu.focus();};
+    menu.onclick=function(){var open=root.dataset.navOpen!=='true';root.dataset.navOpen=String(open);menu.setAttribute('aria-expanded',String(open));menu.setAttribute('aria-label',open?'Close drawer':'Projects and sessions');if(open&&$('homeSidebarSearch'))$('homeSidebarSearch').focus();};
     $('homeNavBackdrop').onclick=close;
     root.addEventListener('keydown',function(event){if(root.dataset.navOpen==='true'&&event.key==='Escape'){event.preventDefault();close();menu.focus();}});
-    root.addEventListener('focusout',function(event){if(root.dataset.navOpen==='true'&&event.relatedTarget&&!$('homeSidebar').contains(event.relatedTarget)&&event.relatedTarget!==menu)close();});
-    $('homeProjectsNav').onclick=function(){close();wsOpen('main','Projects');};
-    if($('homeAgentsBtn'))$('homeAgentsBtn').onclick=function(){homeCaptureDrafts();close();if(typeof cwOpenAgentSwitcherModal==='function')cwOpenAgentSwitcherModal();else wsOpen('cowork','Agents');};
-    if($('homeGroupsBtn'))$('homeGroupsBtn').onclick=function(){close();wsOpen('main','Groups');};
-    if($('homeInboxBtn'))$('homeInboxBtn').onclick=function(){homeCaptureDrafts();close();if(window.__gituAstryx&&typeof window.__gituAstryx.openInbox==='function')window.__gituAstryx.openInbox();else window.location.assign('/inbox');};
-    if($('homeGroupsNav'))$('homeGroupsNav').onclick=function(){close();wsOpen('main','Groups');};
+    var codeToolsBtn=$('codeToolsBtn'),codeToolsMenu=$('codeToolsMenu');
+    if(codeToolsBtn&&codeToolsMenu){
+      codeToolsBtn.onclick=function(){
+        var rect=codeToolsBtn.getBoundingClientRect();
+        codeToolsMenu.style.left='auto';
+        codeToolsMenu.style.right=Math.max(12,Math.round(window.innerWidth-rect.right))+'px';
+        codeToolsMenu.style.top=Math.round(rect.bottom+8)+'px';
+        codeToolsMenu.style.bottom='auto';
+      };
+      codeToolsMenu.addEventListener('click',function(e){
+        var item=e.target&&e.target.closest&&e.target.closest('button');
+        if(item&&typeof codeToolsMenu.hidePopover==='function'){try{codeToolsMenu.hidePopover();}catch(err){}}
+      });
+    }
+    var toggleAllProjects=function(){
+      S.codeShowAllProjects=!S.codeShowAllProjects;
+      var btn=$('homeViewProjects');
+      if(btn){btn.setAttribute('aria-pressed',String(!!S.codeShowAllProjects));btn.textContent=S.codeShowAllProjects?'Show fewer projects':'View all projects';}
+      var target=$('homeProjectCards');if(target)homeRenderProjects(target,target._managed||[],target._sessions||[]);
+    };
+    $('homeProjectsNav').onclick=toggleAllProjects;
+    if($('homeAgentsBtn'))$('homeAgentsBtn').onclick=function(){homeCaptureDrafts();close();if(typeof cwOpenAgentSwitcherModal==='function')cwOpenAgentSwitcherModal();};
+    var focusGroups=function(){
+      if(root&&root.dataset)root.dataset.navOpen='true';
+      var sec=$('homeAgentGroupsSection');if(sec&&typeof sec.scrollIntoView==='function')sec.scrollIntoView({behavior:'smooth',block:'nearest'});
+      var list=$('homeAgentGroups'),first=list&&list.querySelector?list.querySelector('button'):null;
+      if(first&&first.focus)first.focus();else if($('homeNewGroup')&&$('homeNewGroup').focus)$('homeNewGroup').focus();
+    };
+    var openInboxMode=function(){homeCaptureDrafts();close();if(window.__gituAstryx&&typeof window.__gituAstryx.openInbox==='function')window.__gituAstryx.openInbox();else window.location.assign('/inbox');};
+    if($('homeGroupsBtn'))$('homeGroupsBtn').onclick=focusGroups;
+    if($('homeInboxBtn'))$('homeInboxBtn').onclick=openInboxMode;
+    if($('cwInboxBtn'))$('cwInboxBtn').onclick=openInboxMode;
+    if($('homeGroupsNav'))$('homeGroupsNav').onclick=focusGroups;
     if($('homeNewGroup'))$('homeNewGroup').onclick=function(){homeCaptureDrafts();close();if(typeof cwGroupModal==='function')cwGroupModal(cwEnsure().selectedAgentId);else cwEnterWorkspace('chat',cwEnsure().selectedAgentId);};
     if($('homeConnections'))$('homeConnections').onclick=function(){homeCaptureDrafts();close();if(typeof cwOpenConnections==='function')cwOpenConnections();else openSettings('connections');};
-    $('homeViewProjects').onclick=function(){close();wsOpen('main','Projects');};
+    if($('homeBrowserBtn'))$('homeBrowserBtn').onclick=function(){close();if(typeof openToolPanel==='function')openToolPanel('browser');};
+    if($('homeGitBtn'))$('homeGitBtn').onclick=function(){close();if(typeof openToolPanel==='function')openToolPanel('git');};
+    if($('homeTaskDetailsBtn'))$('homeTaskDetailsBtn').onclick=function(){close();if(typeof openToolPanel==='function')openToolPanel('state');};
+    if($('homeFilesBtn'))$('homeFilesBtn').onclick=function(){close();if(typeof openToolPanel==='function')openToolPanel('files');};
+    if($('homeSkillsBtn'))$('homeSkillsBtn').onclick=function(){homeCaptureDrafts();close();openSettings('skills');};
+    if($('homeScheduledBtn'))$('homeScheduledBtn').onclick=function(){homeCaptureDrafts();close();openSettings('cron');};
+    if($('codeNewTaskMenuBtn'))$('codeNewTaskMenuBtn').onclick=function(){homeCaptureDrafts();openHome();};
+    if($('codeFilesMenuBtn'))$('codeFilesMenuBtn').onclick=function(){if(typeof openToolPanel==='function')openToolPanel('files');};
+    if($('codeBrowserMenuBtn'))$('codeBrowserMenuBtn').onclick=function(){if(typeof openToolPanel==='function')openToolPanel('browser');};
+    if($('codeGitMenuBtn'))$('codeGitMenuBtn').onclick=function(){if(typeof openToolPanel==='function')openToolPanel('git');};
+    if($('codeAgentsMenuBtn'))$('codeAgentsMenuBtn').onclick=function(){homeCaptureDrafts();if(typeof cwOpenAgentSwitcherModal==='function')cwOpenAgentSwitcherModal();};
+    if($('codeGroupsMenuBtn'))$('codeGroupsMenuBtn').onclick=function(){homeCaptureDrafts();if(typeof cwSessionsModal==='function')cwSessionsModal('groups');else focusGroups();};
+    if($('codeProfileMenuBtn'))$('codeProfileMenuBtn').onclick=function(){homeCaptureDrafts();var agent=cwProfileAgent()||cwEnsure().agents[0];cwEnterWorkspace(agent?'profile':'new',agent&&agent.id);};
+    if($('codeConnectionsMenuBtn'))$('codeConnectionsMenuBtn').onclick=function(){homeCaptureDrafts();if(typeof cwOpenConnections==='function')cwOpenConnections();else openSettings('connections');};
+    if($('codeSkillsMenuBtn'))$('codeSkillsMenuBtn').onclick=function(){homeCaptureDrafts();openSettings('skills');};
+    if($('codeScheduledMenuBtn'))$('codeScheduledMenuBtn').onclick=function(){homeCaptureDrafts();openSettings('cron');};
+    if($('codeSettingsMenuBtn'))$('codeSettingsMenuBtn').onclick=function(){homeCaptureDrafts();openSettings('overview');};
+    if($('homeNewSessionBtn'))$('homeNewSessionBtn').onclick=function(){homeCaptureDrafts();close();if(typeof cwNewSessionModal==='function'&&cwEnsure().agents&&cwEnsure().agents.length)cwNewSessionModal();else openHome();};
+    if($('homeSessionsScopeBtn'))$('homeSessionsScopeBtn').onclick=function(){S.homeShowAllSessions=!S.homeShowAllSessions;var target=$('homeSessionList');if(target)target._markup=null;homeRefreshSidebarProjects();};
+    $('homeViewProjects').onclick=toggleAllProjects;
     $('homeNewProject').onclick=function(){close();newProject();};
     $('homeArchivedProjects').setAttribute('aria-pressed',String(!!S.codeArchiveView));
     $('homeArchivedProjects').textContent=S.codeArchiveView?'Back to projects':'Archived & hidden';
@@ -457,7 +608,41 @@ export const HOME_WORKSPACE_JS = PROJECT_PREFERENCES_JS + String.raw`
     $('cwCurrentChat').onclick=function(){homeCaptureDrafts();cwEnterWorkspace('chat',cwEnsure().selectedAgentId);};
     $('cwInfoBtn').onclick=function(){homeCaptureDrafts();close();var agent=cwProfileAgent()||cwEnsure().agents[0];cwEnterWorkspace(agent?'profile':'new',agent&&agent.id);};
     $('homeSettings').onclick=function(){homeCaptureDrafts();close();openSettings('overview');};
-    $('cwPageSearch').onclick=function(){close();wsOpen('main');};
+    var searchInput=$('homeSidebarSearch');
+    if(searchInput){
+      searchInput.value=S.homeSidebarFilter||'';
+      var recallTimer=null,recallSeq=0;
+      searchInput.oninput=function(){
+        S.homeSidebarFilter=searchInput.value;
+        var sList=$('homeSessionList');if(sList)sList._markup=null;
+        var pCards=$('homeProjectCards');if(pCards)pCards._markup=null;
+        if(S.homeSidebarFilter&&$('homeSessionsDropdown'))$('homeSessionsDropdown').open=true;
+        homeRefreshSidebarProjects();
+        homeRenderSidebarAgentState();
+        clearTimeout(recallTimer);
+        var q=String(S.homeSidebarFilter||'').trim(),hitsEl=$('homeSidebarHits'),seq=++recallSeq;
+        if(!hitsEl)return;
+        if(q.length<2){hitsEl.hidden=true;hitsEl.innerHTML='';return;}
+        recallTimer=setTimeout(function(){
+          api('/api/cowork/search?q='+encodeURIComponent(q)+'&limit=8').then(function(data){
+            if(seq!==recallSeq||!hitsEl.isConnected)return;
+            var hits=(data&&data.hits)||[];
+            if(!hits.length){hitsEl.hidden=true;hitsEl.innerHTML='';return;}
+            hitsEl.hidden=false;
+            hitsEl.innerHTML=hits.map(function(hit){
+              return '<button type="button" class="home-sidebar-hit" data-home-hit-conv="'+esc(hit.conversationId)+'" data-home-hit-thread="'+esc(hit.threadId||'')+'"><strong>'+esc(hit.conversationTitle||'Conversation')+'</strong><small>'+esc(hit.snippet||'')+'</small></button>';
+            }).join('');
+            hitsEl.querySelectorAll('[data-home-hit-conv]').forEach(function(btn){
+              btn.onclick=function(){
+                var cid=btn.getAttribute('data-home-hit-conv'),tid=btn.getAttribute('data-home-hit-thread')||null;
+                homeCloseNavigation();
+                cwEnterWorkspace('conv',cwEnsure().selectedAgentId||null,cid,tid);
+              };
+            });
+          }).catch(function(){if(seq===recallSeq){hitsEl.hidden=true;hitsEl.innerHTML='';}});
+        },250);
+      };
+    }
     var timer=setInterval(function(){if(!root.isConnected){clearInterval(timer);return;}if(!document.hidden)homeLoadProjects();},5000);
 
     homeRenderSidebarAgentState();

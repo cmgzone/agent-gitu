@@ -592,12 +592,20 @@ data class InboxAgentSummary(
 )
 
 @Serializable
+data class InboxProjectSummary(
+    val name: String = "",
+    val path: String = "",
+)
+
+@Serializable
 data class InboxMember(
     val id: String = "",
     val name: String = "",
     val email: String? = null,
     val status: String? = "active",
+    val allowedAgentIds: List<String> = emptyList(),
     val toolPolicy: String? = null,
+    val joinedAt: String? = null,
 )
 
 @Serializable
@@ -607,9 +615,13 @@ data class InboxInvite(
     val pikpamInviteUrl: String? = null,
     val label: String? = null,
     val scopeType: String = "dm",
+    val roomId: String? = null,
+    val targetEmail: String? = null,
+    val defaultAgentIds: List<String> = emptyList(),
     val toolPolicy: String = "read_only",
     val maxUses: Int = 1,
     val usedCount: Int = 0,
+    val expiresAt: String? = null,
     val createdAt: String = "",
     val revokedAt: String? = null,
 )
@@ -623,6 +635,13 @@ data class InboxRoom(
     val activeAgentIds: List<String> = emptyList(),
     val agentTriggerMode: String = "mention",
     val toolPolicyOverride: String? = null,
+    val notesVisibility: String = "owner_only",
+    val projectPath: String? = null,
+    val noteCount: Int = 0,
+    val openTaskCount: Int = 0,
+    val pendingApprovalCount: Int = 0,
+    val activeAgentTurnIds: List<String> = emptyList(),
+    val watching: Boolean = false,
     val updatedAt: String = "",
 )
 
@@ -635,22 +654,104 @@ data class InboxMessage(
     val senderId: String = "",
     val senderName: String = "",
     val text: String = "",
+    val visibility: String? = null,
     val ts: String = "",
+)
+
+@Serializable
+data class InboxRoomNote(
+    val id: String = "",
+    val roomId: String = "",
+    val kind: String = "note",
+    val title: String = "",
+    val content: String = "",
+    val createdByType: String = "owner",
+    val createdById: String = "",
+    val createdByName: String = "",
+    val sharedToChat: Boolean = false,
+    val sharedMessageId: String? = null,
+    val createdAt: String = "",
+    val updatedAt: String = "",
+)
+
+@Serializable
+data class InboxRoomTask(
+    val id: String = "",
+    val roomId: String = "",
+    val title: String = "",
+    val description: String? = null,
+    val kind: String = "action",
+    val status: String = "todo",
+    val assignee: String? = null,
+    val projectPath: String? = null,
+    val requestedByType: String = "owner",
+    val requestedByName: String = "",
+    val codeRunId: String? = null,
+    val codeRunStatus: String? = null,
+    val delegationSummary: String? = null,
+    val subAgentRole: String? = null,
+    val createdAt: String = "",
+    val updatedAt: String = "",
 )
 
 @Serializable
 data class InboxStateResponse(
     val role: String = "owner",
     val workspaceName: String = "",
+    val workspaceUrl: String? = null,
+    val pikpamBaseUrl: String? = null,
+    val pikpamConfigured: Boolean = false,
     val rooms: List<InboxRoom> = emptyList(),
     val members: List<InboxMember> = emptyList(),
     val invites: List<InboxInvite> = emptyList(),
     val agents: List<InboxAgentSummary> = emptyList(),
+    val projects: List<InboxProjectSummary> = emptyList(),
 )
 
 @Serializable
 data class InboxMessagesResponse(
     val messages: List<InboxMessage> = emptyList(),
+    val activeAgentTurnIds: List<String> = emptyList(),
+    val watching: Boolean = false,
+)
+
+@Serializable
+data class InboxWorkspaceResponse(
+    val notesVisibility: String = "owner_only",
+    val projectPath: String? = null,
+    val notes: List<InboxRoomNote> = emptyList(),
+    val tasks: List<InboxRoomTask> = emptyList(),
+)
+
+@Serializable
+data class InboxSummarizeResponse(
+    val note: InboxRoomNote? = null,
+    val createdTasks: List<InboxRoomTask> = emptyList(),
+    val tasks: List<InboxRoomTask> = emptyList(),
+)
+
+@Serializable
+data class InboxDelegateCodeResponse(
+    val task: InboxRoomTask? = null,
+    val runId: String = "",
+    val projectPath: String? = null,
+)
+
+@Serializable
+data class InboxDelegateSubAgentResponse(
+    val task: InboxRoomTask? = null,
+    val report: String = "",
+    val note: InboxRoomNote? = null,
+)
+
+@Serializable
+data class InboxCreateRoomResponse(
+    val room: InboxRoom? = null,
+)
+
+@Serializable
+data class InboxCreateInviteResponse(
+    val invite: InboxInvite? = null,
 )
 
 // --- Settings, Models, Chief, Cron, Push, Local Link ---

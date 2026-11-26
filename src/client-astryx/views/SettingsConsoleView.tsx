@@ -28,7 +28,6 @@ import {
   Layers,
   Moon,
   RefreshCw,
-  Search,
   SETTING_ICONS,
   Settings,
   Sun,
@@ -393,15 +392,6 @@ export function SettingsConsoleView({
 
   const sidebarNav = (
     <VStack gap={3} padding={3} height="100%">
-      <Button
-        label="Search console…"
-        variant="secondary"
-        size="sm"
-        icon={<AppIcon icon={Search} />}
-        width="100%"
-        onClick={() => host?.openSearchOverlay()}
-      />
-
       <StackItem size="fill">
         <VStack gap={3}>
           {navGroups.map(group => (
@@ -468,14 +458,6 @@ export function SettingsConsoleView({
               </HStack>
 
               <HStack gap={2} vAlign="center">
-                <IconButton
-                  label="Search console"
-                  tooltip="Search console"
-                  variant="ghost"
-                  size="sm"
-                  icon={<AppIcon icon={Search} />}
-                  onClick={() => host?.openSearchOverlay()}
-                />
                 <IconButton
                   label={
                     themeMode === 'dark'

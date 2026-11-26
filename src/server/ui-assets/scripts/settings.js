@@ -32,7 +32,7 @@
     if($('settings').hidden)return;
     $('settings').hidden = true;
     document.querySelector('.shell').inert=!!S.settingsShellInert;
-    var focus=S.settingsFocus&&S.settingsFocus.isConnected?S.settingsFocus:$('homeSettings')||$('mainChatHistory')||$('cwBack')||$('cwPageSearch');if(focus)focus.focus({preventScroll:true});
+    var focus=S.settingsFocus&&S.settingsFocus.isConnected?S.settingsFocus:$('homeSettings')||$('mainChatHistory')||$('cwBack')||$('homeSidebarSearch');if(focus)focus.focus({preventScroll:true});
   }
 
   function refreshModels() {
@@ -113,7 +113,7 @@
         '</div>' +
       '</div>';
     $('setnav').innerHTML = navHtml;
-    $('setBack').onclick = function(){wsOpen();};
+    $('setBack').onclick = function(){openSettings('overview');};
     $('setnav').querySelectorAll('[data-sec]').forEach(function (el) {
       el.onclick = function () { S.setSection = resolveSettingsSection(el.getAttribute('data-sec')); renderSettings(); };
     });
@@ -1088,7 +1088,14 @@
         };
       });
     } else if (S.setSection === 'cron') {
-      api('/api/cron').then(function (d) {
+      Promise.allSettled([api('/api/cron'), api('/api/cowork/conversations'), api('/api/cowork/agents')]).then(function (results) {
+        var d = results[0].status === 'fulfilled' && results[0].value ? results[0].value : { jobs: [] };
+        var convData = results[1].status === 'fulfilled' && results[1].value ? results[1].value : { conversations: [], followUps: [] };
+        var agentData = results[2].status === 'fulfilled' && results[2].value ? results[2].value : { agents: [] };
+        var jobs = Array.isArray(d.jobs) ? d.jobs : [];
+        var conversations = Array.isArray(convData.conversations) ? convData.conversations : [];
+        var followUps = Array.isArray(convData.followUps) ? convData.followUps.slice().sort(function (a, b) { return Date.parse(a.dueAt) - Date.parse(b.dueAt); }) : [];
+        var agents = Array.isArray(agentData.agents) ? agentData.agents : [];
         var parseGoal = typeof wsParseGoalText === 'function' ? wsParseGoalText : function (g, fb) {
           var t = String(g || '').trim();
           var colon = /^([A-Z][A-Za-z0-9 _-]{1,35}):\s*([\s\S]+)$/.exec(t);
@@ -1099,9 +1106,36 @@
         };
         var formatFreq = typeof wsFormatFrequency === 'function' ? wsFormatFrequency : function (e) { return 'Every ' + e; };
         var computeNext = typeof wsComputeNextRun === 'function' ? wsComputeNextRun : function () { return ''; };
-        b.innerHTML = '<h1>Scheduled / heartbeat</h1><p style="color:var(--muted);font-size:12.5px">Cron jobs start agent runs on a schedule. A heartbeat periodically checks project health.</p>' +
+        var coworkSchedules = [];
+        conversations.forEach(function (conv) {
+          if (conv && conv.schedule && conv.schedule.every) {
+            coworkSchedules.push({ kind: 'conversation-schedule', conv: conv, schedule: conv.schedule });
+          }
+        });
+        followUps.forEach(function (fu) {
+          var conv = conversations.find(function (c) { return c.id === fu.conversationId; });
+          if (!conv) return;
+          var agent = agents.find(function (a) { return a.id === fu.agentId; });
+          coworkSchedules.push({ kind: 'followup', conv: conv, followUp: fu, agent: agent });
+        });
+        var instCounter = 0;
+        var renderInstFooter = function (promptText) {
+          var id = ++instCounter;
+          return '<div class="ws-sc-footer">' +
+            '<button type="button" class="ws-sc-toggle" data-set-sc-toggle="' + id + '" aria-expanded="false" aria-controls="set-sc-inst-' + id + '">' +
+              '<span class="ws-sc-chevron" aria-hidden="true">▸</span>' +
+              '<span class="ws-sc-toggle-label">View instructions</span>' +
+            '</button>' +
+          '</div>' +
+          '<div class="ws-sc-instructions" id="set-sc-inst-' + id + '" hidden>' +
+            '<div class="ws-sc-instructions-label">Automation instructions</div>' +
+            '<pre class="ws-sc-prompt">' + esc(promptText || 'No instructions provided.') + '</pre>' +
+          '</div>';
+        };
+        b.innerHTML = '<h1>Scheduled / heartbeat</h1><p style="color:var(--muted);font-size:12.5px">Cron jobs start agent runs on a schedule. Cowork chat schedules and one-time teammate reminders also appear here.</p>' +
+          '<h2>Workspace cron jobs</h2>' +
           '<div class="setcard"><div class="setlist">' +
-          (d.jobs.length ? d.jobs.map(function (jb, idx) {
+          (jobs.length ? jobs.map(function (jb) {
             var parsed = parseGoal(jb.goal, 'Cron job');
             var freq = formatFreq(jb.every);
             var next = computeNext(jb.lastRunAt, jb.every);
@@ -1123,22 +1157,87 @@
                   '</div>' +
                 '</div>' +
               '</div>' +
-              '<div class="ws-sc-footer">' +
-                '<button type="button" class="ws-sc-toggle" data-set-sc-toggle="' + idx + '" aria-expanded="false" aria-controls="set-sc-inst-' + idx + '">' +
-                  '<span class="ws-sc-chevron" aria-hidden="true">▸</span>' +
-                  '<span class="ws-sc-toggle-label">View instructions</span>' +
-                '</button>' +
-              '</div>' +
-              '<div class="ws-sc-instructions" id="set-sc-inst-' + idx + '" hidden>' +
-                '<div class="ws-sc-instructions-label">Automation instructions</div>' +
-                '<pre class="ws-sc-prompt">' + esc(jb.goal || 'No instructions provided.') + '</pre>' +
-              '</div>' +
+              renderInstFooter(jb.goal) +
             '</div>';
-          }).join('') : '<div class="meta">no jobs yet</div>') +
+          }).join('') : '<div class="meta">no cron jobs yet</div>') +
           '<div style="height:8px"></div><div class="row"><div style="flex:1"><div class="meta">Schedule (e.g. 30, 30s, 5m, 1h — bare numbers are minutes)</div><input id="crEvery" placeholder="30m" style="margin:0"></div><div style="flex:2"><div class="meta">Goal for the agent</div><input id="crGoal" placeholder="e.g. run tests and fix failures" style="margin:0"></div></div>' +
-          '<div class="row"><button class="btn dark" id="crAdd">Add cron job</button><button class="btn ghost" id="crHeart">+ heartbeat (30m)</button></div></div></div>';
+          '<div class="row"><button class="btn dark" id="crAdd">Add cron job</button><button class="btn ghost" id="crHeart">+ heartbeat (30m)</button></div></div></div>' +
+          '<h2>Cowork schedules &amp; teammate reminders</h2>' +
+          '<div class="setcard"><div class="setlist">' +
+          (coworkSchedules.length ? coworkSchedules.map(function (entry) {
+            if (entry.kind === 'conversation-schedule') {
+              var sc = entry.schedule, conv = entry.conv;
+              var parsedSc = parseGoal(sc.goal, conv.title || 'Scheduled chat');
+              var titleSc = conv.title || parsedSc.title;
+              var freqSc = formatFreq(sc.every);
+              var nextSc = computeNext(sc.lastRunAt, sc.every);
+              var enabledSc = sc.enabled !== false;
+              return '<div class="ws-schedule-card set-schedule-card">' +
+                '<div class="ws-sc-header">' +
+                  '<span class="ws-sc-icon-wrap" aria-hidden="true">' + icon('clock') + '</span>' +
+                  '<div class="ws-sc-main">' +
+                    '<div class="ws-sc-top-row">' +
+                      '<button type="button" class="ws-sc-title-btn" data-cw-schedule-conv="' + esc(conv.id) + '" title="' + esc(titleSc) + '">' + esc(titleSc) + '</button>' +
+                    '</div>' +
+                    '<p class="ws-sc-summary">' + esc(parsedSc.summary || sc.goal || '') + '</p>' +
+                    '<div class="ws-sc-meta">' +
+                      '<span class="ws-sc-badge ' + (enabledSc ? 'active' : 'paused') + '">' + (enabledSc ? 'Active' : 'Paused') + '</span>' +
+                      '<span class="ws-sc-badge frequency">' + esc(freqSc) + '</span>' +
+                      (nextSc ? '<span class="ws-sc-badge next">' + esc(nextSc) + '</span>' : '') +
+                    '</div>' +
+                  '</div>' +
+                '</div>' +
+                renderInstFooter(sc.goal) +
+              '</div>';
+            }
+            var fu = entry.followUp, fConv = entry.conv, fAgent = entry.agent;
+            var fTitle = (fAgent && fAgent.name ? fAgent.name + ' reminder' : 'Reminder') + (fConv && fConv.title ? ' · ' + fConv.title : '');
+            var dueText = '';
+            if (fu.dueAt) {
+              try {
+                var dueDate = new Date(fu.dueAt);
+                var isToday = dueDate.toDateString() === new Date().toDateString();
+                dueText = isToday ? 'Due ' + dueDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Due ' + dueDate.toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+              } catch (e) {}
+            }
+            return '<div class="ws-schedule-card set-schedule-card">' +
+              '<div class="ws-sc-header">' +
+                '<span class="ws-sc-icon-wrap" aria-hidden="true">' + icon('clock') + '</span>' +
+                '<div class="ws-sc-main">' +
+                  '<div class="ws-sc-top-row">' +
+                    '<button type="button" class="ws-sc-title-btn" data-cw-followup-conv="' + esc(fConv.id) + '" title="' + esc(fTitle) + '">' + esc(fTitle) + '</button>' +
+                  '</div>' +
+                  '<p class="ws-sc-summary">' + esc(fu.note || '') + '</p>' +
+                  '<div class="ws-sc-meta">' +
+                    '<span class="ws-sc-badge active">Active</span>' +
+                    '<span class="ws-sc-badge frequency">One-time</span>' +
+                    (dueText ? '<span class="ws-sc-badge next">' + esc(dueText) + '</span>' : '') +
+                    (fConv && fConv.title ? '<span class="ws-sc-badge context">' + esc(fConv.title) + '</span>' : '') +
+                  '</div>' +
+                '</div>' +
+              '</div>' +
+              renderInstFooter(fu.note) +
+            '</div>';
+          }).join('') : '<div class="meta">No Cowork chat schedules or reminders yet. Ask a teammate to schedule a reminder, or use Schedule in a chat’s + menu.</div>') +
+          '</div></div>';
         b.querySelectorAll('[data-x]').forEach(function (el) {
           el.onclick = function () { api('/api/cron/' + el.getAttribute('data-x'), { method: 'DELETE' }).then(function () { renderSettings(); }).catch(function (e) { toast(e.message, true); }); };
+        });
+        b.querySelectorAll('[data-cw-schedule-conv]').forEach(function (btn) {
+          btn.onclick = function () {
+            var convId = btn.getAttribute('data-cw-schedule-conv');
+            closeSettings();
+            if (S.active !== 'cowork' && typeof cwEnterWorkspace === 'function') cwEnterWorkspace('conv', null, convId);
+            else if (typeof cwOpenConv === 'function') { cwOpenConv(convId); if (typeof cwScheduleModal === 'function' && typeof cwActiveConv === 'function') cwScheduleModal(cwActiveConv()); }
+          };
+        });
+        b.querySelectorAll('[data-cw-followup-conv]').forEach(function (btn) {
+          btn.onclick = function () {
+            var convId = btn.getAttribute('data-cw-followup-conv');
+            closeSettings();
+            if (S.active !== 'cowork' && typeof cwEnterWorkspace === 'function') cwEnterWorkspace('conv', null, convId);
+            else if (typeof cwOpenConv === 'function') cwOpenConv(convId, null);
+          };
         });
         b.querySelectorAll('[data-set-sc-toggle]').forEach(function (button) {
           button.onclick = function (event) {
@@ -1204,7 +1303,7 @@
       var el = $('settings');
       if (el && !el.hidden) el.hidden = true;
     };
-    host.openSearchOverlay = function () { if (typeof wsOpen === 'function') wsOpen(); };
+    host.openSearchOverlay = function () { openSettings('overview'); };
     host.openFolderBrowser = function () { if (typeof openFolderBrowser === 'function') openFolderBrowser(); };
     host.openSetupWizard = function () { if (typeof openSetupWizard === 'function') openSetupWizard(); };
     host.effectiveProjectPath = effectiveProjectPath;

@@ -118,6 +118,8 @@ export interface CoworkRunnerDeps {
   references?: string;
   /** Rendered per-agent persistent memory block. */
   memoryFor?: (agent: CoworkAgent) => string;
+  /** Compact one-way briefing of Collaborative Inbox rooms, notes, tasks, and pending approvals for private Cowork turns. */
+  inboxAwarenessFor?: (agent: CoworkAgent) => string | undefined;
   /** Post-turn learning pass (default true — same contract as the main agent's
    *  autoLearn). Set false to stop all proactive skill/pattern creation. */
   autoLearn?: boolean;
@@ -382,6 +384,8 @@ function systemPrompt(agent: CoworkAgent, conversation: CoworkConversation, memb
     );
   const memory = deps?.memoryFor?.(agent);
   if (memory) parts.push(`YOUR PERSISTED MEMORY (facts you chose to keep across conversations — update with the agent_memory tool when they change):\n${memory}`);
+  const collaborativeInbox = deps?.inboxAwarenessFor?.(agent);
+  if (collaborativeInbox) parts.push(collaborativeInbox);
   const inbox = deps?.store?.inboxFor(agent.id) ?? [];
   if (inbox.length > 0) {
     const lines = inbox.map((m) => {

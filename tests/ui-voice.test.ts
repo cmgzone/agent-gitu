@@ -176,4 +176,14 @@ describe('Live call lifecycle', () => {
     await u.context.voiceEnd();
     expect(u.context.voiceState.phase).toBe('idle');
   });
+
+  it('shows a Pikpam status error instead of prompting for LiveKit API keys when Pikpam is connected but voice is disabled', async () => {
+    const u = voiceUi();
+    u.api.mockImplementationOnce(async () => ({ configured: false, mode: 'pikpam', pikpamConnected: true, pikpamAvailable: false }));
+    await u.context.startGituVoice({ kind: 'main' });
+    expect(u.elements.voiceSetup).toBeUndefined();
+    expect(u.elements.gituVoiceBar.dataset.phase).toBe('failed');
+    expect(u.elements.voicePhase.textContent).toContain('Pikpam Managed Voice');
+    expect(u.context.toast).toHaveBeenCalledWith(expect.stringContaining('Pikpam Managed Voice'), true);
+  });
 });

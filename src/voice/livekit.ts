@@ -59,14 +59,64 @@ export class VoiceProviderError extends Error {
   }
 }
 
+function isPikpamHostedUrl(rawUrl: string): boolean {
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return false;
+  return /(?:^|\/\/)(?:[^/]*\.)?pikpam\.com(?:[:/]|$)|pikrouter/i.test(trimmed);
+}
+
+function hasPikpamCloudContext(): boolean {
+  return Boolean(
+    (process.env.PIKPAM_VOICE_TOKEN_URL || '').trim() ||
+    (process.env.PIKPAM_VOICE_ROOMS_URL || '').trim() ||
+    (process.env.PIKPAM_CLOUD_CONTEXT_URL || '').trim() ||
+    isPikpamHostedUrl(process.env.PIKROUTER_BASE_URL || '') ||
+    isPikpamHostedUrl(process.env.ROUTER_BASE_URL || '') ||
+    isPikpamHostedUrl(process.env.HERMES_BASE_URL || '') ||
+    isPikpamHostedUrl(process.env.OPENAI_BASE_URL || ''),
+  );
+}
+
+function isPikpamApiKey(candidate: string): boolean {
+  return candidate.startsWith('sk-live-') || hasPikpamCloudContext();
+}
+
 export function resolvePikpamVoiceToken(overrideToken?: string): string | undefined {
   const direct = overrideToken?.trim();
   if (direct) return direct;
   const stored = loadStoredKeys();
-  const fromStored = (stored.PIKROUTER_API_KEY || stored.HERMES_PIKROUTER_API_KEY || stored.PIKROUTER_TOKEN || '').trim();
-  if (fromStored) return fromStored;
-  const fromEnv = (process.env.PIKROUTER_API_KEY || process.env.HERMES_PIKROUTER_API_KEY || process.env.PIKROUTER_TOKEN || '').trim();
-  return fromEnv || undefined;
+  const explicitStored = (
+    stored.PIKROUTER_API_KEY ||
+    stored.HERMES_PIKROUTER_API_KEY ||
+    stored.PIKROUTER_TOKEN ||
+    stored.PIKPAM_API_KEY ||
+    ''
+  ).trim();
+  if (explicitStored) return explicitStored;
+  const explicitEnv = (
+    process.env.PIKROUTER_API_KEY ||
+    process.env.HERMES_PIKROUTER_API_KEY ||
+    process.env.PIKROUTER_TOKEN ||
+    process.env.PIKPAM_API_KEY ||
+    ''
+  ).trim();
+  if (explicitEnv) return explicitEnv;
+
+  // Pikpam Cloud VPS containers (Shared & Dedicated) inject ROUTER_API_KEY / HERMES_API_KEY / OPENAI_API_KEY
+  // set to the tenant's sk-live-vps_* key alongside Pikpam router/cloud URLs.
+  const routerCandidates = [
+    stored.ROUTER_API_KEY,
+    stored.HERMES_API_KEY,
+    stored.OPENAI_API_KEY,
+    process.env.ROUTER_API_KEY,
+    process.env.HERMES_API_KEY,
+    process.env.OPENAI_API_KEY,
+  ];
+  for (const raw of routerCandidates) {
+    const token = (raw || '').trim();
+    if (token && isPikpamApiKey(token)) return token;
+  }
+  return undefined;
 }
 
 export function pikpamVoiceBaseUrl(): string {
@@ -74,8 +124,33 @@ export function pikpamVoiceBaseUrl(): string {
   if (explicitTokenUrl) return explicitTokenUrl.replace(/\/token\/?$/, '').replace(/\/+$/, '');
   const explicitRoomsUrl = (process.env.PIKPAM_VOICE_ROOMS_URL || '').trim();
   if (explicitRoomsUrl) return explicitRoomsUrl.replace(/\/rooms\/?$/, '').replace(/\/+$/, '');
-  const routerBase = (process.env.PIKROUTER_BASE_URL || '').trim();
-  if (routerBase) return `${routerBase.replace(/\/+$/, '')}/voice`;
+  const pikrouterBase = (process.env.PIKROUTER_BASE_URL || '').trim();
+  if (pikrouterBase) {
+    const normalized = pikrouterBase.replace(/\/+$/, '');
+    if (/\/v1$/i.test(normalized)) return `${normalized.replace(/\/v1$/i, '')}/api/voice`;
+    return `${normalized}/voice`;
+  }
+  const cloudContextUrl = (process.env.PIKPAM_CLOUD_CONTEXT_URL || '').trim();
+  if (cloudContextUrl) {
+    try {
+      return `${new URL(cloudContextUrl).origin}/api/voice`;
+    } catch {
+      // ignore malformed URL
+    }
+  }
+  for (const rawBase of [process.env.ROUTER_BASE_URL, process.env.HERMES_BASE_URL, process.env.OPENAI_BASE_URL]) {
+    const trimmed = (rawBase || '').trim().replace(/\/+$/, '');
+    if (!trimmed) continue;
+    if (isPikpamHostedUrl(trimmed) || (process.env.ROUTER_API_KEY || process.env.HERMES_API_KEY || '').trim().startsWith('sk-live-')) {
+      if (/\/v1$/i.test(trimmed)) return `${trimmed.replace(/\/v1$/i, '')}/api/voice`;
+      if (/\/api$/i.test(trimmed)) return `${trimmed}/voice`;
+      try {
+        return `${new URL(trimmed).origin}/api/voice`;
+      } catch {
+        // ignore malformed URL
+      }
+    }
+  }
   return DEFAULT_PIKPAM_VOICE_BASE_URL;
 }
 

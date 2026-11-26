@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LiveKitCloudWorker } from '../src/voice/cloud-worker.js';
 import { AgentDispatchClient, RoomServiceClient, TokenVerifier } from 'livekit-server-sdk';
-import { GituVoiceCalls, cleanSpokenReply, validateLiveKitConfiguration, decideVoiceTurn } from '../src/voice/livekit.js';
+import { GituVoiceCalls, cleanSpokenReply, pikpamVoiceBaseUrl, resolvePikpamVoiceToken, validateLiveKitConfiguration, decideVoiceTurn } from '../src/voice/livekit.js';
 import type { LlmClient, LlmMessage } from '../src/llm/llm.js';
 import { GituServer } from '../src/server/server.js';
 import type { CoworkMessage } from '../src/cowork/store.js';
@@ -258,5 +258,74 @@ describe('LiveKit voice bridge', () => {
       statusCode: 402,
       code: 'INSUFFICIENT_CREDITS',
     });
+  });
+
+  it('auto-detects Pikpam Managed Voice from Pikpam Cloud VPS env vars (ROUTER_API_KEY / HERMES_API_KEY) without prompting for LiveKit keys', async () => {
+    const savedEnv = {
+      PIKROUTER_API_KEY: process.env.PIKROUTER_API_KEY,
+      HERMES_PIKROUTER_API_KEY: process.env.HERMES_PIKROUTER_API_KEY,
+      PIKROUTER_TOKEN: process.env.PIKROUTER_TOKEN,
+      PIKPAM_API_KEY: process.env.PIKPAM_API_KEY,
+      ROUTER_API_KEY: process.env.ROUTER_API_KEY,
+      HERMES_API_KEY: process.env.HERMES_API_KEY,
+      OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+      ROUTER_BASE_URL: process.env.ROUTER_BASE_URL,
+      HERMES_BASE_URL: process.env.HERMES_BASE_URL,
+      OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
+      PIKROUTER_BASE_URL: process.env.PIKROUTER_BASE_URL,
+      PIKPAM_CLOUD_CONTEXT_URL: process.env.PIKPAM_CLOUD_CONTEXT_URL,
+      PIKPAM_VOICE_TOKEN_URL: process.env.PIKPAM_VOICE_TOKEN_URL,
+      PIKPAM_VOICE_ROOMS_URL: process.env.PIKPAM_VOICE_ROOMS_URL,
+    };
+    const clearVoiceEnv = () => {
+      for (const key of Object.keys(savedEnv)) delete process.env[key];
+    };
+    try {
+      clearVoiceEnv();
+      // A standalone OpenAI key must NOT be treated as a Pikpam token.
+      process.env.OPENAI_API_KEY = 'sk-proj-standalone-openai-key';
+      expect(resolvePikpamVoiceToken()).toBeUndefined();
+
+      // A Pikpam Cloud VPS injects ROUTER_API_KEY / HERMES_API_KEY + ROUTER_BASE_URL / PIKPAM_CLOUD_CONTEXT_URL.
+      clearVoiceEnv();
+      process.env.ROUTER_API_KEY = 'sk-live-vps_test_token_123';
+      process.env.ROUTER_BASE_URL = 'https://cloud.pikpam.example/v1';
+      process.env.PIKPAM_CLOUD_CONTEXT_URL = 'https://cloud.pikpam.example/api/cloud/agent/context';
+      expect(resolvePikpamVoiceToken()).toBe('sk-live-vps_test_token_123');
+      expect(pikpamVoiceBaseUrl()).toBe('https://cloud.pikpam.example/api/voice');
+
+      const seen: Array<{ url: string; auth: string | null }> = [];
+      const mockFetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers);
+        seen.push({ url, auth: headers.get('authorization') });
+        if (url.endsWith('/api/voice/status')) {
+          return new Response(JSON.stringify({
+            available: true,
+            wsUrl: 'wss://pikpam.livekit.cloud',
+            defaultAgentName: 'pikpam-voice-agent',
+            wallet: { spendableCredits: 500, eligible: true },
+          }), { status: 200, headers: { 'content-type': 'application/json' } });
+        }
+        return new Response(JSON.stringify({ error: 'Not found' }), { status: 404 });
+      });
+
+      const calls = new GituVoiceCalls(mockFetch as unknown as typeof fetch);
+      const status = await calls.resolveStatus();
+      expect(status.configured).toBe(true);
+      expect(status.mode).toBe('pikpam');
+      expect(status.pikpamConnected).toBe(true);
+      expect(status.pikpamAvailable).toBe(true);
+      expect(status.agentName).toBe('pikpam-voice-agent');
+      expect(seen[0]).toEqual({
+        url: 'https://cloud.pikpam.example/api/voice/status',
+        auth: 'Bearer sk-live-vps_test_token_123',
+      });
+    } finally {
+      for (const [key, value] of Object.entries(savedEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   });
 });

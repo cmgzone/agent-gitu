@@ -626,7 +626,12 @@ export const VOICE_JS = String.raw`
     try{
       if(window.isSecureContext===false)throw new Error('Voice calls need a secure connection. Open your Gitu server using its HTTPS address, then try again.');
       var config=await api('/api/voice/config');if(generation!==voiceState.generation)return;
-      if(!config.configured){voiceState.starting=false;voiceSetup(config,function(){startGituVoice(target);});return;}
+      if(!config.configured){
+        if(config.pikpamConnected&&config.pikpamAvailable===false){
+          throw new Error('Pikpam Managed Voice is currently disabled on your platform. Enable Voice & Realtime in Pikpam Admin, then try again.');
+        }
+        voiceState.starting=false;voiceSetup(config,function(){startGituVoice(target);});return;
+      }
       voiceShowBar('Calling your agent','connecting');
       var sdkPromise=voiceLoadSdk();
       if(!await voicePrepareWorker(generation))return;
@@ -683,7 +688,7 @@ export const VOICE_JS = String.raw`
       await room.connect(call.url,call.token);
       if(generation!==voiceState.generation){await room.disconnect();return;}
       room.remoteParticipants.forEach(workerReady);
-      if(!voiceState.workerReady)voiceState.readyTimer=setTimeout(function(){if(voiceState.room===room&&!voiceState.workerReady){voiceEnd();toast('The voice worker did not join. Deploy gitu-voice in your connected LiveKit project, then try again.',true);}},25000);
+      if(!voiceState.workerReady)voiceState.readyTimer=setTimeout(function(){if(voiceState.room===room&&!voiceState.workerReady){voiceEnd();toast(call.mode==='pikpam'?'Pikpam voice worker did not join. Check Voice & Realtime in Pikpam Admin, then try again.':'The voice worker did not join. Deploy gitu-voice in your connected LiveKit project, then try again.',true);}},25000);
       await room.localParticipant.publishTrack(mic);
       await room.startAudio().catch(function(){if($('voiceEnableAudio'))$('voiceEnableAudio').hidden=false;if($('voiceStageAudio'))$('voiceStageAudio').hidden=false;});
     }catch(e){if(generation===voiceState.generation){await voiceEnd();var message=e.name==='NotAllowedError'?'Allow microphone access to start a call.':e.message;voiceShowBar('Live voice',message);$('gituVoiceBar').dataset.phase='failed';if($('gituVoiceBar'))$('gituVoiceBar').hidden=false;if($('gituVoiceStage'))$('gituVoiceStage').hidden=true;$('voiceMute').hidden=true;var retry=document.createElement('button');retry.type='button';retry.id='voiceRetry';retry.title='Retry call';retry.setAttribute('aria-label','Retry call');retry.innerHTML=VOICE_SVG+'<path d="M3 11a9 9 0 1 1 3 7M3 4v7h7"/></svg>';retry.onclick=function(){voiceEnd().then(function(){startGituVoice(target);});};$('gituVoiceBar').appendChild(retry);toast(message,true);}}

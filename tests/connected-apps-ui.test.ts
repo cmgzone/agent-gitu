@@ -268,7 +268,7 @@ describe('account and Connections UI', () => {
     expect(page).toContain("location.replace('/')");
     expect(page).toContain('Continue with Pikpam');
     expect(page).toContain('/brand/auth-hero.jpg');
-    expect(page).toContain('goalChips');
+    expect(page).not.toContain('background: transparent !important');
     for (const p of [page, authPage(false, true), authPage(false, false, true, false, false, { google: true })]) {
       expect(() => new Script(p.split('<script>')[1]!.split('</script>')[0]!)).not.toThrow();
     }

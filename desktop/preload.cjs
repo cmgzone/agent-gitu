@@ -17,6 +17,13 @@ contextBridge.exposeInMainWorld('gituDesktop', {
     setAutoConnect: (enabled) => ipcRenderer.invoke('gitu:cloud-agent:set-auto-connect', enabled),
     openTopup: () => ipcRenderer.invoke('gitu:cloud-agent:open-topup'),
   },
+  dock: {
+    status: () => ipcRenderer.invoke('gitu:dock:status'),
+    setEnabled: (enabled) => ipcRenderer.invoke('gitu:dock:set-enabled', enabled),
+    setEdge: (edge) => ipcRenderer.invoke('gitu:dock:set-edge', edge),
+    openChat: (payload) => ipcRenderer.invoke('gitu:dock:open-chat', payload),
+    refresh: () => ipcRenderer.invoke('gitu:dock:refresh'),
+  },
 });
 
 // The main process validates the sender for both appearance and sign-in.

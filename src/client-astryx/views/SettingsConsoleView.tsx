@@ -21,7 +21,7 @@ import {Switch} from '@astryxdesign/core/Switch';
 import {Text} from '@astryxdesign/core/Text';
 import {TextInput} from '@astryxdesign/core/TextInput';
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {getDesktopCloudBridge, getHostBridge} from '../bridge';
+import {getDesktopCloudBridge, getDesktopDockBridge, getHostBridge, type DesktopDockStatus} from '../bridge';
 import {
   AppIcon,
   Cloud,
@@ -89,6 +89,13 @@ export function SettingsConsoleView({
     repoRoot?: string;
   }>({});
   const [savingAction, setSavingAction] = useState(false);
+  const desktopDockBridge = getDesktopDockBridge();
+  const [dockStatus, setDockStatus] = useState<DesktopDockStatus | null>(null);
+
+  useEffect(() => {
+    if (!isOpen || !desktopDockBridge) return;
+    void desktopDockBridge.status().then(setDockStatus).catch(() => {});
+  }, [isOpen, desktopDockBridge]);
 
   const settingItems = useMemo(() => {
     return host?.getWorkspaceSettingItems() ?? [];
@@ -657,6 +664,62 @@ export function SettingsConsoleView({
                       />
                     </VStack>
                   </Card>
+
+                  {desktopDockBridge ? (
+                    <Card padding={4}>
+                      <VStack gap={3}>
+                        <Heading level={4}>Floating Agent Dock</Heading>
+                        <Text color="secondary">
+                          Keep agent shortcuts floating on your desktop so you can open a quick chat box while using any other app (Ctrl+Shift+G).
+                        </Text>
+                        <Switch
+                          label="Show Agent Dock on desktop"
+                          description="Pin teammates to an always-on-top dock with one-click quick chat"
+                          labelPosition="start"
+                          labelSpacing="spread"
+                          width="100%"
+                          value={dockStatus?.enabled !== false}
+                          onChange={val => {
+                            void desktopDockBridge
+                              .setEnabled(val)
+                              .then(setDockStatus)
+                              .catch(() => {});
+                          }}
+                        />
+                        <Selector
+                          label="Dock position"
+                          value={dockStatus?.edge || 'right'}
+                          onChange={val => {
+                            const edge =
+                              val === 'left' || val === 'bottom' ? val : 'right';
+                            void desktopDockBridge
+                              .setEdge(edge)
+                              .then(setDockStatus)
+                              .catch(() => {});
+                          }}
+                          options={[
+                            {value: 'right', label: 'Right edge'},
+                            {value: 'bottom', label: 'Bottom edge'},
+                            {value: 'left', label: 'Left edge'},
+                          ]}
+                          width="100%"
+                        />
+                        <HStack gap={2} wrap="wrap">
+                          <Button
+                            label="Add or manage shortcuts"
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => {
+                              void desktopDockBridge
+                                .openChat({mode: 'manage'})
+                                .then(setDockStatus)
+                                .catch(() => {});
+                            }}
+                          />
+                        </HStack>
+                      </VStack>
+                    </Card>
+                  ) : null}
 
                   <VStack gap={4}>
                     <Card padding={4}>

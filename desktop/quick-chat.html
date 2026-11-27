@@ -1,0 +1,949 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:;" />
+<title>Agent Gitu Quick Chat</title>
+<style>
+  :root {
+    --bg: #15161b;
+    --surface: #1e2028;
+    --surface-2: #262934;
+    --border: rgba(255, 255, 255, 0.11);
+    --ink: #f4f4f6;
+    --muted: #9ca3af;
+    --accent: #ff6b57;
+    --user-bg: #2563eb;
+    --user-ink: #ffffff;
+    --danger: #ef4444;
+    --ok: #22c55e;
+  }
+  :root[data-theme="light"] {
+    --bg: #ffffff;
+    --surface: #f5f6f9;
+    --surface-2: #eceef3;
+    --border: rgba(20, 22, 28, 0.12);
+    --ink: #16181d;
+    --muted: #646977;
+    --user-bg: #1d4ed8;
+    --user-ink: #ffffff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: transparent;
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    font-size: 13px;
+    color: var(--ink);
+  }
+  .shell {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    overflow: hidden;
+    box-shadow: 0 18px 44px rgba(0, 0, 0, 0.42);
+  }
+  .header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 11px 12px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    -webkit-app-region: drag;
+  }
+  .header button { -webkit-app-region: no-drag; }
+  .avatar-wrap {
+    width: 34px;
+    height: 34px;
+    border-radius: 12px;
+    background: var(--surface-2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    overflow: hidden;
+  }
+  .avatar-wrap img { width: 30px; height: 30px; object-fit: contain; }
+  .head-meta { flex: 1; min-width: 0; }
+  .head-title { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .head-sub { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .icon-btn {
+    width: 29px;
+    height: 29px;
+    border-radius: 9px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+  .icon-btn:hover { background: var(--surface-2); color: var(--ink); }
+  .icon-btn.active { color: var(--accent); border-color: var(--border); background: var(--surface-2); }
+  .icon-btn svg { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+  .agent-strip {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 10px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .agent-strip::-webkit-scrollbar { display: none; }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--muted);
+    font-size: 11.5px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .pill:hover { color: var(--ink); background: var(--surface-2); }
+  .pill.active { color: var(--ink); border-color: var(--accent); background: var(--surface-2); font-weight: 600; }
+  .pill img { width: 16px; height: 16px; object-fit: contain; }
+
+  .body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .msg {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    max-width: 90%;
+  }
+  .msg.user { align-self: flex-end; align-items: flex-end; }
+  .msg.agent { align-self: flex-start; align-items: flex-start; max-width: 96%; }
+  .bubble {
+    padding: 9px 12px;
+    border-radius: 14px;
+    line-height: 1.48;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .msg.user .bubble {
+    background: var(--user-bg);
+    color: var(--user-ink);
+    border-bottom-right-radius: 4px;
+  }
+  .msg.agent .bubble {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-top-left-radius: 4px;
+  }
+  .bubble code {
+    font-family: Consolas, monospace;
+    font-size: 12px;
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: rgba(127, 127, 140, 0.2);
+  }
+  .msg-meta { font-size: 10.5px; color: var(--muted); padding: 0 3px; }
+  .working {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 11px;
+    border-radius: 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--muted);
+    align-self: flex-start;
+  }
+  .pulse {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: pulse 1.1s infinite ease-in-out;
+  }
+  @keyframes pulse { 0%,100% { opacity: .35; transform: scale(.85); } 50% { opacity: 1; transform: scale(1.15); } }
+
+  .composer {
+    padding: 9px 10px 10px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+  }
+  .quick-tools {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .chip-btn {
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--muted);
+    border-radius: 999px;
+    padding: 3px 9px;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .chip-btn:hover { color: var(--ink); }
+  .input-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 7px;
+  }
+  textarea {
+    flex: 1;
+    min-height: 38px;
+    max-height: 110px;
+    resize: none;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--bg);
+    color: var(--ink);
+    padding: 8px 11px;
+    font: inherit;
+    line-height: 1.4;
+    outline: none;
+  }
+  textarea:focus { border-color: var(--accent); }
+  .send-btn {
+    width: 38px;
+    height: 38px;
+    border-radius: 12px;
+    border: 0;
+    background: var(--accent);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .send-btn.stop { background: var(--danger); }
+  .send-btn:disabled { opacity: 0.45; cursor: default; }
+  .send-btn svg { width: 17px; height: 17px; stroke: currentColor; fill: none; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* Shortcut Manager & Create Agent UI */
+  .section-title { font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin-top: 4px; }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 13px;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 6px 4px;
+    border-bottom: 1px solid var(--border);
+  }
+  .row:last-child { border-bottom: 0; }
+  .row-left { display: flex; align-items: center; gap: 9px; min-width: 0; flex: 1; }
+  .row-left img { width: 28px; height: 28px; object-fit: contain; flex-shrink: 0; }
+  .row-name { font-weight: 600; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row-sub { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .toggle-btn {
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--ink);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .toggle-btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .field {
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--bg);
+    color: var(--ink);
+    padding: 7px 10px;
+    font: inherit;
+    outline: none;
+  }
+  .field:focus { border-color: var(--accent); }
+  .primary-btn {
+    border: 0;
+    border-radius: 10px;
+    background: var(--accent);
+    color: #fff;
+    padding: 8px 12px;
+    font-weight: 600;
+    font-size: 12.5px;
+    cursor: pointer;
+  }
+  .primary-btn:disabled { opacity: 0.5; cursor: default; }
+  .edge-row { display: flex; gap: 6px; }
+  .edge-btn {
+    flex: 1;
+    padding: 6px 8px;
+    border-radius: 9px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--muted);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .edge-btn.active { border-color: var(--accent); color: var(--ink); background: var(--surface-2); font-weight: 600; }
+  .empty {
+    margin: auto;
+    text-align: center;
+    color: var(--muted);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    padding: 20px;
+  }
+  .err-banner {
+    background: rgba(239, 68, 68, 0.14);
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    color: #fca5a5;
+    border-radius: 10px;
+    padding: 8px 10px;
+    font-size: 12px;
+  }
+  :root[data-theme="light"] .err-banner { color: #b91c1c; }
+</style>
+</head>
+<body>
+  <div class="shell">
+    <div class="header">
+      <div id="headAvatar" class="avatar-wrap"></div>
+      <div class="head-meta">
+        <div id="headTitle" class="head-title">Agent Gitu</div>
+        <div id="headSub" class="head-sub">Quick chat overlay</div>
+      </div>
+      <button id="manageBtn" class="icon-btn" type="button" title="Add or manage dock shortcuts">
+        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
+      <button id="pinBtn" class="icon-btn active" type="button" title="Keep chat on top of other apps">
+        <svg viewBox="0 0 24 24"><path d="M12 17v5M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg>
+      </button>
+      <button id="expandBtn" class="icon-btn" type="button" title="Open in full Agent Gitu window">
+        <svg viewBox="0 0 24 24"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
+      </button>
+      <button id="closeBtn" class="icon-btn" type="button" title="Close (Esc)">
+        <svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+
+    <div id="agentStrip" class="agent-strip"></div>
+    <div id="body" class="body"></div>
+
+    <div id="composer" class="composer">
+      <div class="quick-tools">
+        <button id="clipBtn" class="chip-btn" type="button">Paste clipboard</button>
+        <span id="statusHint" style="font-size:11px;color:var(--muted);margin-left:auto">Enter to send</span>
+      </div>
+      <div class="input-row">
+        <textarea id="input" rows="1" placeholder="Ask your agent while working in other apps…"></textarea>
+        <button id="sendBtn" class="send-btn" type="button" title="Send">
+          <svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+<script>
+(function () {
+  const headAvatar = document.getElementById('headAvatar');
+  const headTitle = document.getElementById('headTitle');
+  const headSub = document.getElementById('headSub');
+  const manageBtn = document.getElementById('manageBtn');
+  const pinBtn = document.getElementById('pinBtn');
+  const expandBtn = document.getElementById('expandBtn');
+  const closeBtn = document.getElementById('closeBtn');
+  const agentStrip = document.getElementById('agentStrip');
+  const bodyEl = document.getElementById('body');
+  const composerEl = document.getElementById('composer');
+  const clipBtn = document.getElementById('clipBtn');
+  const inputEl = document.getElementById('input');
+  const sendBtn = document.getElementById('sendBtn');
+  const statusHint = document.getElementById('statusHint');
+
+  const SHAPES = [
+    ['orb', 'Orb', '#ff6b57'],
+    ['block', 'Block', '#4c7df0'],
+    ['tip', 'Tip', '#eab308'],
+    ['hexa', 'Hexa', '#3fd68f'],
+    ['nova', 'Nova', '#9c6df2'],
+    ['dia', 'Dia', '#29b7ad'],
+    ['penta', 'Penta', '#f39b52'],
+    ['luna', 'Luna', '#4f6396'],
+    ['plus', 'Plus', '#7ccf35'],
+    ['pill', 'Pill', '#ec4899'],
+  ];
+
+  let snap = { agents: [], pinnedAgentIds: [], pinnedAgents: [], prefs: { edge: 'right', includeCodingShortcut: true, alwaysOnTopChat: true }, theme: 'dark', authRequired: false, codingSprite: '' };
+  let mode = 'chat'; // 'chat' | 'coding' | 'manage'
+  let activeAgentId = '';
+  let activeConvId = '';
+  let activeRunId = '';
+  let messages = [];
+  let busy = false;
+  let workingText = '';
+  let lastError = '';
+  let pollTimer = null;
+  let sending = false;
+
+  function esc(str) {
+    return String(str ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  function formatInline(text) {
+    return esc(text).replace(/`([^`]+)`/g, '<code>$1</code>');
+  }
+
+  function currentAgent() {
+    return (snap.agents || []).find((a) => a.id === activeAgentId) || (snap.pinnedAgents || [])[0] || (snap.agents || [])[0] || null;
+  }
+
+  function renderHeader() {
+    document.documentElement.dataset.theme = snap.theme === 'light' ? 'light' : 'dark';
+    pinBtn.classList.toggle('active', snap.prefs?.alwaysOnTopChat !== false);
+    manageBtn.classList.toggle('active', mode === 'manage');
+
+    if (mode === 'manage') {
+      headAvatar.innerHTML = '<span style="font-weight:700;font-size:16px">+</span>';
+      headTitle.textContent = 'Dock Shortcuts';
+      headSub.textContent = 'Pin agents, add new teammates, or move dock';
+      composerEl.style.display = 'none';
+      return;
+    }
+
+    composerEl.style.display = snap.authRequired ? 'none' : 'flex';
+    if (mode === 'coding') {
+      headAvatar.innerHTML = snap.codingSprite ? `<img src="${snap.codingSprite}" alt="Coding" />` : '<span style="font-weight:700">&lt;/&gt;</span>';
+      headTitle.textContent = 'Coding Agent';
+      headSub.textContent = busy ? (workingText || 'Working in workspace…') : 'Quick coding assistant';
+      return;
+    }
+
+    const ag = currentAgent();
+    if (ag) {
+      headAvatar.innerHTML = ag.avatar?.imageDataUrl ? `<img src="${ag.avatar.imageDataUrl}" alt="${esc(ag.name)}" />` : `<span style="font-weight:700">${esc(ag.name.slice(0,2).toUpperCase())}</span>`;
+      headTitle.textContent = ag.name;
+      headSub.textContent = busy ? (workingText || 'Thinking…') : (ag.tagline || 'AI Teammate');
+    } else {
+      headAvatar.innerHTML = '<span style="font-weight:700">G</span>';
+      headTitle.textContent = 'Agent Gitu';
+      headSub.textContent = 'Choose or add an agent';
+    }
+  }
+
+  function renderStrip() {
+    agentStrip.innerHTML = '';
+    const pinned = Array.isArray(snap.pinnedAgents) && snap.pinnedAgents.length ? snap.pinnedAgents : (snap.agents || []).slice(0, 5);
+    for (const ag of pinned) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'pill' + (mode === 'chat' && activeAgentId === ag.id ? ' active' : '');
+      if (ag.avatar?.imageDataUrl) {
+        const img = document.createElement('img');
+        img.src = ag.avatar.imageDataUrl;
+        img.alt = '';
+        btn.appendChild(img);
+      }
+      const txt = document.createElement('span');
+      txt.textContent = ag.name;
+      btn.appendChild(txt);
+      btn.onclick = () => switchTarget('chat', ag.id);
+      agentStrip.appendChild(btn);
+    }
+    if (snap.prefs?.includeCodingShortcut !== false) {
+      const cbtn = document.createElement('button');
+      cbtn.type = 'button';
+      cbtn.className = 'pill' + (mode === 'coding' ? ' active' : '');
+      if (snap.codingSprite) {
+        const img = document.createElement('img');
+        img.src = snap.codingSprite;
+        img.alt = '';
+        cbtn.appendChild(img);
+      }
+      const txt = document.createElement('span');
+      txt.textContent = 'Coding';
+      cbtn.appendChild(txt);
+      cbtn.onclick = () => switchTarget('coding', '__coding__');
+      agentStrip.appendChild(cbtn);
+    }
+  }
+
+  function renderSendButton() {
+    const showStop = busy && !inputEl.value.trim();
+    sendBtn.className = 'send-btn' + (showStop ? ' stop' : '');
+    sendBtn.disabled = sending;
+    sendBtn.title = showStop ? 'Stop agent' : 'Send message';
+    sendBtn.innerHTML = showStop
+      ? '<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></svg>'
+      : '<svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>';
+  }
+
+  function renderManageView() {
+    const pinnedSet = new Set(snap.pinnedAgentIds || []);
+    const allAgents = snap.agents || [];
+    const edge = snap.prefs?.edge || 'right';
+
+    bodyEl.innerHTML = '';
+    if (lastError) {
+      const err = document.createElement('div');
+      err.className = 'err-banner';
+      err.textContent = lastError;
+      bodyEl.appendChild(err);
+    }
+
+    const posTitle = document.createElement('div');
+    posTitle.className = 'section-title';
+    posTitle.textContent = 'Dock position';
+    bodyEl.appendChild(posTitle);
+
+    const edgeRow = document.createElement('div');
+    edgeRow.className = 'edge-row';
+    for (const e of [['left', 'Left edge'], ['bottom', 'Bottom'], ['right', 'Right edge']]) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'edge-btn' + (edge === e[0] ? ' active' : '');
+      b.textContent = e[1];
+      b.onclick = async () => {
+        await window.gituDock.setEdge(e[0]);
+        await loadSnapshot();
+        renderAll();
+      };
+      edgeRow.appendChild(b);
+    }
+    bodyEl.appendChild(edgeRow);
+
+    const pinTitle = document.createElement('div');
+    pinTitle.className = 'section-title';
+    pinTitle.textContent = `Pinned shortcuts (${pinnedSet.size})`;
+    bodyEl.appendChild(pinTitle);
+
+    const listCard = document.createElement('div');
+    listCard.className = 'card';
+
+    // Coding Agent shortcut row
+    const codeRow = document.createElement('div');
+    codeRow.className = 'row';
+    const codeOn = snap.prefs?.includeCodingShortcut !== false;
+    codeRow.innerHTML = `<div class="row-left">${snap.codingSprite ? `<img src="${snap.codingSprite}" alt="" />` : ''}<div><div class="row-name">Coding Agent</div><div class="row-sub">Quick coding chat &amp; workspace runs</div></div></div>`;
+    const codeToggle = document.createElement('button');
+    codeToggle.type = 'button';
+    codeToggle.className = 'toggle-btn' + (codeOn ? ' on' : '');
+    codeToggle.textContent = codeOn ? 'Pinned' : '+ Pin';
+    codeToggle.onclick = async () => {
+      await window.gituDock.setCodingShortcut(!codeOn);
+      await loadSnapshot();
+      renderAll();
+    };
+    codeRow.appendChild(codeToggle);
+    listCard.appendChild(codeRow);
+
+    for (const ag of allAgents) {
+      const isPinned = pinnedSet.has(ag.id);
+      const row = document.createElement('div');
+      row.className = 'row';
+      row.innerHTML = `<div class="row-left">${ag.avatar?.imageDataUrl ? `<img src="${ag.avatar.imageDataUrl}" alt="" />` : ''}<div style="min-width:0"><div class="row-name">${esc(ag.name)}</div><div class="row-sub">${esc(ag.tagline || 'AI Teammate')}</div></div></div>`;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'toggle-btn' + (isPinned ? ' on' : '');
+      btn.textContent = isPinned ? 'Pinned' : '+ Pin';
+      btn.onclick = async () => {
+        const next = isPinned
+          ? [...pinnedSet].filter((id) => id !== ag.id)
+          : [...pinnedSet, ag.id];
+        await window.gituDock.setPinned(next);
+        await loadSnapshot();
+        renderAll();
+      };
+      row.appendChild(btn);
+      listCard.appendChild(row);
+    }
+    bodyEl.appendChild(listCard);
+
+    const createTitle = document.createElement('div');
+    createTitle.className = 'section-title';
+    createTitle.textContent = 'Create & pin a new agent';
+    bodyEl.appendChild(createTitle);
+
+    const formCard = document.createElement('div');
+    formCard.className = 'card';
+    const nameIn = document.createElement('input');
+    nameIn.className = 'field';
+    nameIn.placeholder = 'Agent name (e.g. Research Buddy)';
+    const roleIn = document.createElement('input');
+    roleIn.className = 'field';
+    roleIn.placeholder = 'Role / tagline (e.g. Fast web & writing helper)';
+    const shapeSel = document.createElement('select');
+    shapeSel.className = 'field';
+    for (const s of SHAPES) {
+      const opt = document.createElement('option');
+      opt.value = `${s[0]}|${s[2]}`;
+      opt.textContent = `Character: ${s[1]}`;
+      shapeSel.appendChild(opt);
+    }
+    const createBtn = document.createElement('button');
+    createBtn.type = 'button';
+    createBtn.className = 'primary-btn';
+    createBtn.textContent = '+ Create & add to dock';
+    createBtn.onclick = async () => {
+      const name = nameIn.value.trim();
+      if (!name) return;
+      createBtn.disabled = true;
+      lastError = '';
+      const [shape, color] = shapeSel.value.split('|');
+      const res = await window.gituDock.createAgent({ name, tagline: roleIn.value.trim(), shape, color });
+      createBtn.disabled = false;
+      if (!res || !res.ok) {
+        lastError = (res && res.error) || 'Could not create agent.';
+        renderManageView();
+        return;
+      }
+      await loadSnapshot();
+      const createdId = res.agent && res.agent.id;
+      if (createdId) {
+        switchTarget('chat', createdId);
+      } else {
+        renderAll();
+      }
+    };
+    formCard.appendChild(nameIn);
+    formCard.appendChild(roleIn);
+    formCard.appendChild(shapeSel);
+    formCard.appendChild(createBtn);
+    bodyEl.appendChild(formCard);
+  }
+
+  function renderChatView() {
+    const atBottom = bodyEl.scrollHeight - bodyEl.scrollTop - bodyEl.clientHeight < 60;
+    bodyEl.innerHTML = '';
+
+    if (snap.authRequired) {
+      const empty = document.createElement('div');
+      empty.className = 'empty';
+      empty.innerHTML = '<div style="font-weight:600;color:var(--ink)">Sign in to Agent Gitu</div><div>Unlock your workspace once in the main window to chat from your desktop dock.</div>';
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'primary-btn';
+      b.textContent = 'Open Agent Gitu';
+      b.onclick = () => void window.gituDock.openMain({});
+      empty.appendChild(b);
+      bodyEl.appendChild(empty);
+      return;
+    }
+
+    if (lastError) {
+      const err = document.createElement('div');
+      err.className = 'err-banner';
+      err.textContent = lastError;
+      bodyEl.appendChild(err);
+    }
+
+    if (!messages.length && !busy) {
+      const ag = mode === 'coding' ? { name: 'Coding Agent' } : currentAgent();
+      const empty = document.createElement('div');
+      empty.className = 'empty';
+      empty.innerHTML = `<div style="font-weight:600;color:var(--ink)">Chat with ${esc(ag ? ag.name : 'your agent')}</div><div>Send a message anytime while using other apps on your computer.</div>`;
+      bodyEl.appendChild(empty);
+    } else {
+      for (const m of messages.slice(-40)) {
+        const div = document.createElement('div');
+        div.className = 'msg ' + (m.role === 'user' ? 'user' : 'agent');
+        const bubble = document.createElement('div');
+        bubble.className = 'bubble';
+        bubble.innerHTML = formatInline(m.text || '');
+        div.appendChild(bubble);
+        if (m.label) {
+          const meta = document.createElement('div');
+          meta.className = 'msg-meta';
+          meta.textContent = m.label;
+          div.appendChild(meta);
+        }
+        bodyEl.appendChild(div);
+      }
+    }
+
+    if (busy) {
+      const w = document.createElement('div');
+      w.className = 'working';
+      w.innerHTML = `<span class="pulse"></span><span>${esc(workingText || 'Working…')}</span>`;
+      bodyEl.appendChild(w);
+    }
+
+    if (atBottom) bodyEl.scrollTop = bodyEl.scrollHeight;
+  }
+
+  function renderAll() {
+    renderHeader();
+    renderStrip();
+    renderSendButton();
+    if (mode === 'manage') renderManageView();
+    else renderChatView();
+  }
+
+  async function loadSnapshot() {
+    const res = await window.gituDock.snapshot();
+    if (res) {
+      snap = { ...snap, ...res };
+      if (!activeAgentId && snap.pinnedAgents && snap.pinnedAgents.length) {
+        activeAgentId = snap.pinnedAgents[0].id;
+      }
+    }
+  }
+
+  async function ensureDmConversation(agentId) {
+    const listRes = await window.gituDock.api('/api/cowork/conversations', 'GET');
+    if (!listRes.ok) {
+      lastError = listRes.error || '';
+      return '';
+    }
+    const convs = Array.isArray(listRes.data?.conversations) ? listRes.data.conversations : [];
+    const existing = convs.find((c) => c.kind === 'dm' && Array.isArray(c.memberIds) && c.memberIds.length === 1 && c.memberIds[0] === agentId);
+    if (existing) return existing.id;
+    const ag = (snap.agents || []).find((a) => a.id === agentId);
+    const created = await window.gituDock.api('/api/cowork/conversations', 'POST', {
+      kind: 'dm',
+      memberIds: [agentId],
+      title: ag ? ag.name : 'Direct chat',
+    });
+    if (!created.ok) {
+      lastError = created.error || 'Could not start conversation.';
+      return '';
+    }
+    return created.data?.conversation?.id || '';
+  }
+
+  async function pollMessages() {
+    if (mode === 'manage' || snap.authRequired) return;
+    if (mode === 'coding') {
+      const runsRes = await window.gituDock.api('/api/runs', 'GET');
+      if (!runsRes.ok) {
+        if (runsRes.status === 401) snap.authRequired = true;
+        renderAll();
+        return;
+      }
+      const runs = Array.isArray(runsRes.data) ? runsRes.data : [];
+      const latest = activeRunId ? runs.find((r) => r.runId === activeRunId) || runs[0] : runs[0];
+      if (!latest) {
+        messages = [];
+        busy = false;
+        workingText = '';
+        renderAll();
+        return;
+      }
+      activeRunId = latest.runId;
+      const evRes = await window.gituDock.api(`/api/mobile/runs/${encodeURIComponent(latest.runId)}/events?after=-1`, 'GET');
+      if (evRes.ok && evRes.data) {
+        const s = evRes.data.session || latest;
+        busy = s.status === 'running' || s.status === 'starting';
+        const evs = Array.isArray(evRes.data.events) ? evRes.data.events : [];
+        const parsed = [];
+        if (s.goal) parsed.push({ role: 'user', text: s.goal, label: 'You' });
+        for (const ev of evs) {
+          const t = String(ev.text || '');
+          if (t.startsWith('user-msg ')) parsed.push({ role: 'user', text: t.slice(9), label: 'You' });
+          else if (t.startsWith('say ')) parsed.push({ role: 'agent', text: t.slice(4), label: 'Coding Agent' });
+        }
+        messages = parsed;
+        const lastEv = evs[evs.length - 1];
+        workingText = busy ? String(lastEv?.text || 'Working…').slice(0, 80) : '';
+      }
+      renderAll();
+      return;
+    }
+
+    const ag = currentAgent();
+    if (!ag) {
+      messages = [];
+      busy = false;
+      renderAll();
+      return;
+    }
+    if (!activeConvId) {
+      activeConvId = await ensureDmConversation(ag.id);
+    }
+    if (!activeConvId) {
+      renderAll();
+      return;
+    }
+    const viewRes = await window.gituDock.api(`/api/cowork/conversations/${encodeURIComponent(activeConvId)}/messages?rosterRevision=0`, 'GET');
+    if (!viewRes.ok) {
+      if (viewRes.status === 401) snap.authRequired = true;
+      else lastError = viewRes.error || '';
+      renderAll();
+      return;
+    }
+    lastError = '';
+    const v = viewRes.data || {};
+    busy = Boolean(v.busy);
+    workingText = v.progress?.detail || v.progress?.text || (busy ? `${ag.name} is working…` : '');
+    const rawMsgs = Array.isArray(v.messages) ? v.messages : [];
+    messages = rawMsgs
+      .filter((m) => m.role === 'user' || m.role === 'agent')
+      .map((m) => ({
+        role: m.role,
+        text: m.text || '',
+        label: m.role === 'user' ? 'You' : (m.agentName || ag.name),
+      }));
+    renderAll();
+  }
+
+  function startPolling() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(() => { void pollMessages(); }, busy ? 1500 : 3000);
+  }
+
+  function switchTarget(nextMode, agentId) {
+    mode = nextMode;
+    lastError = '';
+    if (nextMode === 'chat') {
+      if (agentId && agentId !== activeAgentId) {
+        activeAgentId = agentId;
+        activeConvId = '';
+        messages = [];
+      }
+    }
+    renderAll();
+    if (nextMode !== 'manage') {
+      void pollMessages();
+    }
+  }
+
+  async function sendOrStop() {
+    const text = inputEl.value.trim();
+    if (!text && busy) {
+      if (mode === 'coding' && activeRunId) {
+        await window.gituDock.api(`/api/runs/${encodeURIComponent(activeRunId)}/stop`, 'POST', {});
+      } else if (activeConvId) {
+        await window.gituDock.api(`/api/cowork/conversations/${encodeURIComponent(activeConvId)}/stop`, 'POST', {});
+      }
+      await pollMessages();
+      return;
+    }
+    if (!text || sending) return;
+    sending = true;
+    lastError = '';
+    inputEl.value = '';
+    inputEl.style.height = '38px';
+    renderSendButton();
+
+    try {
+      if (mode === 'coding') {
+        if (activeRunId && busy) {
+          const r = await window.gituDock.api(`/api/runs/${encodeURIComponent(activeRunId)}/message`, 'POST', { text });
+          if (!r.ok) lastError = r.error || 'Could not send follow-up.';
+        } else {
+          const proj = await window.gituDock.api('/api/project', 'GET');
+          const projectPath = proj.data?.repoRoot || '';
+          const r = await window.gituDock.api('/api/runs', 'POST', { goal: text, projectPath, mode: 'agent', autoApprove: false, review: true });
+          if (r.ok && r.data?.runId) activeRunId = r.data.runId;
+          else if (!r.ok) lastError = r.error || 'Could not start coding run.';
+        }
+      } else {
+        const ag = currentAgent();
+        if (!ag) {
+          lastError = 'Select an agent first.';
+        } else {
+          if (!activeConvId) activeConvId = await ensureDmConversation(ag.id);
+          if (activeConvId) {
+            const msgId = 'dock_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+            const r = await window.gituDock.api(`/api/cowork/conversations/${encodeURIComponent(activeConvId)}/messages`, 'POST', {
+              id: msgId,
+              text,
+            });
+            if (!r.ok) lastError = r.error || 'Could not send message.';
+          }
+        }
+      }
+    } finally {
+      sending = false;
+      renderSendButton();
+      await pollMessages();
+    }
+  }
+
+  manageBtn.onclick = () => switchTarget(mode === 'manage' ? 'chat' : 'manage', activeAgentId);
+  pinBtn.onclick = async () => {
+    const next = !(snap.prefs?.alwaysOnTopChat !== false);
+    await window.gituDock.setChatPinned(next);
+    await loadSnapshot();
+    renderHeader();
+  };
+  expandBtn.onclick = () => void window.gituDock.openMain({ agentId: activeAgentId, conversationId: activeConvId });
+  closeBtn.onclick = () => void window.gituDock.closeChat();
+  clipBtn.onclick = async () => {
+    const res = await window.gituDock.readClipboard();
+    if (res && res.text) {
+      inputEl.value = inputEl.value ? `${inputEl.value}\n${res.text}` : res.text;
+      inputEl.focus();
+      renderSendButton();
+    }
+  };
+  sendBtn.onclick = () => void sendOrStop();
+  inputEl.addEventListener('input', () => {
+    inputEl.style.height = '38px';
+    inputEl.style.height = Math.min(110, inputEl.scrollHeight) + 'px';
+    renderSendButton();
+  });
+  inputEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      void sendOrStop();
+    }
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') void window.gituDock.closeChat();
+  });
+
+  window.gituDock.onState((next) => {
+    if (next && next.prefs) snap.prefs = next.prefs;
+    if (next && next.theme) snap.theme = next.theme;
+    if (next && next.target) {
+      const nextMode = next.target.mode || 'chat';
+      const nextAgent = next.target.agentId || '';
+      if (nextMode !== mode || (nextMode === 'chat' && nextAgent && nextAgent !== activeAgentId)) {
+        switchTarget(nextMode, nextAgent);
+      } else {
+        renderHeader();
+      }
+    }
+  });
+
+  (async function boot() {
+    await loadSnapshot();
+    const st = await window.gituDock.getState();
+    if (st && st.target) {
+      mode = st.target.mode || 'chat';
+      if (st.target.agentId) activeAgentId = st.target.agentId;
+    }
+    renderAll();
+    if (mode !== 'manage') await pollMessages();
+    startPolling();
+  })();
+})();
+</script>
+</body>
+</html>

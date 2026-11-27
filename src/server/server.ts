@@ -18,7 +18,7 @@ import { bridgeDesktop, connectDesktopStream, localDesktopAudioStream, localDesk
 import { CloudComputerTransport } from '../cowork/cloud-computer.js';
 import { desktopAsset, desktopView } from './desktop-view.js';
 import { MobileAccess } from './mobile-access.js';
-import { FcmPushSender, MobilePush, formatMessageHint, type PushSender } from './mobile-push.js';
+import { FcmPushSender, MobilePush, formatMessageHint, resolveFcmProjectId, type PushSender } from './mobile-push.js';
 import { AppAuth } from './app-auth.js';
 import { GoogleSignIn } from './google-sign-in.js';
 import { authPage } from './ui-auth.js';
@@ -908,7 +908,7 @@ export class GituServer {
     this.mobileAccess = new MobileAccess(config.accessKey ?? process.env['AGENT_GITU_ACCESS_KEY']);
     this.appAuth = new AppAuth(nodePath.join(ensureGituHome().settings, 'app-password.json'), config.passwordRequired !== false, process.env['AGENT_GITU_TRUST_LOCAL_PROXY'] === '1', process.env['AGENT_GITU_REGISTRATION_TOKEN'], this.mobileAccess.enabled && process.env['AGENT_GITU_ALLOW_LAN_LOGIN'] === '1');
     this.chiefStore = new ChiefStore(nodePath.join(ensureGituHome().settings, 'chief-of-staff.json'));
-    const pushProject = process.env['AGENT_GITU_FCM_PROJECT_ID'];
+    const pushProject = resolveFcmProjectId();
     this.mobilePush = new MobilePush(ensureGituHome().settings, () => this.appAuth.userId, config.pushSender ?? (pushProject ? new FcmPushSender(pushProject) : undefined));
     this.connectedApps = config.connectedApps ?? new ComposioConnections(
       () => this.appAuth.userId,
@@ -1958,7 +1958,30 @@ export class GituServer {
 
   private publishCowork(conversationId: string, progressOnly = false): void {
     for (const send of this.coworkSubscribers.get(conversationId) ?? []) send(progressOnly);
-    if (progressOnly || this.stopping || !this.appAuth.configured) return;
+    if (this.stopping || !this.appAuth.configured) return;
+    if (progressOnly) {
+      try {
+        if (!this.mobilePush.hasLiveActivityDevices) return;
+        const run = this.coworkRuns.get(conversationId);
+        if (!run?.busy) return;
+        const store = this.cowork();
+        const prog = run.progress;
+        const agentName = prog?.agentName || (run.working ? store.getAgent(run.working)?.name : undefined) || 'Teammate';
+        const stepText = formatMessageHint(prog?.detail || prog?.text || `${agentName} is working…`, 110);
+        this.mobilePush.notifyLiveActivity(`cowork:${conversationId}`, {
+          target: 'cowork',
+          targetId: conversationId,
+          ...(run.threadId ? { threadId: run.threadId } : {}),
+          title: agentName,
+          body: stepText || `${agentName} is working…`,
+          agentName,
+          phase: prog?.tool || prog?.phase || 'Working',
+        });
+      } catch {
+        /* best-effort live activity progress */
+      }
+      return;
+    }
     try {
       if (!this.mobilePush.hasDevices) return;
       const store = this.cowork();
@@ -8735,9 +8758,33 @@ export class GituServer {
     if (!this.stopping && this.appAuth.configured) {
       const gateId = /^approval-required ([\w-]+)/.exec(text)?.[1]
         ?? (text.startsWith('plan-review ') ? s.planReview?.id : text.startsWith('ask-user waiting') ? s.questions?.id : undefined);
-      if (gateId) this.mobilePush.notify({ id: 'run-gate:' + s.runId + ':' + gateId, at: Date.now(), kind: 'attention', target: 'run', targetId: s.runId });
+      if (gateId) this.mobilePush.notify({ id: 'run-gate:' + s.runId + ':' + gateId, at: Date.now(), kind: 'attention', target: 'run', targetId: s.runId, title: 'Coding Agent needs input', body: 'Review or approve the pending coding step.', agentName: 'Coding Agent' });
       if (text.startsWith('run finished:') && ['completed', 'failed', 'blocked', 'stalled'].includes(s.status)) {
-        this.mobilePush.notify({ id: 'run:' + s.runId + ':' + s.status + ':' + (s.finishedAt ?? s.startedAt), at: Date.now(), kind: s.status === 'completed' ? 'completed' : 'failed', target: 'run', targetId: s.runId });
+        const lastSay = [...s.events].reverse().find(e => e.text.startsWith('say '))?.text.slice(4);
+        this.mobilePush.notify({
+          id: 'run:' + s.runId + ':' + s.status + ':' + (s.finishedAt ?? s.startedAt),
+          at: Date.now(),
+          kind: s.status === 'completed' ? 'completed' : 'failed',
+          target: 'run',
+          targetId: s.runId,
+          ...(lastSay ? { body: formatMessageHint(lastSay, 120) } : {}),
+        });
+      } else if (this.mobilePush.hasLiveActivityDevices && (s.status === 'running' || s.status === 'waiting_for_model')) {
+        const cleanStep = text.startsWith('say ')
+          ? formatMessageHint(text.slice(4), 110)
+          : text.startsWith('tdelta ') || text.startsWith('rdelta ')
+            ? ''
+            : formatMessageHint(text, 100);
+        if (cleanStep) {
+          this.mobilePush.notifyLiveActivity(`run:${s.runId}`, {
+            target: 'run',
+            targetId: s.runId,
+            title: s.project ? `Coding · ${s.project}` : 'Coding Agent',
+            body: cleanStep,
+            agentName: 'Coding Agent',
+            phase: 'Coding',
+          });
+        }
       }
     }
   }
@@ -9355,16 +9402,34 @@ export class GituServer {
 
     if (path === '/api/mobile/push' || path === '/api/mobile/push/test') {
       if (!this.appAuth.authenticated(req)) { this.sendJson(res, 401, { error: 'Sign in to manage Android notifications.' }); return; }
-      if (!this.isSameOrigin(req)) { this.sendJson(res, 403, { error: 'cross-origin request rejected' }); return; }
+      if (!this.isSameOrigin(req) && !this.mobileAccess.sameOrigin(req)) { this.sendJson(res, 403, { error: 'cross-origin request rejected' }); return; }
       try {
         if (path === '/api/mobile/push' && method === 'GET') this.sendJson(res, 200, this.mobilePush.status(url.searchParams.get('deviceId')));
-        else if (method === 'POST' || method === 'DELETE' && path === '/api/mobile/push') {
+        else if (method === 'POST' || method === 'PATCH' || (method === 'DELETE' && path === '/api/mobile/push')) {
           const body = await this.readBody(req, 8192);
+          const prefs = {
+            ...(typeof body['liveActivity'] === 'boolean' ? { liveActivity: body['liveActivity'] } : {}),
+            ...(typeof body['showLockScreenPreview'] === 'boolean' ? { showLockScreenPreview: body['showLockScreenPreview'] } : {}),
+          };
           if (path.endsWith('/test')) { await this.mobilePush.test(body['deviceId']); this.sendJson(res, 200, { ok: true }); }
           else if (method === 'DELETE') { this.mobilePush.unregister(body['deviceId']); this.sendJson(res, 200, this.mobilePush.status(body['deviceId'])); }
-          else this.sendJson(res, 200, this.mobilePush.register(body['deviceId'], body['token']));
+          else if (method === 'PATCH') { this.sendJson(res, 200, this.mobilePush.updatePreferences(body['deviceId'], prefs)); }
+          else this.sendJson(res, 200, this.mobilePush.register(body['deviceId'], body['token'], prefs));
         } else this.sendJson(res, 405, { error: 'Method not allowed.' });
-      } catch { this.sendJson(res, 400, { error: 'Could not update notifications. Check the device permission and server Firebase configuration.' }); }
+      } catch (err) {
+        const safeMessages = new Set([
+          'The server owner must configure Firebase notifications first.',
+          'Invalid Android notification token.',
+          'Invalid notification device ID.',
+          'Enable notifications on this phone first.',
+          'Remove an unused notification device first.',
+          'The test notification could not be sent. Check Firebase configuration.',
+        ]);
+        const msg = err instanceof Error && safeMessages.has(err.message)
+          ? err.message
+          : 'Could not update notifications. Check the device permission and server Firebase configuration.';
+        this.sendJson(res, 400, { error: msg });
+      }
       return;
     }
 
@@ -9409,7 +9474,7 @@ export class GituServer {
       } catch (error) { if (!res.headersSent) this.sendJson(res, 400, { error: (error as Error).message }); else res.end(); } return;
     }
 
-    const serverBrowserRoute = path.match(/^\/api\/server-browser(?:\/([\w-]+))?(\/view)?$/);
+    const serverBrowserRoute = path.match(/^\/api\/server-browser(?:\/(?!view$)([\w-]+))?(\/view)?$/);
     if (serverBrowserRoute) {
       if (!this.appAuth.authenticated(req)) { this.sendJson(res, 401, { error: 'Sign in to view the private browser.' }); return; }
       if (!this.isSameOrigin(req)) { this.sendJson(res, 403, { error: 'cross-origin request rejected' }); return; }

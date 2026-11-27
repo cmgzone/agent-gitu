@@ -333,6 +333,23 @@ export interface DesktopCloudBridge {
   openTopup(): Promise<DesktopCloudActionResult>;
 }
 
+export interface DesktopDockStatus {
+  enabled: boolean;
+  edge: 'right' | 'bottom' | 'left';
+  collapsed?: boolean;
+  includeCodingShortcut?: boolean;
+  dockOpen?: boolean;
+  chatOpen?: boolean;
+}
+
+export interface DesktopDockBridge {
+  status(): Promise<DesktopDockStatus>;
+  setEnabled(enabled: boolean): Promise<DesktopDockStatus>;
+  setEdge(edge: 'right' | 'bottom' | 'left'): Promise<DesktopDockStatus>;
+  openChat(payload?: {mode?: 'chat' | 'manage' | 'coding'; agentId?: string}): Promise<DesktopDockStatus>;
+  refresh(): Promise<unknown>;
+}
+
 export function getDesktopCloudBridge(): DesktopCloudBridge | null {
   if (typeof window === 'undefined') return null;
   const w = window as unknown as {
@@ -340,4 +357,13 @@ export function getDesktopCloudBridge(): DesktopCloudBridge | null {
   };
   const bridge = w.gituDesktop?.cloudAgent;
   return bridge && typeof bridge.connect === 'function' ? bridge : null;
+}
+
+export function getDesktopDockBridge(): DesktopDockBridge | null {
+  if (typeof window === 'undefined') return null;
+  const w = window as unknown as {
+    gituDesktop?: {dock?: DesktopDockBridge};
+  };
+  const bridge = w.gituDesktop?.dock;
+  return bridge && typeof bridge.setEnabled === 'function' ? bridge : null;
 }

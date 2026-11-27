@@ -5,6 +5,7 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { phoneAddresses, registerPhoneAccess, ensurePhoneFirewall } = require('./phone-access.cjs');
 const { createCloudAgentManager, registerCloudAgent } = require('./cloud-agent.cjs');
+const { createDockManager } = require('./dock-manager.cjs');
 
 const APP_ICON_PATH = path.join(__dirname, '..', 'assets', 'agent-gitu-icon.png');
 // Keep native crash dumps on this computer; never submit them to a service.
@@ -59,7 +60,49 @@ const cloudAgentManager = createCloudAgentManager({
     await mainWindow.loadURL(url);
   },
   openExternal: (url) => shell.openExternal(url),
-  onTargetChange: () => updateRuntimeTray(),
+  onTargetChange: () => {
+    updateRuntimeTray();
+    if (dockManager) void dockManager.refresh();
+  },
+});
+
+const dockManager = createDockManager({
+  getActiveOrigin: () => {
+    const target = cloudAgentManager.getTarget();
+    if (target && target.mode === 'cloud' && target.origin) return target.origin;
+    return boundPort ? `http://127.0.0.1:${boundPort}` : '';
+  },
+  getPrefsPath: () => (engine && engine.paths && engine.paths.dir ? path.join(engine.paths.dir, 'desktop-dock.json') : ''),
+  getSessionFetch: () => {
+    const ses = mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && mainWindow.webContents.session
+      ? mainWindow.webContents.session
+      : null;
+    return ses && typeof ses.fetch === 'function'
+      ? ses.fetch.bind(ses)
+      : (...args) => globalThis.fetch(...args);
+  },
+  showMainApp: () => showWorkspace(),
+  openAgentInMainApp: (agentId, conversationId) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    const payload = JSON.stringify({ agentId: String(agentId || ''), conversationId: String(conversationId || '') });
+    void mainWindow.webContents.executeJavaScript(
+      `(function(p){
+        try {
+          if (!window.__gituHost) return;
+          if (p.conversationId && typeof window.__gituHost.openConv === 'function') {
+            window.__gituHost.openConv(p.conversationId);
+          } else if (p.agentId && typeof window.__gituHost.openDm === 'function') {
+            window.__gituHost.openDm(p.agentId);
+          }
+        } catch {}
+      })(${payload})`,
+      true,
+    ).catch(() => {});
+  },
+  isTrustedMainOrigin: (origin) => cloudAgentManager.isTrustedOrigin(origin),
+  onChange: () => updateRuntimeTray(),
+  iconPath: APP_ICON_PATH,
+  log,
 });
 
 function phoneAccessStatus() {
@@ -83,6 +126,7 @@ function updateRuntimeTray() {
   if (status.enabled && process.platform === 'win32') phoneItems.push({ label: 'Allow phone access through Windows Firewall', click: () => { void allowPhoneAccess(true); } });
   const cloudStatus = cloudAgentManager.getStatus();
   const activeTarget = cloudAgentManager.getTarget();
+  const dockStatus = dockManager.getStatus();
   const workspaceAgentItems = [
     {
       label: `${activeTarget.mode === 'local' ? '● ' : ''}Local Agent (This PC)`,
@@ -101,8 +145,26 @@ function updateRuntimeTray() {
         },
       })),
   ];
+  const dockItems = [
+    {
+      label: dockStatus.enabled ? 'Hide Floating Agent Dock' : 'Show Floating Agent Dock',
+      click: () => { dockManager.setEnabled(!dockStatus.enabled); },
+    },
+    {
+      label: 'Quick Chat / Manage Shortcuts',
+      click: () => {
+        if (!dockStatus.enabled) dockManager.setEnabled(true);
+        dockManager.openQuickChat({ mode: 'manage' });
+      },
+    },
+    { type: 'separator' },
+    { label: `${dockStatus.edge === 'right' ? '● ' : ''}Dock on Right Edge`, click: () => { dockManager.setEnabled(true); dockManager.setEdge('right'); } },
+    { label: `${dockStatus.edge === 'bottom' ? '● ' : ''}Dock on Bottom Edge`, click: () => { dockManager.setEnabled(true); dockManager.setEdge('bottom'); } },
+    { label: `${dockStatus.edge === 'left' ? '● ' : ''}Dock on Left Edge`, click: () => { dockManager.setEnabled(true); dockManager.setEdge('left'); } },
+  ];
   runtimeTray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Open Agent Gitu', click: showWorkspace },
+    { label: 'Agent Dock (Ctrl+Shift+G)', submenu: dockItems },
     { label: 'Workspace Agent', submenu: workspaceAgentItems },
     { label: 'Connect Android phone', submenu: phoneItems },
     { type: 'separator' },
@@ -758,6 +820,7 @@ function createMainWindow() {
   require('./app-sign-in.cjs').registerAuthBrowser(themedWindow.webContents, (origin) => cloudAgentManager.isTrustedOrigin(origin), (url) => shell.openExternal(url));
   registerPhoneAccess(themedWindow.webContents, appUrl, phoneAccessStatus, () => allowPhoneAccess(true));
   registerCloudAgent(themedWindow.webContents, cloudAgentManager);
+  dockManager.registerMainWindowIpc(themedWindow.webContents);
   themedWindow.webContents.ipc.on('gitu:theme', (event, theme) => {
     if (themedWindow.isDestroyed() || event.senderFrame !== themedWindow.webContents.mainFrame) return;
     if (theme !== 'light' && theme !== 'dark') return;
@@ -766,6 +829,7 @@ function createMainWindow() {
       const colors = windowColors(theme);
       themedWindow.setBackgroundColor(colors.color);
       themedWindow.setTitleBarOverlay({ ...colors, height: 32 });
+      dockManager.setTheme(theme);
     } catch { /* The window may close during a theme change. */ }
   });
   const revealWindow = () => {
@@ -879,7 +943,7 @@ function createMainWindow() {
   const appShellProbe = `(function(){
     if (document.getElementById('gitu-fail')) return 'fail';
     if (document.getElementById('view') && document.getElementById('gearBtn')) return 'app';
-    if (document.querySelector('main.auth') && document.getElementById('authForm')) return 'auth';
+    if ((document.querySelector('main.auth') && document.getElementById('authForm')) || (document.querySelector('main.auth-pane') && document.getElementById('pikOAuthBtn'))) return 'auth';
     return 'other';
   })()`;
 
@@ -915,6 +979,9 @@ function createMainWindow() {
           clearTimeout(loadWatchdog);
           log('mainWindow did-finish-load fired (' + (state === 'auth' ? 'sign-in page' : 'app shell present') + ')');
           revealWindow();
+          if (state === 'app') {
+            void dockManager.refresh();
+          }
           const activeTarget = cloudAgentManager.getTarget();
           if (state === 'app' && activeTarget && activeTarget.mode === 'cloud') {
             const cloudLabel = `Cloud: ${activeTarget.name || 'Agent'}`;
@@ -1063,6 +1130,7 @@ async function start() {
     }
     createMainWindow();
     log('main window created');
+    dockManager.start();
     updateRuntimeTray();
     if (mainWindow && !mainWindow.isDestroyed() && cloudAgentManager.shouldAutoConnectOnLaunch()) {
       mainWindow.webContents.once('did-finish-load', () => {
@@ -1117,6 +1185,7 @@ if (!gotLock) {
   app.on('before-quit', (event) => {
     log('app before-quit event fired');
     quitting=true;
+    dockManager.destroy();
     if (keepEngineRunning) {
       engine?.disconnect();
       log('interface exiting; independent engine retained');
@@ -1140,6 +1209,7 @@ if (!gotLock) {
   });
   app.on('will-quit', () => {
     log('app will-quit event fired');
+    dockManager.destroy();
     engine?.disconnect();
   });
   app.on('quit', (_e, exitCode) => {

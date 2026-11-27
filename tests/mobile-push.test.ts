@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { FcmPushSender, MobilePush, type PushNotice, type PushSender } from '../src/server/mobile-push.js';
+import { FcmPushSender, MobilePush, resolveFcmProjectId, type PushNotice, type PushSender } from '../src/server/mobile-push.js';
 import { GituServer } from '../src/server/server.js';
 import { ScriptedMockLlm } from '../src/llm/llm.js';
 import type { CoworkStore } from '../src/cowork/store.js';
@@ -196,5 +196,60 @@ describe('authenticated Android push API and event hooks', () => {
     expect((await post('/api/mobile/push', { deviceId }, cookie, base, 'DELETE')).status).toBe(200);
     expect(hooks.mobilePush.status(deviceId).enabled).toBe(false);
     expect((await post('/api/mobile/push/test', { deviceId }, cookie)).status).toBe(400);
+  }, 30_000);
+
+  it('infers FCM project ID, supports Live Activity preferences, and serves /api/server-browser/view without Agent not found', async () => {
+    expect(
+      resolveFcmProjectId({
+        AGENT_GITU_FCM_SERVICE_ACCOUNT_JSON: JSON.stringify({ project_id: 'agent-gitu' }),
+      }),
+    ).toBe('agent-gitu');
+
+    const transport = sender();
+    const password = 'Disposable notification passphrase!';
+    const email = 'owner@example.com';
+    const project = mkdtempSync(path.join(tmpdir(), 'gitu-live-act-'));
+    writeFileSync(path.join(project, 'package.json'), '{"name":"live-act-fixture"}');
+    const server = new GituServer({ cwd: project, port: 0, pushSender: transport, autoInstallLsp: false, llm: new ScriptedMockLlm([() => 'OK']) });
+    servers.push(server);
+    const base = 'http://127.0.0.1:' + (await server.start());
+    const req = (url: string, method = 'GET', body?: object, cookie = '') =>
+      fetch(base + url, {
+        method,
+        headers: { cookie, origin: base, ...(body ? { 'content-type': 'application/json' } : {}) },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      });
+
+    await req('/api/auth/register', 'POST', { name: 'Owner', email, password });
+    const login = await req('/api/auth/login', 'POST', { email, password });
+    const cookie = login.headers.get('set-cookie')!;
+
+    // Register with Live Activity enabled and toggle via PATCH
+    const reg = await req('/api/mobile/push', 'POST', { deviceId, token, liveActivity: true, showLockScreenPreview: true }, cookie);
+    expect(reg.status).toBe(200);
+    expect(await reg.json()).toMatchObject({ available: true, enabled: true, liveActivity: true, showLockScreenPreview: true });
+
+    const patch = await req('/api/mobile/push', 'PATCH', { deviceId, liveActivity: true, showLockScreenPreview: false }, cookie);
+    expect(patch.status).toBe(200);
+    expect(await patch.json()).toMatchObject({ liveActivity: true, showLockScreenPreview: false });
+
+    const hooks = server as unknown as { mobilePush: MobilePush };
+    hooks.mobilePush.notifyLiveActivity('run:r1', { target: 'run', targetId: 'r1', title: 'Coding Agent', body: 'Running tests', agentName: 'Forge', phase: 'Testing' }, 100);
+    await hooks.mobilePush.drain();
+    expect(transport.send).toHaveBeenCalledWith(
+      token,
+      expect.any(String),
+      expect.objectContaining({ kind: 'working', liveActivity: true, target: 'run', targetId: 'r1' }),
+      { liveActivity: true, showLockScreenPreview: false },
+    );
+
+    // Coding Agent server-browser view route must work for BOTH /api/server-browser/view and /api/server-browser/workspace/view
+    const legacyView = await req('/api/server-browser/view', 'GET', undefined, cookie);
+    expect(legacyView.status).toBe(200);
+    expect(await legacyView.text()).toContain('Gitu browser');
+
+    const workspaceView = await req('/api/server-browser/workspace/view', 'GET', undefined, cookie);
+    expect(workspaceView.status).toBe(200);
+    expect(await workspaceView.text()).toContain('/api/server-browser/workspace');
   }, 30_000);
 });

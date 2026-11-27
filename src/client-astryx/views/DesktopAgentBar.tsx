@@ -1,8 +1,12 @@
 import {Button} from '@astryxdesign/core/Button';
 import {Card} from '@astryxdesign/core/Card';
 import {HStack} from '@astryxdesign/core/Layout';
-import type {DesktopCloudBridge, DesktopCloudState} from '../bridge';
-import {AppIcon, Cloud, Monitor} from '../components/AppIcons';
+import {
+  getDesktopDockBridge,
+  type DesktopCloudBridge,
+  type DesktopCloudState,
+} from '../bridge';
+import {AppIcon, Cloud, Layers, Monitor} from '../components/AppIcons';
 
 export function DesktopAgentBar({
   cloudBridge,
@@ -18,6 +22,7 @@ export function DesktopAgentBar({
   onOpenCloudDialog: () => void;
 }) {
   if (!cloudBridge) return null;
+  const dockBridge = getDesktopDockBridge();
 
   const mode = cloudStatus?.mode === 'cloud' ? 'cloud' : 'local';
   const activeCloudName = cloudStatus?.activeCloud?.name || '';
@@ -31,25 +36,40 @@ export function DesktopAgentBar({
       variant="default"
       aria-label="Workspace agent switcher">
       <HStack gap={1} vAlign="center">
-        <Button
-          label="Local"
-          size="sm"
-          variant={mode === 'local' ? 'primary' : 'ghost'}
-          icon={<AppIcon icon={Monitor} size="sm" />}
-          isDisabled={switchingMode}
-          isLoading={switchingMode && mode === 'cloud'}
-          onClick={() => {
-            if (mode === 'cloud') onSwitchLocal();
-          }}
-        />
-        <Button
-          label={cloudLabel}
-          size="sm"
-          variant={mode === 'cloud' ? 'primary' : 'ghost'}
-          icon={<AppIcon icon={Cloud} size="sm" />}
-          isDisabled={switchingMode}
-          onClick={onOpenCloudDialog}
-        />
+        {cloudBridge ? (
+          <>
+            <Button
+              label="Local"
+              size="sm"
+              variant={mode === 'local' ? 'primary' : 'ghost'}
+              icon={<AppIcon icon={Monitor} size="sm" />}
+              isDisabled={switchingMode}
+              isLoading={switchingMode && mode === 'cloud'}
+              onClick={() => {
+                if (mode === 'cloud') onSwitchLocal();
+              }}
+            />
+            <Button
+              label={cloudLabel}
+              size="sm"
+              variant={mode === 'cloud' ? 'primary' : 'ghost'}
+              icon={<AppIcon icon={Cloud} size="sm" />}
+              isDisabled={switchingMode}
+              onClick={onOpenCloudDialog}
+            />
+          </>
+        ) : null}
+        {dockBridge ? (
+          <Button
+            label="Dock"
+            size="sm"
+            variant="ghost"
+            icon={<AppIcon icon={Layers} size="sm" />}
+            onClick={() => {
+              void dockBridge.openChat({mode: 'chat'});
+            }}
+          />
+        ) : null}
       </HStack>
     </Card>
   );

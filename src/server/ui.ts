@@ -74,3 +74,12 @@ export const UI_HTML = renderUiDocument(UI_ASSETS, {
   ONBOARDING_JS,
   UI_BUTTON_JS,
 });
+
+export const INBOX_HTML = renderUiDocument(
+  UI_ASSETS,
+  {
+    UI_THEME_BOOTSTRAP,
+    UI_THEME_CSS,
+  },
+  'inbox.html',
+);

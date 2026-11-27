@@ -5,6 +5,12 @@ import android.provider.OpenableColumns
 import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -22,6 +28,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -31,8 +40,10 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
@@ -54,6 +65,9 @@ private enum class HubFilter {
     DMS,
     INBOX,
 }
+
+internal fun chiefOfStaffPresenceTeammates(teammates: List<Teammate>): List<Teammate> =
+    teammates.filter { it.chiefOfStaff }
 
 /**
  * Exact Stitch Cowork Hub (cowork_hub_redesigned/code.html),
@@ -195,15 +209,28 @@ fun CoworkScreen(
                 showCreateTeammate = false
                 editingTeammate = null
             },
-            onSave = { id, name, tagline, prompt, color, shape, allowShell, allowWrites, chief ->
+            onSave = { id, name, tagline, prompt, color, shape, allowShell, allowWrites, chief, pendingAvatarDataUrl, removeAvatar ->
                 showCreateTeammate = false
                 editingTeammate = null
-                vm.saveTeammate(id, name, tagline, prompt, color, shape, allowShell, allowWrites, chief)
+                vm.saveTeammate(
+                    id = id,
+                    name = name,
+                    tagline = tagline,
+                    systemPrompt = prompt,
+                    color = color,
+                    shape = shape,
+                    allowShell = allowShell,
+                    allowWrites = allowWrites,
+                    chiefOfStaff = chief,
+                    pendingAvatarDataUrl = pendingAvatarDataUrl,
+                    removeAvatar = removeAvatar,
+                )
             },
         )
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CoworkHubContent(
     state: AppUiState,
@@ -248,6 +275,9 @@ private fun CoworkHubContent(
         state.inboxState?.rooms.orEmpty().filter { q.isEmpty() || it.title.lowercase().contains(q) }
     } else {
         emptyList()
+    }
+    val presenceChiefs = remember(state.teammates) {
+        chiefOfStaffPresenceTeammates(state.teammates)
     }
 
     Column(
@@ -329,390 +359,410 @@ private fun CoworkHubContent(
             )
         }
 
-        LazyColumn(
+        PullToRefreshBox(
+            isRefreshing = state.isRefreshing,
+            onRefresh = { vm.pullRefreshCoworkHub() },
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            // Teammate Presence Strip (No heavy boxes — exact Stitch spec)
-            item(key = "presence_strip") {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(14.dp),
-                    verticalAlignment = Alignment.Top,
-                ) {
-                    state.teammates.forEach { ag ->
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                // Chief of Staff Presence Strip (No heavy boxes — exact Stitch spec)
+                item(key = "presence_strip") {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        verticalAlignment = Alignment.Top,
+                    ) {
+                        presenceChiefs.forEach { ag ->
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(5.dp),
+                                modifier = Modifier
+                                    .width(64.dp)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .stitchPressBounce(pressedScale = 0.93f) {
+                                        val dm = state.conversations.firstOrNull {
+                                            it.kind == "dm" && it.memberIds == listOf(ag.id)
+                                        }
+                                        if (dm != null) vm.openConversation(dm.id)
+                                        else vm.createConversation(listOf(ag.id), ag.name, null)
+                                    },
+                            ) {
+                                StitchCharacterAvatar(
+                                    label = ag.name,
+                                    accentHex = ag.avatar.color,
+                                    shapeName = ag.avatar.shape,
+                                    imageUrl = ag.avatar.imageUrl,
+                                    size = 58.dp,
+                                    floating = true,
+                                    statusDotColor = s.success,
+                                )
+                                Text(
+                                    text = ag.name,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = s.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+
+                        // Dashed "+ Hire" Roster Button
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(5.dp),
                             modifier = Modifier
                                 .width(64.dp)
-                                .clickable {
-                                    val dm = state.conversations.firstOrNull {
-                                        it.kind == "dm" && it.memberIds == listOf(ag.id)
-                                    }
-                                    if (dm != null) vm.openConversation(dm.id)
-                                    else vm.createConversation(listOf(ag.id), ag.name, null)
-                                },
+                                .clip(RoundedCornerShape(14.dp))
+                                .stitchPressBounce(pressedScale = 0.93f, onClick = onOpenRoster),
                         ) {
-                            StitchCharacterAvatar(
-                                label = ag.name,
-                                accentHex = ag.avatar.color,
-                                shapeName = ag.avatar.shape,
-                                size = 58.dp,
-                                floating = true,
-                                statusDotColor = s.success,
-                            )
-                            Text(
-                                text = ag.name,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = s.onSurface,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                    }
-
-                    // Dashed "+ Hire" Roster Button
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(5.dp),
-                        modifier = Modifier
-                            .width(64.dp)
-                            .clickable(onClick = onOpenRoster),
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(56.dp)
-                                .clip(CircleShape)
-                                .background(s.surfaceContainerLow)
-                                .border(1.dp, s.outline, CircleShape),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(Icons.Default.PersonAdd, contentDescription = "Hire teammate", tint = s.onSurfaceVariant, modifier = Modifier.size(22.dp))
-                        }
-                        Text("Hire", style = MaterialTheme.typography.labelMedium, color = s.onSurfaceVariant)
-                    }
-                }
-            }
-
-            // Compact Inline Escalation Strip (appears when any coding gate needs approval)
-            if (pendingApproval != null && pendingRunWithApproval != null) {
-                item(key = "escalation_strip") {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(20.dp))
-                            .background(s.tertiaryContainer)
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = s.onTertiaryContainer, modifier = Modifier.size(20.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = pendingApproval.tool.ifBlank { "Approval needed" },
-                                style = MaterialTheme.typography.labelLarge,
-                                color = s.onTertiaryContainer,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Text(
-                                text = pendingApproval.summary.ifBlank { pendingRunWithApproval.goal },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = s.onTertiaryContainer.copy(alpha = 0.85f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                        Box(
-                            modifier = Modifier
-                                .clip(CircleShape)
-                                .background(s.tertiary)
-                                .clickable { vm.resolveApproval(pendingApproval.id, true) }
-                                .padding(horizontal = 12.dp, vertical = 6.dp),
-                        ) {
-                            Text("Approve", style = MaterialTheme.typography.labelMedium, color = s.onTertiary)
-                        }
-                    }
-                }
-            }
-
-            // Conversations Filter Tabs (All | Teams | DMs | Inbox)
-            item(key = "filter_tabs") {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        listOf(
-                            HubFilter.ALL to "All",
-                            HubFilter.TEAMS to "Teams",
-                            HubFilter.DMS to "DMs",
-                            HubFilter.INBOX to "Inbox",
-                        ).forEach { (tab, label) ->
-                            val active = filter == tab
                             Box(
                                 modifier = Modifier
+                                    .size(56.dp)
                                     .clip(CircleShape)
-                                    .background(if (active) s.primary else Color.Transparent)
-                                    .clickable { onFilterChange(tab) }
-                                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                                    .background(s.surfaceContainerLow)
+                                    .border(1.dp, s.outline, CircleShape),
+                                contentAlignment = Alignment.Center,
                             ) {
-                                Text(
-                                    text = label,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = if (active) s.onPrimary else s.onSurfaceVariant,
-                                )
+                                Icon(Icons.Default.PersonAdd, contentDescription = "Hire teammate", tint = s.onSurfaceVariant, modifier = Modifier.size(22.dp))
                             }
-                        }
-                    }
-                    HorizontalDivider(color = s.outlineVariant)
-                }
-            }
-
-            // Owner Inbox Hub Controls (New Room · Invite Human · Members · Invites)
-            if (filter == HubFilter.INBOX && state.inboxState?.role != "member") {
-                item(key = "inbox_actions") {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        InboxChipPill(
-                            label = "New Room",
-                            selected = true,
-                            icon = Icons.Default.Add,
-                            onClick = onNewInboxRoom,
-                        )
-                        InboxChipPill(
-                            label = "Invite Human",
-                            selected = false,
-                            icon = Icons.Default.PersonAdd,
-                            onClick = onInviteInbox,
-                        )
-                        InboxChipPill(
-                            label = "Members (${state.inboxState?.members?.size ?: 0})",
-                            selected = false,
-                            icon = Icons.Default.Shield,
-                            onClick = onOpenInboxMembers,
-                        )
-                        InboxChipPill(
-                            label = "Invites (${state.inboxState?.invites?.size ?: 0})",
-                            selected = false,
-                            icon = Icons.Default.Link,
-                            onClick = onOpenInboxInvites,
-                        )
-                    }
-                }
-            }
-
-            // Separated Thread Cards
-            if (filteredConvs.isEmpty() && filteredInboxRooms.isEmpty()) {
-                item(key = "empty_hub") {
-                    StitchCard(modifier = Modifier.fillMaxWidth()) {
-                        Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text(
-                                text = if (filter == HubFilter.INBOX) "No Inbox rooms yet" else "No conversations here yet",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = s.onSurface,
-                            )
-                            Text(
-                                text = if (filter == HubFilter.INBOX) {
-                                    "Create a shared Inbox room to collaborate with clients and AI teammates, take private notes, and delegate coding tasks."
-                                } else {
-                                    "Tap the compose button above or any teammate avatar to start a Cowork thread."
-                                },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = s.onSurfaceVariant,
-                            )
-                            if (filter == HubFilter.INBOX && state.inboxState?.role != "member") {
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    StitchPrimaryButton(text = "New Room", icon = Icons.Default.Add, onClick = onNewInboxRoom)
-                                    StitchSecondaryButton(text = "Invite", icon = Icons.Default.PersonAdd, onClick = onInviteInbox)
-                                }
-                            }
+                            Text("Hire", style = MaterialTheme.typography.labelMedium, color = s.onSurfaceVariant)
                         }
                     }
                 }
-            } else {
-                items(filteredConvs, key = { "conv_${it.id}" }) { conv ->
-                    val convAgents = conv.memberIds.mapNotNull { id -> state.teammates.firstOrNull { it.id == id } }
-                    val firstAgent = convAgents.firstOrNull()
-                    val memberNames = convAgents.map { it.name }
-                    StitchCard(
-                        modifier = Modifier.fillMaxWidth(),
-                        onClick = { vm.openConversation(conv.id) },
-                    ) {
+
+                // Compact Inline Escalation Strip (appears when any coding gate needs approval)
+                if (pendingApproval != null && pendingRunWithApproval != null) {
+                    item(key = "escalation_strip") {
                         Row(
-                            modifier = Modifier.padding(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .animateItem()
+                                .clip(RoundedCornerShape(20.dp))
+                                .background(s.tertiaryContainer)
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
-                            if (convAgents.size > 1) {
-                                Box(modifier = Modifier.width(54.dp).height(46.dp)) {
-                                    StitchCharacterAvatar(
-                                        label = convAgents[0].name,
-                                        accentHex = convAgents[0].avatar.color,
-                                        shapeName = convAgents[0].avatar.shape,
-                                        size = 38.dp,
-                                    )
-                                    Box(modifier = Modifier.align(Alignment.BottomEnd)) {
-                                        StitchCharacterAvatar(
-                                            label = convAgents[1].name,
-                                            accentHex = convAgents[1].avatar.color,
-                                            shapeName = convAgents[1].avatar.shape,
-                                            size = 32.dp,
-                                        )
-                                    }
-                                }
-                            } else {
-                                StitchCharacterAvatar(
-                                    label = firstAgent?.name ?: conv.title,
-                                    accentHex = firstAgent?.avatar?.color,
-                                    shapeName = firstAgent?.avatar?.shape,
-                                    size = 48.dp,
-                                    statusDotColor = s.success,
-                                )
+                            val escalationPres = remember(pendingApproval) {
+                                cardActionPresentation(pendingApproval.tool, pendingApproval.why, pendingApproval.summary)
                             }
-                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                ) {
-                                    Text(
-                                        text = conv.title.ifBlank { memberNames.joinToString(", ").ifBlank { "Conversation" } },
-                                        style = MaterialTheme.typography.titleMedium,
-                                        color = s.onSurface,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f),
-                                    )
-                                    Text(
-                                        text = formatShortTime(conv.updatedAt).ifBlank { conv.kind.uppercase() },
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = s.onSurfaceVariant,
-                                    )
-                                }
+                            Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = s.onTertiaryContainer, modifier = Modifier.size(20.dp))
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = if (conv.kind == "group") {
-                                        "Team • ${memberNames.joinToString(", ").ifBlank { "${conv.memberIds.size} members" }}"
-                                    } else {
-                                        firstAgent?.tagline?.ifBlank { "Direct message with ${firstAgent.name}" } ?: "Direct message"
-                                    },
+                                    text = escalationPres.title,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = s.onTertiaryContainer,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    text = escalationPres.detail.ifBlank { pendingRunWithApproval.goal },
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = s.onSurfaceVariant,
-                                    maxLines = 2,
+                                    color = s.onTertiaryContainer.copy(alpha = 0.85f),
+                                    maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                 )
                             }
+                            Box(
+                                modifier = Modifier
+                                    .clip(CircleShape)
+                                    .background(s.tertiary)
+                                    .stitchPressBounce(pressedScale = 0.92f) { vm.resolveApproval(pendingApproval.id, true) }
+                                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                            ) {
+                                Text("Approve", style = MaterialTheme.typography.labelMedium, color = s.onTertiary)
+                            }
                         }
                     }
                 }
 
-                items(filteredInboxRooms, key = { "inbox_${it.id}" }) { room ->
-                    StitchCard(
-                        modifier = Modifier.fillMaxWidth(),
-                        onClick = { vm.openInboxRoom(room.id) },
-                    ) {
+                // Conversations Filter Tabs (All | Teams | DMs | Inbox)
+                item(key = "filter_tabs") {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Row(
-                            modifier = Modifier.padding(12.dp),
-                            verticalAlignment = Alignment.Top,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(44.dp)
-                                    .clip(CircleShape)
-                                    .background(s.surfaceContainer),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Icon(
-                                    imageVector = if (room.agentTriggerMode == "watch") Icons.Default.Visibility else Icons.Default.Group,
-                                    contentDescription = null,
-                                    tint = s.onSurfaceVariant,
-                                    modifier = Modifier.size(22.dp),
-                                )
-                            }
-                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween,
+                            listOf(
+                                HubFilter.ALL to "All",
+                                HubFilter.TEAMS to "Teams",
+                                HubFilter.DMS to "DMs",
+                                HubFilter.INBOX to "Inbox",
+                            ).forEach { (tab, label) ->
+                                val active = filter == tab
+                                Box(
+                                    modifier = Modifier
+                                        .clip(CircleShape)
+                                        .background(if (active) s.primary else Color.Transparent)
+                                        .stitchPressBounce(pressedScale = 0.93f) { onFilterChange(tab) }
+                                        .padding(horizontal = 14.dp, vertical = 6.dp),
                                 ) {
                                     Text(
-                                        text = room.title.ifBlank { "Shared Room" },
-                                        style = MaterialTheme.typography.titleMedium,
-                                        color = s.onSurface,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f),
+                                        text = label,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = if (active) s.onPrimary else s.onSurfaceVariant,
                                     )
-                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                        if (room.pendingApprovalCount > 0) {
-                                            StitchBadge(
-                                                text = "${room.pendingApprovalCount} approval",
-                                                tone = BadgeTone.WARNING,
-                                            )
-                                        } else if (room.agentTriggerMode == "watch") {
-                                            StitchBadge(text = "Watch", tone = BadgeTone.PRIMARY)
-                                        }
-                                    }
                                 }
+                            }
+                        }
+                        HorizontalDivider(color = s.outlineVariant)
+                    }
+                }
+
+                // Owner Inbox Hub Controls (New Room · Invite Human · Members · Invites)
+                if (filter == HubFilter.INBOX && state.inboxState?.role != "member") {
+                    item(key = "inbox_actions") {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            InboxChipPill(
+                                label = "New Room",
+                                selected = true,
+                                icon = Icons.Default.Add,
+                                onClick = onNewInboxRoom,
+                            )
+                            InboxChipPill(
+                                label = "Invite Human",
+                                selected = false,
+                                icon = Icons.Default.PersonAdd,
+                                onClick = onInviteInbox,
+                            )
+                            InboxChipPill(
+                                label = "Members (${state.inboxState?.members?.size ?: 0})",
+                                selected = false,
+                                icon = Icons.Default.Shield,
+                                onClick = onOpenInboxMembers,
+                            )
+                            InboxChipPill(
+                                label = "Invites (${state.inboxState?.invites?.size ?: 0})",
+                                selected = false,
+                                icon = Icons.Default.Link,
+                                onClick = onOpenInboxInvites,
+                            )
+                        }
+                    }
+                }
+
+                // Separated Thread Cards
+                if (filteredConvs.isEmpty() && filteredInboxRooms.isEmpty()) {
+                    item(key = "empty_hub") {
+                        StitchCard(modifier = Modifier.fillMaxWidth().animateItem()) {
+                            Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Text(
-                                    text = buildString {
-                                        append("Shared Inbox • ${room.memberIds.size} guests • ${room.activeAgentIds.size} agents")
-                                        val items = room.noteCount + room.openTaskCount
-                                        if (items > 0) append(" • $items notes/tasks")
+                                    text = if (filter == HubFilter.INBOX) "No Inbox rooms yet" else "No conversations here yet",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = s.onSurface,
+                                )
+                                Text(
+                                    text = if (filter == HubFilter.INBOX) {
+                                        "Create a shared Inbox room to collaborate with clients and AI teammates, take private notes, and delegate coding tasks."
+                                    } else {
+                                        "Tap the compose button above or a Chief of Staff avatar to start a Cowork thread."
                                     },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = s.onSurfaceVariant,
-                                    maxLines = 2,
                                 )
+                                if (filter == HubFilter.INBOX && state.inboxState?.role != "member") {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        StitchPrimaryButton(text = "New Room", icon = Icons.Default.Add, onClick = onNewInboxRoom)
+                                        StitchSecondaryButton(text = "Invite", icon = Icons.Default.PersonAdd, onClick = onInviteInbox)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    items(filteredConvs, key = { "conv_${it.id}" }) { conv ->
+                        val convAgents = conv.memberIds.mapNotNull { id -> state.teammates.firstOrNull { it.id == id } }
+                        val firstAgent = convAgents.firstOrNull()
+                        val memberNames = convAgents.map { it.name }
+                        StitchCard(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .animateItem(),
+                            onClick = { vm.openConversation(conv.id) },
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                if (convAgents.size > 1) {
+                                    Box(modifier = Modifier.width(54.dp).height(46.dp)) {
+                                        StitchCharacterAvatar(
+                                            label = convAgents[0].name,
+                                            accentHex = convAgents[0].avatar.color,
+                                            shapeName = convAgents[0].avatar.shape,
+                                            imageUrl = convAgents[0].avatar.imageUrl,
+                                            size = 38.dp,
+                                        )
+                                        Box(modifier = Modifier.align(Alignment.BottomEnd)) {
+                                            StitchCharacterAvatar(
+                                                label = convAgents[1].name,
+                                                accentHex = convAgents[1].avatar.color,
+                                                shapeName = convAgents[1].avatar.shape,
+                                                imageUrl = convAgents[1].avatar.imageUrl,
+                                                size = 32.dp,
+                                            )
+                                        }
+                                    }
+                                } else {
+                                    StitchCharacterAvatar(
+                                        label = firstAgent?.name ?: conv.title,
+                                        accentHex = firstAgent?.avatar?.color,
+                                        shapeName = firstAgent?.avatar?.shape,
+                                        imageUrl = firstAgent?.avatar?.imageUrl,
+                                        size = 48.dp,
+                                        statusDotColor = s.success,
+                                    )
+                                }
+                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                    ) {
+                                        Text(
+                                            text = conv.title.ifBlank { memberNames.joinToString(", ").ifBlank { "Conversation" } },
+                                            style = MaterialTheme.typography.titleMedium,
+                                            color = s.onSurface,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                        Text(
+                                            text = formatShortTime(conv.updatedAt).ifBlank { conv.kind.uppercase() },
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = s.onSurfaceVariant,
+                                        )
+                                    }
+                                    Text(
+                                        text = if (conv.kind == "group") {
+                                            "Team • ${memberNames.joinToString(", ").ifBlank { "${conv.memberIds.size} members" }}"
+                                        } else {
+                                            firstAgent?.tagline?.ifBlank { "Direct message with ${firstAgent.name}" } ?: "Direct message"
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = s.onSurfaceVariant,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    items(filteredInboxRooms, key = { "inbox_${it.id}" }) { room ->
+                        StitchCard(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .animateItem(),
+                            onClick = { vm.openInboxRoom(room.id) },
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.Top,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .clip(CircleShape)
+                                        .background(s.surfaceContainer),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Icon(
+                                        imageVector = if (room.agentTriggerMode == "watch") Icons.Default.Visibility else Icons.Default.Group,
+                                        contentDescription = null,
+                                        tint = s.onSurfaceVariant,
+                                        modifier = Modifier.size(22.dp),
+                                    )
+                                }
+                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                    ) {
+                                        Text(
+                                            text = room.title.ifBlank { "Shared Room" },
+                                            style = MaterialTheme.typography.titleMedium,
+                                            color = s.onSurface,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            if (room.pendingApprovalCount > 0) {
+                                                StitchBadge(
+                                                    text = "${room.pendingApprovalCount} approval",
+                                                    tone = BadgeTone.WARNING,
+                                                )
+                                            } else if (room.agentTriggerMode == "watch") {
+                                                StitchBadge(text = "Watch", tone = BadgeTone.PRIMARY)
+                                            }
+                                        }
+                                    }
+                                    Text(
+                                        text = buildString {
+                                            append("Shared Inbox • ${room.memberIds.size} guests • ${room.activeAgentIds.size} agents")
+                                            val items = room.noteCount + room.openTaskCount
+                                            if (items > 0) append(" • $items notes/tasks")
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = s.onSurfaceVariant,
+                                        maxLines = 2,
+                                    )
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            // Quick LiveKit Voice Bar (exact Stitch rounded-full bar)
-            item(key = "voice_bar") {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(CircleShape)
-                        .background(s.surfaceContainerLow)
-                        .border(1.dp, s.outlineVariant, CircleShape)
-                        .clickable { vm.startCoworkVoiceCall() }
-                        .padding(horizontal = 14.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
+                // Quick LiveKit Voice Bar (exact Stitch rounded-full bar)
+                item(key = "voice_bar") {
                     Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(CircleShape)
+                            .background(s.surfaceContainerLow)
+                            .border(1.dp, s.outlineVariant, CircleShape)
+                            .stitchPressBounce(pressedScale = 0.97f) { vm.startCoworkVoiceCall() }
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        modifier = Modifier.weight(1f),
+                        horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(36.dp)
-                                .clip(CircleShape)
-                                .background(s.primary),
-                            contentAlignment = Alignment.Center,
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            modifier = Modifier.weight(1f),
                         ) {
-                            Icon(Icons.Default.Call, contentDescription = null, tint = s.onPrimary, modifier = Modifier.size(18.dp))
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .background(s.primary),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(Icons.Default.Call, contentDescription = null, tint = s.onPrimary, modifier = Modifier.size(18.dp))
+                            }
+                            Column {
+                                Text("Voice check-in with Chief", style = MaterialTheme.typography.labelLarge, color = s.onSurface)
+                                Text("Ask, steer, or queue without stopping runs", style = MaterialTheme.typography.bodySmall, color = s.onSurfaceVariant)
+                            }
                         }
-                        Column {
-                            Text("Voice check-in with Chief", style = MaterialTheme.typography.labelLarge, color = s.onSurface)
-                            Text("Ask, steer, or queue without stopping runs", style = MaterialTheme.typography.bodySmall, color = s.onSurfaceVariant)
-                        }
+                        Icon(Icons.Default.ChevronRight, contentDescription = null, tint = s.onSurfaceVariant)
                     }
-                    Icon(Icons.Default.ChevronRight, contentDescription = null, tint = s.onSurfaceVariant)
                 }
             }
         }
@@ -783,6 +833,7 @@ private fun TeammatesRosterScreen(
                                         label = ag.name,
                                         accentHex = ag.avatar.color,
                                         shapeName = ag.avatar.shape,
+                                        imageUrl = ag.avatar.imageUrl,
                                         size = 54.dp,
                                         floating = true,
                                         statusDotColor = s.success,
@@ -870,12 +921,14 @@ private fun TeammatesRosterScreen(
  * Full-bleed Cowork Chat with FLOATING character avatar, FLOATING circular action buttons,
  * FLOATING pill composer, auto-scroll to latest message, and inline-only document previews.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CoworkChatScreen(
     state: AppUiState,
     vm: GituAppViewModel,
 ) {
     val s = LocalStitchPalette.current
+    val clipboard = LocalClipboardManager.current
     val convId = state.selectedConversationId ?: return
     val conv = state.conversations.firstOrNull { it.id == convId }
     val view = state.activeTeamView
@@ -885,6 +938,9 @@ private fun CoworkChatScreen(
     var showTagFolderDialog by remember { mutableStateOf(false) }
     var inlineMailAgentId by remember { mutableStateOf<String?>(null) }
     var inlineApiKeyConnect by remember { mutableStateOf<Triple<String, ConnectedServiceItem, String>?>(null) }
+    var editingMessage by remember { mutableStateOf<TeamMessage?>(null) }
+    var deletingMessage by remember { mutableStateOf<TeamMessage?>(null) }
+    var fullViewMessage by remember { mutableStateOf<TeamMessage?>(null) }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments(),
@@ -918,24 +974,62 @@ private fun CoworkChatScreen(
 
     val members = conv?.memberIds.orEmpty().mapNotNull { id -> state.teammates.firstOrNull { it.id == id } }
     val primaryAgent = members.firstOrNull()
+    val isGroupChat = conv?.kind == "group" || members.size > 1
+    val showSideAgentAvatar = isGroupChat
+
+    val activeBubbleColor = remember(primaryAgent, s.primary) {
+        if (primaryAgent != null) {
+            parseHexColor(
+                resolveCharacterColorHex(primaryAgent.avatar.shape, primaryAgent.avatar.color, primaryAgent.name),
+                fallback = s.primary,
+            )
+        } else {
+            s.primary
+        }
+    }
+    val activeBubbleInk = remember(activeBubbleColor) { contrastInkFor(activeBubbleColor) }
     val artifactById = remember(view?.artifacts) {
         view?.artifacts.orEmpty().associateBy { it.id }
     }
     val visibleMessages = remember(view?.messages) {
         view?.messages.orEmpty()
     }
-    val visibleRequests = remember(view?.requests) {
+    val messageById = remember(visibleMessages) {
+        visibleMessages.associateBy { it.id }
+    }
+    // Only show open/pending request cards — once accepted, approved, answered, declined, or swiped they smoothly disappear!
+    val visibleRequests = remember(view?.requests, state.settledRequestIds) {
         view?.requests.orEmpty().filter { req ->
-            req.hiddenAt.isNullOrBlank() && (
-                req.status == "open" ||
-                    req.status == "pending" ||
-                    req.appConnection != null ||
-                    req.kind == "credential"
-                )
+            val isOpen = req.status == "open" || req.status == "pending"
+            req.hiddenAt.isNullOrBlank() && isOpen && req.id !in state.settledRequestIds
         }
     }
 
-    // Interleave messages & inline request/app-connection cards chronologically so Connect cards appear inline right in chat!
+    // Active In-Chat Computer & Handoff detection (matching Web ui-cowork-computer.ts)
+    val openHandoffRequest = remember(visibleRequests) {
+        visibleRequests.firstOrNull { it.desktopHandoff }
+    }
+    val computerAgent = remember(state.inlineComputerAgentId, openHandoffRequest, members, state.teammates, primaryAgent) {
+        state.inlineComputerAgentId?.let { id ->
+            members.firstOrNull { it.id == id } ?: state.teammates.firstOrNull { it.id == id }
+        } ?: openHandoffRequest?.agentId?.let { id ->
+            members.firstOrNull { it.id == id } ?: state.teammates.firstOrNull { it.id == id }
+        } ?: primaryAgent
+    }
+    val computerStatus = computerAgent?.id?.let { state.agentComputers[it] }
+    val hasComputerHandoff = openHandoffRequest != null ||
+        computerStatus?.isUserControl == true ||
+        !computerStatus?.handoff?.reason.isNullOrBlank()
+    val agentUsingDesktop = view?.busy == true && view.progresses.any {
+        it.tool == "desktop_input" || it.tool == "desktop_screenshot"
+    }
+    val autoComputerDismissKey = "${convId}:${openHandoffRequest?.id ?: computerStatus?.control ?: "auto"}"
+    val showInlineComputer = computerAgent != null && (
+        state.inlineComputerAgentId == computerAgent.id ||
+            ((hasComputerHandoff || agentUsingDesktop) && state.inlineComputerDismissedKey != autoComputerDismissKey)
+        )
+
+    // Interleave messages & open inline request cards chronologically
     val timelineEntries = remember(visibleMessages, visibleRequests) {
         val list = mutableListOf<Pair<String, Any>>()
         visibleMessages.forEach { m -> list.add((m.ts.ifBlank { "0" }) to m) }
@@ -969,125 +1063,284 @@ private fun CoworkChatScreen(
     }
 
     val listState = rememberLazyListState()
-    LaunchedEffect(convId, state.selectedThreadId, timelineEntries.size) {
-        if (timelineEntries.isNotEmpty()) {
-            val lastIdx = listState.layoutInfo.totalItemsCount - 1
-            if (lastIdx >= 0) listState.animateScrollToItem(lastIdx)
+    LaunchedEffect(convId, state.selectedThreadId, timelineEntries.size, showInlineComputer) {
+        val lastIdx = listState.layoutInfo.totalItemsCount - 1
+        if (lastIdx >= 0 && (timelineEntries.isNotEmpty() || showInlineComputer)) {
+            listState.animateScrollToItem(lastIdx)
         }
     }
+
+    val pullState = rememberPullToRefreshState()
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(s.surface),
     ) {
-        // 1. FULL-BLEED SCROLLABLE CHAT STREAM (messages + inline app connection / approval cards)
-        LazyColumn(
-            state = listState,
+        // 1. FULL-BLEED SCROLLABLE CHAT STREAM WITH PULL-TO-REFRESH
+        PullToRefreshBox(
+            isRefreshing = state.isRefreshing,
+            onRefresh = { vm.pullRefreshActiveConversation() },
+            state = pullState,
+            indicator = {
+                PullToRefreshDefaults.Indicator(
+                    state = pullState,
+                    isRefreshing = state.isRefreshing,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = if (uniqueThreads.size > 1) 120.dp else 92.dp),
+                )
+            },
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(
-                top = if (uniqueThreads.size > 1) 128.dp else 98.dp,
-                bottom = 108.dp,
-                start = 12.dp,
-                end = 12.dp,
-            ),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            items(
-                items = timelineEntries,
-                key = { (_, entry) ->
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(
+                    top = if (uniqueThreads.size > 1) 128.dp else 98.dp,
+                    bottom = if (state.referencedMessageIds.isNotEmpty()) 142.dp else 112.dp,
+                    start = 12.dp,
+                    end = 12.dp,
+                ),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                items(
+                    items = timelineEntries,
+                    key = { (_, entry) ->
+                        when (entry) {
+                            is TeamMessage -> "m_${entry.id}_${entry.revision}"
+                            is TeamRequest -> "req_${entry.id}_${entry.status}"
+                            else -> entry.hashCode().toString()
+                        }
+                    },
+                ) { (_, entry) ->
                     when (entry) {
-                        is TeamMessage -> "m_${entry.id}_${entry.revision}"
-                        is TeamRequest -> "req_${entry.id}_${entry.status}"
-                        else -> entry.hashCode().toString()
-                    }
-                },
-            ) { (_, entry) ->
-                when (entry) {
-                    is TeamMessage -> {
-                        val attachedArtifacts = entry.artifactIds.orEmpty().mapNotNull { artifactById[it] }
-                        StitchChatMessageRow(
-                            msg = entry,
-                            teammates = state.teammates,
-                            attachedArtifacts = attachedArtifacts,
-                            artifactUrlFor = { artId -> vm.artifactInlineUrl(artId) },
-                            onPreviewArtifact = { art -> vm.openArtifactPreview(art.id, art.name) },
-                            onSendAction = { prompt -> vm.sendTeamMessage(prompt) },
-                            onOpenRun = { runId ->
-                                vm.closeConversation()
-                                vm.selectTab(MainTab.CODING)
-                                vm.openRun(runId)
-                            },
-                        )
-                    }
-                    is TeamRequest -> {
-                        val svcSpec = entry.appConnection?.let { app ->
-                            state.connectedApps.services.firstOrNull { it.slug.equals(app.service, ignoreCase = true) }
+                        is TeamMessage -> {
+                            val attachedArtifacts = entry.artifactIds.orEmpty().mapNotNull { artifactById[it] }
+                            StitchChatMessageRow(
+                                msg = entry,
+                                teammates = state.teammates,
+                                showAgentAvatar = showSideAgentAvatar,
+                                isReferenced = entry.id in state.referencedMessageIds,
+                                userBubbleColor = activeBubbleColor,
+                                userBubbleInk = activeBubbleInk,
+                                attachedArtifacts = attachedArtifacts,
+                                artifactUrlFor = { artId -> vm.artifactInlineUrl(artId) },
+                                onPreviewArtifact = { art -> vm.openArtifactPreview(art.id, art.name) },
+                                onSendAction = { prompt -> vm.sendTeamMessage(prompt) },
+                                onOpenRun = { runId ->
+                                    vm.closeConversation()
+                                    vm.selectTab(MainTab.CODING)
+                                    vm.openRun(runId)
+                                },
+                                onCopyMessage = { text -> clipboard.setText(AnnotatedString(text)) },
+                                onEditMessage = { m -> editingMessage = m },
+                                onRetryMessage = { m -> vm.retryTeamMessage(m.id, m.attempt) },
+                                onReferenceMessage = { m -> vm.toggleReferencedMessage(m.id) },
+                                onOpenFullView = { m -> fullViewMessage = m },
+                                onDeleteMessage = { m -> deletingMessage = m },
+                                modifier = Modifier.animateItem(),
+                            )
                         }
-                        val alreadyActive = entry.appConnection?.let { app ->
-                            (state.connectedApps.accounts + state.connectedApps.mail.accounts).any {
-                                it.toolkit.equals(app.service, ignoreCase = true) && !it.disabled && it.status.equals("ACTIVE", ignoreCase = true)
+                        is TeamRequest -> {
+                            val svcSpec = entry.appConnection?.let { app ->
+                                state.connectedApps.services.firstOrNull { it.slug.equals(app.service, ignoreCase = true) }
                             }
-                        } == true
-                        val matchingAvailable = entry.appConnection?.let { app ->
-                            (state.connectedApps.availableAccounts + state.connectedApps.mail.available).firstOrNull {
-                                it.toolkit.equals(app.service, ignoreCase = true) && !it.disabled && it.status.equals("ACTIVE", ignoreCase = true)
-                            }
-                        }
-                        StitchTeamRequestCard(
-                            request = entry,
-                            teammate = state.teammates.firstOrNull { it.id == entry.agentId },
-                            authLink = state.appAuthLinksByRequest[entry.id],
-                            liveConnected = alreadyActive,
-                            availableAccount = matchingAvailable,
-                            onAssignExisting = { agentId, accountId -> vm.assignAppAccount(agentId, accountId) },
-                            onConnectApp = { agentId, service, reqId ->
-                                when {
-                                    service.equals("mail", ignoreCase = true) -> inlineMailAgentId = agentId
-                                    svcSpec != null && !svcSpec.supportsDirectOAuth && svcSpec.apiKeyAuthConfig != null -> {
-                                        inlineApiKeyConnect = Triple(agentId, svcSpec, reqId)
-                                    }
-                                    else -> vm.connectAppService(agentId, service, reqId)
+                            val alreadyActive = entry.appConnection?.let { app ->
+                                (state.connectedApps.accounts + state.connectedApps.mail.accounts).any {
+                                    it.toolkit.equals(app.service, ignoreCase = true) && !it.disabled && it.status.equals("ACTIVE", ignoreCase = true)
                                 }
-                            },
-                            onOpenAuthUrl = { url -> runCatching { uriHandler.openUri(url) } },
-                            onManageApps = { agentId -> vm.openConnections(agentId) },
-                            onSubmitCredential = { reqId, label, provider, baseUrl, token, valPath ->
-                                vm.submitInlineCredential(reqId, label, provider, baseUrl, token, valPath)
-                            },
-                            onAction = { action, resp -> vm.resolveTeamRequest(entry.id, action, resp) },
-                        )
-                    }
-                }
-            }
+                            } == true
+                            val matchingAvailable = entry.appConnection?.let { app ->
+                                (state.connectedApps.availableAccounts + state.connectedApps.mail.available).firstOrNull {
+                                    it.toolkit.equals(app.service, ignoreCase = true) && !it.disabled && it.status.equals("ACTIVE", ignoreCase = true)
+                                }
+                            }
+                            val appApproval = remember(entry) { parseAppApprovalAction(entry) }
+                            val quickQuestionAnswer = entry.recommended?.takeIf { it.isNotBlank() }
+                                ?: entry.options.firstOrNull()?.takeIf { it.isNotBlank() }
 
-            // Live Working Indicator (rich animated plush character + active app/website scanner badge)
-            val activeProgresses = view?.progresses.orEmpty().filter {
-                !it.text.isNullOrBlank() || !it.tool.isNullOrBlank() || !it.appService.isNullOrBlank() || !it.webUrl.isNullOrBlank()
-            }
-            if (activeProgresses.isNotEmpty()) {
-                activeProgresses.forEachIndexed { pIdx, prog ->
-                    item(key = "prog_${prog.agentId ?: pIdx}") {
-                        val progAgent = state.teammates.firstOrNull {
-                            it.id == prog.agentId || it.name.equals(prog.agentName, ignoreCase = true)
+                            val (enableAcceptSwipe, swipeAcceptLabel) = when {
+                                entry.appConnection != null -> true to (if (matchingAvailable != null) "Assign" else "Connect")
+                                entry.kind == "permission" -> true to "Allow"
+                                entry.kind == "recommendation" -> true to "Accept"
+                                appApproval != null -> true to "Approve"
+                                entry.desktopHandoff -> true to "Open computer"
+                                entry.kind == "question" && !quickQuestionAnswer.isNullOrBlank() -> true to quickQuestionAnswer.take(18)
+                                else -> false to "Accept"
+                            }
+
+                            SwipeableRequestCard(
+                                acceptLabel = swipeAcceptLabel,
+                                deleteLabel = "Delete",
+                                enableAcceptSwipe = enableAcceptSwipe,
+                                enableDeleteSwipe = true,
+                                onAccept = {
+                                    when {
+                                        entry.appConnection != null -> {
+                                            val app = entry.appConnection
+                                            if (matchingAvailable != null) {
+                                                vm.assignAppAccount(entry.agentId, matchingAvailable.id)
+                                                vm.resolveTeamRequest(entry.id, "accept", "Connected")
+                                                true
+                                            } else if (app.service.equals("mail", ignoreCase = true)) {
+                                                inlineMailAgentId = entry.agentId
+                                                false
+                                            } else if (svcSpec != null && !svcSpec.supportsDirectOAuth && svcSpec.apiKeyAuthConfig != null) {
+                                                inlineApiKeyConnect = Triple(entry.agentId, svcSpec, entry.id)
+                                                false
+                                            } else {
+                                                vm.connectAppService(entry.agentId, app.service, entry.id)
+                                                false
+                                            }
+                                        }
+                                        entry.kind == "permission" -> {
+                                            vm.resolveTeamRequest(entry.id, "approve")
+                                            true
+                                        }
+                                        entry.kind == "recommendation" -> {
+                                            vm.resolveTeamRequest(entry.id, "accept")
+                                            true
+                                        }
+                                        appApproval != null -> {
+                                            vm.resolveTeamRequest(entry.id, "accept")
+                                            true
+                                        }
+                                        entry.desktopHandoff -> {
+                                            vm.openInlineComputer(entry.agentId)
+                                            false
+                                        }
+                                        entry.kind == "question" && !quickQuestionAnswer.isNullOrBlank() -> {
+                                            vm.resolveTeamRequest(entry.id, "answer", quickQuestionAnswer)
+                                            true
+                                        }
+                                        else -> false
+                                    }
+                                },
+                                onDelete = {
+                                    vm.deleteTeamRequest(entry.id)
+                                    true
+                                },
+                                modifier = Modifier.animateItem(),
+                            ) {
+                                StitchTeamRequestCard(
+                                    request = entry,
+                                    teammate = state.teammates.firstOrNull { it.id == entry.agentId },
+                                    showAvatar = showSideAgentAvatar,
+                                    servicesCatalog = state.connectedApps.services,
+                                    authLink = state.appAuthLinksByRequest[entry.id],
+                                    liveConnected = alreadyActive,
+                                    availableAccount = matchingAvailable,
+                                    onAssignExisting = { agentId, accountId ->
+                                        vm.assignAppAccount(agentId, accountId)
+                                        vm.resolveTeamRequest(entry.id, "accept", "Connected")
+                                    },
+                                    onConnectApp = { agentId, service, reqId ->
+                                        when {
+                                            service.equals("mail", ignoreCase = true) -> inlineMailAgentId = agentId
+                                            svcSpec != null && !svcSpec.supportsDirectOAuth && svcSpec.apiKeyAuthConfig != null -> {
+                                                inlineApiKeyConnect = Triple(agentId, svcSpec, reqId)
+                                            }
+                                            else -> vm.connectAppService(agentId, service, reqId)
+                                        }
+                                    },
+                                    onOpenAuthUrl = { url -> runCatching { uriHandler.openUri(url) } },
+                                    onManageApps = { agentId -> vm.openConnections(agentId) },
+                                    onOpenComputer = { agentId, _ -> vm.openInlineComputer(agentId) },
+                                    onSubmitCredential = { reqId, label, provider, baseUrl, token, valPath, setupJson, values ->
+                                        vm.submitInlineCredential(
+                                            requestId = reqId,
+                                            label = label,
+                                            provider = provider,
+                                            baseUrl = baseUrl,
+                                            token = token,
+                                            validationPath = valPath,
+                                            setupJson = setupJson,
+                                            values = values,
+                                        )
+                                    },
+                                    onProbeSshHostKey = { reqId, baseUrl, onRes ->
+                                        vm.probeSshHostKey(reqId, baseUrl, onRes)
+                                    },
+                                    onSubmitSshCredential = { reqId, label, baseUrl, password, fp ->
+                                        vm.submitSshCredential(reqId, label, baseUrl, password, fp)
+                                    },
+                                    onSubmitBrowserAuth = { reqId, setupJson, values, terms ->
+                                        vm.submitBrowserAuth(reqId, setupJson, values, terms)
+                                    },
+                                    onAction = { action, resp, reviewedArgs, rememberChief, chiefPat, chiefScope ->
+                                        vm.resolveTeamRequest(
+                                            requestId = entry.id,
+                                            action = action,
+                                            response = resp,
+                                            reviewedArgs = reviewedArgs,
+                                            rememberForChief = rememberChief,
+                                            chiefPattern = chiefPat,
+                                            chiefScope = chiefScope,
+                                        )
+                                    },
+                                )
+                            }
                         }
-                        RichWorkingIndicator(
-                            agentName = prog.agentName.ifBlank { progAgent?.name ?: "AI" },
-                            accentHex = progAgent?.avatar?.color,
-                            shapeName = progAgent?.avatar?.shape,
-                            progress = prog,
+                    }
+                }
+
+                // Live Interactive In-Chat Computer & Handoff Panel (directly inside chat, matching Web!)
+                if (showInlineComputer && computerAgent != null) {
+                    item(key = "inline_computer_${computerAgent.id}") {
+                        InChatComputerPanel(
+                            teammate = computerAgent,
+                            computer = computerStatus,
+                            busy = computerAgent.id in state.computerActionBusy,
+                            handoffActive = hasComputerHandoff,
+                            handoffReason = openHandoffRequest?.detail.orEmpty().ifBlank {
+                                computerStatus?.handoff?.reason.orEmpty()
+                            },
+                            computerViewUrl = vm.agentComputerViewUrl(computerAgent.id, preview = false),
+                            serverBrowserViewUrl = vm.serverBrowserViewUrl(computerAgent.id),
+                            authHeaders = vm.mediaAuthHeaders(),
+                            onSyncCookies = { wv -> vm.syncCookiesForWebView(wv) },
+                            onAction = { action -> vm.performComputerAction(computerAgent.id, action) },
+                            onLaunchApp = { app -> vm.launchComputerApp(computerAgent.id, app) },
+                            onServerBrowserControl = { action -> vm.performServerBrowserControl(computerAgent.id, action) },
+                            onExpandFullscreen = { vm.openLiveDesktop(computerAgent.id, computerAgent.name) },
+                            onClose = { vm.closeInlineComputer(autoComputerDismissKey) },
+                            screenHeight = 330.dp,
+                            modifier = Modifier.animateItem(),
                         )
                     }
                 }
-            } else if (view?.busy == true) {
-                item(key = "prog_busy") {
-                    RichWorkingIndicator(
-                        agentName = primaryAgent?.name ?: "AI",
-                        accentHex = primaryAgent?.avatar?.color,
-                        shapeName = primaryAgent?.avatar?.shape,
-                        progress = null,
-                        fallbackText = view.working?.ifBlank { "Working…" } ?: "Working…",
-                    )
+
+                // Live Working Indicator (rich animated plush character + active app/website scanner badge)
+                val activeProgresses = view?.progresses.orEmpty().filter {
+                    !it.text.isNullOrBlank() || !it.tool.isNullOrBlank() || !it.appService.isNullOrBlank() || !it.webUrl.isNullOrBlank()
+                }
+                if (activeProgresses.isNotEmpty()) {
+                    activeProgresses.forEachIndexed { pIdx, prog ->
+                        item(key = "prog_${prog.agentId ?: pIdx}") {
+                            val progAgent = state.teammates.firstOrNull {
+                                it.id == prog.agentId || it.name.equals(prog.agentName, ignoreCase = true)
+                            }
+                            RichWorkingIndicator(
+                                agentName = prog.agentName.ifBlank { progAgent?.name ?: "AI" },
+                                accentHex = progAgent?.avatar?.color,
+                                shapeName = progAgent?.avatar?.shape,
+                                imageUrl = progAgent?.avatar?.imageUrl,
+                                progress = prog,
+                            )
+                        }
+                    }
+                } else if (view?.busy == true) {
+                    item(key = "prog_busy") {
+                        RichWorkingIndicator(
+                            agentName = primaryAgent?.name ?: "AI",
+                            accentHex = primaryAgent?.avatar?.color,
+                            shapeName = primaryAgent?.avatar?.shape,
+                            imageUrl = primaryAgent?.avatar?.imageUrl,
+                            progress = null,
+                            fallbackText = view.working?.ifBlank { "Working…" } ?: "Working…",
+                        )
+                    }
                 }
             }
         }
@@ -1145,6 +1398,7 @@ private fun CoworkChatScreen(
                                     label = ag.name,
                                     accentHex = ag.avatar.color,
                                     shapeName = ag.avatar.shape,
+                                    imageUrl = ag.avatar.imageUrl,
                                     size = 38.dp,
                                     floating = true,
                                     working = view?.busy == true,
@@ -1157,6 +1411,7 @@ private fun CoworkChatScreen(
                             label = primaryAgent?.name ?: conv?.title ?: "AI",
                             accentHex = primaryAgent?.avatar?.color,
                             shapeName = primaryAgent?.avatar?.shape,
+                            imageUrl = primaryAgent?.avatar?.imageUrl,
                             size = 44.dp,
                             floating = true,
                             working = view?.busy == true,
@@ -1195,7 +1450,7 @@ private fun CoworkChatScreen(
                     }
                 }
 
-                // Floating Action Buttons (right: Stop, Desktop, Voice Call)
+                // Floating Action Buttons (right: Stop, In-Chat Computer w/ live dot, Voice Call)
                 Row(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
@@ -1213,15 +1468,34 @@ private fun CoworkChatScreen(
                             )
                         }
                     }
-                    primaryAgent?.let { ag ->
-                        Box(modifier = Modifier.shadow(6.dp, CircleShape)) {
-                            StitchCircleIconButton(
-                                icon = Icons.Default.DesktopWindows,
-                                contentDescription = "Desktop",
-                                outlined = true,
-                                size = 36.dp,
-                                onClick = { vm.openLiveDesktop(ag.id, ag.name) },
-                            )
+                    computerAgent?.let { ag ->
+                        Box {
+                            Box(modifier = Modifier.shadow(6.dp, CircleShape)) {
+                                StitchCircleIconButton(
+                                    icon = Icons.Default.DesktopWindows,
+                                    contentDescription = if (showInlineComputer) "Hide computer" else "Open computer in chat",
+                                    primary = showInlineComputer,
+                                    outlined = !showInlineComputer,
+                                    size = 36.dp,
+                                    onClick = {
+                                        if (showInlineComputer) {
+                                            vm.closeInlineComputer(autoComputerDismissKey)
+                                        } else {
+                                            vm.openInlineComputer(ag.id)
+                                        }
+                                    },
+                                )
+                            }
+                            if (hasComputerHandoff || computerStatus?.isRunning == true) {
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .size(10.dp)
+                                        .clip(CircleShape)
+                                        .background(if (hasComputerHandoff) activeBubbleColor else s.success)
+                                        .border(1.5.dp, s.surface, CircleShape),
+                                )
+                            }
                         }
                     }
                     Box(modifier = Modifier.shadow(6.dp, CircleShape)) {
@@ -1286,7 +1560,7 @@ private fun CoworkChatScreen(
                             .clip(CircleShape)
                             .background(s.surfaceContainerLowest)
                             .border(1.dp, s.outlineVariant, CircleShape)
-                            .clickable { showNewThreadDialog = true },
+                            .stitchPressBounce(pressedScale = 0.88f) { showNewThreadDialog = true },
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(Icons.Default.Add, contentDescription = "Add thread", tint = s.primary, modifier = Modifier.size(14.dp))
@@ -1314,6 +1588,44 @@ private fun CoworkChatScreen(
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
+            // Referenced message chips (matching Web cwReferences)
+            if (state.referencedMessageIds.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    state.referencedMessageIds.forEach { refId ->
+                        val refMsg = messageById[refId]
+                        val snippet = refMsg?.text?.replace('\n', ' ')?.trim()?.take(28)?.ifBlank { "Message" } ?: "Referenced message"
+                        val author = if (refMsg?.role == "user") "You" else refMsg?.agentName?.ifBlank { "Agent" } ?: "Ref"
+                        Surface(
+                            shape = CircleShape,
+                            color = s.surfaceContainerLowest.copy(alpha = 0.96f),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, activeBubbleColor),
+                            shadowElevation = 2.dp,
+                            modifier = Modifier.clickable { vm.removeReferencedMessage(refId) },
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                            ) {
+                                Icon(Icons.Default.FormatQuote, contentDescription = null, tint = activeBubbleColor, modifier = Modifier.size(13.dp))
+                                Text(
+                                    text = "$author: $snippet",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                                    color = s.onSurface,
+                                    maxLines = 1,
+                                )
+                                Icon(Icons.Default.Close, contentDescription = "Remove reference", tint = s.onSurfaceVariant, modifier = Modifier.size(12.dp))
+                            }
+                        }
+                    }
+                }
+            }
+
             // Pending file/photo attachment chips
             if (state.pendingAttachments.isNotEmpty()) {
                 Row(
@@ -1371,7 +1683,7 @@ private fun CoworkChatScreen(
                         color = s.surfaceContainerLowest.copy(alpha = 0.92f),
                         border = androidx.compose.foundation.BorderStroke(1.dp, s.outlineVariant),
                         shadowElevation = 2.dp,
-                        modifier = Modifier.clickable {
+                        modifier = Modifier.stitchPressBounce(pressedScale = 0.94f) {
                             composer = if (composer.isBlank()) "@${ag.name} " else "$composer @${ag.name} "
                         },
                     ) {
@@ -1388,7 +1700,7 @@ private fun CoworkChatScreen(
                     color = s.surfaceContainerLowest.copy(alpha = 0.92f),
                     border = androidx.compose.foundation.BorderStroke(1.dp, s.outlineVariant),
                     shadowElevation = 2.dp,
-                    modifier = Modifier.clickable { showTagFolderDialog = true },
+                    modifier = Modifier.stitchPressBounce(pressedScale = 0.94f) { showTagFolderDialog = true },
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp),
@@ -1405,7 +1717,7 @@ private fun CoworkChatScreen(
                     color = s.surfaceContainerLowest.copy(alpha = 0.92f),
                     border = androidx.compose.foundation.BorderStroke(1.dp, s.outlineVariant),
                     shadowElevation = 2.dp,
-                    modifier = Modifier.clickable {
+                    modifier = Modifier.stitchPressBounce(pressedScale = 0.94f) {
                         vm.startCoworkVoiceCall(
                             conversationId = state.selectedConversationId,
                             threadId = state.selectedThreadId,
@@ -1467,29 +1779,142 @@ private fun CoworkChatScreen(
                         )
                     }
                 }
-                // Dynamic Send ↔ Stop button: Stop while agent is working & input empty, Send as soon as user starts writing!
+                // Animated Send <-> Stop morphing button
                 val canSend = composer.isNotBlank() || state.pendingAttachments.isNotEmpty()
                 val showStop = view?.busy == true && !canSend
                 Box(modifier = Modifier.shadow(6.dp, CircleShape)) {
-                    StitchCircleIconButton(
-                        icon = if (showStop) Icons.Default.Stop else Icons.Default.ArrowUpward,
-                        contentDescription = if (showStop) "Stop agent" else "Send",
-                        primary = !showStop && canSend,
-                        outlined = !showStop && !canSend,
-                        danger = showStop,
-                        size = 38.dp,
-                        onClick = {
-                            if (showStop) {
-                                vm.stopTeamChat()
-                            } else if (canSend) {
-                                vm.sendTeamMessage(composer)
-                                composer = ""
-                            }
-                        },
-                    )
+                    AnimatedContent(
+                        targetState = showStop,
+                        transitionSpec = { (fadeIn() + scaleIn(initialScale = 0.82f)) togetherWith (fadeOut() + scaleOut(targetScale = 0.82f)) },
+                        label = "sendStopMorph",
+                    ) { stopping ->
+                        StitchCircleIconButton(
+                            icon = if (stopping) Icons.Default.Stop else Icons.Default.ArrowUpward,
+                            contentDescription = if (stopping) "Stop agent" else "Send",
+                            primary = !stopping && canSend,
+                            outlined = !stopping && !canSend,
+                            danger = stopping,
+                            size = 38.dp,
+                            onClick = {
+                                if (stopping) {
+                                    vm.stopTeamChat()
+                                } else if (canSend) {
+                                    vm.sendTeamMessage(composer)
+                                    composer = ""
+                                }
+                            },
+                        )
+                    }
                 }
             }
         }
+    }
+
+    // Edit user message dialog (from ... -> Edit)
+    editingMessage?.let { targetMsg ->
+        var editText by remember(targetMsg.id, targetMsg.revision) { mutableStateOf(targetMsg.text) }
+        AlertDialog(
+            onDismissRequest = { editingMessage = null },
+            containerColor = s.surfaceContainerLowest,
+            title = { Text("Edit message", color = s.onSurface) },
+            text = {
+                StitchInputField(
+                    value = editText,
+                    onValueChange = { editText = it },
+                    label = "Message",
+                    singleLine = false,
+                    minLines = 2,
+                    maxLines = 6,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = editText.isNotBlank() && editText.trim() != targetMsg.text.trim(),
+                    onClick = {
+                        vm.editTeamMessage(targetMsg.id, editText, targetMsg.revision)
+                        editingMessage = null
+                    },
+                ) { Text("Save", color = s.primary) }
+            },
+            dismissButton = {
+                TextButton(onClick = { editingMessage = null }) { Text("Cancel", color = s.onSurfaceVariant) }
+            },
+        )
+    }
+
+    // Confirm delete message dialog (from ... -> Delete)
+    deletingMessage?.let { targetMsg ->
+        AlertDialog(
+            onDismissRequest = { deletingMessage = null },
+            containerColor = s.surfaceContainerLowest,
+            title = { Text("Delete message?", color = s.onSurface) },
+            text = {
+                Text(
+                    text = "This removes the message from this conversation across mobile and web.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = s.onSurfaceVariant,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        vm.deleteTeamMessage(targetMsg.id)
+                        deletingMessage = null
+                    },
+                ) { Text("Delete", color = s.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { deletingMessage = null }) { Text("Cancel", color = s.onSurfaceVariant) }
+            },
+        )
+    }
+
+    // Full-view reader dialog (from ... -> Open full view, matching Web Workbench)
+    fullViewMessage?.let { targetMsg ->
+        AlertDialog(
+            onDismissRequest = { fullViewMessage = null },
+            containerColor = s.surfaceContainerLowest,
+            title = {
+                Text(
+                    text = if (targetMsg.role == "user") "Your message" else targetMsg.agentName?.ifBlank { "Agent" } ?: "Agent",
+                    color = s.onSurface,
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    RichChatMessageContent(
+                        rawText = targetMsg.text,
+                        baseColor = s.onSurface,
+                        mentionNames = state.teammates.map { it.name },
+                        onSendAction = { prompt ->
+                            fullViewMessage = null
+                            vm.sendTeamMessage(prompt)
+                        },
+                        onOpenRun = { runId ->
+                            fullViewMessage = null
+                            vm.closeConversation()
+                            vm.selectTab(MainTab.CODING)
+                            vm.openRun(runId)
+                        },
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        clipboard.setText(AnnotatedString(targetMsg.text))
+                        fullViewMessage = null
+                    },
+                ) { Text("Copy", color = s.primary) }
+            },
+            dismissButton = {
+                TextButton(onClick = { fullViewMessage = null }) { Text("Close", color = s.onSurfaceVariant) }
+            },
+        )
     }
 
     if (showNewThreadDialog) {
@@ -1731,20 +2156,32 @@ private fun StitchThreadPill(label: String, selected: Boolean, onClick: () -> Un
 private fun StitchChatMessageRow(
     msg: TeamMessage,
     teammates: List<Teammate>,
+    showAgentAvatar: Boolean,
+    isReferenced: Boolean,
+    userBubbleColor: Color,
+    userBubbleInk: Color,
     attachedArtifacts: List<TeamArtifact>,
     artifactUrlFor: (String) -> String,
     onPreviewArtifact: (TeamArtifact) -> Unit,
     onSendAction: (String) -> Unit,
     onOpenRun: (String) -> Unit,
+    onCopyMessage: (String) -> Unit,
+    onEditMessage: (TeamMessage) -> Unit,
+    onRetryMessage: (TeamMessage) -> Unit,
+    onReferenceMessage: (TeamMessage) -> Unit,
+    onOpenFullView: (TeamMessage) -> Unit,
+    onDeleteMessage: (TeamMessage) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val s = LocalStitchPalette.current
     val timeLabel = formatShortTime(msg.ts)
     val mentionNames = remember(teammates) { teammates.map { it.name } }
+    var menuOpen by remember(msg.id, msg.revision) { mutableStateOf(false) }
 
     if (msg.role == "system") {
         val cleanSystem = remember(msg.text) { ChatMessageFilter.filterVisibleReply(msg.text) }
         if (cleanSystem.isBlank()) return
-        Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(12.dp))
@@ -1765,65 +2202,174 @@ private fun StitchChatMessageRow(
     }
 
     if (msg.role == "user") {
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+        Column(
+            modifier = modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.End,
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
             Column(
                 modifier = Modifier
-                    .widthIn(max = 290.dp)
+                    .widthIn(min = 52.dp, max = 280.dp)
                     .clip(RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 4.dp))
-                    .background(s.primary)
+                    .background(userBubbleColor)
+                    .then(
+                        if (isReferenced) Modifier.border(1.5.dp, s.onSurface, RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 4.dp))
+                        else Modifier,
+                    )
                     .padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 RichChatMessageContent(
                     rawText = msg.text,
-                    baseColor = s.onPrimary,
+                    baseColor = userBubbleInk,
                     mentionNames = mentionNames,
+                    fillWidth = false,
                 )
                 if (timeLabel.isNotBlank()) {
                     Text(
                         text = timeLabel,
                         style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, lineHeight = 12.sp),
-                        color = s.onPrimary.copy(alpha = 0.72f),
+                        color = userBubbleInk.copy(alpha = 0.76f),
                         modifier = Modifier.align(Alignment.End),
                     )
+                }
+            }
+
+            // ... actions row directly BELOW the user bubble (matching Web cwMessageActionsHtml)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.padding(end = 2.dp),
+            ) {
+                if (msg.status == "failed") {
+                    Text(
+                        text = "Failed",
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                        color = s.error,
+                    )
+                } else if (msg.revision > 0) {
+                    Text(
+                        text = "Edited",
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                        color = s.onSurfaceVariant,
+                    )
+                }
+                if (isReferenced) {
+                    Text(
+                        text = "Referenced",
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                        color = userBubbleColor,
+                    )
+                }
+                Box {
+                    Row(
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .clickable { menuOpen = true }
+                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.MoreHoriz,
+                            contentDescription = "Message actions",
+                            tint = s.onSurfaceVariant,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Copy") },
+                            leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                            onClick = {
+                                menuOpen = false
+                                onCopyMessage(msg.text)
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Edit") },
+                            leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                            onClick = {
+                                menuOpen = false
+                                onEditMessage(msg)
+                            },
+                        )
+                        if (msg.status == "failed") {
+                            DropdownMenuItem(
+                                text = { Text("Retry") },
+                                leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                                onClick = {
+                                    menuOpen = false
+                                    onRetryMessage(msg)
+                                },
+                            )
+                        }
+                        DropdownMenuItem(
+                            text = { Text(if (isReferenced) "Remove reference" else "Reference") },
+                            leadingIcon = { Icon(Icons.Default.FormatQuote, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                            onClick = {
+                                menuOpen = false
+                                onReferenceMessage(msg)
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Delete", color = s.error) },
+                            leadingIcon = { Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = s.error, modifier = Modifier.size(16.dp)) },
+                            onClick = {
+                                menuOpen = false
+                                onDeleteMessage(msg)
+                            },
+                        )
+                    }
                 }
             }
         }
     } else {
         val ag = teammates.firstOrNull { it.name.equals(msg.agentName, ignoreCase = true) }
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = modifier.fillMaxWidth(),
             verticalAlignment = Alignment.Top,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            horizontalArrangement = Arrangement.spacedBy(if (showAgentAvatar) 6.dp else 0.dp),
         ) {
-            StitchCharacterAvatar(
-                label = msg.agentName ?: "AI",
-                accentHex = ag?.avatar?.color,
-                shapeName = ag?.avatar?.shape,
-                size = 26.dp,
-            )
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            if (showAgentAvatar) {
+                StitchCharacterAvatar(
+                    label = msg.agentName ?: "AI",
+                    accentHex = ag?.avatar?.color,
+                    shapeName = ag?.avatar?.shape,
+                    imageUrl = ag?.avatar?.imageUrl,
+                    size = 26.dp,
+                )
+            }
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    Text(
-                        text = msg.agentName?.ifBlank { "Agent" } ?: "Agent",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = s.onSurface,
-                    )
-                    if (!ag?.tagline.isNullOrBlank()) {
+                    if (showAgentAvatar) {
                         Text(
-                            text = "• ${ag!!.tagline.take(18)}",
-                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp),
-                            color = s.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f, fill = false),
+                            text = msg.agentName?.ifBlank { "Agent" } ?: "Agent",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = s.onSurface,
                         )
+                        if (!ag?.tagline.isNullOrBlank()) {
+                            Text(
+                                text = "• ${ag!!.tagline.take(18)}",
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp),
+                                color = s.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false),
+                            )
+                        }
+                        Spacer(Modifier.weight(1f))
+                    } else {
+                        Text(
+                            text = msg.agentName?.ifBlank { "Agent" } ?: "Agent",
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                            color = s.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.weight(1f))
                     }
-                    Spacer(Modifier.weight(1f))
                     if (timeLabel.isNotBlank()) {
                         Text(
                             text = timeLabel,
@@ -1832,13 +2378,23 @@ private fun StitchChatMessageRow(
                         )
                     }
                 }
+                val bubbleShape = RoundedCornerShape(
+                    topStart = if (showAgentAvatar) 4.dp else 14.dp,
+                    topEnd = 18.dp,
+                    bottomStart = 18.dp,
+                    bottomEnd = 18.dp,
+                )
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 18.dp))
+                        .clip(bubbleShape)
                         .background(s.surfaceContainerLowest)
-                        .border(1.dp, s.outlineVariant, RoundedCornerShape(topStart = 4.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 18.dp))
-                        .padding(horizontal = 12.dp, vertical = 9.dp),
+                        .border(
+                            width = if (isReferenced) 1.5.dp else 1.dp,
+                            color = if (isReferenced) userBubbleColor else s.outlineVariant,
+                            shape = bubbleShape,
+                        )
+                        .padding(horizontal = 13.dp, vertical = 10.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     RichChatMessageContent(
@@ -1866,7 +2422,7 @@ private fun StitchChatMessageRow(
                                         .clip(RoundedCornerShape(12.dp))
                                         .background(s.surfaceContainerLow)
                                         .border(1.dp, s.outlineVariant, RoundedCornerShape(12.dp))
-                                        .clickable { onPreviewArtifact(art) }
+                                        .stitchPressBounce(pressedScale = 0.97f) { onPreviewArtifact(art) }
                                         .padding(horizontal = 9.dp, vertical = 7.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1898,329 +2454,70 @@ private fun StitchChatMessageRow(
                         }
                     }
                 }
-            }
-        }
-    }
-}
 
-@Composable
-private fun StitchTeamRequestCard(
-    request: TeamRequest,
-    teammate: Teammate?,
-    authLink: String?,
-    liveConnected: Boolean = false,
-    availableAccount: ConnectedAppAccount? = null,
-    onAssignExisting: (agentId: String, accountId: String) -> Unit = { _, _ -> },
-    onConnectApp: (agentId: String, service: String, requestId: String) -> Unit,
-    onOpenAuthUrl: (String) -> Unit,
-    onManageApps: (agentId: String) -> Unit,
-    onSubmitCredential: (requestId: String, label: String, provider: String, baseUrl: String, token: String, valPath: String) -> Unit,
-    onAction: (action: String, response: String?) -> Unit,
-) {
-    val s = LocalStitchPalette.current
-    val agentName = teammate?.name?.ifBlank { "Teammate" } ?: "Teammate"
-
-    // 1. INLINE APP CONNECTION CARD (exact parity with web UI cwAppConnectionHtml)
-    val app = request.appConnection
-    if (app != null) {
-        val isConnected = liveConnected || request.status == "accepted" || request.response.equals("Connected", ignoreCase = true)
-        val isDismissed = request.status == "dismissed"
-        val context = LocalContext.current
-        val media = LocalGituMediaContext.current
-        val loader = media.imageLoader ?: remember(context) { ImageLoader(context) }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.Top,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            StitchCharacterAvatar(
-                label = agentName,
-                accentHex = teammate?.avatar?.color,
-                shapeName = teammate?.avatar?.shape,
-                size = 26.dp,
-            )
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 18.dp))
-                    .background(s.surfaceContainerLowest)
-                    .border(1.dp, s.outlineVariant, RoundedCornerShape(topStart = 4.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 18.dp))
-                    .padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = "$agentName • Suggested app",
-                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp),
-                        color = s.onSurfaceVariant,
-                    )
-                    if (request.createdAt.isNotBlank()) {
-                        Text(
-                            text = formatShortTime(request.createdAt),
-                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                            color = s.onSurfaceVariant,
-                        )
-                    }
-                }
-
+                // ... actions row directly BELOW the agent bubble (matching Web cwMessageActionsHtml)
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.padding(start = 2.dp),
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(36.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(s.surfaceContainerLow)
-                            .border(1.dp, s.outlineVariant, RoundedCornerShape(10.dp)),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        val logo = app.logo?.takeIf { it.startsWith("https://") }
-                        if (logo != null) {
-                            SubcomposeAsyncImage(
-                                model = ImageRequest.Builder(context).data(logo).crossfade(true).build(),
-                                imageLoader = loader,
-                                contentDescription = app.name,
-                                contentScale = ContentScale.Fit,
-                                modifier = Modifier.size(22.dp),
-                                error = {
-                                    Icon(Icons.Default.Extension, contentDescription = null, tint = s.primary, modifier = Modifier.size(18.dp))
-                                },
-                            )
-                        } else {
-                            Icon(
-                                imageVector = if (app.service == "mail") Icons.Default.Email else Icons.Default.Extension,
-                                contentDescription = null,
-                                tint = s.primary,
-                                modifier = Modifier.size(18.dp),
-                            )
-                        }
-                    }
-                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                        Text(
-                            text = app.name.ifBlank { app.service.replaceFirstChar { it.uppercase() } },
-                            style = MaterialTheme.typography.labelLarge.copy(fontSize = 13.5.sp),
-                            color = s.onSurface,
-                        )
-                        Text(
-                            text = "For $agentName only",
-                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp),
-                            color = s.onSurfaceVariant,
-                        )
-                    }
-                }
-
-                val reason = app.reason.ifBlank { request.detail }
-                if (reason.isNotBlank()) {
-                    Text(text = reason, style = MaterialTheme.typography.bodySmall, color = s.onSurface)
-                }
-
-                when {
-                    isConnected -> {
+                    Box {
                         Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(5.dp),
                             modifier = Modifier
                                 .clip(CircleShape)
-                                .background(s.successContainer)
-                                .padding(horizontal = 10.dp, vertical = 4.dp),
-                        ) {
-                            Icon(Icons.Default.Check, contentDescription = null, tint = s.onSuccessContainer, modifier = Modifier.size(14.dp))
-                            Text("Connected", style = MaterialTheme.typography.labelSmall, color = s.onSuccessContainer)
-                        }
-                    }
-                    isDismissed -> {
-                        Text("Skipped", style = MaterialTheme.typography.labelSmall, color = s.onSurfaceVariant)
-                    }
-                    else -> {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                .clickable { menuOpen = true }
+                                .padding(horizontal = 6.dp, vertical = 2.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            if (!authLink.isNullOrBlank()) {
-                                StitchPrimaryButton(
-                                    text = "Continue sign-in",
-                                    icon = Icons.Default.OpenInNew,
-                                    onClick = { onOpenAuthUrl(authLink) },
-                                )
-                            } else if (availableAccount != null) {
-                                StitchPrimaryButton(
-                                    text = "Assign ${availableAccount.label?.take(12) ?: "account"}",
-                                    icon = Icons.Default.Check,
-                                    onClick = { onAssignExisting(request.agentId, availableAccount.id) },
-                                )
-                                StitchSecondaryButton(
-                                    text = "New account",
-                                    outlined = true,
-                                    onClick = { onConnectApp(request.agentId, app.service, request.id) },
-                                )
-                            } else {
-                                StitchPrimaryButton(
-                                    text = "Connect",
-                                    icon = Icons.Default.Link,
-                                    onClick = { onConnectApp(request.agentId, app.service, request.id) },
-                                )
-                            }
-                            StitchSecondaryButton(
-                                text = "Use existing",
-                                outlined = true,
-                                onClick = { onManageApps(request.agentId) },
+                            Icon(
+                                imageVector = Icons.Default.MoreHoriz,
+                                contentDescription = "Message actions",
+                                tint = s.onSurfaceVariant,
+                                modifier = Modifier.size(16.dp),
                             )
-                            TextButton(onClick = { onAction("dismiss", null) }) {
-                                Text("Skip", color = s.onSurfaceVariant, style = MaterialTheme.typography.labelMedium)
-                            }
+                        }
+                        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Copy") },
+                                leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                                onClick = {
+                                    menuOpen = false
+                                    onCopyMessage(msg.text)
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Open full view") },
+                                leadingIcon = { Icon(Icons.Default.OpenInFull, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                                onClick = {
+                                    menuOpen = false
+                                    onOpenFullView(msg)
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text(if (isReferenced) "Remove reference" else "Reference") },
+                                leadingIcon = { Icon(Icons.Default.FormatQuote, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                                onClick = {
+                                    menuOpen = false
+                                    onReferenceMessage(msg)
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Delete", color = s.error) },
+                                leadingIcon = { Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = s.error, modifier = Modifier.size(16.dp)) },
+                                onClick = {
+                                    menuOpen = false
+                                    onDeleteMessage(msg)
+                                },
+                            )
                         }
                     }
-                }
-            }
-        }
-        return
-    }
-
-    // 2. INLINE SECURE CREDENTIAL CARD (API key / Bearer connection request)
-    if (request.kind == "credential") {
-        val cred = request.credential
-        val settled = request.status != "open" && request.status != "pending"
-        var label by remember(request.id) { mutableStateOf(cred?.label ?: cred?.providerHint?.replaceFirstChar { it.uppercase() } ?: request.title.ifBlank { "API Connection" }) }
-        var baseUrl by remember(request.id) { mutableStateOf(cred?.baseUrl ?: "https://") }
-        var token by remember(request.id) { mutableStateOf("") }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.Top,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            StitchCharacterAvatar(
-                label = agentName,
-                accentHex = teammate?.avatar?.color,
-                shapeName = teammate?.avatar?.shape,
-                size = 26.dp,
-            )
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 18.dp))
-                    .background(s.surfaceContainerLowest)
-                    .border(1.dp, s.outlineVariant, RoundedCornerShape(topStart = 4.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 18.dp))
-                    .padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Icon(Icons.Default.Key, contentDescription = null, tint = s.primary, modifier = Modifier.size(16.dp))
-                    Text(request.title.ifBlank { "Connect ${cred?.providerHint ?: "service"}" }, style = MaterialTheme.typography.labelLarge, color = s.onSurface)
-                }
-                if (request.detail.isNotBlank()) {
-                    Text(request.detail, style = MaterialTheme.typography.bodySmall, color = s.onSurfaceVariant)
-                }
-                if (settled) {
-                    StitchBadge(
-                        text = request.status.replaceFirstChar { it.uppercase() },
-                        tone = if (request.status == "provided" || request.status == "accepted") BadgeTone.SUCCESS else BadgeTone.NEUTRAL,
-                    )
-                } else {
-                    StitchInputField(value = label, onValueChange = { label = it }, label = "Connection label")
-                    StitchInputField(value = baseUrl, onValueChange = { baseUrl = it }, label = "Base URL", mono = true)
-                    StitchInputField(
-                        value = token,
-                        onValueChange = { token = it },
-                        label = "API Key / Token",
-                        placeholder = "Stored securely — never saved in chat",
-                        mono = true,
-                        visualTransformation = PasswordVisualTransformation(),
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        StitchPrimaryButton(
-                            text = "Save & Connect",
-                            enabled = token.isNotBlank() && baseUrl.startsWith("http"),
-                            onClick = {
-                                onSubmitCredential(
-                                    request.id,
-                                    label,
-                                    cred?.providerHint?.ifBlank { "custom" } ?: "custom",
-                                    baseUrl,
-                                    token,
-                                    cred?.validationPath ?: "/",
-                                )
-                            },
-                            modifier = Modifier.weight(1f),
-                        )
-                        StitchSecondaryButton(
-                            text = "Dismiss",
-                            outlined = true,
-                            onClick = { onAction("dismiss", null) },
+                    if (isReferenced) {
+                        Text(
+                            text = "Referenced",
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                            color = userBubbleColor,
                         )
                     }
-                }
-            }
-        }
-        return
-    }
-
-    // 3. PERMISSION / RECOMMENDATION / QUESTION INLINE CARD
-    var answer by remember { mutableStateOf("") }
-    StitchCard(
-        modifier = Modifier.fillMaxWidth(),
-        containerColor = s.surfaceContainerLow,
-    ) {
-        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.weight(1f)) {
-                    Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = s.tertiary, modifier = Modifier.size(16.dp))
-                    Text(request.title.ifBlank { "Approval gate • ${request.kind}" }, style = MaterialTheme.typography.labelMedium, color = s.onSurface)
-                }
-                Text(
-                    text = "Dismiss",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = s.onSurfaceVariant,
-                    modifier = Modifier.clickable { onAction("dismiss", null) },
-                )
-            }
-            if (request.detail.isNotBlank()) {
-                Text(request.detail, style = MaterialTheme.typography.bodySmall, color = s.onSurfaceVariant)
-            }
-            if (request.options.isNotEmpty()) {
-                Row(
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    request.options.forEach { opt ->
-                        StitchThreadPill(label = opt, selected = opt == request.recommended) { onAction("answer", opt) }
-                    }
-                }
-            }
-            when (request.kind) {
-                "permission" -> {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        StitchPrimaryButton(text = "Approve", onClick = { onAction("approve", null) }, modifier = Modifier.weight(1f))
-                        StitchSecondaryButton(text = "Deny", onClick = { onAction("deny", null) }, outlined = true, modifier = Modifier.weight(1f))
-                    }
-                }
-                "recommendation" -> {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        StitchPrimaryButton(text = "Accept", onClick = { onAction("accept", null) }, modifier = Modifier.weight(1f))
-                        StitchSecondaryButton(text = "Dismiss", onClick = { onAction("dismiss", null) }, outlined = true, modifier = Modifier.weight(1f))
-                    }
-                }
-                else -> {
-                    StitchInputField(value = answer, onValueChange = { answer = it }, label = "Reply", placeholder = "Type answer")
-                    StitchPrimaryButton(
-                        text = "Send",
-                        onClick = { onAction("answer", answer) },
-                        enabled = answer.isNotBlank(),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
                 }
             }
         }
@@ -2264,6 +2561,7 @@ private fun CreateConversationDialog(
                             label = ag.name,
                             accentHex = ag.avatar.color,
                             shapeName = ag.avatar.shape,
+                            imageUrl = ag.avatar.imageUrl,
                             size = 30.dp,
                         )
                         Text(ag.name, color = s.onSurface, style = MaterialTheme.typography.bodyMedium)
@@ -2288,21 +2586,68 @@ private fun CreateConversationDialog(
 private fun SaveTeammateDialog(
     initial: Teammate?,
     onDismiss: () -> Unit,
-    onSave: (String?, String, String, String, String, String, Boolean, Boolean, Boolean) -> Unit,
+    onSave: (
+        id: String?,
+        name: String,
+        tagline: String,
+        prompt: String,
+        color: String,
+        shape: String,
+        allowShell: Boolean,
+        allowWrites: Boolean,
+        chief: Boolean,
+        pendingAvatarDataUrl: String?,
+        removeAvatar: Boolean,
+    ) -> Unit,
 ) {
     val s = LocalStitchPalette.current
+    val context = LocalContext.current
     val initialSpec = remember(initial) {
         resolveOfficialCharacter(initial?.avatar?.shape, initial?.avatar?.color, initial?.name.orEmpty())
+    }
+    val initialColor = remember(initial, initialSpec) {
+        resolveCharacterColorHex(initial?.avatar?.shape, initial?.avatar?.color, initial?.name.orEmpty())
     }
     var name by remember { mutableStateOf(initial?.name.orEmpty()) }
     var tagline by remember { mutableStateOf(initial?.tagline.orEmpty()) }
     var prompt by remember { mutableStateOf(initial?.systemPrompt.orEmpty()) }
     var selectedShape by remember { mutableStateOf(initialSpec.shape) }
+    var selectedColor by remember { mutableStateOf(initialColor) }
+    var customColorPicked by remember(initial) {
+        mutableStateOf(
+            initial != null && !initialColor.equals(initialSpec.accentHex, ignoreCase = true),
+        )
+    }
+    var pendingAvatarDataUrl by remember(initial) { mutableStateOf<String?>(null) }
+    var removeAvatar by remember(initial) { mutableStateOf(false) }
     var allowShell by remember { mutableStateOf(initial?.allowShell ?: false) }
     var allowWrites by remember { mutableStateOf(initial?.allowWrites ?: false) }
     var chief by remember { mutableStateOf(initial?.chiefOfStaff ?: false) }
 
     val selectedSpec = OFFICIAL_AI_CHARACTERS.firstOrNull { it.shape == selectedShape } ?: OFFICIAL_AI_CHARACTERS.first()
+    val effectivePreviewImageUrl = if (removeAvatar) null else (pendingAvatarDataUrl ?: initial?.avatar?.imageUrl)
+
+    val avatarPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent(),
+    ) { uri ->
+        if (uri != null) {
+            runCatching {
+                val cr = context.contentResolver
+                val rawMime = cr.getType(uri)?.lowercase().orEmpty()
+                val mime = when {
+                    rawMime.contains("png") -> "image/png"
+                    rawMime.contains("webp") -> "image/webp"
+                    else -> "image/jpeg"
+                }
+                val bytes = cr.openInputStream(uri)?.use { it.readBytes() } ?: return@runCatching
+                if (bytes.size <= 4 * 1024 * 1024) {
+                    val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                    pendingAvatarDataUrl = "data:$mime;base64,$b64"
+                    removeAvatar = false
+                }
+            }
+        }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -2313,6 +2658,91 @@ private fun SaveTeammateDialog(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                // Live Avatar Preview + Custom Photo Upload / Remove controls
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(s.surfaceContainerLow)
+                        .border(1.dp, s.outlineVariant, RoundedCornerShape(14.dp))
+                        .padding(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    StitchCharacterAvatar(
+                        label = name.ifBlank { selectedSpec.displayName },
+                        accentHex = selectedColor,
+                        shapeName = selectedShape,
+                        imageUrl = effectivePreviewImageUrl,
+                        size = 56.dp,
+                        floating = true,
+                    )
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = if (effectivePreviewImageUrl != null) "Custom photo" else selectedSpec.displayName,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = s.onSurface,
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            StitchSecondaryButton(
+                                text = if (effectivePreviewImageUrl != null) "Change" else "Upload photo",
+                                icon = Icons.Default.PhotoCamera,
+                                outlined = true,
+                                onClick = { avatarPicker.launch("image/*") },
+                            )
+                            if (effectivePreviewImageUrl != null) {
+                                TextButton(
+                                    onClick = {
+                                        pendingAvatarDataUrl = null
+                                        removeAvatar = true
+                                    },
+                                ) { Text("Use plush", color = s.onSurfaceVariant, style = MaterialTheme.typography.labelSmall) }
+                            }
+                        }
+                    }
+                }
+
+                // 10-color palette swatches matching Web CW_CHARACTER_PALETTE
+                Text("Character & chat color", style = MaterialTheme.typography.labelMedium, color = s.onSurfaceVariant)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OFFICIAL_COLOR_PALETTE.forEach { (colorName, hex) ->
+                        val active = selectedColor.equals(hex, ignoreCase = true)
+                        val swatchColor = parseHexColor(hex)
+                        val swatchInk = contrastInkFor(swatchColor)
+                        Box(
+                            modifier = Modifier
+                                .size(30.dp)
+                                .clip(CircleShape)
+                                .background(swatchColor)
+                                .border(
+                                    width = if (active) 2.5.dp else 1.dp,
+                                    color = if (active) s.onSurface else s.outlineVariant,
+                                    shape = CircleShape,
+                                )
+                                .clickable {
+                                    selectedColor = hex
+                                    customColorPicked = true
+                                },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            if (active) {
+                                Icon(
+                                    imageVector = Icons.Default.Check,
+                                    contentDescription = colorName,
+                                    tint = swatchInk,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+
                 Text("AI Character", style = MaterialTheme.typography.labelMedium, color = s.onSurfaceVariant)
                 Row(
                     modifier = Modifier
@@ -2330,15 +2760,18 @@ private fun SaveTeammateDialog(
                                 .background(if (active) s.surfaceContainer else Color.Transparent)
                                 .border(
                                     width = if (active) 1.5.dp else 1.dp,
-                                    color = if (active) s.primary else s.outlineVariant,
+                                    color = if (active) parseHexColor(selectedColor, s.primary) else s.outlineVariant,
                                     shape = RoundedCornerShape(14.dp),
                                 )
-                                .clickable { selectedShape = spec.shape }
+                                .clickable {
+                                    selectedShape = spec.shape
+                                    if (!customColorPicked) selectedColor = spec.accentHex
+                                }
                                 .padding(horizontal = 8.dp, vertical = 6.dp),
                         ) {
                             StitchCharacterAvatar(
                                 label = spec.displayName,
-                                accentHex = spec.accentHex,
+                                accentHex = if (active) selectedColor else spec.accentHex,
                                 shapeName = spec.shape,
                                 size = 40.dp,
                                 floating = active,
@@ -2376,11 +2809,13 @@ private fun SaveTeammateDialog(
                         name,
                         tagline,
                         prompt,
-                        selectedSpec.accentHex,
+                        selectedColor,
                         selectedSpec.shape,
                         allowShell,
                         allowWrites,
                         chief,
+                        pendingAvatarDataUrl,
+                        removeAvatar,
                     )
                 },
                 enabled = name.isNotBlank() && prompt.isNotBlank(),

@@ -1,5 +1,7 @@
 
 (function () {
+  var p = (window.location && window.location.pathname || '').replace(/\/+$/, '') || '/';
+  if (p === '/inbox') return;
   var canvas = document.getElementById('mascotCanvas');
   if (!canvas) return;
   var mode = 'walk';

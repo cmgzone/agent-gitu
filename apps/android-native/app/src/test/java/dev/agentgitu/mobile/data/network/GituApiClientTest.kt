@@ -224,4 +224,90 @@ class GituApiClientTest {
         val r6 = server.takeRequest()
         assertEquals("/api/inbox/rooms/r1/notes/n2/share", r6.path)
     }
+
+    @Test
+    fun coworkMessageMutationsRequestDeleteAndComputerHandoffEndpointsMatchServer() = runTest {
+        server.enqueue(MockResponse().setResponseCode(202).setBody("""{"ok":true,"queued":false}"""))
+        server.enqueue(MockResponse().setResponseCode(202).setBody("""{"ok":true,"queued":false}"""))
+        server.enqueue(MockResponse().setResponseCode(202).setBody("""{"ok":true,"queued":false}"""))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"ok":true}"""))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"ok":true}"""))
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"computer":{"agentId":"ag_1","name":"gitu-cowork-abc","state":"running","control":"shared","workspace":"/workspace","useHostComputer":false}}""",
+            ),
+        )
+        server.enqueue(
+            MockResponse().setResponseCode(202).setBody(
+                """{"computer":{"agentId":"ag_1","name":"gitu-cowork-abc","state":"running","control":"user","handoff":{"reason":"You have control."},"workspace":"/workspace","useHostComputer":false}}""",
+            ),
+        )
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"ok":true}"""))
+
+        val baseUrl = server.url("").toString().trimEnd('/')
+        val client = GituApiClient(baseUrl)
+
+        client.sendTeamMessage("conv_1", "msg_2", "Follow up", referencedMessageIds = listOf("msg_1"))
+        client.editTeamMessage("conv_1", "msg_2", "Follow up edited", revision = 0)
+        client.retryTeamMessage("conv_1", "msg_2", attempt = 1)
+        client.deleteTeamMessage("conv_1", "msg_2")
+        client.deleteTeamRequest("req_77")
+
+        val comp = client.getAgentComputer("ag_1").computer
+        assertTrue(comp.isRunning)
+        assertEquals("shared", comp.control)
+
+        val handoffComp = client.agentComputerAction("ag_1", "take-control").computer
+        assertTrue(handoffComp.isUserControl)
+        assertEquals("You have control.", handoffComp.handoff?.reason)
+
+        client.agentComputerInput(
+            "ag_1",
+            buildJsonObject {
+                put("action", "launch")
+                put("app", "browser")
+            },
+        )
+
+        assertEquals("$baseUrl/api/cowork/agents/ag_1/computer/view", client.agentComputerViewUrl("ag_1"))
+        assertEquals("$baseUrl/api/cowork/agents/ag_1/computer/view?preview=1", client.agentComputerViewUrl("ag_1", preview = true))
+        assertEquals("$baseUrl/api/server-browser/ag_1/view", client.serverBrowserViewUrl("ag_1"))
+
+        val sendReq = server.takeRequest()
+        assertEquals("POST", sendReq.method)
+        assertTrue(sendReq.body.readUtf8().contains(""""referencedMessageIds":["msg_1"]"""))
+
+        val editReq = server.takeRequest()
+        assertEquals("PATCH", editReq.method)
+        assertEquals("/api/cowork/conversations/conv_1/messages/msg_2", editReq.path)
+        val editBody = editReq.body.readUtf8()
+        assertTrue(editBody.contains("Follow up edited"))
+        assertTrue(editBody.contains(""""revision":0"""))
+
+        val retryReq = server.takeRequest()
+        assertEquals("POST", retryReq.method)
+        assertEquals("/api/cowork/conversations/conv_1/messages/msg_2/retry", retryReq.path)
+        assertTrue(retryReq.body.readUtf8().contains(""""attempt":1"""))
+
+        val delMsgReq = server.takeRequest()
+        assertEquals("DELETE", delMsgReq.method)
+        assertEquals("/api/cowork/conversations/conv_1/messages/msg_2", delMsgReq.path)
+
+        val delCardReq = server.takeRequest()
+        assertEquals("DELETE", delCardReq.method)
+        assertEquals("/api/cowork/requests/req_77", delCardReq.path)
+
+        val getCompReq = server.takeRequest()
+        assertEquals("GET", getCompReq.method)
+        assertEquals("/api/cowork/agents/ag_1/computer", getCompReq.path)
+
+        val handoffReq = server.takeRequest()
+        assertEquals("POST", handoffReq.method)
+        assertEquals("/api/cowork/agents/ag_1/computer", handoffReq.path)
+        assertTrue(handoffReq.body.readUtf8().contains(""""action":"take-control""""))
+
+        val launchReq = server.takeRequest()
+        assertEquals("POST", launchReq.method)
+        assertTrue(launchReq.body.readUtf8().contains(""""app":"browser""""))
+    }
 }

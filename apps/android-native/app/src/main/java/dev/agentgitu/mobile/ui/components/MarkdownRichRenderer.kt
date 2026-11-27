@@ -66,6 +66,7 @@ fun RichChatMessageContent(
     mentionNames: List<String> = emptyList(),
     onSendAction: ((String) -> Unit)? = null,
     onOpenRun: ((String) -> Unit)? = null,
+    fillWidth: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val s = LocalStitchPalette.current
@@ -86,8 +87,12 @@ fun RichChatMessageContent(
         return
     }
 
+    val needsFullWidth = fillWidth || blocks.any { block ->
+        block !is ChatBlock.ParagraphBlock && block !is ChatBlock.HeadingBlock
+    }
+
     Column(
-        modifier = modifier.fillMaxWidth(),
+        modifier = if (needsFullWidth) modifier.fillMaxWidth() else modifier.wrapContentWidth(),
         verticalArrangement = Arrangement.spacedBy(7.dp),
     ) {
         blocks.forEach { block ->

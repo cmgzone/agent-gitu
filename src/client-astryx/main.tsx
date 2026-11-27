@@ -502,10 +502,18 @@ function StandaloneInboxApp() {
 }
 
 function mountAstryxRoot() {
-  const isStandaloneInbox = window.location.pathname === '/inbox';
+  const normalizedPath = window.location.pathname.replace(/\/+$/, '') || '/';
+  const isStandaloneInbox = normalizedPath === '/inbox';
   if (isStandaloneInbox) {
+    const existingRoot = document.getElementById('gituAstryxRoot');
+    if (existingRoot && document.body.children.length <= 2) {
+      createRoot(existingRoot).render(<StandaloneInboxApp />);
+      return;
+    }
     document.body.innerHTML = '';
     const host = document.createElement('div');
+    host.style.width = '100%';
+    host.style.height = '100%';
     document.body.appendChild(host);
     createRoot(host).render(<StandaloneInboxApp />);
     return;

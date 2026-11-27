@@ -17,6 +17,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -26,6 +29,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -71,12 +76,14 @@ private sealed interface CodingChatItem {
  * FLOATING frosted workspace pill & circular action buttons, collapsible reasoning
  * & tool activity pills, inline approval/plan/question gates, and FLOATING bottom composer.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AgentScreen(
     state: AppUiState,
     vm: GituAppViewModel,
 ) {
     val s = LocalStitchPalette.current
+    val clipboard = LocalClipboardManager.current
     var sidebarOpen by remember { mutableStateOf(false) }
     var codingMode by remember { mutableStateOf("agent") } // "agent" | "chat"
     var effort by remember { mutableStateOf("high") }
@@ -87,6 +94,7 @@ fun AgentScreen(
     var showCreateProjectDialog by remember { mutableStateOf(false) }
     var showTagFolderDialog by remember { mutableStateOf(false) }
     var showModelPicker by remember { mutableStateOf(false) }
+    var fullViewBubbleText by remember { mutableStateOf<Pair<String, String>?>(null) }
 
     // Isolate sessions & active run strictly to the currently selected project!
     val projectRuns = remember(state.runs, state.selectedProjectPath) {
@@ -104,6 +112,7 @@ fun AgentScreen(
     val coderName = codingTeammate?.name ?: "Forge"
     val coderShape = codingTeammate?.avatar?.shape ?: "dot-hexa"
     val coderColor = codingTeammate?.avatar?.color ?: "#3fd68f"
+    val coderImageUrl = codingTeammate?.avatar?.imageUrl
 
     val reasoningText = remember(activeRun?.runId, state.activeRunEvents) {
         if (activeRun == null) "" else GituAppViewModel.extractReasoningText(state.activeRunEvents)
@@ -130,44 +139,55 @@ fun AgentScreen(
         }
     }
 
+    val pullState = rememberPullToRefreshState()
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(s.surface),
     ) {
-        // 1. FULL-BLEED SCROLLABLE CODING CHAT STREAM
-        LazyColumn(
-            state = listState,
+        // 1. FULL-BLEED SCROLLABLE CODING CHAT STREAM WITH PULL-TO-REFRESH
+        PullToRefreshBox(
+            isRefreshing = state.isRefreshing,
+            onRefresh = { vm.pullRefreshCoding() },
+            state = pullState,
+            indicator = {
+                PullToRefreshDefaults.Indicator(
+                    state = pullState,
+                    isRefreshing = state.isRefreshing,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 122.dp),
+                )
+            },
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(
-                top = 130.dp,
-                bottom = 108.dp,
-                start = 12.dp,
-                end = 12.dp,
-            ),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            if (state.offlineMode) {
-                item(key = "offline_banner") {
-                    StitchBanner("Offline — showing cached coding session.", isError = true)
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(
+                    top = 130.dp,
+                    bottom = 108.dp,
+                    start = 12.dp,
+                    end = 12.dp,
+                ),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                if (state.offlineMode) {
+                    item(key = "offline_banner") {
+                        StitchBanner("Offline — showing cached coding session.", isError = true)
+                    }
                 }
-            }
 
-            if (activeRun == null) {
-                // Clean Cowork-style welcome bubble from the Coding character
-                item(key = "welcome_chat") {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.Top,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        StitchCharacterAvatar(
-                            label = coderName,
-                            accentHex = coderColor,
-                            shapeName = coderShape,
-                            size = 26.dp,
-                        )
-                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (activeRun == null) {
+                    // Clean Cowork-style full-width welcome bubble (no side avatar — floating avatar is centered above)
+                    item(key = "welcome_chat") {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .animateItem(),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -182,10 +202,10 @@ fun AgentScreen(
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 18.dp))
+                                    .clip(RoundedCornerShape(topStart = 6.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 18.dp))
                                     .background(s.surfaceContainerLowest)
-                                    .border(1.dp, s.outlineVariant, RoundedCornerShape(topStart = 4.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 18.dp))
-                                    .padding(horizontal = 12.dp, vertical = 9.dp),
+                                    .border(1.dp, s.outlineVariant, RoundedCornerShape(topStart = 6.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 18.dp))
+                                    .padding(horizontal = 13.dp, vertical = 10.dp),
                                 verticalArrangement = Arrangement.spacedBy(4.dp),
                             ) {
                                 Text(
@@ -196,70 +216,117 @@ fun AgentScreen(
                             }
                         }
                     }
-                }
-            } else {
-                // Conversational bubbles (User goals/follow-ups & Agent replies/report)
-                items(parsedStream.chatItems, key = { it.key }) { item ->
-                    when (item) {
-                        is CodingChatItem.UserBubble -> {
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                } else {
+                    // Conversational bubbles (User goals/follow-ups & Agent replies/report)
+                    items(parsedStream.chatItems, key = { it.key }) { item ->
+                        when (item) {
+                            is CodingChatItem.UserBubble -> {
+                                var menuOpen by remember(item.key) { mutableStateOf(false) }
                                 Column(
                                     modifier = Modifier
-                                        .widthIn(max = 290.dp)
-                                        .clip(RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 4.dp))
-                                        .background(s.primary)
-                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                        .fillMaxWidth()
+                                        .animateItem(),
+                                    horizontalAlignment = Alignment.End,
                                     verticalArrangement = Arrangement.spacedBy(2.dp),
                                 ) {
-                                    RichChatMessageContent(rawText = item.text, baseColor = s.onPrimary)
-                                    if (item.time.isNotBlank()) {
-                                        Text(
-                                            text = item.time,
-                                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, lineHeight = 12.sp),
-                                            color = s.onPrimary.copy(alpha = 0.72f),
-                                            modifier = Modifier.align(Alignment.End),
+                                    Column(
+                                        modifier = Modifier
+                                            .widthIn(min = 52.dp, max = 280.dp)
+                                            .clip(RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 4.dp))
+                                            .background(s.primary)
+                                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                                    ) {
+                                        RichChatMessageContent(
+                                            rawText = item.text,
+                                            baseColor = s.onPrimary,
+                                            fillWidth = false,
                                         )
+                                        if (item.time.isNotBlank()) {
+                                            Text(
+                                                text = item.time,
+                                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, lineHeight = 12.sp),
+                                                color = s.onPrimary.copy(alpha = 0.72f),
+                                                modifier = Modifier.align(Alignment.End),
+                                            )
+                                        }
+                                    }
+                                    // ... action menu BELOW user bubble
+                                    Box {
+                                        Row(
+                                            modifier = Modifier
+                                                .clip(CircleShape)
+                                                .clickable { menuOpen = true }
+                                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.MoreHoriz,
+                                                contentDescription = "Message actions",
+                                                tint = s.onSurfaceVariant,
+                                                modifier = Modifier.size(16.dp),
+                                            )
+                                        }
+                                        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                                            DropdownMenuItem(
+                                                text = { Text("Copy") },
+                                                leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                                                onClick = {
+                                                    menuOpen = false
+                                                    clipboard.setText(AnnotatedString(item.text))
+                                                },
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("Quote in composer") },
+                                                leadingIcon = { Icon(Icons.Default.FormatQuote, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                                                onClick = {
+                                                    menuOpen = false
+                                                    val snippet = item.text.trim().take(120)
+                                                    composer = if (composer.isBlank()) "> $snippet\n\n" else "$composer\n> $snippet\n"
+                                                },
+                                            )
+                                        }
                                     }
                                 }
                             }
-                        }
 
-                        is CodingChatItem.SystemPill -> {
-                            val cleanSys = remember(item.text) { ChatMessageFilter.filterVisibleReply(item.text) }
-                            if (cleanSys.isNotBlank()) {
-                                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                            is CodingChatItem.SystemPill -> {
+                                val cleanSys = remember(item.text) { ChatMessageFilter.filterVisibleReply(item.text) }
+                                if (cleanSys.isNotBlank()) {
                                     Box(
                                         modifier = Modifier
-                                            .clip(RoundedCornerShape(12.dp))
-                                            .background(s.surfaceContainerLow)
-                                            .border(1.dp, s.outlineVariant, RoundedCornerShape(12.dp))
-                                            .padding(horizontal = 10.dp, vertical = 4.dp),
+                                            .fillMaxWidth()
+                                            .animateItem(),
+                                        contentAlignment = Alignment.Center,
                                     ) {
-                                        MarkdownTextContent(
-                                            text = cleanSys.take(200),
-                                            baseColor = s.onSurfaceVariant,
-                                            fontSizeSp = 11.5f,
-                                            lineHeightSp = 15f,
-                                            onOpenRun = { runId -> vm.openRun(runId) },
-                                        )
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(12.dp))
+                                                .background(s.surfaceContainerLow)
+                                                .border(1.dp, s.outlineVariant, RoundedCornerShape(12.dp))
+                                                .padding(horizontal = 10.dp, vertical = 4.dp),
+                                        ) {
+                                            MarkdownTextContent(
+                                                text = cleanSys.take(200),
+                                                baseColor = s.onSurfaceVariant,
+                                                fontSizeSp = 11.5f,
+                                                lineHeightSp = 15f,
+                                                onOpenRun = { runId -> vm.openRun(runId) },
+                                            )
+                                        }
                                     }
                                 }
                             }
-                        }
 
-                        is CodingChatItem.AgentBubble -> {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.Top,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            ) {
-                                StitchCharacterAvatar(
-                                    label = coderName,
-                                    accentHex = coderColor,
-                                    shapeName = coderShape,
-                                    size = 26.dp,
-                                )
-                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            is CodingChatItem.AgentBubble -> {
+                                var menuOpen by remember(item.key) { mutableStateOf(false) }
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .animateItem(),
+                                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                                ) {
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
                                         verticalAlignment = Alignment.CenterVertically,
@@ -288,10 +355,10 @@ fun AgentScreen(
                                     Column(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 18.dp))
+                                            .clip(RoundedCornerShape(topStart = 6.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 18.dp))
                                             .background(s.surfaceContainerLowest)
-                                            .border(1.dp, s.outlineVariant, RoundedCornerShape(topStart = 4.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 18.dp))
-                                            .padding(horizontal = 12.dp, vertical = 9.dp),
+                                            .border(1.dp, s.outlineVariant, RoundedCornerShape(topStart = 6.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 18.dp))
+                                            .padding(horizontal = 13.dp, vertical = 10.dp),
                                         verticalArrangement = Arrangement.spacedBy(8.dp),
                                     ) {
                                         RichChatMessageContent(
@@ -405,292 +472,588 @@ fun AgentScreen(
                                             }
                                         }
                                     }
-                                }
-                            }
-                        }
-                    }
-                }
 
-                // Compact Expandable Reasoning & Tool Activity Pills (keeps chat clean like Cowork)
-                if (reasoningText.isNotBlank() || parsedStream.activityEvents.isNotEmpty()) {
-                    item(key = "activity_pills") {
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .horizontalScroll(rememberScrollState()),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                if (reasoningText.isNotBlank()) {
-                                    Row(
-                                        modifier = Modifier
-                                            .clip(CircleShape)
-                                            .background(s.surfaceContainerLow)
-                                            .border(1.dp, s.outlineVariant, CircleShape)
-                                            .clickable { showReasoning = !showReasoning }
-                                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                    ) {
-                                        Icon(Icons.Default.Psychology, contentDescription = null, tint = s.primary, modifier = Modifier.size(14.dp))
-                                        Text("Reasoned • ${reasoningText.length} chars", style = MaterialTheme.typography.labelSmall, color = s.onSurfaceVariant)
-                                        Icon(
-                                            if (showReasoning) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                            contentDescription = null,
-                                            tint = s.onSurfaceVariant,
-                                            modifier = Modifier.size(14.dp),
-                                        )
-                                    }
-                                }
-
-                                if (parsedStream.activityEvents.isNotEmpty()) {
-                                    Row(
-                                        modifier = Modifier
-                                            .clip(CircleShape)
-                                            .background(s.surfaceContainerLow)
-                                            .border(1.dp, s.outlineVariant, CircleShape)
-                                            .clickable { showActivity = !showActivity }
-                                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                    ) {
-                                        Icon(Icons.Default.Terminal, contentDescription = null, tint = s.primary, modifier = Modifier.size(14.dp))
-                                        Text("Steps • ${parsedStream.activityEvents.size}", style = MaterialTheme.typography.labelSmall, color = s.onSurfaceVariant)
-                                        Icon(
-                                            if (showActivity) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                            contentDescription = null,
-                                            tint = s.onSurfaceVariant,
-                                            modifier = Modifier.size(14.dp),
-                                        )
-                                    }
-                                }
-
-                                if (state.activeCheckpoints.isNotEmpty() || activeRun.status == "completed") {
-                                    Row(
-                                        modifier = Modifier
-                                            .clip(CircleShape)
-                                            .background(s.surfaceContainerLow)
-                                            .border(1.dp, s.outlineVariant, CircleShape)
-                                            .clickable {
-                                                vm.loadCheckpoints(activeRun.runId)
-                                                showCheckpoints = true
-                                            }
-                                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                    ) {
-                                        Icon(Icons.Default.History, contentDescription = null, tint = s.onSurfaceVariant, modifier = Modifier.size(14.dp))
-                                        Text("Checkpoints (${state.activeCheckpoints.size})", style = MaterialTheme.typography.labelSmall, color = s.onSurfaceVariant)
-                                    }
-                                }
-                            }
-
-                            if (showReasoning && reasoningText.isNotBlank()) {
-                                StitchCard(modifier = Modifier.fillMaxWidth(), containerColor = s.surfaceContainerLow) {
-                                    Text(
-                                        text = reasoningText,
-                                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                                        color = s.onSurfaceVariant,
-                                        modifier = Modifier.padding(12.dp),
-                                    )
-                                }
-                            }
-
-                            if (showActivity && parsedStream.activityEvents.isNotEmpty()) {
-                                StitchCard(modifier = Modifier.fillMaxWidth(), containerColor = s.surfaceContainerLow) {
-                                    Column(
-                                        modifier = Modifier.padding(12.dp),
-                                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                                    ) {
-                                        parsedStream.activityEvents.takeLast(40).forEach { ev ->
-                                            Row(
-                                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                                verticalAlignment = Alignment.Top,
-                                            ) {
-                                                Text(
-                                                    text = ev.t.ifBlank { "step" },
-                                                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                                                    color = s.primary,
-                                                    maxLines = 1,
-                                                )
-                                                Text(
-                                                    text = ev.text.take(220),
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = s.onSurfaceVariant,
-                                                    modifier = Modifier.weight(1f),
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Inline Pending Approvals (same clean gate feel as Cowork)
-                if (activeRun.pendingApprovals.isNotEmpty()) {
-                    items(activeRun.pendingApprovals, key = { "appr_${it.id}" }) { approval ->
-                        StitchCard(modifier = Modifier.fillMaxWidth(), containerColor = s.surfaceContainerLow) {
-                            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = s.tertiary, modifier = Modifier.size(18.dp))
-                                    Text("Approval gate • ${approval.tool}", style = MaterialTheme.typography.labelMedium, color = s.onSurface)
-                                }
-                                if (approval.summary.isNotBlank()) Text(approval.summary, style = MaterialTheme.typography.bodySmall, color = s.onSurface)
-                                if (approval.why.isNotBlank()) Text(approval.why, style = MaterialTheme.typography.bodySmall, color = s.onSurfaceVariant)
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    StitchPrimaryButton(text = "Approve", onClick = { vm.resolveApproval(approval.id, true) }, modifier = Modifier.weight(1f))
-                                    StitchSecondaryButton(text = "Deny", onClick = { vm.resolveApproval(approval.id, false) }, danger = true, modifier = Modifier.weight(1f))
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Inline Pending Plan Review
-                activeRun.pendingPlanReview?.let { review ->
-                    item(key = "plan_${review.id}") {
-                        var note by remember { mutableStateOf("") }
-                        StitchCard(modifier = Modifier.fillMaxWidth(), containerColor = s.surfaceContainerLow) {
-                            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                Text("Plan review", style = MaterialTheme.typography.titleMedium, color = s.onSurface)
-                                review.criteria.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall, color = s.onSurface) }
-                                review.steps.forEachIndexed { idx, step ->
-                                    Text("${idx + 1}. ${step.description}", style = MaterialTheme.typography.bodySmall, color = s.onSurface)
-                                }
-                                StitchInputField(value = note, onValueChange = { note = it }, label = "Review note", placeholder = "Optional feedback")
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    StitchPrimaryButton(text = "Approve plan", onClick = { vm.resolvePlanReview(review.id, true, note) }, modifier = Modifier.weight(1f))
-                                    StitchSecondaryButton(text = "Revise", onClick = { vm.resolvePlanReview(review.id, false, note) }, outlined = true, modifier = Modifier.weight(1f))
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Inline Pending Clarification Questions
-                activeRun.pendingQuestions?.let { pq ->
-                    item(key = "q_${pq.id}") {
-                        var ans by remember { mutableStateOf("") }
-                        StitchCard(modifier = Modifier.fillMaxWidth(), containerColor = s.surfaceContainerLow) {
-                            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                Text("Clarification needed", style = MaterialTheme.typography.titleMedium, color = s.onSurface)
-                                pq.questions.forEach { q ->
-                                    Text(q.question, style = MaterialTheme.typography.bodyMedium, color = s.onSurface)
-                                    if (q.options.isNotEmpty()) {
-                                        Row(modifier = Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                            q.options.forEach { opt ->
-                                                StitchSecondaryButton(text = opt, onClick = { vm.submitAnswer(pq.id, opt) }, outlined = true)
-                                            }
-                                        }
-                                    }
-                                }
-                                StitchInputField(value = ans, onValueChange = { ans = it }, label = "Answer", placeholder = "Type reply")
-                                StitchPrimaryButton(text = "Submit", onClick = { vm.submitAnswer(pq.id, ans) }, enabled = ans.isNotBlank(), modifier = Modifier.fillMaxWidth())
-                            }
-                        }
-                    }
-                }
-
-                // Inline Pending Connection Card (when coding agent requests an API/app connection)
-                activeRun.pendingConnection?.let { pc ->
-                    item(key = "conn_${pc.id}") {
-                        val req = pc.requirement
-                        var label by remember(pc.id) { mutableStateOf(req?.label?.ifBlank { req.providerHint } ?: "Service Connection") }
-                        var baseUrl by remember(pc.id) { mutableStateOf(req?.baseUrl ?: "https://") }
-                        var token by remember(pc.id) { mutableStateOf("") }
-                        StitchCard(modifier = Modifier.fillMaxWidth(), containerColor = s.surfaceContainerLow) {
-                            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    Icon(Icons.Default.Link, contentDescription = null, tint = s.primary, modifier = Modifier.size(16.dp))
-                                    Text(
-                                        text = "Connect ${req?.label?.ifBlank { req.providerHint } ?: "service"}",
-                                        style = MaterialTheme.typography.labelLarge,
-                                        color = s.onSurface,
-                                    )
-                                }
-                                if (!req?.reason.isNullOrBlank()) {
-                                    Text(req!!.reason, style = MaterialTheme.typography.bodySmall, color = s.onSurfaceVariant)
-                                }
-                                StitchInputField(value = label, onValueChange = { label = it }, label = "Label")
-                                StitchInputField(value = baseUrl, onValueChange = { baseUrl = it }, label = "Base URL", mono = true)
-                                StitchInputField(
-                                    value = token,
-                                    onValueChange = { token = it },
-                                    label = "API Key / Token",
-                                    placeholder = "Stored securely — never saved in chat",
-                                    mono = true,
-                                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
-                                )
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    StitchPrimaryButton(
-                                        text = "Save & Connect",
-                                        enabled = token.isNotBlank() && baseUrl.startsWith("http"),
-                                        onClick = {
-                                            vm.saveCustomConnection(
-                                                label = label,
-                                                provider = req?.providerHint?.ifBlank { "custom" } ?: "custom",
-                                                baseUrl = baseUrl,
-                                                token = token,
-                                                validationPath = req?.validationPath ?: "/",
+                                    // ... action menu BELOW agent bubble
+                                    Box {
+                                        Row(
+                                            modifier = Modifier
+                                                .clip(CircleShape)
+                                                .clickable { menuOpen = true }
+                                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.MoreHoriz,
+                                                contentDescription = "Message actions",
+                                                tint = s.onSurfaceVariant,
+                                                modifier = Modifier.size(16.dp),
                                             )
-                                        },
-                                        modifier = Modifier.weight(1f),
-                                    )
-                                    StitchSecondaryButton(
-                                        text = "Apps",
-                                        outlined = true,
-                                        onClick = { vm.openConnections() },
+                                        }
+                                        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                                            DropdownMenuItem(
+                                                text = { Text("Copy") },
+                                                leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                                                onClick = {
+                                                    menuOpen = false
+                                                    clipboard.setText(AnnotatedString(item.text))
+                                                },
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("Open full view") },
+                                                leadingIcon = { Icon(Icons.Default.OpenInFull, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                                                onClick = {
+                                                    menuOpen = false
+                                                    fullViewBubbleText = coderName to item.text
+                                                },
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("Quote in composer") },
+                                                leadingIcon = { Icon(Icons.Default.FormatQuote, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                                                onClick = {
+                                                    menuOpen = false
+                                                    val snippet = item.text.trim().take(120)
+                                                    composer = if (composer.isBlank()) "> $snippet\n\n" else "$composer\n> $snippet\n"
+                                                },
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Compact Expandable Reasoning & Tool Activity Pills (keeps chat clean like Cowork)
+                    if (reasoningText.isNotBlank() || parsedStream.activityEvents.isNotEmpty()) {
+                        item(key = "activity_pills") {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    if (reasoningText.isNotBlank()) {
+                                        Row(
+                                            modifier = Modifier
+                                                .clip(CircleShape)
+                                                .background(s.surfaceContainerLow)
+                                                .border(1.dp, s.outlineVariant, CircleShape)
+                                                .stitchPressBounce(pressedScale = 0.94f) { showReasoning = !showReasoning }
+                                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        ) {
+                                            Icon(Icons.Default.Psychology, contentDescription = null, tint = s.primary, modifier = Modifier.size(14.dp))
+                                            Text("Reasoned • ${reasoningText.length} chars", style = MaterialTheme.typography.labelSmall, color = s.onSurfaceVariant)
+                                            Icon(
+                                                if (showReasoning) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                                contentDescription = null,
+                                                tint = s.onSurfaceVariant,
+                                                modifier = Modifier.size(14.dp),
+                                            )
+                                        }
+                                    }
+
+                                    if (parsedStream.activityEvents.isNotEmpty()) {
+                                        Row(
+                                            modifier = Modifier
+                                                .clip(CircleShape)
+                                                .background(s.surfaceContainerLow)
+                                                .border(1.dp, s.outlineVariant, CircleShape)
+                                                .stitchPressBounce(pressedScale = 0.94f) { showActivity = !showActivity }
+                                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        ) {
+                                            Icon(Icons.Default.Terminal, contentDescription = null, tint = s.primary, modifier = Modifier.size(14.dp))
+                                            Text("Steps • ${parsedStream.activityEvents.size}", style = MaterialTheme.typography.labelSmall, color = s.onSurfaceVariant)
+                                            Icon(
+                                                if (showActivity) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                                contentDescription = null,
+                                                tint = s.onSurfaceVariant,
+                                                modifier = Modifier.size(14.dp),
+                                            )
+                                        }
+                                    }
+
+                                    if (state.activeCheckpoints.isNotEmpty() || activeRun.status == "completed") {
+                                        Row(
+                                            modifier = Modifier
+                                                .clip(CircleShape)
+                                                .background(s.surfaceContainerLow)
+                                                .border(1.dp, s.outlineVariant, CircleShape)
+                                                .stitchPressBounce(pressedScale = 0.94f) {
+                                                    vm.loadCheckpoints(activeRun.runId)
+                                                    showCheckpoints = true
+                                                }
+                                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        ) {
+                                            Icon(Icons.Default.History, contentDescription = null, tint = s.onSurfaceVariant, modifier = Modifier.size(14.dp))
+                                            Text("Checkpoints (${state.activeCheckpoints.size})", style = MaterialTheme.typography.labelSmall, color = s.onSurfaceVariant)
+                                        }
+                                    }
+                                }
+
+                                if (showReasoning && reasoningText.isNotBlank()) {
+                                    StitchCard(modifier = Modifier.fillMaxWidth(), containerColor = s.surfaceContainerLow) {
+                                        Text(
+                                            text = reasoningText,
+                                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                                            color = s.onSurfaceVariant,
+                                            modifier = Modifier.padding(12.dp),
+                                        )
+                                    }
+                                }
+
+                                if (showActivity && parsedStream.activityEvents.isNotEmpty()) {
+                                    StitchCard(modifier = Modifier.fillMaxWidth(), containerColor = s.surfaceContainerLow) {
+                                        Column(
+                                            modifier = Modifier.padding(12.dp),
+                                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                                        ) {
+                                            parsedStream.activityEvents.takeLast(40).forEach { ev ->
+                                                Row(
+                                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                    verticalAlignment = Alignment.Top,
+                                                ) {
+                                                    Text(
+                                                        text = ev.t.ifBlank { "step" },
+                                                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                                                        color = s.primary,
+                                                        maxLines = 1,
+                                                    )
+                                                    Text(
+                                                        text = ev.text.take(220),
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = s.onSurfaceVariant,
+                                                        modifier = Modifier.weight(1f),
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Inline Pending Approvals (swipe right = Allow, swipe left = Deny; disappears immediately once settled)
+                    val openApprovals = activeRun.pendingApprovals.filter { it.id !in state.settledCodingGateIds }
+                    if (openApprovals.isNotEmpty()) {
+                        items(openApprovals, key = { "appr_${it.id}" }) { approval ->
+                            val pres = remember(approval) {
+                                cardActionPresentation(approval.tool, approval.why, approval.summary)
+                            }
+                            var showTechnical by remember(approval.id) { mutableStateOf(false) }
+                            val rawTechnical = remember(approval) {
+                                listOfNotNull(
+                                    approval.tool.takeIf { it.isNotBlank() }?.let { "Tool: $it" },
+                                    approval.summary.takeIf { it.isNotBlank() },
+                                ).joinToString("\n")
+                            }
+                            SwipeableRequestCard(
+                                acceptLabel = "Allow",
+                                deleteLabel = "Deny",
+                                onAccept = {
+                                    vm.resolveApproval(approval.id, true)
+                                    true
+                                },
+                                onDelete = {
+                                    vm.resolveApproval(approval.id, false)
+                                    true
+                                },
+                                modifier = Modifier.animateItem(),
+                            ) {
+                                StitchCard(modifier = Modifier.fillMaxWidth(), containerColor = s.surfaceContainerLow) {
+                                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = s.tertiary, modifier = Modifier.size(16.dp))
+                                                Text("Approval", style = MaterialTheme.typography.labelMedium, color = s.tertiary)
+                                            }
+                                            StitchBadge(text = "Swipe to decide", tone = BadgeTone.WARNING)
+                                        }
+                                        Text(pres.title, style = MaterialTheme.typography.titleSmall, color = s.onSurface)
+                                        if (pres.detail.isNotBlank()) {
+                                            Text(pres.detail, style = MaterialTheme.typography.bodySmall, color = s.onSurfaceVariant)
+                                        }
+                                        if (rawTechnical.isNotBlank()) {
+                                            Row(
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(8.dp))
+                                                    .clickable { showTechnical = !showTechnical }
+                                                    .padding(vertical = 2.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                            ) {
+                                                Icon(
+                                                    if (showTechnical) Icons.Default.ExpandLess else Icons.Default.ChevronRight,
+                                                    contentDescription = null,
+                                                    tint = s.onSurfaceVariant,
+                                                    modifier = Modifier.size(15.dp),
+                                                )
+                                                Text("Technical details", style = MaterialTheme.typography.labelSmall, color = s.onSurfaceVariant)
+                                            }
+                                            if (showTechnical) {
+                                                Text(
+                                                    text = rawTechnical,
+                                                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace, fontSize = 11.sp),
+                                                    color = s.onSurfaceVariant,
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .clip(RoundedCornerShape(10.dp))
+                                                        .background(s.surfaceContainer)
+                                                        .padding(10.dp),
+                                                )
+                                            }
+                                        }
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            StitchPrimaryButton(text = "Allow", onClick = { vm.resolveApproval(approval.id, true) }, modifier = Modifier.weight(1f))
+                                            StitchSecondaryButton(text = "Deny", onClick = { vm.resolveApproval(approval.id, false) }, danger = true, modifier = Modifier.weight(1f))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Inline Pending Plan Review (swipe right = Approve, swipe left = Revise; disappears once settled)
+                    activeRun.pendingPlanReview?.takeIf { it.id !in state.settledCodingGateIds }?.let { review ->
+                        item(key = "plan_${review.id}") {
+                            var note by remember { mutableStateOf("") }
+                            SwipeableRequestCard(
+                                acceptLabel = "Approve",
+                                deleteLabel = "Revise",
+                                onAccept = {
+                                    vm.resolvePlanReview(review.id, true, note)
+                                    true
+                                },
+                                onDelete = {
+                                    vm.resolvePlanReview(review.id, false, note)
+                                    true
+                                },
+                                modifier = Modifier.animateItem(),
+                            ) {
+                                StitchCard(modifier = Modifier.fillMaxWidth(), containerColor = s.surfaceContainerLow) {
+                                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Text("Plan review", style = MaterialTheme.typography.titleMedium, color = s.onSurface)
+                                            StitchBadge(text = "Needs plan review", tone = BadgeTone.WARNING)
+                                        }
+                                        review.criteria.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall, color = s.onSurface) }
+                                        review.steps.forEachIndexed { idx, step ->
+                                            Text("${idx + 1}. ${step.description}", style = MaterialTheme.typography.bodySmall, color = s.onSurface)
+                                        }
+                                        StitchInputField(value = note, onValueChange = { note = it }, label = "Review note (optional)", placeholder = "Optional feedback")
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            StitchPrimaryButton(text = "Approve plan", onClick = { vm.resolvePlanReview(review.id, true, note) }, modifier = Modifier.weight(1f))
+                                            StitchSecondaryButton(text = "Revise", onClick = { vm.resolvePlanReview(review.id, false, note) }, outlined = true, modifier = Modifier.weight(1f))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Inline Pending Clarification Questions (disappears once answered)
+                    activeRun.pendingQuestions?.takeIf { it.id !in state.settledCodingGateIds }?.let { pq ->
+                        item(key = "q_${pq.id}") {
+                            var selectedOpt by remember(pq.id) { mutableStateOf("") }
+                            var ans by remember(pq.id) { mutableStateOf("") }
+                            val hasOptions = pq.questions.any { it.options.isNotEmpty() }
+                            var customOpen by remember(pq.id) { mutableStateOf(!hasOptions) }
+                            StitchCard(modifier = Modifier.fillMaxWidth().animateItem(), containerColor = s.surfaceContainerLow) {
+                                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            Icon(Icons.Default.HelpOutline, contentDescription = null, tint = s.primary, modifier = Modifier.size(16.dp))
+                                            Text("Question", style = MaterialTheme.typography.labelMedium, color = s.primary)
+                                        }
+                                        StitchBadge(text = "Needs your answer", tone = BadgeTone.PRIMARY)
+                                    }
+                                    pq.questions.forEach { q ->
+                                        val (cleanQ, _) = remember(q.question) { cardQuestionDetail(q.question) }
+                                        Text(cleanQ.ifBlank { q.question }, style = MaterialTheme.typography.bodyMedium, color = s.onSurface)
+                                        if (q.options.isNotEmpty()) {
+                                            @OptIn(ExperimentalLayoutApi::class)
+                                            FlowRow(
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                                            ) {
+                                                q.options.forEach { opt ->
+                                                    val isSel = selectedOpt == opt
+                                                    Surface(
+                                                        shape = RoundedCornerShape(10.dp),
+                                                        color = if (isSel) s.primary.copy(alpha = 0.14f) else s.surfaceContainerLowest,
+                                                        border = BorderStroke(1.dp, if (isSel) s.primary else s.outlineVariant),
+                                                        modifier = Modifier.stitchPressBounce(pressedScale = 0.95f) {
+                                                            selectedOpt = if (isSel) "" else opt
+                                                        },
+                                                    ) {
+                                                        Row(
+                                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                                            verticalAlignment = Alignment.CenterVertically,
+                                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                        ) {
+                                                            if (isSel) {
+                                                                Icon(Icons.Default.Check, contentDescription = null, tint = s.primary, modifier = Modifier.size(14.dp))
+                                                            }
+                                                            Text(opt, style = MaterialTheme.typography.labelMedium, color = s.onSurface)
+                                                        }
+                                                    }
+                                                }
+                                                Surface(
+                                                    shape = RoundedCornerShape(10.dp),
+                                                    color = if (customOpen) s.primary.copy(alpha = 0.10f) else Color.Transparent,
+                                                    border = BorderStroke(1.dp, if (customOpen) s.primary else s.outlineVariant),
+                                                    modifier = Modifier.stitchPressBounce(pressedScale = 0.95f) { customOpen = !customOpen },
+                                                ) {
+                                                    Text(
+                                                        text = "Custom answer",
+                                                        style = MaterialTheme.typography.labelMedium,
+                                                        color = if (customOpen) s.onSurface else s.onSurfaceVariant,
+                                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if (customOpen || !hasOptions) {
+                                        StitchInputField(
+                                            value = ans,
+                                            onValueChange = { ans = it },
+                                            label = if (hasOptions) "Custom answer" else "Your answer",
+                                            placeholder = "Write your answer…",
+                                            singleLine = false,
+                                            maxLines = 4,
+                                        )
+                                    }
+                                    val finalAnswer = buildString {
+                                        if (selectedOpt.isNotBlank()) append(selectedOpt.trim())
+                                        if (ans.isNotBlank()) {
+                                            if (isNotEmpty()) append("\n")
+                                            append(ans.trim())
+                                        }
+                                    }
+                                    StitchPrimaryButton(
+                                        text = "Send answer",
+                                        onClick = { vm.submitAnswer(pq.id, finalAnswer) },
+                                        enabled = finalAnswer.isNotBlank(),
+                                        modifier = Modifier.fillMaxWidth(),
                                     )
                                 }
                             }
                         }
                     }
-                }
 
-                // Live Working Indicator (rich animated plush character + active tool/app scanner)
-                if (activeRun.isRunning) {
-                    item(key = "working_row") {
-                        val lastEv = parsedStream.activityEvents.lastOrNull()
-                        val inferredProgress = remember(lastEv, activeRun.project, selectedProject?.name) {
-                            val rawText = lastEv?.text?.trim().orEmpty()
-                            val rawType = lastEv?.typed?.get("type")?.jsonPrimitive?.contentOrNull
-                                ?: lastEv?.t.orEmpty()
-                            val toolName = when {
-                                rawType.contains("command", ignoreCase = true) || rawType.contains("shell", ignoreCase = true) -> "run_command"
-                                rawType.contains("test", ignoreCase = true) -> "run_command"
-                                rawType.contains("edit", ignoreCase = true) || rawType.contains("file_changed", ignoreCase = true) -> "apply_edit"
-                                rawType.contains("read", ignoreCase = true) -> "read_file"
-                                rawType.contains("browse", ignoreCase = true) || rawText.contains("http", ignoreCase = true) -> "browse"
-                                else -> "gitu_task"
+                    // Inline Pending Connection Card (exact parity with Web ui-connections.ts -> POST /api/runs/:id/connection)
+                    activeRun.pendingConnection?.let { pc ->
+                        item(key = "conn_${pc.id}") {
+                            val req = pc.requirement
+                            val setup = req?.setup
+                            val isReauth = req?.requestType == "reauth" || !req?.existingConnectionId.isNullOrBlank()
+                            var label by remember(pc.id) { mutableStateOf(setup?.label ?: req?.label?.ifBlank { req.providerHint } ?: "Service Connection") }
+                            var provider by remember(pc.id) { mutableStateOf(req?.providerHint.orEmpty()) }
+                            var baseUrl by remember(pc.id) { mutableStateOf(setup?.baseUrl ?: req?.baseUrl.orEmpty()) }
+                            var docsUrl by remember(pc.id) { mutableStateOf(setup?.documentationUrl ?: req?.documentationUrl.orEmpty()) }
+                            var validationPath by remember(pc.id) { mutableStateOf(setup?.validationPath ?: req?.validationPath ?: "/") }
+                            var token by remember(pc.id) { mutableStateOf("") }
+                            var showKey by remember(pc.id) { mutableStateOf(false) }
+                            var showSettings by remember(pc.id) { mutableStateOf(baseUrl.isBlank()) }
+
+                            StitchCard(modifier = Modifier.fillMaxWidth().animateItem(), containerColor = s.surfaceContainerLow) {
+                                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        AppServiceLogo(
+                                            serviceSlug = provider.ifBlank { label },
+                                            baseUrl = baseUrl,
+                                            fallbackLabel = label,
+                                            servicesCatalog = state.connectedApps.services,
+                                            size = 36.dp,
+                                        )
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = if (isReauth) "Update access to $label" else "Connect $label to continue",
+                                                style = MaterialTheme.typography.titleSmall,
+                                                color = s.onSurface,
+                                            )
+                                            Text(
+                                                text = "Secure connection for this task",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = s.onSurfaceVariant,
+                                            )
+                                        }
+                                    }
+                                    val desc = req?.description?.takeIf { it.isNotBlank() } ?: req?.reason.orEmpty()
+                                    if (desc.isNotBlank()) {
+                                        Text(desc, style = MaterialTheme.typography.bodySmall, color = s.onSurfaceVariant)
+                                    }
+                                    if (!req?.requiredFor.isNullOrBlank()) {
+                                        Text("Needed for: ${req!!.requiredFor}", style = MaterialTheme.typography.labelSmall, color = s.primary)
+                                    }
+                                    StitchInputField(
+                                        value = token,
+                                        onValueChange = { token = it },
+                                        label = "API key or access token",
+                                        placeholder = "Paste your key here",
+                                        mono = true,
+                                        visualTransformation = if (showKey) androidx.compose.ui.text.input.VisualTransformation.None else androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                                        trailingIcon = {
+                                            IconButton(onClick = { showKey = !showKey }) {
+                                                Icon(
+                                                    imageVector = if (showKey) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                                    contentDescription = if (showKey) "Hide key" else "Show key",
+                                                    tint = s.onSurfaceVariant,
+                                                )
+                                            }
+                                        },
+                                    )
+                                    Text(
+                                        text = "Saved securely on this device. Never sent to the model or task history.",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp),
+                                        color = s.onSurfaceVariant,
+                                    )
+                                    Row(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .clickable { showSettings = !showSettings }
+                                            .padding(vertical = 2.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    ) {
+                                        Icon(
+                                            if (showSettings) Icons.Default.ExpandLess else Icons.Default.ChevronRight,
+                                            contentDescription = null,
+                                            tint = s.onSurfaceVariant,
+                                            modifier = Modifier.size(16.dp),
+                                        )
+                                        Text("Review connection settings", style = MaterialTheme.typography.labelSmall, color = s.onSurfaceVariant)
+                                    }
+                                    if (showSettings) {
+                                        StitchInputField(value = label, onValueChange = { label = it }, label = "Connection name")
+                                        StitchInputField(value = provider, onValueChange = { provider = it }, label = "Provider", mono = true)
+                                        StitchInputField(value = baseUrl, onValueChange = { baseUrl = it }, label = "API address", placeholder = "https://api.example.com", mono = true)
+                                        StitchInputField(value = docsUrl, onValueChange = { docsUrl = it }, label = "API documentation (optional)", mono = true)
+                                        StitchInputField(value = validationPath, onValueChange = { validationPath = it }, label = "Connection test path", mono = true)
+                                    }
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        StitchPrimaryButton(
+                                            text = if (isReauth) "Save key & continue" else "Connect & continue",
+                                            enabled = token.isNotBlank() && (isReauth || baseUrl.startsWith("http")),
+                                            onClick = {
+                                                vm.submitRunConnection(
+                                                    runId = activeRun.runId,
+                                                    label = label,
+                                                    provider = provider.ifBlank { "custom" },
+                                                    baseUrl = baseUrl,
+                                                    documentationUrl = docsUrl.takeIf { it.isNotBlank() },
+                                                    validationPath = validationPath.ifBlank { "/" },
+                                                    capabilities = req?.capabilities.orEmpty(),
+                                                    token = token,
+                                                    existingConnectionId = req?.existingConnectionId,
+                                                )
+                                                token = ""
+                                            },
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                        StitchSecondaryButton(
+                                            text = "Connections",
+                                            outlined = true,
+                                            onClick = { vm.openConnections() },
+                                        )
+                                    }
+                                }
                             }
-                            TeamProgress(
+                        }
+                    }
+
+                    // Live Working Indicator (rich animated plush character + active tool/app scanner)
+                    if (activeRun.isRunning) {
+                        item(key = "working_row") {
+                            val lastEv = parsedStream.activityEvents.lastOrNull()
+                            val inferredProgress = remember(lastEv, activeRun.project, selectedProject?.name) {
+                                val rawText = lastEv?.text?.trim().orEmpty()
+                                val rawType = lastEv?.typed?.get("type")?.jsonPrimitive?.contentOrNull
+                                    ?: lastEv?.t.orEmpty()
+                                val toolName = when {
+                                    rawType.contains("command", ignoreCase = true) || rawType.contains("shell", ignoreCase = true) -> "run_command"
+                                    rawType.contains("test", ignoreCase = true) -> "run_command"
+                                    rawType.contains("edit", ignoreCase = true) || rawType.contains("file_changed", ignoreCase = true) -> "apply_edit"
+                                    rawType.contains("read", ignoreCase = true) -> "read_file"
+                                    rawType.contains("browse", ignoreCase = true) || rawText.contains("http", ignoreCase = true) -> "browse"
+                                    else -> "gitu_task"
+                                }
+                                TeamProgress(
+                                    agentName = coderName,
+                                    text = rawText.ifBlank { "Working in ${activeRun.project ?: selectedProject?.name ?: "workspace"}…" },
+                                    detail = rawText.take(100),
+                                    tool = toolName,
+                                    phase = "working",
+                                )
+                            }
+                            RichWorkingIndicator(
                                 agentName = coderName,
-                                text = rawText.ifBlank { "Working in ${activeRun.project ?: selectedProject?.name ?: "workspace"}…" },
-                                detail = rawText.take(100),
-                                tool = toolName,
-                                phase = "working",
+                                accentHex = coderColor,
+                                shapeName = coderShape,
+                                imageUrl = coderImageUrl,
+                                progress = inferredProgress,
+                                onClick = { showActivity = true },
                             )
                         }
-                        RichWorkingIndicator(
-                            agentName = coderName,
-                            accentHex = coderColor,
-                            shapeName = coderShape,
-                            progress = inferredProgress,
-                            onClick = { showActivity = true },
-                        )
                     }
-                }
 
-                // Error banner if run failed
-                activeRun.error?.takeIf { it.isNotBlank() }?.let { err ->
-                    item(key = "run_error") {
-                        StitchBanner(text = err, isError = true)
+                    // Error banner if run failed
+                    activeRun.error?.takeIf { it.isNotBlank() }?.let { err ->
+                        item(key = "run_error") {
+                            StitchBanner(text = err, isError = true)
+                        }
                     }
                 }
             }
+        }
+
+        // Full-view message reader dialog (from ... -> Open full view)
+        fullViewBubbleText?.let { (author, body) ->
+            AlertDialog(
+                onDismissRequest = { fullViewBubbleText = null },
+                containerColor = s.surfaceContainerLowest,
+                title = { Text(author, color = s.onSurface) },
+                text = {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState()),
+                    ) {
+                        RichChatMessageContent(rawText = body, baseColor = s.onSurface)
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            clipboard.setText(AnnotatedString(body))
+                            fullViewBubbleText = null
+                        },
+                    ) { Text("Copy", color = s.primary) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { fullViewBubbleText = null }) { Text("Close", color = s.onSurfaceVariant) }
+                },
+            )
         }
 
         // 2. FLOATING TOP OVERLAY: Compact Scrim + Floating AI Character + Floating Action Buttons
@@ -739,6 +1102,7 @@ fun AgentScreen(
                         label = coderName,
                         accentHex = coderColor,
                         shapeName = coderShape,
+                        imageUrl = coderImageUrl,
                         size = 44.dp,
                         floating = true,
                         working = activeRun?.isRunning == true,
@@ -1095,6 +1459,7 @@ fun AgentScreen(
                                 label = coderName,
                                 accentHex = coderColor,
                                 shapeName = coderShape,
+                                imageUrl = coderImageUrl,
                                 size = 38.dp,
                             )
                             Text("Coding workspace", style = MaterialTheme.typography.headlineSmall, color = s.onSurface)

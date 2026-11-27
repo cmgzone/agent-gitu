@@ -151,7 +151,7 @@ import type { ModelContextAttachment } from '../context/model-context.js';
 import type { CompletionReport, ProjectIdentity, ProjectLock, RiskTier, ToolResult } from '../types.js';
 import { nowIso, sha256, shortId } from '../util.js';
 import { createProject, ensureGituHome, gituHomeRoot, isDriveRoot, listProjects, loadWorkspaceSettings, projectsDir, sanitizeCustomProviders, setWorkspaceFileLimit, updateWorkspaceSettings, workspaceFileLimit } from '../workspace/home.js';
-import { UI_HTML } from './ui.js';
+import { INBOX_HTML, UI_HTML } from './ui.js';
 import { credentialChatInput } from './credential-chat.js';
 import { coworkActivityView } from './cowork-activity.js';
 import { BRAND_DIR, BRAND_FILES, CHARACTERS_DIR, CHARACTER_FILES, FONT_FILES, FONTS_DIR, VENDOR_THREE, VENDOR_THREE_CORE, isPreviewableMime, isTextLikeFile, mimeForFile, safeFileName } from './static-assets.js';
@@ -2359,9 +2359,49 @@ export class GituServer {
   }
 
   private requestOriginUrl(req: http.IncomingMessage): string {
-    const proto = req.headers['x-forwarded-proto'] === 'https' || this.appAuth.secure(req) ? 'https' : 'http';
+    const configured =
+      process.env['AGENT_GITU_PUBLIC_URL'] ||
+      process.env['AGENT_GITU_PUBLIC_ORIGIN'] ||
+      this.googleSignIn.publicOrigin;
+    if (configured) {
+      try {
+        const parsed = new URL(configured);
+        if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+          return parsed.origin;
+        }
+      } catch {
+        /* fall back to incoming request headers */
+      }
+    }
+    const forwardedProto = String(req.headers['x-forwarded-proto'] ?? '')
+      .split(',')[0]
+      ?.trim()
+      .toLowerCase();
+    const proto = forwardedProto === 'https' || this.appAuth.secure(req) ? 'https' : 'http';
     const host = String(req.headers['x-forwarded-host'] || req.headers['host'] || 'localhost').split(',')[0]!.trim();
     return `${proto}://${host}`;
+  }
+
+  private renderInboxStatusPage(opts: {
+    title: string;
+    heading: string;
+    message: string;
+    primaryHref?: string;
+    primaryLabel?: string;
+    secondaryHref?: string;
+    secondaryLabel?: string;
+  }): string {
+    const esc = (v: string): string =>
+      v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const primary =
+      opts.primaryHref && opts.primaryLabel
+        ? `<a class="btn primary" href="${esc(opts.primaryHref)}">${esc(opts.primaryLabel)}</a>`
+        : '';
+    const secondary =
+      opts.secondaryHref && opts.secondaryLabel
+        ? `<a class="btn" href="${esc(opts.secondaryHref)}">${esc(opts.secondaryLabel)}</a>`
+        : '';
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(opts.title)}</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:#111112;color:#f4f4f5;font:15px/1.55 system-ui,-apple-system,sans-serif}.card{max-width:440px;width:100%;background:#18181b;border:1px solid #27272a;border-radius:18px;padding:28px;box-sizing:border-box}h1{margin:0 0 10px;font-size:20px;font-weight:650}p{margin:0 0 20px;color:#a1a1aa}.actions{display:flex;gap:10px;flex-wrap:wrap}.btn{display:inline-flex;align-items:center;justify-content:center;padding:10px 16px;border-radius:999px;text-decoration:none;font-weight:500;font-size:14px;border:1px solid #3f3f46;color:#f4f4f5}.btn.primary{background:#f4f4f5;color:#111112;border-color:#f4f4f5}</style></head><body><main class="card"><h1>${esc(opts.heading)}</h1><p>${esc(opts.message)}</p><div class="actions">${primary}${secondary}</div></main></body></html>`;
   }
 
   /**
@@ -2377,7 +2417,8 @@ export class GituServer {
     path: string,
     method: string,
   ): Promise<boolean> {
-    if (path !== '/inbox' && path !== '/inbox/join' && !path.startsWith('/api/inbox')) {
+    const normalizedPath = path.length > 1 ? path.replace(/\/+$/, '') : path;
+    if (normalizedPath !== '/inbox' && normalizedPath !== '/inbox/join' && !path.startsWith('/api/inbox')) {
       return false;
     }
 
@@ -2385,34 +2426,105 @@ export class GituServer {
     const isOwner = !this.appAuth.enabled || this.appAuth.authenticated(req);
     const member = store.authenticateRequest(req);
     const origin = this.requestOriginUrl(req);
+    const pikpamBase = resolvePikpamApiBase();
     const workspaceName = this.appAuth.account?.name
       ? `${this.appAuth.account.name}'s Workspace`
       : 'Agent Gitu Workspace';
 
     // 1. Join via short-lived signed Pikpam handoff ticket
-    if (path === '/inbox/join' && method === 'GET') {
+    if (normalizedPath === '/inbox/join' && method === 'GET') {
       const ticket = (url.searchParams.get('ticket') ?? '').trim();
       if (!ticket) {
+        if (member || isOwner) {
+          res.writeHead(302, { location: '/inbox', 'cache-control': 'no-store' });
+          res.end();
+          return true;
+        }
         res.writeHead(400, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-        res.end('<!doctype html><meta charset="utf-8"><title>Inbox Invite</title><p>Missing Pikpam invitation ticket.</p>');
+        res.end(
+          this.renderInboxStatusPage({
+            title: 'Inbox Invite',
+            heading: 'Invitation link is incomplete',
+            message: 'This invite URL is missing its Pikpam sign-in ticket. Open the original Pikpam invite link again to join.',
+            primaryHref: pikpamBase,
+            primaryLabel: 'Open Pikpam',
+          }),
+        );
         return true;
       }
       const verified = await verifyPikpamWorkspaceTicket(ticket, origin);
       if (!verified.ok) {
+        // One-time tickets fail if the user refreshes or double-clicks /inbox/join after
+        // their session cookie was already issued. Let active sessions proceed smoothly.
+        if (member) {
+          res.writeHead(302, { location: '/inbox', 'cache-control': 'no-store' });
+          res.end();
+          return true;
+        }
         res.writeHead(401, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-        res.end(`<!doctype html><meta charset="utf-8"><title>Inbox Invite</title><p>${verified.error}</p>`);
+        res.end(
+          this.renderInboxStatusPage({
+            title: 'Inbox Invite',
+            heading: 'Could not verify invite link',
+            message: verified.error || 'This invitation ticket expired or has already been used. Open your Pikpam invite link again to sign in.',
+            primaryHref: pikpamBase,
+            primaryLabel: 'Return to Pikpam',
+          }),
+        );
         return true;
       }
       const invite = verified.inviteId ? store.getInvite(verified.inviteId) : undefined;
+      const existingMember = store.getMemberByPikpamId(verified.userId);
       if (invite?.revokedAt) {
         res.writeHead(403, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-        res.end('<!doctype html><meta charset="utf-8"><title>Inbox Invite</title><p>This invite link was revoked by the workspace owner.</p>');
+        res.end(
+          this.renderInboxStatusPage({
+            title: 'Inbox Invite Revoked',
+            heading: 'Invite link revoked',
+            message: 'This invite link was revoked by the workspace owner. Ask them for a fresh invite link.',
+            primaryHref: pikpamBase,
+            primaryLabel: 'Return to Pikpam',
+          }),
+        );
         return true;
       }
-      const existingMember = store.getMemberByPikpamId(verified.userId);
+      if (invite?.expiresAt && Date.parse(invite.expiresAt) <= Date.now() && existingMember?.status !== 'active') {
+        res.writeHead(410, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(
+          this.renderInboxStatusPage({
+            title: 'Inbox Invite Expired',
+            heading: 'Invite link expired',
+            message: 'This invite link has expired. Ask the workspace owner to send you a new invite link.',
+            primaryHref: pikpamBase,
+            primaryLabel: 'Return to Pikpam',
+          }),
+        );
+        return true;
+      }
+      if (invite && invite.usedCount >= invite.maxUses && existingMember?.status !== 'active') {
+        res.writeHead(410, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(
+          this.renderInboxStatusPage({
+            title: 'Inbox Invite Used',
+            heading: 'Invite link already used',
+            message: 'This invite link has reached its maximum number of uses. Ask the workspace owner for a new invite link.',
+            primaryHref: pikpamBase,
+            primaryLabel: 'Return to Pikpam',
+          }),
+        );
+        return true;
+      }
       if (existingMember?.status === 'revoked' && !invite) {
         res.writeHead(403, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-        res.end('<!doctype html><meta charset="utf-8"><title>Inbox Access</title><p>Your access to this workspace was revoked by the owner.</p>');
+        res.end(
+          this.renderInboxStatusPage({
+            title: 'Inbox Access Revoked',
+            heading: 'Access revoked',
+            message: 'Your access to this workspace Inbox was revoked by the owner.',
+            primaryHref: pikpamBase,
+            primaryLabel: 'Return to Pikpam',
+          }),
+        );
         return true;
       }
       const joined = store.upsertMemberFromPikpam({
@@ -2427,17 +2539,18 @@ export class GituServer {
         } : {}),
       });
       if (invite) {
-        store.markInviteUsed(invite.id);
-        if (invite.roomId) {
-          store.ensureMemberInRoom(invite.roomId, joined.id);
-        } else {
+        if (!existingMember || existingMember.status === 'revoked' || (invite.roomId && !store.getRoom(invite.roomId)?.memberIds.includes(joined.id))) {
+          store.markInviteUsed(invite.id);
+        }
+        const addedToRoom = invite.roomId ? store.ensureMemberInRoom(invite.roomId, joined.id) : undefined;
+        if (!addedToRoom && store.listRooms(joined.id).length === 0) {
           store.ensureDmRoomForMember(joined, invite.defaultAgentIds);
         }
       } else if (store.listRooms(joined.id).length === 0) {
         store.ensureDmRoomForMember(joined, joined.allowedAgentIds);
       }
       const session = store.createSession(joined.id);
-      const secureFlag = this.appAuth.secure(req) ? '; Secure' : '';
+      const secureFlag = this.appAuth.secure(req) || origin.startsWith('https://') ? '; Secure' : '';
       appendSetCookie(
         res,
         `${INBOX_MEMBER_COOKIE}=${session.token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${30 * 24 * 60 * 60}${secureFlag}`,
@@ -2449,10 +2562,27 @@ export class GituServer {
     }
 
     // 2. Standalone /inbox shell (accessible to both Owner and Invited Members)
-    if (path === '/inbox' && method === 'GET') {
-      if (!isOwner && !member) {
-        res.writeHead(302, { location: '/auth', 'cache-control': 'no-store' });
+    // Uses INBOX_HTML (no legacy owner boot scripts) so invited members never trigger
+    // owner-only /api/* calls or get redirected to /auth.
+    if (normalizedPath === '/inbox' && method === 'GET') {
+      if (path !== '/inbox') {
+        res.writeHead(302, { location: '/inbox', 'cache-control': 'no-store' });
         res.end();
+        return true;
+      }
+      if (!isOwner && !member) {
+        res.writeHead(401, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(
+          this.renderInboxStatusPage({
+            title: 'Agent Gitu · Inbox',
+            heading: 'Sign in to open Collaborative Inbox',
+            message: 'If you were invited to this workspace, open the Pikpam invite link shared with you. Workspace owners can sign in directly below.',
+            primaryHref: '/auth',
+            primaryLabel: 'Workspace owner sign in',
+            secondaryHref: pikpamBase,
+            secondaryLabel: 'Open Pikpam',
+          }),
+        );
         return true;
       }
       res.writeHead(200, {
@@ -2461,7 +2591,7 @@ export class GituServer {
         'x-frame-options': 'DENY',
         'content-security-policy': "frame-ancestors 'none'",
       });
-      res.end(UI_HTML);
+      res.end(INBOX_HTML);
       return true;
     }
 
@@ -2495,7 +2625,8 @@ export class GituServer {
     if (path === '/api/inbox/logout' && method === 'POST') {
       if (!this.isSameOrigin(req)) { this.sendJson(res, 403, { error: 'cross-origin request rejected' }); return true; }
       store.destroySession(req);
-      appendSetCookie(res, `${INBOX_MEMBER_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
+      const secureFlag = this.appAuth.secure(req) || origin.startsWith('https://') ? '; Secure' : '';
+      appendSetCookie(res, `${INBOX_MEMBER_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secureFlag}`);
       this.sendJson(res, 200, { ok: true });
       return true;
     }
@@ -2531,12 +2662,53 @@ export class GituServer {
       return true;
     }
 
+    // Agent custom avatar for Inbox (visible to owner and to members who can see that agent)
+    const inboxAvatarMatch = path.match(/^\/api\/inbox\/agents\/([\w-]+)\/avatar$/);
+    if (inboxAvatarMatch && (method === 'GET' || method === 'HEAD')) {
+      const targetAgentId = inboxAvatarMatch[1]!;
+      if (!isOwner) {
+        const memberRooms = store.listRooms(member!.id);
+        const visibleAgentIds = new Set<string>([
+          ...member!.allowedAgentIds,
+          ...memberRooms.flatMap((r) => r.activeAgentIds),
+        ]);
+        if (!visibleAgentIds.has(targetAgentId)) {
+          this.sendJson(res, 403, { error: 'Agent avatar not accessible.' });
+          return true;
+        }
+      }
+      const avatarFile = this.cowork().agentAvatarFile(targetAgentId);
+      if (!avatarFile) {
+        this.sendJson(res, 404, { error: 'Avatar not found.' });
+        return true;
+      }
+      try {
+        const buf = readFileSync(avatarFile.filePath);
+        res.writeHead(200, {
+          'content-type': avatarFile.mime,
+          'content-length': String(buf.byteLength),
+          'cache-control': 'private, max-age=3600',
+          'x-content-type-options': 'nosniff',
+          'content-security-policy': "default-src 'none'",
+        });
+        res.end(method === 'HEAD' ? undefined : buf);
+      } catch {
+        this.sendJson(res, 404, { error: 'Avatar not found.' });
+      }
+      return true;
+    }
+
     // Full Inbox state (strictly filtered for members)
     if (path === '/api/inbox/state' && method === 'GET') {
       const allAgents = this.cowork().listAgents().map((a) => ({
         id: a.id,
         name: a.name,
-        avatar: a.avatar,
+        avatar: !isOwner && a.avatar?.imageUrl
+          ? {
+              ...a.avatar,
+              imageUrl: a.avatar.imageUrl.replace('/api/cowork/agents/', '/api/inbox/agents/'),
+            }
+          : a.avatar,
         tagline: a.tagline,
       }));
       if (isOwner) {
@@ -6905,6 +7077,85 @@ export class GituServer {
       return false;
     }
 
+    const agentAvatarMatch = path.match(/^\/api\/cowork\/agents\/([\w-]+)\/avatar$/);
+    if (agentAvatarMatch) {
+      const agentId = agentAvatarMatch[1]!;
+      if (method === 'GET' || method === 'HEAD') {
+        const avatarFile = store.agentAvatarFile(agentId);
+        if (!avatarFile) {
+          this.sendJson(res, 404, { error: 'Avatar not found.' });
+          return true;
+        }
+        try {
+          const buf = readFileSync(avatarFile.filePath);
+          res.writeHead(200, {
+            'content-type': avatarFile.mime,
+            'content-length': String(buf.byteLength),
+            'cache-control': 'private, max-age=3600',
+            'x-content-type-options': 'nosniff',
+            'content-security-policy': "default-src 'none'",
+          });
+          res.end(method === 'HEAD' ? undefined : buf);
+        } catch {
+          this.sendJson(res, 404, { error: 'Avatar not found.' });
+        }
+        return true;
+      }
+      if (method === 'POST') {
+        const target = store.getAgent(agentId);
+        if (!target) {
+          this.sendJson(res, 404, { error: 'Agent not found.' });
+          return true;
+        }
+        try {
+          const maxAvatarBytes = 4 * 1024 * 1024;
+          const body = await this.readBody(req, Math.ceil(maxAvatarBytes * 1.45) + 16_384);
+          const dataUrl = typeof body['dataUrl'] === 'string' ? body['dataUrl'].trim() : '';
+          const match = /^data:image\/(?:png|jpeg|jpg|webp);base64,([A-Za-z0-9+/=\s]+)$/i.exec(dataUrl);
+          if (!match) {
+            this.sendJson(res, 400, { error: 'Upload a PNG, JPEG, or WebP image (max 4 MB).' });
+            return true;
+          }
+          const rawBytes = Buffer.from(match[1]!.replace(/\s+/g, ''), 'base64');
+          if (rawBytes.byteLength === 0 || rawBytes.byteLength > maxAvatarBytes) {
+            this.sendJson(res, 400, { error: 'Avatar image must be between 1 byte and 4 MB.' });
+            return true;
+          }
+          const mime: 'image/png' | 'image/jpeg' | 'image/webp' | null =
+            rawBytes.byteLength >= 8 &&
+            rawBytes[0] === 0x89 && rawBytes[1] === 0x50 && rawBytes[2] === 0x4e && rawBytes[3] === 0x47 &&
+            rawBytes[4] === 0x0d && rawBytes[5] === 0x0a && rawBytes[6] === 0x1a && rawBytes[7] === 0x0a
+              ? 'image/png'
+              : rawBytes.byteLength >= 3 && rawBytes[0] === 0xff && rawBytes[1] === 0xd8 && rawBytes[2] === 0xff
+                ? 'image/jpeg'
+                : rawBytes.byteLength >= 12 &&
+                    rawBytes.subarray(0, 4).toString('ascii') === 'RIFF' &&
+                    rawBytes.subarray(8, 12).toString('ascii') === 'WEBP'
+                  ? 'image/webp'
+                  : null;
+          if (!mime) {
+            this.sendJson(res, 400, { error: 'Invalid image file. Only PNG, JPEG, and WebP images are supported.' });
+            return true;
+          }
+          const updated = store.saveAgentAvatar(agentId, rawBytes, mime);
+          this.sendJson(res, 200, { ok: true, agent: updated, imageUrl: updated.avatar.imageUrl });
+        } catch (err) {
+          this.sendJson(res, 400, { error: (err as Error).message || 'Could not upload avatar.' });
+        }
+        return true;
+      }
+      if (method === 'DELETE') {
+        const updated = store.deleteAgentAvatar(agentId);
+        if (!updated) {
+          this.sendJson(res, 404, { error: 'Agent not found.' });
+          return true;
+        }
+        this.sendJson(res, 200, { ok: true, agent: updated });
+        return true;
+      }
+      return false;
+    }
+
     const agentMatch = path.match(/^\/api\/cowork\/agents\/([\w-]+)$/);
     if (agentMatch && method === 'DELETE') {
       const target = store.getAgent(agentMatch[1]!);
@@ -8134,15 +8385,34 @@ export class GituServer {
    * Host header alone is useless under DNS rebinding, where an attacker
    * controls BOTH (evil.com resolves to 127.0.0.1).
    */
+  private configuredPublicOrigins(): URL[] {
+    const raw = [
+      process.env['AGENT_GITU_PUBLIC_URL'],
+      process.env['AGENT_GITU_PUBLIC_ORIGIN'],
+      this.googleSignIn.publicOrigin,
+    ];
+    const parsed: URL[] = [];
+    for (const value of raw) {
+      if (!value) continue;
+      try {
+        const url = new URL(value);
+        if (url.protocol === 'https:' || url.protocol === 'http:') {
+          parsed.push(url);
+        }
+      } catch {
+        /* Ignore an invalid configured origin. */
+      }
+    }
+    return parsed;
+  }
+
   private isTrustedHost(host: string): boolean {
     let name: string;
     try { name = new URL(`http://${host}`).hostname.replace(/^\[|\]$/g, '').toLowerCase(); }
     catch { return false; }
     if (!name) return false;
-    const publicOrigin = process.env['AGENT_GITU_PUBLIC_ORIGIN'] || this.googleSignIn.publicOrigin;
-    if (publicOrigin) {
-      try { const allowed = new URL(publicOrigin); if (allowed.protocol === 'https:' && allowed.host === host) return true; }
-      catch { /* Ignore an invalid configured origin. */ }
+    for (const allowed of this.configuredPublicOrigins()) {
+      if (allowed.protocol === 'https:' && allowed.host === host) return true;
     }
     if (name === 'localhost' || name.endsWith('.localhost')) return true;
     if (name === '::1') return true; // brackets were stripped above, so '[::1]' can never occur again
@@ -8165,7 +8435,15 @@ export class GituServer {
     if (typeof origin !== 'string' || origin === '' || origin === 'null') return false;
     try {
       const parsed = new URL(origin);
-      return parsed.protocol === (this.appAuth.secure(req) ? 'https:' : 'http:') && parsed.host === host && this.isTrustedHost(parsed.host);
+      if (parsed.protocol === (this.appAuth.secure(req) ? 'https:' : 'http:') && parsed.host === host && this.isTrustedHost(parsed.host)) {
+        return true;
+      }
+      // Behind a TLS-terminating cloud proxy (e.g. Docker/Kubernetes ingress),
+      // the Node socket sees plain HTTP while the browser sends the configured
+      // HTTPS public origin. Allow exact matches against configured public URLs.
+      return this.configuredPublicOrigins().some(
+        (allowed) => allowed.protocol === 'https:' && allowed.origin === parsed.origin,
+      );
     } catch {
       return false;
     }
@@ -8991,6 +9269,46 @@ export class GituServer {
       }
       return;
     }
+    // Public repository-bundled UI assets (strictly allowlisted static files,
+    // no workspace data). Served before owner auth so invited guests on /inbox
+    // and visitors on /auth load fonts, plush avatars, and the brand mark cleanly.
+    if ((method === 'GET' || method === 'HEAD') && path.startsWith('/fonts/')) {
+      const fontName = path.slice('/fonts/'.length);
+      const contentType = Object.hasOwn(FONT_FILES, fontName) ? FONT_FILES[fontName] : undefined;
+      const fontPath = contentType ? nodePath.join(FONTS_DIR, fontName) : undefined;
+      if (!contentType || !fontPath || !existsSync(fontPath)) {
+        this.sendJson(res, 404, { error: 'font not found' });
+        return;
+      }
+      res.writeHead(200, { 'content-type': contentType, 'cache-control': 'public, max-age=31536000, immutable', 'x-content-type-options': 'nosniff' });
+      if (method === 'HEAD') res.end(); else this.pipeFile(res, fontPath);
+      return;
+    }
+    if ((method === 'GET' || method === 'HEAD') && path.startsWith('/characters/')) {
+      const assetName = path.slice('/characters/'.length);
+      const contentType = Object.hasOwn(CHARACTER_FILES, assetName) ? CHARACTER_FILES[assetName] : undefined;
+      const assetPath = contentType ? nodePath.join(CHARACTERS_DIR, assetName) : undefined;
+      if (!contentType || !assetPath || !existsSync(assetPath)) {
+        this.sendJson(res, 404, { error: 'character asset not found' });
+        return;
+      }
+      res.writeHead(200, { 'content-type': contentType, 'cache-control': 'public, max-age=86400', 'x-content-type-options': 'nosniff' });
+      if (method === 'HEAD') res.end(); else this.pipeFile(res, assetPath);
+      return;
+    }
+    if ((method === 'GET' || method === 'HEAD') && path.startsWith('/brand/')) {
+      const assetName = path.slice('/brand/'.length);
+      const contentType = Object.hasOwn(BRAND_FILES, assetName) ? BRAND_FILES[assetName] : undefined;
+      const assetPath = contentType ? nodePath.join(BRAND_DIR, assetName) : undefined;
+      if (!contentType || !assetPath || !existsSync(assetPath)) {
+        this.sendJson(res, 404, { error: 'brand asset not found' });
+        return;
+      }
+      res.writeHead(200, { 'content-type': contentType, 'cache-control': 'public, max-age=31536000, immutable', 'x-content-type-options': 'nosniff' });
+      if (method === 'HEAD') res.end(); else this.pipeFile(res, assetPath);
+      return;
+    }
+
     if (await this.handleInboxRoute(req, res, url, path, method)) return;
     if (this.appAuth.enabled && !this.appAuth.authenticated(req)) {
       if (path.startsWith('/api/')) this.sendJson(res, 401, { error: 'Unlock Agent Gitu to continue.', code: 'APP_LOCKED' });
@@ -9255,19 +9573,6 @@ export class GituServer {
       }
       res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'public, max-age=86400' });
       this.pipeFile(res, VENDOR_THREE_CORE);
-      return;
-    }
-
-    if (method === 'GET' && path.startsWith('/fonts/')) {
-      const fontName = path.slice('/fonts/'.length);
-      const contentType = FONT_FILES[fontName];
-      const fontPath = contentType ? nodePath.join(FONTS_DIR, fontName) : undefined;
-      if (!contentType || !fontPath || !existsSync(fontPath)) {
-        this.sendJson(res, 404, { error: 'font not found' });
-        return;
-      }
-      res.writeHead(200, { 'content-type': contentType, 'cache-control': 'public, max-age=31536000, immutable' });
-      this.pipeFile(res, fontPath);
       return;
     }
 
@@ -9813,38 +10118,12 @@ export class GituServer {
       return;
     }
 
-    if (method === 'GET' && path.startsWith('/characters/')) {
-      const assetName = path.slice('/characters/'.length);
-      const contentType = Object.hasOwn(CHARACTER_FILES, assetName) ? CHARACTER_FILES[assetName] : undefined;
-      const assetPath = contentType ? nodePath.join(CHARACTERS_DIR, assetName) : undefined;
-      if (!contentType || !assetPath || !existsSync(assetPath)) {
-        this.sendJson(res, 404, { error: 'character asset not found' });
-        return;
-      }
-      res.writeHead(200, { 'content-type': contentType, 'cache-control': 'private, max-age=86400', 'x-content-type-options': 'nosniff' });
-      this.pipeFile(res, assetPath);
-      return;
-    }
-
     if (method === 'GET' && path.startsWith('/api/model-icons/')) {
       const match = path.match(/^\/api\/model-icons\/(lab|provider)\/([a-z0-9][a-z0-9-]{0,63})\.svg$/);
       const image = match ? await modelIcon(match[1]!, match[2]!) : undefined;
       if (!image) { res.writeHead(404, { 'cache-control': 'private, max-age=60' }); res.end(); return; }
       res.writeHead(200, { 'content-type': 'image/svg+xml', 'cache-control': 'private, max-age=86400', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox" });
       res.end(image); return;
-    }
-
-    if (method === 'GET' && path.startsWith('/brand/')) {
-      const assetName = path.slice('/brand/'.length);
-      const contentType = BRAND_FILES[assetName];
-      const assetPath = contentType ? nodePath.join(BRAND_DIR, assetName) : undefined;
-      if (!contentType || !assetPath || !existsSync(assetPath)) {
-        this.sendJson(res, 404, { error: 'brand asset not found' });
-        return;
-      }
-      res.writeHead(200, { 'content-type': contentType, 'cache-control': 'public, max-age=31536000, immutable' });
-      this.pipeFile(res, assetPath);
-      return;
     }
 
     if (method === 'GET' && path === '/api/browser') {

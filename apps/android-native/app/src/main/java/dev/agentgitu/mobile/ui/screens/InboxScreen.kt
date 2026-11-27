@@ -15,6 +15,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -36,6 +37,7 @@ import dev.agentgitu.mobile.ui.viewmodel.GituAppViewModel
  * - Safe Sub-Agent & Code run delegation with guest approval gates
  * - Room settings (rename, project link, agents, members, visibility, delete)
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun InboxRoomDetailScreen(
     roomId: String,
@@ -320,149 +322,179 @@ fun InboxRoomDetailScreen(
             }
         },
     ) { padding ->
-        LazyColumn(
-            state = listState,
+        PullToRefreshBox(
+            isRefreshing = state.isRefreshing,
+            onRefresh = { vm.pullRefreshInboxRoom() },
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            if (state.inboxMessages.isEmpty()) {
-                item(key = "empty_room") {
-                    StitchCard(modifier = Modifier.fillMaxWidth(), containerColor = s.surfaceContainerLow) {
-                        Column(
-                            modifier = Modifier.padding(18.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            Text(
-                                text = room?.title?.ifBlank { "Shared Room" } ?: "Shared Room",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = s.onSurface,
-                            )
-                            Text(
-                                text = when {
-                                    isWatchMode -> "Watch & Note mode is active. Chat normally — your agent silently records decisions, notes, and tasks without interrupting."
-                                    activeRoomAgents.isNotEmpty() && room?.agentTriggerMode == "mention" ->
-                                        "Start chatting below, mention @${activeRoomAgents.first().name} publicly, or toggle Private to whisper secretly to your agent."
-                                    else -> "Send a message below to start collaborating in this room."
-                                },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = s.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
-            }
-
-            items(state.inboxMessages, key = { it.id }) { msg ->
-                val isPrivateMsg = msg.visibility == "owner_only"
-                val isSystem = msg.senderType == "system"
-                val isMine = if (isOwner) msg.senderType == "owner" else msg.senderType == "member"
-
-                if (isSystem) {
-                    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        StitchBadge(
-                            text = if (isPrivateMsg) "Private • ${msg.text}" else msg.text,
-                            tone = BadgeTone.NEUTRAL,
-                        )
-                    }
-                } else {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = if (isMine) Arrangement.End else Arrangement.Start,
-                    ) {
-                        Column(
-                            modifier = Modifier.widthIn(max = 310.dp),
-                            horizontalAlignment = if (isMine) Alignment.End else Alignment.Start,
-                            verticalArrangement = Arrangement.spacedBy(4.dp),
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            ) {
-                                if (isPrivateMsg) {
-                                    Icon(
-                                        Icons.Default.Lock,
-                                        contentDescription = "Private",
-                                        tint = s.primary,
-                                        modifier = Modifier.size(12.dp),
-                                    )
-                                    Text(
-                                        text = if (isMine) {
-                                            "Private whisper • hidden from guests"
-                                        } else {
-                                            "${msg.senderName} • Private reply (only you)"
-                                        },
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = s.primary,
-                                        fontWeight = FontWeight.SemiBold,
-                                    )
-                                } else {
-                                    Text(
-                                        text = "${msg.senderName} • ${msg.senderType}",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = s.onSurfaceVariant,
-                                    )
-                                }
-                            }
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(20.dp))
-                                    .background(
-                                        when {
-                                            isPrivateMsg -> s.surfaceContainerLowest
-                                            isMine -> s.primary
-                                            else -> s.surfaceContainerLowest
-                                        },
-                                    )
-                                    .border(
-                                        width = if (isPrivateMsg) 1.5.dp else 1.dp,
-                                        color = when {
-                                            isPrivateMsg -> s.primary
-                                            isMine -> s.primary
-                                            else -> s.outlineVariant
-                                        },
-                                        shape = RoundedCornerShape(20.dp),
-                                    )
-                                    .padding(horizontal = 14.dp, vertical = 10.dp),
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                if (state.inboxMessages.isEmpty()) {
+                    item(key = "empty_room") {
+                        StitchCard(modifier = Modifier.fillMaxWidth().animateItem(), containerColor = s.surfaceContainerLow) {
+                            Column(
+                                modifier = Modifier.padding(18.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
                             ) {
                                 Text(
-                                    text = msg.text,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = if (isMine && !isPrivateMsg) s.onPrimary else s.onSurface,
+                                    text = room?.title?.ifBlank { "Shared Room" } ?: "Shared Room",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = s.onSurface,
+                                )
+                                Text(
+                                    text = when {
+                                        isWatchMode -> "Watch & Note mode is active. Chat normally — your agent silently records decisions, notes, and tasks without interrupting."
+                                        activeRoomAgents.isNotEmpty() && room?.agentTriggerMode == "mention" ->
+                                            "Start chatting below, mention @${activeRoomAgents.first().name} publicly, or toggle Private to whisper secretly to your agent."
+                                        else -> "Send a message below to start collaborating in this room."
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = s.onSurfaceVariant,
                                 )
                             }
                         }
                     }
                 }
-            }
 
-            if (thinkingNames.isNotEmpty() || (isOwner && state.inboxWatching)) {
-                item(key = "live_status") {
-                    Row(
-                        modifier = Modifier
-                            .clip(CircleShape)
-                            .background(s.surfaceContainerLow)
-                            .border(1.dp, s.outlineVariant, CircleShape)
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(12.dp),
-                            strokeWidth = 2.dp,
-                            color = s.primary,
-                        )
-                        Text(
-                            text = if (thinkingNames.isNotEmpty()) {
-                                "${thinkingNames.joinToString(", ")} ${if (thinkingNames.size == 1) "is" else "are"} working…"
-                            } else {
-                                "Watching & noting silently…"
-                            },
-                            style = MaterialTheme.typography.labelSmall,
-                            color = s.onSurfaceVariant,
-                        )
+                items(state.inboxMessages, key = { it.id }) { msg ->
+                    val isPrivateMsg = msg.visibility == "owner_only"
+                    val isSystem = msg.senderType == "system"
+                    val isMine = if (isOwner) msg.senderType == "owner" else msg.senderType == "member"
+
+                    if (isSystem) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .animateItem(),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            StitchBadge(
+                                text = if (isPrivateMsg) "Private • ${msg.text}" else msg.text,
+                                tone = BadgeTone.NEUTRAL,
+                            )
+                        }
+                    } else {
+                        val senderAgent = if (msg.senderType == "agent") {
+                            agentsById[msg.senderId] ?: state.inboxState?.agents?.firstOrNull {
+                                it.name.equals(msg.senderName, ignoreCase = true)
+                            }
+                        } else null
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .animateItem(),
+                            horizontalArrangement = if (isMine) Arrangement.End else Arrangement.Start,
+                            verticalAlignment = Alignment.Top,
+                        ) {
+                            if (!isMine && senderAgent != null) {
+                                StitchCharacterAvatar(
+                                    label = senderAgent.name,
+                                    accentHex = senderAgent.avatar?.color,
+                                    shapeName = senderAgent.avatar?.shape,
+                                    imageUrl = senderAgent.avatar?.imageUrl,
+                                    size = 26.dp,
+                                )
+                                Spacer(Modifier.width(6.dp))
+                            }
+                            Column(
+                                modifier = Modifier.widthIn(max = 310.dp),
+                                horizontalAlignment = if (isMine) Alignment.End else Alignment.Start,
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                ) {
+                                    if (isPrivateMsg) {
+                                        Icon(
+                                            Icons.Default.Lock,
+                                            contentDescription = "Private",
+                                            tint = s.primary,
+                                            modifier = Modifier.size(12.dp),
+                                        )
+                                        Text(
+                                            text = if (isMine) {
+                                                "Private whisper • hidden from guests"
+                                            } else {
+                                                "${msg.senderName} • Private reply (only you)"
+                                            },
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = s.primary,
+                                            fontWeight = FontWeight.SemiBold,
+                                        )
+                                    } else {
+                                        Text(
+                                            text = "${msg.senderName} • ${msg.senderType}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = s.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(20.dp))
+                                        .background(
+                                            when {
+                                                isPrivateMsg -> s.surfaceContainerLowest
+                                                isMine -> s.primary
+                                                else -> s.surfaceContainerLowest
+                                            },
+                                        )
+                                        .border(
+                                            width = if (isPrivateMsg) 1.5.dp else 1.dp,
+                                            color = when {
+                                                isPrivateMsg -> s.primary
+                                                isMine -> s.primary
+                                                else -> s.outlineVariant
+                                            },
+                                            shape = RoundedCornerShape(20.dp),
+                                        )
+                                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                                ) {
+                                    Text(
+                                        text = msg.text,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = if (isMine && !isPrivateMsg) s.onPrimary else s.onSurface,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (thinkingNames.isNotEmpty() || (isOwner && state.inboxWatching)) {
+                    item(key = "live_status") {
+                        Row(
+                            modifier = Modifier
+                                .animateItem()
+                                .clip(CircleShape)
+                                .background(s.surfaceContainerLow)
+                                .border(1.dp, s.outlineVariant, CircleShape)
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(12.dp),
+                                strokeWidth = 2.dp,
+                                color = s.primary,
+                            )
+                            Text(
+                                text = if (thinkingNames.isNotEmpty()) {
+                                    "${thinkingNames.joinToString(", ")} ${if (thinkingNames.size == 1) "is" else "are"} working…"
+                                } else {
+                                    "Watching & noting silently…"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = s.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
             }

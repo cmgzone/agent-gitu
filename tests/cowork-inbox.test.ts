@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import type { IncomingMessage } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   clampInboxAgentForMember,
   INBOX_MEMBER_COOKIE,
@@ -18,8 +18,9 @@ import {
   summarizeInboxMeeting,
 } from '../src/cowork/inbox-runtime.js';
 import type { CoworkAgent } from '../src/cowork/store.js';
-import type { LlmClient, LlmMessage } from '../src/llm/llm.js';
+import { ScriptedMockLlm, type LlmClient, type LlmMessage } from '../src/llm/llm.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
+import { HermesServer } from '../src/server/server.js';
 
 const dirs: string[] = [];
 function tempDir(): string {
@@ -776,5 +777,336 @@ describe('Inbox meeting notes, tasks, safe delegation, and meeting summary', () 
     expect(watchRes.savedTasks[0]?.status).toBe('pending_approval');
     // Zero agent replies were posted in chat!
     expect(store.messages(room.id).filter((m) => m.senderType === 'agent')).toHaveLength(0);
+  });
+});
+
+function extractCookieHeader(res: Response, cookieName: string): string {
+  const getSetCookie = (res.headers as unknown as { getSetCookie?: () => string[] }).getSetCookie;
+  const rawList = typeof getSetCookie === 'function' ? getSetCookie.call(res.headers) : [res.headers.get('set-cookie') ?? ''];
+  for (const raw of rawList) {
+    const pair = raw.split(';')[0]?.trim() ?? '';
+    if (pair.startsWith(`${cookieName}=`)) return pair;
+  }
+  return '';
+}
+
+function extractSetCookieLine(res: Response, cookieName: string): string {
+  const getSetCookie = (res.headers as unknown as { getSetCookie?: () => string[] }).getSetCookie;
+  const rawList = typeof getSetCookie === 'function' ? getSetCookie.call(res.headers) : [res.headers.get('set-cookie') ?? ''];
+  return rawList.find((raw) => raw.trim().startsWith(`${cookieName}=`)) ?? '';
+}
+
+describe('Inbox invite-link HTTP join flow (authenticated workspace)', () => {
+  const servers: HermesServer[] = [];
+
+  afterEach(async () => {
+    try {
+      for (const server of servers.splice(0)) await server.stop();
+    } finally {
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+    }
+  }, 30_000);
+
+  it('lets an invited guest join via /inbox/join, load isolated INBOX_HTML + static assets, and chat without owner auth', async () => {
+    const homeDir = tempDir();
+    const projectDir = tempDir();
+    vi.stubEnv('AGENT_GITU_HOME', homeDir);
+    vi.stubEnv('PIKPAM_API_KEY', 'test-pikpam-owner-key');
+
+    const createdInvites = new Map<string, { workspaceUrl: string; inviteId: string }>();
+    const verifiedCalls: Array<{ ticket: string; workspaceUrl?: string }> = [];
+    const origFetch = globalThis.fetch.bind(globalThis);
+
+    vi.stubGlobal('fetch', async (input: string | URL | Request, init?: RequestInit) => {
+      const urlStr = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (urlStr.startsWith('https://pikpam.com/api/workspace-invites/verify-ticket')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as { ticket?: string; workspaceUrl?: string };
+        verifiedCalls.push({ ticket: String(body.ticket ?? ''), workspaceUrl: body.workspaceUrl });
+        if (body.ticket === 'valid-ticket-1') {
+          const first = [...createdInvites.values()][0];
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              userId: 'pik-guest-1',
+              email: 'guest@client.test',
+              name: 'Guest Sarah',
+              inviteId: first?.inviteId ?? null,
+              workspaceUrl: body.workspaceUrl ?? first?.workspaceUrl ?? '',
+              ownerUserId: 'pik-owner-1',
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          );
+        }
+        if (body.ticket === 'deleted-room-ticket') {
+          const second = [...createdInvites.values()][1];
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              userId: 'pik-guest-2',
+              email: 'guest2@client.test',
+              name: 'Guest Leo',
+              inviteId: second?.inviteId ?? null,
+              workspaceUrl: body.workspaceUrl ?? '',
+              ownerUserId: 'pik-owner-1',
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          );
+        }
+        if (body.ticket === 'revoked-ticket') {
+          const third = [...createdInvites.values()][2];
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              userId: 'pik-guest-3',
+              email: 'guest3@client.test',
+              name: 'Guest Blocked',
+              inviteId: third?.inviteId ?? null,
+              workspaceUrl: body.workspaceUrl ?? '',
+              ownerUserId: 'pik-owner-1',
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          );
+        }
+        return new Response(
+          JSON.stringify({ ok: false, error: 'Ticket expired or already used.' }),
+          { status: 401, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (urlStr.startsWith('https://pikpam.com/api/workspace-invites/revoke')) {
+        return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (urlStr.startsWith('https://pikpam.com/api/workspace-invites')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as { workspaceUrl: string; inviteId: string };
+        const code = `code-${createdInvites.size + 1}`;
+        createdInvites.set(code, { workspaceUrl: body.workspaceUrl, inviteId: body.inviteId });
+        return new Response(
+          JSON.stringify({ code, inviteUrl: `https://pikpam.com/invite/${code}` }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return origFetch(input as Parameters<typeof fetch>[0], init);
+    });
+
+    const server = new HermesServer({
+      passwordRequired: true,
+      autoInstallLsp: false,
+      cwd: projectDir,
+      port: 0,
+      llm: new ScriptedMockLlm([]),
+    });
+    servers.push(server);
+    const port = await server.start();
+    const base = `http://127.0.0.1:${port}`;
+
+    // Register & log in as workspace owner so appAuth is active and locked
+    const reg = await origFetch(`${base}/api/auth/register`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base },
+      body: JSON.stringify({ name: 'Owner', email: 'owner@example.com', password: 'super-secret-password-123' }),
+    });
+    expect(reg.status).toBe(201);
+    const login = await origFetch(`${base}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base },
+      body: JSON.stringify({ email: 'owner@example.com', password: 'super-secret-password-123' }),
+    });
+    expect(login.status).toBe(200);
+    const ownerCookie = extractCookieHeader(login, 'gitu_session');
+    expect(ownerCookie).toContain('gitu_session=');
+
+    // Owner creates a group room and an invite link for it
+    const roomRes = await origFetch(`${base}/api/inbox/rooms`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: ownerCookie, origin: base },
+      body: JSON.stringify({ kind: 'group', title: 'Client Launch Room', agentTriggerMode: 'mention' }),
+    });
+    expect(roomRes.status).toBe(201);
+    const { room } = (await roomRes.json()) as { room: { id: string } };
+
+    const invRes = await origFetch(`${base}/api/inbox/invites`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: ownerCookie, origin: base },
+      body: JSON.stringify({ label: 'Sarah', scopeType: 'group', roomId: room.id, maxUses: 1 }),
+    });
+    expect(invRes.status).toBe(201);
+    const { invite } = (await invRes.json()) as { invite: { id: string; pikpamInviteUrl: string } };
+    expect(invite.pikpamInviteUrl).toBe('https://pikpam.com/invite/code-1');
+
+    // Unauthenticated visitor to /inbox receives a clear 401 sign-in prompt (not a broken owner app)
+    const unauthInbox = await origFetch(`${base}/inbox`, { redirect: 'manual' });
+    expect(unauthInbox.status).toBe(401);
+    const unauthHtml = await unauthInbox.text();
+    expect(unauthHtml).toContain('Sign in to open Collaborative Inbox');
+    expect(unauthHtml).toContain('/auth');
+
+    // Guest joins via /inbox/join?ticket=valid-ticket-1
+    const joinRes = await origFetch(`${base}/inbox/join?ticket=valid-ticket-1`, { redirect: 'manual' });
+    expect(joinRes.status).toBe(302);
+    expect(joinRes.headers.get('location')).toBe('/inbox');
+    const guestCookie = extractCookieHeader(joinRes, INBOX_MEMBER_COOKIE);
+    expect(guestCookie).toContain(`${INBOX_MEMBER_COOKIE}=`);
+    expect(verifiedCalls[0]).toEqual({ ticket: 'valid-ticket-1', workspaceUrl: base });
+
+    // Guest loads /inbox with ONLY the guest cookie: gets isolated INBOX_HTML (NO legacy owner boot/APP_LOCKED redirect)
+    const inboxRes = await origFetch(`${base}/inbox`, { headers: { cookie: guestCookie }, redirect: 'manual' });
+    expect(inboxRes.status).toBe(200);
+    const inboxHtml = await inboxRes.text();
+    expect(inboxHtml).toContain('id="gituAstryxRoot"');
+    expect(inboxHtml).toContain('id="gituAstryxBundle"');
+    expect(inboxHtml).not.toContain('APP_LOCKED');
+    expect(inboxHtml).not.toContain("location.replace('/auth')");
+
+    // Trailing slash /inbox/ redirects cleanly to /inbox
+    const slashRes = await origFetch(`${base}/inbox/`, { headers: { cookie: guestCookie }, redirect: 'manual' });
+    expect(slashRes.status).toBe(302);
+    expect(slashRes.headers.get('location')).toBe('/inbox');
+
+    // Public static UI assets needed by /inbox succeed with 200 (not 302 /auth)
+    const brandRes = await origFetch(`${base}/brand/agent-gitu-mark.svg`, { headers: { cookie: guestCookie }, redirect: 'manual' });
+    expect(brandRes.status).toBe(200);
+    const charRes = await origFetch(`${base}/characters/orb.png`, { headers: { cookie: guestCookie }, redirect: 'manual' });
+    expect(charRes.status).toBe(200);
+
+    // Guest loads /api/inbox/state and posts a message into their invited room
+    const stateRes = await origFetch(`${base}/api/inbox/state`, { headers: { cookie: guestCookie } });
+    expect(stateRes.status).toBe(200);
+    const state = (await stateRes.json()) as { role: string; rooms: Array<{ id: string; title: string }> };
+    expect(state.role).toBe('member');
+    expect(state.rooms.map((r) => r.id)).toEqual([room.id]);
+
+    const postRes = await origFetch(`${base}/api/inbox/rooms/${room.id}/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: guestCookie, origin: base },
+      body: JSON.stringify({ text: 'Hello from invited guest!' }),
+    });
+    expect(postRes.status).toBe(201);
+
+    // Owner APIs remain strictly blocked for the guest
+    const ownerApiRes = await origFetch(`${base}/api/project`, { headers: { cookie: guestCookie } });
+    expect(ownerApiRes.status).toBe(401);
+    const guestInviteRes = await origFetch(`${base}/api/inbox/invites`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: guestCookie, origin: base },
+      body: JSON.stringify({ scopeType: 'workspace' }),
+    });
+    expect(guestInviteRes.status).toBe(403);
+
+    // Refreshing /inbox/join with an already-used ticket redirects smoothly to /inbox when the guest cookie is active
+    const refreshRes = await origFetch(`${base}/inbox/join?ticket=already-used`, {
+      headers: { cookie: guestCookie },
+      redirect: 'manual',
+    });
+    expect(refreshRes.status).toBe(302);
+    expect(refreshRes.headers.get('location')).toBe('/inbox');
+
+    // Invite pointing to a deleted room falls back to creating a DM room instead of leaving the guest with 0 rooms
+    const tempRoomRes = await origFetch(`${base}/api/inbox/rooms`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: ownerCookie, origin: base },
+      body: JSON.stringify({ kind: 'group', title: 'Temporary Room' }),
+    });
+    const { room: tempRoom } = (await tempRoomRes.json()) as { room: { id: string } };
+    await origFetch(`${base}/api/inbox/invites`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: ownerCookie, origin: base },
+      body: JSON.stringify({ label: 'Leo', scopeType: 'group', roomId: tempRoom.id }),
+    });
+    await origFetch(`${base}/api/inbox/rooms/${tempRoom.id}`, {
+      method: 'DELETE',
+      headers: { cookie: ownerCookie, origin: base },
+    });
+    const leoJoin = await origFetch(`${base}/inbox/join?ticket=deleted-room-ticket`, { redirect: 'manual' });
+    expect(leoJoin.status).toBe(302);
+    const leoCookie = extractCookieHeader(leoJoin, INBOX_MEMBER_COOKIE);
+    const leoState = (await (await origFetch(`${base}/api/inbox/state`, { headers: { cookie: leoCookie } })).json()) as {
+      rooms: Array<{ kind: string }>;
+    };
+    expect(leoState.rooms.length).toBeGreaterThan(0);
+
+    // Revoked invite rejects join attempts with 403
+    const revInvRes = await origFetch(`${base}/api/inbox/invites`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: ownerCookie, origin: base },
+      body: JSON.stringify({ label: 'Revoked invite', scopeType: 'workspace' }),
+    });
+    const { invite: revInv } = (await revInvRes.json()) as { invite: { id: string } };
+    await origFetch(`${base}/api/inbox/invites/${revInv.id}/revoke`, {
+      method: 'POST',
+      headers: { cookie: ownerCookie, origin: base },
+    });
+    const revokedJoin = await origFetch(`${base}/inbox/join?ticket=revoked-ticket`, { redirect: 'manual' });
+    expect(revokedJoin.status).toBe(403);
+    expect(await revokedJoin.text()).toContain('Invite link revoked');
+  });
+
+  it('uses AGENT_GITU_PUBLIC_URL for Pikpam ticket verification, Secure cookie, and proxied HTTPS Origin checks', async () => {
+    const homeDir = tempDir();
+    const projectDir = tempDir();
+    const publicUrl = 'https://cloud-agent.example.com';
+    vi.stubEnv('AGENT_GITU_HOME', homeDir);
+    vi.stubEnv('AGENT_GITU_PUBLIC_URL', publicUrl);
+
+    let verifiedWorkspaceUrl: string | undefined;
+    const origFetch = globalThis.fetch.bind(globalThis);
+    vi.stubGlobal('fetch', async (input: string | URL | Request, init?: RequestInit) => {
+      const urlStr = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (urlStr.startsWith('https://pikpam.com/api/workspace-invites/verify-ticket')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as { workspaceUrl?: string };
+        verifiedWorkspaceUrl = body.workspaceUrl;
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            userId: 'pik-cloud-guest',
+            email: 'cloud-guest@example.com',
+            name: 'Cloud Guest',
+            inviteId: null,
+            workspaceUrl: body.workspaceUrl ?? publicUrl,
+            ownerUserId: 'pik-owner-cloud',
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return origFetch(input as Parameters<typeof fetch>[0], init);
+    });
+
+    const server = new HermesServer({
+      passwordRequired: true,
+      autoInstallLsp: false,
+      cwd: projectDir,
+      port: 0,
+      llm: new ScriptedMockLlm([]),
+    });
+    servers.push(server);
+    const port = await server.start();
+    const base = `http://127.0.0.1:${port}`;
+
+    const joinRes = await origFetch(`${base}/inbox/join?ticket=cloud-ticket`, { redirect: 'manual' });
+    expect(joinRes.status).toBe(302);
+    expect(verifiedWorkspaceUrl).toBe(publicUrl);
+    const setCookieLine = extractSetCookieLine(joinRes, INBOX_MEMBER_COOKIE);
+    expect(setCookieLine).toContain('; Secure');
+
+    const guestCookie = extractCookieHeader(joinRes, INBOX_MEMBER_COOKIE);
+    const state = (await (await origFetch(`${base}/api/inbox/state`, { headers: { cookie: guestCookie } })).json()) as {
+      rooms: Array<{ id: string }>;
+    };
+    const roomId = state.rooms[0]!.id;
+
+    // Behind a TLS-terminating cloud ingress, Origin is the configured HTTPS public URL while socket is plain HTTP
+    const okPost = await origFetch(`${base}/api/inbox/rooms/${roomId}/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: guestCookie, origin: publicUrl },
+      body: JSON.stringify({ text: 'Hello through HTTPS proxy!' }),
+    });
+    expect(okPost.status).toBe(201);
+
+    // Untrusted cross-origin POST is still blocked with 403
+    const evilPost = await origFetch(`${base}/api/inbox/rooms/${roomId}/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: guestCookie, origin: 'https://evil.example.net' },
+      body: JSON.stringify({ text: 'CSRF attempt' }),
+    });
+    expect(evilPost.status).toBe(403);
   });
 });

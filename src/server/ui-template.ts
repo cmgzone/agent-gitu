@@ -1,6 +1,10 @@
 /** Assemble trusted, repository-owned UI assets without evaluating templates.
  * Script order and the existing shared browser scope are intentionally retained. */
-export function renderUiDocument(assets: Readonly<Record<string, string>>, bindings: Readonly<Record<string, string>>): string {
+export function renderUiDocument(
+  assets: Readonly<Record<string, string>>,
+  bindings: Readonly<Record<string, string>>,
+  entry = 'index.html',
+): string {
   const active = new Set<string>();
   const expand = (name: string): string => {
     if (!Object.hasOwn(assets, name)) throw new Error('Missing UI asset: ' + name);
@@ -10,7 +14,7 @@ export function renderUiDocument(assets: Readonly<Record<string, string>>, bindi
     active.delete(name);
     return text;
   };
-  return expand('index.html').replace(
+  return expand(entry).replace(
     /\/\* GITU_BINDING_([A-Z0-9_]+) \*\/|\/\* GITU_VALUE_([A-Z0-9_]+) \*\/ null/g,
     (_match, text: string | undefined, value: string | undefined) => {
       const key = text ?? value!;

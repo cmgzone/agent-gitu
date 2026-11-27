@@ -146,12 +146,28 @@ data class PendingQuestions(
 )
 
 @Serializable
+data class ConnectionRequirementSetup(
+    val label: String? = null,
+    val baseUrl: String? = null,
+    val documentationUrl: String? = null,
+    val validationPath: String? = null,
+)
+
+@Serializable
 data class ConnectionRequirement(
     val providerHint: String = "",
     val label: String = "",
     val reason: String = "",
+    val description: String? = null,
+    val requiredFor: String? = null,
+    val requestType: String? = null,
+    val existingConnectionId: String? = null,
+    val requiredFields: List<String> = emptyList(),
+    val capabilities: List<String> = emptyList(),
     val baseUrl: String? = null,
     val validationPath: String? = null,
+    val documentationUrl: String? = null,
+    val setup: ConnectionRequirementSetup? = null,
 )
 
 @Serializable
@@ -260,6 +276,14 @@ data class TeammateAvatar(
     val color: String? = null,
     val kind: String? = null,
     val shape: String? = null,
+    val imageUrl: String? = null,
+)
+
+@Serializable
+data class UploadAvatarResponse(
+    val ok: Boolean = true,
+    val agent: Teammate? = null,
+    val imageUrl: String? = null,
 )
 
 @Serializable
@@ -299,8 +323,41 @@ data class TeamMessage(
     val text: String = "",
     val ts: String = "",
     val revision: Int = 0,
+    val attempt: Int = 0,
     val status: String = "sent",
     val artifactIds: List<String>? = null,
+    val referencedMessageIds: List<String>? = null,
+)
+
+@Serializable
+data class AgentComputerHandoff(
+    val reason: String = "",
+    val requestId: String? = null,
+)
+
+@Serializable
+data class AgentComputerStatus(
+    val agentId: String = "",
+    val name: String = "",
+    val state: String = "stopped",
+    val control: String = "shared",
+    val handoff: AgentComputerHandoff? = null,
+    val workspace: String = "/workspace",
+    val error: String? = null,
+    val reason: String? = null,
+    val useHostComputer: Boolean = false,
+) {
+    val isRunning: Boolean
+        get() = !useHostComputer && state == "running"
+
+    val isUserControl: Boolean
+        get() = control == "user"
+}
+
+@Serializable
+data class AgentComputerResponse(
+    val computer: AgentComputerStatus = AgentComputerStatus(),
+    val agent: Teammate? = null,
 )
 
 @Serializable
@@ -313,6 +370,27 @@ data class TeamAppSuggestion(
 )
 
 @Serializable
+data class TeamCredentialField(
+    val id: String = "",
+    val label: String = "",
+    val secret: Boolean = true,
+    val required: Boolean = true,
+    val inputType: String? = null,
+    val header: String? = null,
+    val prefix: String? = null,
+)
+
+@Serializable
+data class TeamCredentialAuth(
+    val type: String = "",
+    val header: String? = null,
+    val prefix: String? = null,
+    val fields: List<TeamCredentialField> = emptyList(),
+    val tokenUrl: String? = null,
+    val grantType: String? = null,
+)
+
+@Serializable
 data class TeamCredentialRequest(
     val providerHint: String = "",
     val label: String? = null,
@@ -320,7 +398,50 @@ data class TeamCredentialRequest(
     val validationPath: String? = null,
     val documentationUrl: String? = null,
     val connectionId: String? = null,
+    val auth: TeamCredentialAuth? = null,
 )
+
+@Serializable
+data class TeamBrowserAuthField(
+    val id: String = "",
+    val label: String = "",
+    val type: String = "text",
+    val required: Boolean = false,
+)
+
+@Serializable
+data class TeamBrowserAuthTerm(
+    val id: String = "",
+    val label: String = "",
+    val url: String? = null,
+    val required: Boolean = false,
+)
+
+@Serializable
+data class TeamBrowserAuthCard(
+    val origin: String = "",
+    val mode: String = "signin",
+    val iconUrl: String? = null,
+    val challengeId: String = "",
+    val computer: String = "",
+    val expiresAt: Long = 0L,
+    val fields: List<TeamBrowserAuthField> = emptyList(),
+    val terms: List<TeamBrowserAuthTerm> = emptyList(),
+)
+
+@Serializable
+data class TeamAppAction(
+    val service: String = "",
+    val accountId: String = "",
+    val tool: String = "",
+    val args: JsonObject = JsonObject(emptyMap()),
+)
+
+private val lenientModelJson = kotlinx.serialization.json.Json {
+    ignoreUnknownKeys = true
+    isLenient = true
+    coerceInputValues = true
+}
 
 @Serializable
 data class TeamRequest(
@@ -330,14 +451,38 @@ data class TeamRequest(
     val title: String = "",
     val detail: String = "",
     val appConnection: TeamAppSuggestion? = null,
-    val credential: TeamCredentialRequest? = null,
+    val credential: JsonObject? = null,
+    val browserAuth: JsonObject? = null,
+    val appAction: TeamAppAction? = null,
+    val reviewedAction: TeamAppAction? = null,
+    val permission: String? = null,
+    val desktopHandoff: Boolean = false,
+    val delegatedGate: String? = null,
     val options: List<String> = emptyList(),
     val recommended: String? = null,
     val status: String = "open",
     val response: String? = null,
+    val resolvedBy: String? = null,
+    val resolvedByLabel: String? = null,
     val createdAt: String = "",
     val hiddenAt: String? = null,
-)
+) {
+    val credentialSpec: TeamCredentialRequest?
+        get() = credential?.let {
+            runCatching { lenientModelJson.decodeFromJsonElement(TeamCredentialRequest.serializer(), it) }.getOrNull()
+        }
+
+    val credentialSetupJson: String?
+        get() = credential?.toString()
+
+    val browserAuthSpec: TeamBrowserAuthCard?
+        get() = browserAuth?.let {
+            runCatching { lenientModelJson.decodeFromJsonElement(TeamBrowserAuthCard.serializer(), it) }.getOrNull()
+        }
+
+    val browserAuthSetupJson: String?
+        get() = browserAuth?.toString()
+}
 
 @Serializable
 data class TeamThread(
@@ -527,15 +672,32 @@ data class ConnectAppResponse(
 )
 
 @Serializable
+data class CustomConnectionOperation(
+    val id: String = "",
+    val label: String = "",
+    val capability: String = "",
+    val method: String = "GET",
+    val path: String = "/",
+    val risk: String = "read",
+)
+
+@Serializable
 data class CustomConnectionProfile(
     val id: String = "",
     val label: String = "",
     val provider: String = "",
     val baseUrl: String = "",
     val documentationUrl: String? = null,
+    val auth: TeamCredentialAuth? = null,
     val capabilities: List<String> = emptyList(),
+    val operations: List<CustomConnectionOperation> = emptyList(),
     val status: String? = null,
-)
+) {
+    val validationPath: String
+        get() = operations.firstOrNull { it.id == "validate" }?.path
+            ?: operations.firstOrNull { it.method.equals("GET", ignoreCase = true) && it.risk.equals("read", ignoreCase = true) }?.path
+            ?: "/"
+}
 
 @Serializable
 data class CustomConnectionsResponse(
@@ -589,6 +751,7 @@ data class InboxAgentSummary(
     val id: String = "",
     val name: String = "",
     val tagline: String? = null,
+    val avatar: TeammateAvatar? = null,
 )
 
 @Serializable

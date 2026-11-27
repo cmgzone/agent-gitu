@@ -106,7 +106,10 @@
   /* GITU_BINDING_OUTPUT_JS */
   /* GITU_BINDING_ONBOARDING_JS */
   /* GITU_BINDING_UI_BUTTON_JS */
-  boot();
+  var __gituPath = (window.location && window.location.pathname || '').replace(/\/+$/, '') || '/';
+  if (__gituPath !== '/inbox') {
+    boot();
+  }
   window.gituOpenPushTarget = async function (target) {
     if (!target || !['run','cowork','home'].includes(target.target)) throw new Error('Invalid notification destination.');
     if (target.target !== 'home' && !/^[\w-]{1,150}$/.test(target.targetId || '')) throw new Error('Invalid notification destination.');

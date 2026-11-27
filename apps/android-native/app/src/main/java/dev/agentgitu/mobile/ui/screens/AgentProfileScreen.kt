@@ -1,5 +1,8 @@
 package dev.agentgitu.mobile.ui.screens
 
+import android.util.Base64
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -17,6 +20,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -27,9 +31,9 @@ import dev.agentgitu.mobile.ui.viewmodel.AppUiState
 import dev.agentgitu.mobile.ui.viewmodel.GituAppViewModel
 
 /**
- * Native Agent Profile Screen showing the teammate's official AI character,
- * capabilities, connected apps, model/compute configuration, instructions,
- * and quick actions (DM, Desktop, Voice, Connections, Edit, Delete).
+ * Native Agent Profile Screen showing the teammate's official AI character or uploaded
+ * avatar, capabilities, connected apps with real icons, model/compute configuration,
+ * instructions, and quick actions (DM, Desktop, Voice, Connections, Edit, Delete).
  */
 @Composable
 fun AgentProfileScreen(
@@ -41,11 +45,33 @@ fun AgentProfileScreen(
     onStartDm: () -> Unit,
 ) {
     val s = LocalStitchPalette.current
+    val context = LocalContext.current
     val charSpec = remember(teammate) {
         resolveOfficialCharacter(teammate.avatar.shape, teammate.avatar.color, teammate.name)
     }
     var confirmDelete by remember { mutableStateOf(false) }
     var showModelPicker by remember { mutableStateOf(false) }
+
+    val avatarPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent(),
+    ) { uri ->
+        if (uri != null) {
+            runCatching {
+                val cr = context.contentResolver
+                val rawMime = cr.getType(uri)?.lowercase().orEmpty()
+                val mime = when {
+                    rawMime.contains("png") -> "image/png"
+                    rawMime.contains("webp") -> "image/webp"
+                    else -> "image/jpeg"
+                }
+                val bytes = cr.openInputStream(uri)?.use { it.readBytes() } ?: return@runCatching
+                if (bytes.size <= 4 * 1024 * 1024) {
+                    val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                    vm.uploadAgentAvatar(teammate.id, "data:$mime;base64,$b64")
+                }
+            }
+        }
+    }
 
     val agentAccounts = remember(state.connectedApps, state.connectionsAgentId, teammate.id) {
         if (state.connectionsAgentId == teammate.id) {
@@ -119,10 +145,27 @@ fun AgentProfileScreen(
                         label = teammate.name,
                         accentHex = teammate.avatar.color,
                         shapeName = teammate.avatar.shape,
+                        imageUrl = teammate.avatar.imageUrl,
                         size = 84.dp,
                         floating = true,
                         statusDotColor = s.success,
                     )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = { avatarPicker.launch("image/*") }) {
+                            Icon(Icons.Default.PhotoCamera, contentDescription = null, tint = s.primary, modifier = Modifier.size(15.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                text = if (teammate.avatar.imageUrl.isNullOrBlank()) "Upload avatar" else "Change photo",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = s.primary,
+                            )
+                        }
+                        if (!teammate.avatar.imageUrl.isNullOrBlank()) {
+                            TextButton(onClick = { vm.deleteAgentAvatar(teammate.id) }) {
+                                Text("Use plush", style = MaterialTheme.typography.labelMedium, color = s.onSurfaceVariant)
+                            }
+                        }
+                    }
                     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(3.dp)) {
                         Text(teammate.name, style = MaterialTheme.typography.headlineSmall, color = s.onSurface)
                         Text(
@@ -195,6 +238,7 @@ fun AgentProfileScreen(
                         )
                     } else {
                         agentAccounts.forEach { acc ->
+                            val displayName = acc.label ?: acc.address ?: acc.toolkit.replaceFirstChar { it.uppercase() }
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -202,11 +246,17 @@ fun AgentProfileScreen(
                                     .background(s.surfaceContainerLow)
                                     .padding(horizontal = 10.dp, vertical = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
                             ) {
+                                AppServiceLogo(
+                                    serviceSlug = acc.toolkit.ifBlank { "mail" },
+                                    fallbackLabel = displayName,
+                                    servicesCatalog = state.connectedApps.services,
+                                    size = 32.dp,
+                                )
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = acc.label ?: acc.address ?: acc.toolkit.replaceFirstChar { it.uppercase() },
+                                        text = displayName,
                                         style = MaterialTheme.typography.labelMedium,
                                         color = s.onSurface,
                                     )

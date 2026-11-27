@@ -176,7 +176,7 @@
   function icon(name) { return ICONS[name] || ''; }
   function api(path, opts) {
     return fetch(path, opts).then(function (r) {
-      if (r.status === 401) return r.clone().json().catch(function () { return {}; }).then(function (data) { if (data.code === 'APP_LOCKED') { location.replace('/auth'); throw new Error('Unlock Agent Gitu to continue.'); } return r.text().then(function (t) { throw new Error(t || 'Unauthorized'); }); });
+      if (r.status === 401) return r.clone().json().catch(function () { return {}; }).then(function (data) { var curPath = (window.location && window.location.pathname || '').replace(/\/+$/, '') || '/'; if (data.code === 'APP_LOCKED' && curPath !== '/inbox') { location.replace('/auth'); throw new Error('Unlock Agent Gitu to continue.'); } return r.text().then(function (t) { throw new Error(t || 'Unauthorized'); }); });
       if (!r.ok) return r.text().then(function (t) { var message=t;try{message=JSON.parse(t).error||t;}catch(e){}throw new Error(message || String(r.status)); });
       return r.json();
     });

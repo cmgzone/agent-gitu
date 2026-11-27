@@ -357,6 +357,7 @@ export function InboxView({
       cw?.agents?.[0] ||
       state?.agents?.[0];
     const av = asCoworkAvatar(sel?.avatar);
+    if (av?.imageUrl) return av.imageUrl;
     return host?.getAvatarImageUrl?.(av?.shape) || '/characters/orb.png?v=opendots1';
   }, [host, state]);
 

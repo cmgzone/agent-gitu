@@ -161,9 +161,13 @@ export class AppAuth {
   }
 
   secure(req: IncomingMessage): boolean {
+    const forwardedProto = String(req.headers['x-forwarded-proto'] ?? '')
+      .split(',')[0]
+      ?.trim()
+      .toLowerCase();
     return (
       Boolean((req.socket as { encrypted?: boolean }).encrypted) ||
-      (this.trustLocalProxy && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress ?? '') && req.headers['x-forwarded-proto'] === 'https')
+      (this.trustLocalProxy && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress ?? '') && forwardedProto === 'https')
     );
   }
 

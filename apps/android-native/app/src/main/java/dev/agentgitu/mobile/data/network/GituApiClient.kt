@@ -62,15 +62,20 @@ class GituApiClient(
             URLEncoder.encode(value, StandardCharsets.UTF_8.name())
     }
 
-    fun syncCookiesToWebView() {
-        if (cookies.isEmpty()) return
+    fun syncCookiesToWebView(webView: android.webkit.WebView? = null) {
         try {
             val manager = CookieManager.getInstance()
             manager.setAcceptCookie(true)
-            for ((k, v) in cookies) {
-                manager.setCookie(baseUrl, "$k=$v; Path=/")
+            if (webView != null) {
+                manager.setAcceptThirdPartyCookies(webView, true)
             }
-            manager.flush()
+            if (cookies.isNotEmpty()) {
+                val secureSuffix = if (baseUrl.startsWith("https://", ignoreCase = true)) "; Secure" else ""
+                for ((k, v) in cookies) {
+                    manager.setCookie(baseUrl, "$k=$v; Path=/$secureSuffix")
+                }
+                manager.flush()
+            }
         } catch (_: Throwable) {
             // Safe no-op in JVM unit tests where Android WebView is absent.
         }
@@ -368,6 +373,33 @@ class GituApiClient(
             body = buildJsonObject { put("answer", answer) },
         )
 
+    suspend fun submitRunConnection(
+        runId: String,
+        label: String? = null,
+        provider: String? = null,
+        baseUrl: String? = null,
+        documentationUrl: String? = null,
+        validationPath: String? = null,
+        capabilities: List<String> = emptyList(),
+        token: String,
+        existingConnectionId: String? = null,
+    ): JsonElement = request(
+        "/api/runs/${encodeQuery(runId)}/connection",
+        method = "POST",
+        body = buildJsonObject {
+            if (!existingConnectionId.isNullOrBlank()) put("id", existingConnectionId)
+            if (!label.isNullOrBlank()) put("label", label.trim())
+            if (!provider.isNullOrBlank()) put("provider", provider.trim().lowercase())
+            if (!baseUrl.isNullOrBlank()) put("baseUrl", baseUrl.trim())
+            if (!documentationUrl.isNullOrBlank()) put("documentationUrl", documentationUrl.trim())
+            if (!validationPath.isNullOrBlank()) put("validationPath", validationPath.trim())
+            if (capabilities.isNotEmpty()) {
+                put("capabilities", JsonArray(capabilities.map { JsonPrimitive(it) }))
+            }
+            put("token", token.trim())
+        },
+    )
+
     suspend fun runCheckpoints(runId: String): CheckpointsResponse =
         request("/api/runs/${encodeQuery(runId)}/checkpoints")
 
@@ -448,6 +480,19 @@ class GituApiClient(
         method = "DELETE",
     )
 
+    suspend fun uploadAgentAvatar(agentId: String, dataUrl: String): UploadAvatarResponse = request(
+        "/api/cowork/agents/${encodeQuery(agentId)}/avatar",
+        method = "POST",
+        body = buildJsonObject {
+            put("dataUrl", dataUrl)
+        },
+    )
+
+    suspend fun deleteAgentAvatar(agentId: String): UploadAvatarResponse = request(
+        "/api/cowork/agents/${encodeQuery(agentId)}/avatar",
+        method = "DELETE",
+    )
+
     suspend fun teamChat(conversationId: String, threadId: String = "main"): TeamView {
         val threadParam = if (threadId.isBlank() || threadId == "main") "" else "&thread=${encodeQuery(threadId)}"
         return request(
@@ -461,6 +506,7 @@ class GituApiClient(
         text: String,
         threadId: String = "main",
         files: List<PendingAttachment> = emptyList(),
+        referencedMessageIds: List<String> = emptyList(),
     ): SendTeamMessageResponse = request(
         "/api/cowork/conversations/${encodeQuery(conversationId)}/messages",
         method = "POST",
@@ -470,6 +516,9 @@ class GituApiClient(
             // Main conversation thread MUST omit threadId — server validates threadId against created sub-threads.
             if (threadId.isNotBlank() && threadId != "main") {
                 put("threadId", threadId)
+            }
+            if (referencedMessageIds.isNotEmpty()) {
+                put("referencedMessageIds", JsonArray(referencedMessageIds.map { JsonPrimitive(it) }))
             }
             if (files.isNotEmpty()) {
                 put(
@@ -487,6 +536,94 @@ class GituApiClient(
             }
         },
     )
+
+    suspend fun editTeamMessage(
+        conversationId: String,
+        messageId: String,
+        text: String,
+        revision: Int,
+    ): JsonElement = request(
+        "/api/cowork/conversations/${encodeQuery(conversationId)}/messages/${encodeQuery(messageId)}",
+        method = "PATCH",
+        body = buildJsonObject {
+            put("text", text)
+            put("revision", revision)
+        },
+    )
+
+    suspend fun retryTeamMessage(
+        conversationId: String,
+        messageId: String,
+        attempt: Int,
+    ): JsonElement = request(
+        "/api/cowork/conversations/${encodeQuery(conversationId)}/messages/${encodeQuery(messageId)}/retry",
+        method = "POST",
+        body = buildJsonObject {
+            put("attempt", attempt)
+        },
+    )
+
+    suspend fun deleteTeamMessage(
+        conversationId: String,
+        messageId: String,
+    ): JsonElement = request(
+        "/api/cowork/conversations/${encodeQuery(conversationId)}/messages/${encodeQuery(messageId)}",
+        method = "DELETE",
+    )
+
+    suspend fun deleteTeamRequest(requestId: String): JsonElement = request(
+        "/api/cowork/requests/${encodeQuery(requestId)}",
+        method = "DELETE",
+    )
+
+    suspend fun getAgentComputer(agentId: String): AgentComputerResponse = request(
+        "/api/cowork/agents/${encodeQuery(agentId)}/computer",
+        method = "GET",
+    )
+
+    suspend fun agentComputerAction(
+        agentId: String,
+        action: String,
+        input: JsonObject? = null,
+    ): AgentComputerResponse = request(
+        "/api/cowork/agents/${encodeQuery(agentId)}/computer",
+        method = "POST",
+        body = buildJsonObject {
+            put("action", action)
+            if (input != null) put("input", input)
+        },
+    )
+
+    suspend fun agentComputerInput(
+        agentId: String,
+        input: JsonObject,
+    ): JsonElement = request(
+        "/api/cowork/agents/${encodeQuery(agentId)}/computer",
+        method = "POST",
+        body = buildJsonObject {
+            put("action", "input")
+            put("input", input)
+        },
+    )
+
+    suspend fun serverBrowserAction(
+        agentId: String,
+        action: String,
+    ): JsonElement = request(
+        "/api/server-browser/${encodeQuery(agentId)}",
+        method = "POST",
+        body = buildJsonObject {
+            put("action", action)
+        },
+    )
+
+    fun agentComputerViewUrl(agentId: String, preview: Boolean = false): String {
+        val suffix = if (preview) "?preview=1" else ""
+        return "$baseUrl/api/cowork/agents/${encodeQuery(agentId)}/computer/view$suffix"
+    }
+
+    fun serverBrowserViewUrl(agentId: String): String =
+        "$baseUrl/api/server-browser/${encodeQuery(agentId)}/view"
 
     suspend fun addConversationFolder(conversationId: String, path: String, label: String? = null): TeamFolder =
         request<ConversationFolderResponse>(
@@ -600,33 +737,127 @@ class GituApiClient(
         baseUrl: String,
         token: String,
         validationPath: String = "/",
+        id: String? = null,
+        documentationUrl: String? = null,
+        capabilities: List<String> = listOf("connection.discover"),
+        authType: String = "auto",
+        authHeader: String? = null,
+        authPrefix: String? = null,
+        existingOperations: List<CustomConnectionOperation> = emptyList(),
+        structuredAuthJson: JsonElement? = null,
+    ): CustomConnectionProfile {
+        val cleanCaps = capabilities.map { it.trim() }.filter { it.isNotBlank() }.ifEmpty { listOf("connection.discover") }
+        val keptOps = existingOperations
+            .filter { it.id != "validate" && cleanCaps.contains(it.capability) }
+            .map { op ->
+                buildJsonObject {
+                    put("id", op.id)
+                    put("label", op.label)
+                    put("capability", op.capability)
+                    put("method", op.method)
+                    put("path", op.path)
+                    put("risk", op.risk)
+                }
+            }
+        val validateOp = buildJsonObject {
+            put("id", "validate")
+            put("label", "Test connection")
+            put("capability", cleanCaps.first())
+            put("method", "GET")
+            put("path", validationPath.trim().ifBlank { "/" })
+            put("risk", "read")
+        }
+        return request<SaveCustomConnectionResponse>(
+            "/api/connections",
+            method = "POST",
+            body = buildJsonObject {
+                if (!id.isNullOrBlank()) put("id", id)
+                put("label", label.trim())
+                put("provider", provider.trim().lowercase().ifBlank { "custom" })
+                put("baseUrl", baseUrl.trim())
+                if (!documentationUrl.isNullOrBlank()) put("documentationUrl", documentationUrl.trim())
+                when {
+                    structuredAuthJson != null -> put("auth", structuredAuthJson)
+                    authType == "header" -> put(
+                        "auth",
+                        buildJsonObject {
+                            put("type", "header")
+                            put("header", authHeader?.trim().orEmpty())
+                            if (!authPrefix.isNullOrBlank()) put("prefix", authPrefix.trim())
+                        },
+                    )
+                    authType == "bearer" -> put("auth", buildJsonObject { put("type", "bearer") })
+                    else -> put("auth", JsonNull)
+                }
+                put("capabilities", JsonArray(cleanCaps.map { JsonPrimitive(it) }))
+                put("operations", JsonArray(keptOps + validateOp))
+                if (token.isNotBlank()) put("token", token.trim())
+            },
+        ).connection
+    }
+
+    suspend fun saveCredentialForRequest(
+        requestId: String,
+        setupJson: String,
+        token: String? = null,
+        values: Map<String, String>? = null,
     ): CustomConnectionProfile = request<SaveCustomConnectionResponse>(
-        "/api/connections",
+        "/api/cowork/requests/${encodeQuery(requestId)}/credential-save",
         method = "POST",
         body = buildJsonObject {
-            put("label", label.trim())
-            put("provider", provider.trim().lowercase().ifBlank { "custom" })
-            put("baseUrl", baseUrl.trim())
-            put("auth", buildJsonObject { put("type", "bearer"); put("header", "Authorization"); put("prefix", "Bearer") })
-            put("capabilities", JsonArray(listOf(JsonPrimitive("api"))))
-            put(
-                "operations",
-                JsonArray(
-                    listOf(
-                        buildJsonObject {
-                            put("id", "validate")
-                            put("label", "Test connection")
-                            put("capability", "api")
-                            put("method", "GET")
-                            put("path", validationPath.ifBlank { "/" })
-                            put("risk", "read")
-                        },
-                    ),
-                ),
-            )
-            put("token", token.trim())
+            put("setup", setupJson)
+            if (values != null && values.isNotEmpty()) {
+                put("values", buildJsonObject { values.forEach { (k, v) -> put(k, v) } })
+            } else if (token != null) {
+                put("token", token)
+            }
         },
     ).connection
+
+    suspend fun probeSshHostKey(requestId: String, baseUrl: String): String {
+        val obj = request<JsonObject>(
+            "/api/cowork/requests/${encodeQuery(requestId)}/ssh-host-key",
+            method = "POST",
+            body = buildJsonObject { put("baseUrl", baseUrl.trim()) },
+        )
+        return obj["fingerprint"]?.jsonPrimitive?.contentOrNull.orEmpty()
+    }
+
+    suspend fun saveSshCredentialForRequest(
+        requestId: String,
+        label: String,
+        baseUrl: String,
+        password: String,
+        hostFingerprint: String,
+    ): String {
+        val obj = request<JsonObject>(
+            "/api/cowork/requests/${encodeQuery(requestId)}/ssh-save",
+            method = "POST",
+            body = buildJsonObject {
+                put("label", label.trim())
+                put("baseUrl", baseUrl.trim())
+                put("password", password)
+                put("hostFingerprint", hostFingerprint)
+            },
+        )
+        val conn = obj["connection"] as? JsonObject
+        return conn?.get("id")?.jsonPrimitive?.contentOrNull.orEmpty()
+    }
+
+    suspend fun submitBrowserAuthForRequest(
+        requestId: String,
+        setupJson: String,
+        values: Map<String, String>,
+        terms: List<String>,
+    ): JsonElement = request(
+        "/api/cowork/requests/${encodeQuery(requestId)}/browser-auth",
+        method = "POST",
+        body = buildJsonObject {
+            put("setup", setupJson)
+            put("values", buildJsonObject { values.forEach { (k, v) -> put(k, v) } })
+            put("terms", JsonArray(terms.map { JsonPrimitive(it) }))
+        },
+    )
 
     suspend fun testCustomConnection(id: String): JsonElement = request(
         "/api/connections/${encodeQuery(id)}/test",
@@ -657,12 +888,26 @@ class GituApiClient(
         requestId: String,
         action: String,
         response: String? = null,
+        connectionId: String? = null,
+        setupJson: String? = null,
+        reviewedArgs: JsonObject? = null,
+        rememberForChief: Boolean = false,
+        chiefPattern: String? = null,
+        chiefScope: String? = null,
     ): JsonElement = request(
         "/api/cowork/requests/${encodeQuery(requestId)}",
         method = "POST",
         body = buildJsonObject {
             put("action", action)
             if (response != null) put("response", response)
+            if (!connectionId.isNullOrBlank()) put("connectionId", connectionId)
+            if (!setupJson.isNullOrBlank()) put("setup", setupJson)
+            if (reviewedArgs != null) put("reviewedArgs", reviewedArgs)
+            if (rememberForChief) {
+                put("rememberForChief", true)
+                if (!chiefPattern.isNullOrBlank()) put("chiefPattern", chiefPattern.trim())
+                if (!chiefScope.isNullOrBlank()) put("chiefScope", chiefScope)
+            }
         },
     )
 

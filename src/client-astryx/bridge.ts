@@ -1,6 +1,7 @@
 export interface CoworkAvatar {
   color?: string;
   shape?: string;
+  imageUrl?: string;
 }
 
 export interface AgentRole {
@@ -165,6 +166,7 @@ export interface GituHostBridge {
   activeConv(): CoworkConversation | null;
   getAvatarImageUrl(shape?: string): string;
   getCharacterColor(avatar?: CoworkAvatar): string;
+  getCharacterFilter?(avatar?: CoworkAvatar): string;
   getConstants(): {
     shapes: string[];
     characterNames: Record<string, string>;

@@ -29,6 +29,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.ImageLoader
+import coil.decode.SvgDecoder
 import dev.agentgitu.mobile.data.local.ThemePreference
 import dev.agentgitu.mobile.push.PushDeepLink
 import dev.agentgitu.mobile.push.PushNavigationTarget
@@ -167,6 +168,7 @@ private fun AgentGituRoot(vm: GituAppViewModel) {
         val okClient = vm.mediaOkHttpClient()
         val loader = ImageLoader.Builder(context)
             .apply { if (okClient != null) okHttpClient(okClient) }
+            .components { add(SvgDecoder.Factory()) }
             .crossfade(true)
             .build()
         GituMediaContext(
@@ -182,6 +184,8 @@ private fun AgentGituRoot(vm: GituAppViewModel) {
             if (liveSurface != null) {
                 LiveSurfaceScreen(
                     request = liveSurface,
+                    state = state,
+                    vm = vm,
                     onClose = { vm.closeLiveSurface() },
                 )
             } else if (state.showConnectionsScreen) {

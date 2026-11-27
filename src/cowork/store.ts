@@ -21,6 +21,8 @@ export interface CoworkAvatar {
   color: string;
   /** Character style rendered consistently throughout the UI. */
   shape: 'orb' | 'cube' | 'home-blob' | 'diamond' | 'pyramid' | 'dot-orb' | 'dot-block' | 'dot-tip' | 'dot-hexa' | 'dot-nova' | 'dot-dia' | 'dot-penta' | 'dot-luna' | 'dot-plus' | 'dot-pill';
+  /** Optional user-uploaded portrait URL served by Gitu (e.g. /api/cowork/agents/<id>/avatar?v=<ts>). */
+  imageUrl?: string;
 }
 
 export interface CoworkAgent extends AgentProfileSettings {
@@ -879,9 +881,80 @@ export class CoworkStore {
     this.save();
   }
 
+  private avatarDir(): string {
+    return path.join(path.dirname(this.file()), 'avatars');
+  }
+
+  private removeAgentAvatarFiles(agentId: string): void {
+    if (!/^[\w-]+$/.test(agentId)) return;
+    const dir = this.avatarDir();
+    for (const ext of ['.png', '.jpg', '.webp']) {
+      try {
+        rmSync(path.join(dir, `${agentId}${ext}`), { force: true });
+      } catch {
+        /* best effort */
+      }
+    }
+  }
+
+  saveAgentAvatar(agentId: string, bytes: Buffer, mime: 'image/png' | 'image/jpeg' | 'image/webp'): CoworkAgent {
+    const data = this.load();
+    const agent = data.agents.find((a) => a.id === agentId);
+    if (!agent) throw new Error('Agent not found.');
+    if (!/^[\w-]+$/.test(agentId)) throw new Error('Invalid agent id.');
+    const ext = mime === 'image/png' ? '.png' : mime === 'image/webp' ? '.webp' : '.jpg';
+    const dir = this.avatarDir();
+    mkdirSync(dir, { recursive: true });
+    this.removeAgentAvatarFiles(agentId);
+    const dest = path.join(dir, `${agentId}${ext}`);
+    const tmp = `${dest}.${process.pid}.tmp`;
+    writeFileSync(tmp, bytes);
+    try {
+      renameSync(tmp, dest);
+    } catch {
+      writeFileSync(dest, bytes);
+      try { rmSync(tmp, { force: true }); } catch { /* best effort */ }
+    }
+    agent.avatar = {
+      ...agent.avatar,
+      imageUrl: `/api/cowork/agents/${encodeURIComponent(agentId)}/avatar?v=${Date.now()}`,
+    };
+    this.save(true);
+    return agent;
+  }
+
+  agentAvatarFile(agentId: string): { filePath: string; mime: string } | undefined {
+    if (!/^[\w-]+$/.test(agentId)) return undefined;
+    const dir = this.avatarDir();
+    const candidates: Array<{ ext: string; mime: string }> = [
+      { ext: '.png', mime: 'image/png' },
+      { ext: '.jpg', mime: 'image/jpeg' },
+      { ext: '.webp', mime: 'image/webp' },
+    ];
+    for (const c of candidates) {
+      const candidatePath = path.join(dir, `${agentId}${c.ext}`);
+      if (existsSync(candidatePath)) return { filePath: candidatePath, mime: c.mime };
+    }
+    return undefined;
+  }
+
+  deleteAgentAvatar(agentId: string): CoworkAgent | undefined {
+    const data = this.load();
+    const agent = data.agents.find((a) => a.id === agentId);
+    if (!agent) return undefined;
+    this.removeAgentAvatarFiles(agentId);
+    if (agent.avatar?.imageUrl) {
+      const { imageUrl: _removed, ...rest } = agent.avatar;
+      agent.avatar = rest;
+      this.save(true);
+    }
+    return agent;
+  }
+
   deleteAgent(id: string): boolean {
     const data = this.load();
     if (!data.agents.some((a) => a.id === id)) return false;
+    this.removeAgentAvatarFiles(id);
     const previousConversationIds = new Set(data.conversations.map((conversation) => conversation.id));
     data.agents = data.agents.filter((a) => a.id !== id);
     // Remove the agent from every group; delete DMs that were only with them.
@@ -2158,7 +2231,18 @@ function sanitizeAvatar(value: unknown, fallback: CoworkAvatar | undefined): Cow
   const color = typeof raw['color'] === 'string' && /^#[0-9a-f]{6}$/i.test(raw['color']) ? raw['color'].toLowerCase() : fallback?.color ?? '#8f80ff';
   const suppliedShape = typeof raw['shape'] === 'string' ? raw['shape'] : '';
   const shape = AVATAR_SHAPES.has(suppliedShape) ? suppliedShape as CoworkAvatar['shape'] : LEGACY_AVATAR_SHAPES.get(suppliedShape) ?? fallback?.shape ?? 'orb';
-  return { color, shape };
+  let imageUrl: string | undefined;
+  if ('imageUrl' in raw) {
+    const candidate = typeof raw['imageUrl'] === 'string' ? raw['imageUrl'].trim() : '';
+    if (/^\/api\/cowork\/agents\/[\w-]+\/avatar(?:\?v=\d+)?$/.test(candidate)) {
+      imageUrl = candidate;
+    } else {
+      imageUrl = undefined;
+    }
+  } else if (fallback?.imageUrl && /^\/api\/cowork\/agents\/[\w-]+\/avatar(?:\?v=\d+)?$/.test(fallback.imageUrl)) {
+    imageUrl = fallback.imageUrl;
+  }
+  return imageUrl ? { color, shape, imageUrl } : { color, shape };
 }
 
 function sanitizeTelegram(value: unknown): CoworkTelegramConfig {

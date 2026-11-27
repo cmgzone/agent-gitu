@@ -349,6 +349,7 @@ fun RichWorkingIndicator(
     agentName: String,
     accentHex: String?,
     shapeName: String?,
+    imageUrl: String? = null,
     progress: TeamProgress?,
     fallbackText: String = "Working…",
     onClick: (() -> Unit)? = null,
@@ -394,6 +395,7 @@ fun RichWorkingIndicator(
             label = agentName.ifBlank { "AI" },
             accentHex = accentHex,
             shapeName = shapeName,
+            imageUrl = imageUrl,
             size = 28.dp,
             working = true,
         )

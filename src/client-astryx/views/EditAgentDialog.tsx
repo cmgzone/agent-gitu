@@ -19,7 +19,7 @@ import {Switch} from '@astryxdesign/core/Switch';
 import {Text} from '@astryxdesign/core/Text';
 import {TextArea} from '@astryxdesign/core/TextArea';
 import {TextInput} from '@astryxdesign/core/TextInput';
-import {useEffect, useMemo, useState} from 'react';
+import {useEffect, useMemo, useRef, useState} from 'react';
 import {
   getHostBridge,
   type AppSkill,
@@ -29,6 +29,9 @@ import {
 } from '../bridge';
 import {AppIcon, Sparkles, Trash2} from '../components/AppIcons';
 import {PlushPortrait} from '../components/PlushPortrait';
+
+const MAX_AVATAR_UPLOAD_BYTES = 4 * 1024 * 1024;
+const ALLOWED_AVATAR_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 
 export function EditAgentDialog({
   isOpen,
@@ -63,6 +66,10 @@ export function EditAgentDialog({
   const [systemPrompt, setSystemPrompt] = useState('');
   const [shape, setShape] = useState('dot-orb');
   const [color, setColor] = useState('');
+  const [avatarImageUrl, setAvatarImageUrl] = useState<string | undefined>(undefined);
+  const [pendingAvatarDataUrl, setPendingAvatarDataUrl] = useState<string | null>(null);
+  const [removeAvatarPending, setRemoveAvatarPending] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [provider, setProvider] = useState('pikrouter');
   const [model, setModel] = useState('');
   const [effort, setEffort] = useState('');
@@ -95,6 +102,9 @@ export function EditAgentDialog({
         constants.characterPalette[0]?.[1] ||
         '',
     );
+    setAvatarImageUrl(agent?.avatar?.imageUrl);
+    setPendingAvatarDataUrl(null);
+    setRemoveAvatarPending(false);
     setProvider(
       agent ? agent.provider || '' : hasPikrouter ? 'pikrouter' : selParts[0] || '',
     );
@@ -211,6 +221,33 @@ export function EditAgentDialog({
     }
   };
 
+  const effectivePreviewImageUrl = removeAvatarPending
+    ? undefined
+    : pendingAvatarDataUrl || avatarImageUrl;
+
+  const handleAvatarFileSelected = (file: File | null) => {
+    if (!file || !host) return;
+    if (!ALLOWED_AVATAR_MIMES.has(file.type)) {
+      host.toast('Please choose a PNG, JPEG, or WebP image.', true);
+      return;
+    }
+    if (file.size > MAX_AVATAR_UPLOAD_BYTES) {
+      host.toast('Avatar image must be 4 MB or smaller.', true);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = typeof reader.result === 'string' ? reader.result : '';
+      if (!dataUrl) return;
+      setPendingAvatarDataUrl(dataUrl);
+      setRemoveAvatarPending(false);
+    };
+    reader.onerror = () => {
+      host.toast('Could not read the selected image.', true);
+    };
+    reader.readAsDataURL(file);
+  };
+
   const handleSave = async () => {
     if (!host) return;
     if (!name.trim()) {
@@ -223,6 +260,15 @@ export function EditAgentDialog({
     }
     setSaving(true);
     try {
+      const avatarPayload: {shape: string; color: string; imageUrl?: string} = {
+        shape,
+        color,
+      };
+      if (removeAvatarPending) {
+        avatarPayload.imageUrl = '';
+      } else if (avatarImageUrl) {
+        avatarPayload.imageUrl = avatarImageUrl;
+      }
       const result = await host.api<{agent: CoworkAgent; conversation?: unknown}>(
         '/api/cowork/agents',
         {
@@ -231,7 +277,7 @@ export function EditAgentDialog({
           body: JSON.stringify({
             id: isEdit ? agent?.id : undefined,
             name: name.trim(),
-            avatar: {shape, color},
+            avatar: avatarPayload,
             tagline,
             description,
             systemPrompt,
@@ -248,7 +294,25 @@ export function EditAgentDialog({
           }),
         },
       );
-      onSaved(result.agent, !isEdit);
+      let finalAgent = result.agent;
+      if (pendingAvatarDataUrl && finalAgent?.id) {
+        const uploaded = await host.api<{ok: boolean; agent: CoworkAgent}>(
+          `/api/cowork/agents/${encodeURIComponent(finalAgent.id)}/avatar`,
+          {
+            method: 'POST',
+            headers: {'content-type': 'application/json'},
+            body: JSON.stringify({dataUrl: pendingAvatarDataUrl}),
+          },
+        );
+        if (uploaded?.agent) finalAgent = uploaded.agent;
+      } else if (removeAvatarPending && isEdit && finalAgent?.id) {
+        const cleared = await host.api<{ok: boolean; agent: CoworkAgent}>(
+          `/api/cowork/agents/${encodeURIComponent(finalAgent.id)}/avatar`,
+          {method: 'DELETE'},
+        );
+        if (cleared?.agent) finalAgent = cleared.agent;
+      }
+      onSaved(finalAgent, !isEdit);
       onClose();
     } catch (err) {
       host.toast(
@@ -394,33 +458,77 @@ export function EditAgentDialog({
                   <HStack gap={3} vAlign="center" hAlign="between" wrap="wrap">
                     <HStack gap={3} vAlign="center">
                       <PlushPortrait
-                        avatar={{shape, color}}
+                        avatar={{
+                          shape,
+                          color,
+                          imageUrl: effectivePreviewImageUrl,
+                        }}
                         name={name || 'Teammate'}
                         size={48}
                       />
                       <VStack gap={0.5}>
                         <Text type="body" weight="semibold">
-                          {constants.characterNames[shape] || 'Character'}
+                          {effectivePreviewImageUrl
+                            ? 'Custom avatar'
+                            : constants.characterNames[shape] || 'Character'}
                         </Text>
                         <Text type="supporting" color="secondary">
-                          Plush avatar and accent highlight in Cowork
+                          {effectivePreviewImageUrl
+                            ? 'Uploaded photo with your chosen accent color'
+                            : 'Plush avatar and accent highlight in Cowork'}
                         </Text>
                       </VStack>
                     </HStack>
                     <HStack gap={2} vAlign="center" wrap="wrap">
-                      {constants.characterPalette.map(([label, hex]) => (
-                        <button
-                          key={hex}
-                          type="button"
-                          className="gitu-astryx-swatch"
-                          style={{backgroundColor: hex}}
-                          aria-label={`${label} character color`}
-                          aria-pressed={color === hex}
-                          title={label}
-                          onClick={() => setColor(hex)}
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        hidden
+                        onChange={event => {
+                          const file = event.target.files?.[0] || null;
+                          handleAvatarFileSelected(file);
+                          event.target.value = '';
+                        }}
+                      />
+                      <Button
+                        label={
+                          effectivePreviewImageUrl
+                            ? 'Change photo'
+                            : 'Upload photo'
+                        }
+                        variant="secondary"
+                        size="sm"
+                        isDisabled={saving}
+                        onClick={() => fileInputRef.current?.click()}
+                      />
+                      {effectivePreviewImageUrl ? (
+                        <Button
+                          label="Use plush"
+                          variant="ghost"
+                          size="sm"
+                          isDisabled={saving}
+                          onClick={() => {
+                            setPendingAvatarDataUrl(null);
+                            setRemoveAvatarPending(true);
+                          }}
                         />
-                      ))}
+                      ) : null}
                     </HStack>
+                  </HStack>
+                  <HStack gap={2} vAlign="center" wrap="wrap">
+                    {constants.characterPalette.map(([label, hex]) => (
+                      <button
+                        key={hex}
+                        type="button"
+                        className="gitu-astryx-swatch"
+                        style={{backgroundColor: hex}}
+                        aria-label={`${label} character color`}
+                        aria-pressed={color === hex}
+                        title={label}
+                        onClick={() => setColor(hex)}
+                      />
+                    ))}
                   </HStack>
                   <Grid columns={isMobile ? 3 : 6} gap={2}>
                     {constants.shapes.map(s => {

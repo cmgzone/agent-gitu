@@ -45,12 +45,15 @@ data class LiveSurfaceRequest(
     val title: String,
     val url: String,
     val subtitle: String = "",
+    val computerAgentId: String? = null,
+    val isServerBrowser: Boolean = false,
 )
 
 data class AppUiState(
     val initialized: Boolean = false,
     val connected: Boolean = false,
     val connecting: Boolean = false,
+    val isRefreshing: Boolean = false,
     val serverUrl: String = "http://10.0.2.2:8321",
     val connectionMode: ConnectionMode = ConnectionMode.LOCAL,
     val savedEmail: String = "",
@@ -84,6 +87,7 @@ data class AppUiState(
     val activeRunEvents: List<RunEvent> = emptyList(),
     val activeRunCursor: Int = -1,
     val activeCheckpoints: List<RunCheckpoint> = emptyList(),
+    val settledCodingGateIds: Set<String> = emptySet(),
     val gitStatus: GitStatus? = null,
     val gitDiff: String = "",
     val modelsCatalog: ModelsCatalogResponse = ModelsCatalogResponse(),
@@ -100,6 +104,14 @@ data class AppUiState(
     val activeTeamView: TeamView? = null,
     val selectedProfileAgentId: String? = null,
     val pendingAttachments: List<PendingAttachment> = emptyList(),
+    val referencedMessageIds: List<String> = emptyList(),
+    val settledRequestIds: Set<String> = emptySet(),
+
+    // Interactive Computer & Handoff
+    val agentComputers: Map<String, AgentComputerStatus> = emptyMap(),
+    val computerActionBusy: Set<String> = emptySet(),
+    val inlineComputerAgentId: String? = null,
+    val inlineComputerDismissedKey: String? = null,
 
     // Native Connections Page
     val showConnectionsScreen: Boolean = false,
@@ -144,6 +156,7 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
     private var runPollJob: Job? = null
     private var teamPollJob: Job? = null
     private var inboxPollJob: Job? = null
+    private var computerPollJob: Job? = null
     private var pendingPushTarget: PushNavigationTarget? = null
 
     private val _uiState = MutableStateFlow(AppUiState())
@@ -265,7 +278,10 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
                 refreshAgentWorkspace()
             }
             MainTab.CODING -> refreshAgentWorkspace()
-            MainTab.DESKTOP -> refreshCowork()
+            MainTab.DESKTOP -> {
+                refreshCowork()
+                refreshAllAgentComputers()
+            }
             MainTab.SETTINGS -> refreshSettings()
         }
     }
@@ -800,6 +816,7 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
 
     fun resolveApproval(approvalId: String, approved: Boolean) {
         val client = api ?: return
+        _uiState.update { it.copy(settledCodingGateIds = it.settledCodingGateIds + approvalId) }
         viewModelScope.launch {
             runCatching { client.resolveApproval(approvalId, approved) }
                 .onSuccess {
@@ -807,12 +824,16 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
                         it.copy(bannerMessage = if (approved) "Action approved." else "Action denied.")
                     }
                 }
-                .onFailure { handleApiError(it) }
+                .onFailure { err ->
+                    _uiState.update { it.copy(settledCodingGateIds = it.settledCodingGateIds - approvalId) }
+                    handleApiError(err)
+                }
         }
     }
 
     fun resolvePlanReview(reviewId: String, approved: Boolean, note: String) {
         val client = api ?: return
+        _uiState.update { it.copy(settledCodingGateIds = it.settledCodingGateIds + reviewId) }
         viewModelScope.launch {
             runCatching { client.resolvePlanReview(reviewId, approved, note.trim()) }
                 .onSuccess {
@@ -820,17 +841,56 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
                         it.copy(bannerMessage = if (approved) "Plan approved." else "Plan revision requested.")
                     }
                 }
-                .onFailure { handleApiError(it) }
+                .onFailure { err ->
+                    _uiState.update { it.copy(settledCodingGateIds = it.settledCodingGateIds - reviewId) }
+                    handleApiError(err)
+                }
         }
     }
 
     fun submitAnswer(answerId: String, answer: String) {
         val client = api ?: return
         if (answer.isBlank()) return
+        _uiState.update { it.copy(settledCodingGateIds = it.settledCodingGateIds + answerId) }
         viewModelScope.launch {
             runCatching { client.submitAnswer(answerId, answer.trim()) }
                 .onSuccess { _uiState.update { it.copy(bannerMessage = "Answer sent.") } }
-                .onFailure { handleApiError(it) }
+                .onFailure { err ->
+                    _uiState.update { it.copy(settledCodingGateIds = it.settledCodingGateIds - answerId) }
+                    handleApiError(err)
+                }
+        }
+    }
+
+    fun submitRunConnection(
+        runId: String,
+        label: String? = null,
+        provider: String? = null,
+        baseUrl: String? = null,
+        documentationUrl: String? = null,
+        validationPath: String? = null,
+        capabilities: List<String> = emptyList(),
+        token: String,
+        existingConnectionId: String? = null,
+    ) {
+        val client = api ?: return
+        viewModelScope.launch {
+            runCatching {
+                client.submitRunConnection(
+                    runId = runId,
+                    label = label,
+                    provider = provider,
+                    baseUrl = baseUrl,
+                    documentationUrl = documentationUrl,
+                    validationPath = validationPath,
+                    capabilities = capabilities,
+                    token = token,
+                    existingConnectionId = existingConnectionId,
+                )
+            }.onSuccess {
+                _uiState.update { it.copy(bannerMessage = "Connection ready — continuing your task.") }
+                refreshConnections()
+            }.onFailure { handleApiError(it) }
         }
     }
 
@@ -948,11 +1008,13 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
         allowShell: Boolean,
         allowWrites: Boolean,
         chiefOfStaff: Boolean,
+        pendingAvatarDataUrl: String? = null,
+        removeAvatar: Boolean = false,
     ) {
         val client = api ?: return
         viewModelScope.launch {
             runCatching {
-                client.saveTeammate(
+                val saved = client.saveTeammate(
                     id = id,
                     name = name.trim(),
                     tagline = tagline.trim(),
@@ -963,10 +1025,43 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
                     allowWrites = allowWrites,
                     chiefOfStaff = chiefOfStaff,
                 )
+                when {
+                    !pendingAvatarDataUrl.isNullOrBlank() && saved.id.isNotBlank() -> {
+                        client.uploadAgentAvatar(saved.id, pendingAvatarDataUrl)
+                    }
+                    removeAvatar && !id.isNullOrBlank() && saved.id.isNotBlank() -> {
+                        client.deleteAgentAvatar(saved.id)
+                    }
+                }
+                saved
             }.onSuccess {
                 _uiState.update { it.copy(bannerMessage = "Teammate saved.") }
                 refreshCowork()
             }.onFailure { handleApiError(it) }
+        }
+    }
+
+    fun uploadAgentAvatar(agentId: String, dataUrl: String) {
+        val client = api ?: return
+        viewModelScope.launch {
+            runCatching { client.uploadAgentAvatar(agentId, dataUrl) }
+                .onSuccess {
+                    _uiState.update { it.copy(bannerMessage = "Avatar photo updated.") }
+                    refreshCowork()
+                }
+                .onFailure { handleApiError(it) }
+        }
+    }
+
+    fun deleteAgentAvatar(agentId: String) {
+        val client = api ?: return
+        viewModelScope.launch {
+            runCatching { client.deleteAgentAvatar(agentId) }
+                .onSuccess {
+                    _uiState.update { it.copy(bannerMessage = "Switched back to plush avatar.") }
+                    refreshCowork()
+                }
+                .onFailure { handleApiError(it) }
         }
     }
 
@@ -991,18 +1086,36 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
             it.copy(
                 selectedConversationId = conversationId,
                 selectedThreadId = threadId,
+                referencedMessageIds = emptyList(),
+                inlineComputerAgentId = null,
+                inlineComputerDismissedKey = null,
             )
         }
         if (primaryAgentId.isNotBlank()) {
             refreshConnections(primaryAgentId)
+            refreshAgentComputer(primaryAgentId)
         }
         val client = api ?: return
         teamPollJob = viewModelScope.launch {
+            var pollTick = 0
             while (isActive) {
                 try {
                     val view = client.teamChat(conversationId, _uiState.value.selectedThreadId)
                     _uiState.update { it.copy(activeTeamView = view, offlineMode = false) }
                     store.cacheTeamSnapshot(conversationId, _uiState.value.selectedThreadId, view)
+                    val targetCompAgent = _uiState.value.inlineComputerAgentId
+                        ?: view.requests.firstOrNull { it.desktopHandoff && (it.status == "open" || it.status == "pending") }?.agentId
+                        ?: primaryAgentId
+                    if (targetCompAgent.isNotBlank() && (pollTick % 2 == 0 || _uiState.value.inlineComputerAgentId != null || view.busy)) {
+                        runCatching { client.getAgentComputer(targetCompAgent) }
+                            .onSuccess { res ->
+                                val cid = res.computer.agentId.ifBlank { targetCompAgent }
+                                _uiState.update { st ->
+                                    st.copy(agentComputers = st.agentComputers + (cid to res.computer.copy(agentId = cid)))
+                                }
+                            }
+                    }
+                    pollTick++
                     delay(if (view.busy) 1_500L else 4_500L)
                 } catch (err: Exception) {
                     if (err is GituApiException && err.code == "APP_LOCKED") {
@@ -1018,7 +1131,15 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
 
     fun closeConversation() {
         teamPollJob?.cancel()
-        _uiState.update { it.copy(selectedConversationId = null) }
+        computerPollJob?.cancel()
+        _uiState.update {
+            it.copy(
+                selectedConversationId = null,
+                referencedMessageIds = emptyList(),
+                inlineComputerAgentId = null,
+                inlineComputerDismissedKey = null,
+            )
+        }
         refreshCowork()
     }
 
@@ -1043,17 +1164,90 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
         val convId = _uiState.value.selectedConversationId ?: return
         val threadId = _uiState.value.selectedThreadId
         val attachments = _uiState.value.pendingAttachments
+        val refs = _uiState.value.referencedMessageIds
         if (text.isBlank() && attachments.isEmpty()) return
         val cleanText = text.trim().ifBlank { "Attached ${attachments.joinToString(", ") { it.name }}" }
-        _uiState.update { it.copy(pendingAttachments = emptyList()) }
+        _uiState.update { it.copy(pendingAttachments = emptyList(), referencedMessageIds = emptyList()) }
         viewModelScope.launch {
             val msgId = "msg_${UUID.randomUUID().toString().replace("-", "").take(16)}"
-            runCatching { client.sendTeamMessage(convId, msgId, cleanText, threadId, attachments) }
+            runCatching { client.sendTeamMessage(convId, msgId, cleanText, threadId, attachments, refs) }
+                .onSuccess { refreshActiveConversationOnce() }
                 .onFailure {
-                    _uiState.update { st -> st.copy(pendingAttachments = attachments) }
+                    _uiState.update { st -> st.copy(pendingAttachments = attachments, referencedMessageIds = refs) }
                     handleApiError(it)
                 }
         }
+    }
+
+    fun editTeamMessage(messageId: String, newText: String, revision: Int) {
+        val client = api ?: return
+        val convId = _uiState.value.selectedConversationId ?: return
+        val clean = newText.trim()
+        if (clean.isBlank()) return
+        viewModelScope.launch {
+            runCatching { client.editTeamMessage(convId, messageId, clean, revision) }
+                .onSuccess {
+                    _uiState.update { it.copy(bannerMessage = "Message updated.") }
+                    refreshActiveConversationOnce()
+                }
+                .onFailure { handleApiError(it) }
+        }
+    }
+
+    fun retryTeamMessage(messageId: String, attempt: Int) {
+        val client = api ?: return
+        val convId = _uiState.value.selectedConversationId ?: return
+        viewModelScope.launch {
+            runCatching { client.retryTeamMessage(convId, messageId, attempt) }
+                .onSuccess {
+                    _uiState.update { it.copy(bannerMessage = "Retrying message…") }
+                    refreshActiveConversationOnce()
+                }
+                .onFailure { handleApiError(it) }
+        }
+    }
+
+    fun deleteTeamMessage(messageId: String) {
+        val client = api ?: return
+        val convId = _uiState.value.selectedConversationId ?: return
+        viewModelScope.launch {
+            runCatching { client.deleteTeamMessage(convId, messageId) }
+                .onSuccess {
+                    _uiState.update { st ->
+                        st.copy(
+                            activeTeamView = st.activeTeamView?.copy(
+                                messages = st.activeTeamView.messages.filterNot { it.id == messageId },
+                            ),
+                            referencedMessageIds = st.referencedMessageIds.filterNot { it == messageId },
+                            bannerMessage = "Message deleted.",
+                        )
+                    }
+                    refreshActiveConversationOnce()
+                }
+                .onFailure { handleApiError(it) }
+        }
+    }
+
+    fun toggleReferencedMessage(messageId: String) {
+        _uiState.update { st ->
+            val current = st.referencedMessageIds
+            val next = if (messageId in current) {
+                current.filterNot { it == messageId }
+            } else {
+                (current + messageId).takeLast(5)
+            }
+            st.copy(referencedMessageIds = next)
+        }
+    }
+
+    fun removeReferencedMessage(messageId: String) {
+        _uiState.update { st ->
+            st.copy(referencedMessageIds = st.referencedMessageIds.filterNot { it == messageId })
+        }
+    }
+
+    fun clearReferencedMessages() {
+        _uiState.update { it.copy(referencedMessageIds = emptyList()) }
     }
 
     fun addPendingAttachment(attachment: PendingAttachment) {
@@ -1235,18 +1429,108 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
         baseUrl: String,
         token: String,
         validationPath: String = "/",
+        setupJson: String? = null,
+        values: Map<String, String>? = null,
+        documentationUrl: String? = null,
+        authType: String = "auto",
+        authHeader: String? = null,
+        authPrefix: String? = null,
     ) {
         val client = api ?: return
         viewModelScope.launch {
             runCatching {
-                val created = client.saveCustomConnection(label, provider, baseUrl, token, validationPath)
-                if (created.id.isNotBlank()) runCatching { client.testCustomConnection(created.id) }
-                client.resolveTeamRequest(requestId, "provide", created.id.ifBlank { "Connected" })
+                val created = if (!setupJson.isNullOrBlank()) {
+                    client.saveCredentialForRequest(
+                        requestId = requestId,
+                        setupJson = setupJson,
+                        token = if (values.isNullOrEmpty()) token else null,
+                        values = values?.takeIf { it.isNotEmpty() },
+                    )
+                } else {
+                    client.saveCustomConnection(
+                        label = label,
+                        provider = provider,
+                        baseUrl = baseUrl,
+                        token = token,
+                        validationPath = validationPath,
+                        documentationUrl = documentationUrl,
+                        authType = authType,
+                        authHeader = authHeader,
+                        authPrefix = authPrefix,
+                    )
+                }
+                client.resolveTeamRequest(
+                    requestId = requestId,
+                    action = "provide",
+                    connectionId = created.id.takeIf { it.isNotBlank() },
+                    setupJson = setupJson,
+                )
                 created
             }.onSuccess { saved ->
-                _uiState.update { it.copy(bannerMessage = "Connected ${saved.label.ifBlank { provider }}.") }
+                _uiState.update {
+                    it.copy(
+                        settledRequestIds = it.settledRequestIds + requestId,
+                        bannerMessage = "Credential saved securely for ${saved.label.ifBlank { provider }}.",
+                    )
+                }
                 refreshConnections()
+                refreshActiveConversationOnce()
             }.onFailure { handleApiError(it) }
+        }
+    }
+
+    fun probeSshHostKey(requestId: String, baseUrl: String, onResult: (Result<String>) -> Unit) {
+        val client = api ?: return
+        viewModelScope.launch {
+            val res = runCatching { client.probeSshHostKey(requestId, baseUrl) }
+            onResult(res)
+        }
+    }
+
+    fun submitSshCredential(
+        requestId: String,
+        label: String,
+        baseUrl: String,
+        password: String,
+        hostFingerprint: String,
+    ) {
+        val client = api ?: return
+        viewModelScope.launch {
+            runCatching {
+                val connId = client.saveSshCredentialForRequest(requestId, label, baseUrl, password, hostFingerprint)
+                client.resolveTeamRequest(requestId = requestId, action = "provide", connectionId = connId)
+            }.onSuccess {
+                _uiState.update {
+                    it.copy(
+                        settledRequestIds = it.settledRequestIds + requestId,
+                        bannerMessage = "SSH connection verified and saved.",
+                    )
+                }
+                refreshConnections()
+                refreshActiveConversationOnce()
+            }.onFailure { handleApiError(it) }
+        }
+    }
+
+    fun submitBrowserAuth(
+        requestId: String,
+        setupJson: String,
+        values: Map<String, String>,
+        terms: List<String>,
+    ) {
+        val client = api ?: return
+        viewModelScope.launch {
+            runCatching { client.submitBrowserAuthForRequest(requestId, setupJson, values, terms) }
+                .onSuccess {
+                    _uiState.update {
+                        it.copy(
+                            settledRequestIds = it.settledRequestIds + requestId,
+                            bannerMessage = "Website form submitted securely.",
+                        )
+                    }
+                    refreshActiveConversationOnce()
+                }
+                .onFailure { handleApiError(it) }
         }
     }
 
@@ -1323,17 +1607,50 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun saveCustomConnection(label: String, provider: String, baseUrl: String, token: String, validationPath: String = "/") {
+    fun saveCustomConnection(
+        label: String,
+        provider: String,
+        baseUrl: String,
+        token: String,
+        validationPath: String = "/",
+        id: String? = null,
+        documentationUrl: String? = null,
+        capabilities: List<String> = listOf("connection.discover"),
+        authType: String = "auto",
+        authHeader: String? = null,
+        authPrefix: String? = null,
+        existingOperations: List<CustomConnectionOperation> = emptyList(),
+        structuredAuthJson: kotlinx.serialization.json.JsonElement? = null,
+    ) {
         val client = api ?: return
         viewModelScope.launch {
             runCatching {
-                val created = client.saveCustomConnection(label, provider, baseUrl, token, validationPath)
-                if (created.id.isNotBlank()) runCatching { client.testCustomConnection(created.id) }
+                val created = client.saveCustomConnection(
+                    label = label,
+                    provider = provider,
+                    baseUrl = baseUrl,
+                    token = token,
+                    validationPath = validationPath,
+                    id = id,
+                    documentationUrl = documentationUrl,
+                    capabilities = capabilities,
+                    authType = authType,
+                    authHeader = authHeader,
+                    authPrefix = authPrefix,
+                    existingOperations = existingOperations,
+                    structuredAuthJson = structuredAuthJson,
+                )
+                if (created.id.isNotBlank()) {
+                    client.testCustomConnection(created.id)
+                }
                 created
             }.onSuccess { saved ->
-                _uiState.update { it.copy(bannerMessage = "Connection \"${saved.label}\" saved.") }
+                _uiState.update { it.copy(bannerMessage = "Connection \"${saved.label}\" saved and checked.") }
                 refreshConnections()
-            }.onFailure { handleApiError(it) }
+            }.onFailure { err ->
+                refreshConnections()
+                handleApiError(err)
+            }
         }
     }
 
@@ -1364,12 +1681,67 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun resolveTeamRequest(requestId: String, action: String, response: String? = null) {
+    fun resolveTeamRequest(
+        requestId: String,
+        action: String,
+        response: String? = null,
+        reviewedArgs: kotlinx.serialization.json.JsonObject? = null,
+        rememberForChief: Boolean = false,
+        chiefPattern: String? = null,
+        chiefScope: String? = null,
+    ) {
         val client = api ?: return
+        _uiState.update { it.copy(settledRequestIds = it.settledRequestIds + requestId) }
         viewModelScope.launch {
-            runCatching { client.resolveTeamRequest(requestId, action, response) }
-                .onSuccess { _uiState.update { it.copy(bannerMessage = "Request updated.") } }
-                .onFailure { handleApiError(it) }
+            runCatching {
+                client.resolveTeamRequest(
+                    requestId = requestId,
+                    action = action,
+                    response = response,
+                    reviewedArgs = reviewedArgs,
+                    rememberForChief = rememberForChief,
+                    chiefPattern = chiefPattern,
+                    chiefScope = chiefScope,
+                )
+            }.onSuccess {
+                _uiState.update {
+                    it.copy(
+                        bannerMessage = when {
+                            rememberForChief -> "Answered and saved for Chief of Staff."
+                            action == "dismiss" || action == "deny" -> "Card dismissed."
+                            else -> "Request updated."
+                        },
+                    )
+                }
+                refreshActiveConversationOnce()
+            }.onFailure { err ->
+                _uiState.update { it.copy(settledRequestIds = it.settledRequestIds - requestId) }
+                handleApiError(err)
+            }
+        }
+    }
+
+    fun deleteTeamRequest(requestId: String) {
+        val client = api ?: return
+        _uiState.update { it.copy(settledRequestIds = it.settledRequestIds + requestId) }
+        viewModelScope.launch {
+            runCatching { client.deleteTeamRequest(requestId) }
+                .onSuccess {
+                    _uiState.update { it.copy(bannerMessage = "Card removed.") }
+                    refreshActiveConversationOnce()
+                }
+                .onFailure { err ->
+                    // Fallback to dismiss if an older server doesn't expose DELETE /api/cowork/requests/:id
+                    runCatching { client.resolveTeamRequest(requestId = requestId, action = "dismiss") }
+                        .onSuccess {
+                            _uiState.update { it.copy(bannerMessage = "Card dismissed.") }
+                            refreshActiveConversationOnce()
+                        }
+                        .onFailure {
+                            _uiState.update { st -> st.copy(settledRequestIds = st.settledRequestIds - requestId) }
+                            handleApiError(err)
+                        }
+                }
         }
     }
 
@@ -1930,17 +2302,380 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    // --- Pull-to-Refresh Actions ---
+
+    fun pullRefreshCoworkHub() {
+        val client = api ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isRefreshing = true) }
+            try {
+                val agents = runCatching { client.listTeammates() }.getOrNull()
+                val convs = runCatching { client.listConversations() }.getOrNull()
+                val inbox = runCatching { client.inboxState() }.getOrNull()
+                val runs = runCatching { client.listRuns() }.getOrNull()
+                _uiState.update { st ->
+                    st.copy(
+                        teammates = agents ?: st.teammates,
+                        conversations = convs ?: st.conversations,
+                        inboxState = inbox ?: st.inboxState,
+                        runs = runs ?: st.runs,
+                        offlineMode = false,
+                        isRefreshing = false,
+                    )
+                }
+            } catch (err: Exception) {
+                _uiState.update { it.copy(isRefreshing = false) }
+                handleApiError(err)
+            }
+        }
+    }
+
+    fun pullRefreshActiveConversation() {
+        val client = api ?: return
+        val convId = _uiState.value.selectedConversationId ?: return
+        val threadId = _uiState.value.selectedThreadId
+        val conv = _uiState.value.conversations.firstOrNull { it.id == convId }
+        val primaryAgentId = conv?.memberIds?.firstOrNull().orEmpty()
+        viewModelScope.launch {
+            _uiState.update { it.copy(isRefreshing = true) }
+            try {
+                val view = client.teamChat(convId, threadId)
+                _uiState.update { it.copy(activeTeamView = view, offlineMode = false) }
+                store.cacheTeamSnapshot(convId, threadId, view)
+                if (primaryAgentId.isNotBlank()) {
+                    runCatching { client.connectedApps(agentId = primaryAgentId) }
+                        .onSuccess { apps -> _uiState.update { it.copy(connectedApps = apps) } }
+                    runCatching { client.getAgentComputer(primaryAgentId) }
+                        .onSuccess { res ->
+                            val cid = res.computer.agentId.ifBlank { primaryAgentId }
+                            _uiState.update { st ->
+                                st.copy(agentComputers = st.agentComputers + (cid to res.computer.copy(agentId = cid)))
+                            }
+                        }
+                }
+            } catch (err: Exception) {
+                handleApiError(err)
+            } finally {
+                _uiState.update { it.copy(isRefreshing = false) }
+            }
+        }
+    }
+
+    fun pullRefreshCoding() {
+        val client = api ?: return
+        val projectPath = _uiState.value.selectedProjectPath
+        val activeRunId = _uiState.value.selectedRunId
+        viewModelScope.launch {
+            _uiState.update { it.copy(isRefreshing = true) }
+            try {
+                val runs = runCatching { client.listRuns() }.getOrNull()
+                val projects = runCatching { client.listProjects() }.getOrNull()
+                if (runs != null || projects != null) {
+                    _uiState.update { st ->
+                        st.copy(
+                            runs = runs ?: st.runs,
+                            projects = projects ?: st.projects,
+                            offlineMode = false,
+                        )
+                    }
+                }
+                if (!activeRunId.isNullOrBlank()) {
+                    val page = runCatching { client.runEvents(activeRunId, -1) }.getOrNull()
+                    if (page != null) {
+                        _uiState.update { st ->
+                            st.copy(
+                                activeRun = page.session,
+                                activeRunEvents = page.events,
+                                activeRunCursor = page.cursor,
+                                runs = st.runs.map { if (it.runId == page.session.runId) page.session else it },
+                                offlineMode = false,
+                            )
+                        }
+                    }
+                }
+                if (projectPath.isNotBlank()) {
+                    runCatching { client.gitStatus(projectPath) }
+                        .onSuccess { status -> _uiState.update { it.copy(gitStatus = status) } }
+                }
+            } catch (err: Exception) {
+                handleApiError(err)
+            } finally {
+                _uiState.update { it.copy(isRefreshing = false) }
+            }
+        }
+    }
+
+    fun pullRefreshInboxRoom() {
+        val client = api ?: return
+        val roomId = _uiState.value.selectedInboxRoomId ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isRefreshing = true) }
+            try {
+                runCatching { client.inboxMessagesResponse(roomId) }
+                    .onSuccess { res ->
+                        _uiState.update {
+                            it.copy(
+                                inboxMessages = res.messages,
+                                inboxActiveAgentTurnIds = res.activeAgentTurnIds,
+                                inboxWatching = res.watching,
+                            )
+                        }
+                    }
+                runCatching { client.inboxWorkspace(roomId) }
+                    .onSuccess { ws -> _uiState.update { it.copy(inboxWorkspace = ws, inboxWorkspaceLoading = false) } }
+                runCatching { client.inboxState() }
+                    .onSuccess { st -> _uiState.update { it.copy(inboxState = st) } }
+            } finally {
+                _uiState.update { it.copy(isRefreshing = false) }
+            }
+        }
+    }
+
+    fun pullRefreshConnections(agentId: String = _uiState.value.connectionsAgentId, search: String = "") {
+        val client = api ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isRefreshing = true, connectionsLoading = true, connectionsAgentId = agentId) }
+            try {
+                val apps = client.connectedApps(agentId = agentId, search = search)
+                val custom = client.listCustomConnections()
+                _uiState.update {
+                    it.copy(
+                        connectedApps = apps,
+                        customConnections = custom,
+                        connectionsLoading = false,
+                        isRefreshing = false,
+                    )
+                }
+            } catch (err: Exception) {
+                _uiState.update { it.copy(connectionsLoading = false, isRefreshing = false) }
+                handleApiError(err)
+            }
+        }
+    }
+
+    fun pullRefreshDesktop() {
+        val client = api ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isRefreshing = true) }
+            try {
+                val agents = runCatching { client.listTeammates() }.getOrElse { _uiState.value.teammates }
+                _uiState.update { it.copy(teammates = agents) }
+                val updated = LinkedHashMap(_uiState.value.agentComputers)
+                for (ag in agents) {
+                    runCatching { client.getAgentComputer(ag.id) }
+                        .onSuccess { res ->
+                            val cid = res.computer.agentId.ifBlank { ag.id }
+                            updated[cid] = res.computer.copy(agentId = cid)
+                        }
+                }
+                _uiState.update { it.copy(agentComputers = updated, offlineMode = false) }
+            } finally {
+                _uiState.update { it.copy(isRefreshing = false) }
+            }
+        }
+    }
+
+    // --- Interactive Computer & Handoff (In-Chat & Desktop Console) ---
+
+    fun syncCookiesForWebView(webView: android.webkit.WebView) {
+        api?.syncCookiesToWebView(webView)
+    }
+
+    fun agentComputerViewUrl(agentId: String, preview: Boolean = false): String =
+        api?.agentComputerViewUrl(agentId, preview).orEmpty()
+
+    fun serverBrowserViewUrl(agentId: String): String =
+        api?.serverBrowserViewUrl(agentId).orEmpty()
+
+    fun refreshAgentComputer(agentId: String) {
+        val client = api ?: return
+        if (agentId.isBlank()) return
+        viewModelScope.launch {
+            runCatching { client.getAgentComputer(agentId) }
+                .onSuccess { res ->
+                    val cid = res.computer.agentId.ifBlank { agentId }
+                    _uiState.update { st ->
+                        st.copy(agentComputers = st.agentComputers + (cid to res.computer.copy(agentId = cid)))
+                    }
+                }
+        }
+    }
+
+    fun refreshAllAgentComputers() {
+        val client = api ?: return
+        val agents = _uiState.value.teammates
+        if (agents.isEmpty()) return
+        viewModelScope.launch {
+            val updated = LinkedHashMap(_uiState.value.agentComputers)
+            for (ag in agents) {
+                runCatching { client.getAgentComputer(ag.id) }
+                    .onSuccess { res ->
+                        val cid = res.computer.agentId.ifBlank { ag.id }
+                        updated[cid] = res.computer.copy(agentId = cid)
+                    }
+            }
+            _uiState.update { it.copy(agentComputers = updated) }
+        }
+    }
+
+    fun openInlineComputer(agentId: String) {
+        val client = api ?: return
+        if (agentId.isBlank()) return
+        client.syncCookiesToWebView()
+        _uiState.update {
+            it.copy(
+                inlineComputerAgentId = agentId,
+                inlineComputerDismissedKey = null,
+            )
+        }
+        startComputerPolling(agentId)
+    }
+
+    fun closeInlineComputer(dismissKey: String? = null) {
+        computerPollJob?.cancel()
+        _uiState.update {
+            it.copy(
+                inlineComputerAgentId = null,
+                inlineComputerDismissedKey = dismissKey ?: it.inlineComputerDismissedKey,
+            )
+        }
+    }
+
+    private fun startComputerPolling(agentId: String) {
+        val client = api ?: return
+        computerPollJob?.cancel()
+        computerPollJob = viewModelScope.launch {
+            while (isActive) {
+                runCatching { client.getAgentComputer(agentId) }
+                    .onSuccess { res ->
+                        val cid = res.computer.agentId.ifBlank { agentId }
+                        _uiState.update { st ->
+                            st.copy(agentComputers = st.agentComputers + (cid to res.computer.copy(agentId = cid)))
+                        }
+                    }
+                val st = _uiState.value.agentComputers[agentId]?.state
+                delay(if (st == "starting") 2_000L else 3_500L)
+            }
+        }
+    }
+
+    fun performComputerAction(agentId: String, action: String) {
+        val client = api ?: return
+        if (agentId.isBlank()) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(computerActionBusy = it.computerActionBusy + agentId) }
+            try {
+                val res = client.agentComputerAction(agentId, action)
+                val cid = res.computer.agentId.ifBlank { agentId }
+                client.syncCookiesToWebView()
+                _uiState.update { st ->
+                    val nextTeammates = res.agent?.let { updatedAgent ->
+                        st.teammates.map { if (it.id == updatedAgent.id) updatedAgent else it }
+                    } ?: st.teammates
+                    val clearedHandoffIds = if (action == "return-control") {
+                        val openHandoffIds = st.activeTeamView?.requests.orEmpty()
+                            .filter { it.agentId == agentId && it.desktopHandoff && (it.status == "open" || it.status == "pending") }
+                            .map { it.id }
+                        st.settledRequestIds + openHandoffIds
+                    } else {
+                        st.settledRequestIds
+                    }
+                    st.copy(
+                        teammates = nextTeammates,
+                        agentComputers = st.agentComputers + (cid to res.computer.copy(agentId = cid)),
+                        settledRequestIds = clearedHandoffIds,
+                        computerActionBusy = st.computerActionBusy - agentId,
+                        bannerMessage = when (action) {
+                            "take-control" -> "You now have control of the computer."
+                            "return-control" -> "Returned control to the teammate."
+                            "start" -> "Starting private desktop…"
+                            "use-private" -> "Switched to private desktop — starting…"
+                            "sleep" -> "Desktop paused and preserved."
+                            "stop" -> "Desktop stopped."
+                            else -> null
+                        },
+                    )
+                }
+                if (action == "start" || action == "use-private") {
+                    startComputerPolling(agentId)
+                }
+                if (action == "return-control") {
+                    refreshActiveConversationOnce()
+                }
+            } catch (err: Exception) {
+                _uiState.update { it.copy(computerActionBusy = it.computerActionBusy - agentId) }
+                handleApiError(err)
+            }
+        }
+    }
+
+    fun launchComputerApp(agentId: String, app: String) {
+        val client = api ?: return
+        if (agentId.isBlank()) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(computerActionBusy = it.computerActionBusy + agentId) }
+            try {
+                val current = _uiState.value.agentComputers[agentId]
+                if (app == "browser" && current?.isUserControl != true) {
+                    val res = client.agentComputerAction(agentId, "take-control")
+                    val cid = res.computer.agentId.ifBlank { agentId }
+                    _uiState.update { st ->
+                        st.copy(agentComputers = st.agentComputers + (cid to res.computer.copy(agentId = cid)))
+                    }
+                }
+                client.agentComputerInput(
+                    agentId,
+                    kotlinx.serialization.json.buildJsonObject {
+                        put("action", kotlinx.serialization.json.JsonPrimitive("launch"))
+                        put("app", kotlinx.serialization.json.JsonPrimitive(app))
+                    },
+                )
+                _uiState.update {
+                    it.copy(
+                        computerActionBusy = it.computerActionBusy - agentId,
+                        bannerMessage = "Opened ${app.replace('_', ' ')} on desktop.",
+                    )
+                }
+            } catch (err: Exception) {
+                _uiState.update { it.copy(computerActionBusy = it.computerActionBusy - agentId) }
+                handleApiError(err)
+            }
+        }
+    }
+
+    fun performServerBrowserControl(agentId: String, action: String) {
+        val client = api ?: return
+        if (agentId.isBlank()) return
+        viewModelScope.launch {
+            runCatching { client.serverBrowserAction(agentId, action) }
+                .onSuccess {
+                    _uiState.update {
+                        it.copy(
+                            bannerMessage = if (action == "take-control") "You have browser control." else "Returned browser control to agent.",
+                        )
+                    }
+                }
+                .onFailure { handleApiError(it) }
+        }
+    }
+
     // --- Live Embedded Interactive Surfaces ---
 
     fun openLiveDesktop(agentId: String, agentName: String) {
         val client = api ?: return
         client.syncCookiesToWebView()
+        val teammate = _uiState.value.teammates.firstOrNull { it.id == agentId }
+        val comp = _uiState.value.agentComputers[agentId]
+        val isHost = comp?.useHostComputer ?: teammate?.useHostComputer ?: false
+        startComputerPolling(agentId)
         _uiState.update {
             it.copy(
                 liveSurface = LiveSurfaceRequest(
-                    title = "$agentName · Live Desktop",
-                    subtitle = "Touch, drag, type, or take control",
-                    url = "${client.baseUrl}/api/cowork/agents/${GituApiClient.encodeQuery(agentId)}/computer/view",
+                    title = if (isHost) "$agentName · Live Browser" else "$agentName · Live Computer",
+                    subtitle = if (isHost) "Browse, sign in, or take control" else "Touch, drag, type, or handoff control",
+                    url = if (isHost) client.serverBrowserViewUrl(agentId) else client.agentComputerViewUrl(agentId, preview = false),
+                    computerAgentId = agentId,
+                    isServerBrowser = isHost,
                 ),
             )
         }
@@ -1969,6 +2704,7 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
                     title = "Agent Browser",
                     subtitle = "Live Chromium session",
                     url = "${client.baseUrl}/api/server-browser/view",
+                    isServerBrowser = true,
                 ),
             )
         }
@@ -1989,6 +2725,9 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun closeLiveSurface() {
+        if (_uiState.value.inlineComputerAgentId == null) {
+            computerPollJob?.cancel()
+        }
         _uiState.update { it.copy(liveSurface = null) }
     }
 
@@ -2147,6 +2886,7 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
         runPollJob?.cancel()
         teamPollJob?.cancel()
         inboxPollJob?.cancel()
+        computerPollJob?.cancel()
     }
 
     override fun onCleared() {

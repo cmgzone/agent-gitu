@@ -74,6 +74,7 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.okhttp)
     implementation(libs.coil.compose)
+    implementation(libs.coil.svg)
     implementation(libs.livekit.android)
     implementation(libs.androidx.datastore.preferences)
     implementation(platform(libs.firebase.bom))

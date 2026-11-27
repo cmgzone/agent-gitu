@@ -692,17 +692,24 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     'scout': { shape: 'dot-tip', color: '#eab308' },
     'lyra': { shape: 'dot-luna', color: '#4f6396' }
   };
+  function cwAvatarImageUrlFromAvatar(avatar) {
+    var url = avatar && typeof avatar.imageUrl === 'string' ? avatar.imageUrl.trim() : '';
+    if (/^\/api\/(?:cowork|inbox)\/agents\/[\w-]+\/avatar(?:\?v=\d+)?$/.test(url) || /^data:image\/(?:png|jpeg|webp);base64,/i.test(url)) return url;
+    return '';
+  }
   function cwEffectiveAvatar(agent) {
     var avatar = agent && agent.avatar;
+    var customImg = cwAvatarImageUrlFromAvatar(avatar);
+    var extra = customImg ? { imageUrl: customImg } : {};
     if (avatar && CW_SHAPES.indexOf(avatar.shape) >= 0) {
-      return { shape: avatar.shape, color: /^#[0-9a-f]{6}$/i.test(avatar.color || '') ? avatar.color.toLowerCase() : CW_DOT_COLORS[avatar.shape] };
+      return Object.assign({ shape: avatar.shape, color: /^#[0-9a-f]{6}$/i.test(avatar.color || '') ? avatar.color.toLowerCase() : CW_DOT_COLORS[avatar.shape] }, extra);
     }
     if (avatar && /^#[0-9a-f]{6}$/i.test(avatar.color || '')) {
-      return { shape: cwAvatarShape(avatar.shape, avatar.color), color: avatar.color.toLowerCase() };
+      return Object.assign({ shape: cwAvatarShape(avatar.shape, avatar.color), color: avatar.color.toLowerCase() }, extra);
     }
     var nameKey = String((agent && agent.name) || '').trim().toLowerCase();
     if (Object.prototype.hasOwnProperty.call(CW_MASCOT_BY_NAME, nameKey)) {
-      return CW_MASCOT_BY_NAME[nameKey];
+      return Object.assign({}, CW_MASCOT_BY_NAME[nameKey], extra);
     }
     var agents = (typeof cwEnsure === 'function' && cwEnsure().agents) || [];
     var idx = -1;
@@ -717,7 +724,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       idx = hash;
     }
     var picked = CW_SHAPES[idx % CW_SHAPES.length];
-    return { shape: picked, color: CW_DOT_COLORS[picked] };
+    return Object.assign({ shape: picked, color: CW_DOT_COLORS[picked] }, extra);
   }
   ${COWORK_COLORS_JS}
   ${COWORK_NOW_JS}
@@ -1163,6 +1170,10 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
 
   // Bundled transparent images share a browser cache across every surface.
   function cwAvaImg(avatar, identity) {
+    var customImg = cwAvatarImageUrlFromAvatar(avatar);
+    if (customImg) {
+      return '<img class="cw-custom-avatar" src="' + esc(customImg) + '" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:inherit;display:block">';
+    }
     var shape = cwAvatarShape(avatar && avatar.shape, avatar && avatar.color);
     var filter=cwCharacterFilter(avatar,shape);
     return plushCharacterHtml(shape.slice(4), identity || '', filter);
@@ -4907,6 +4918,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     host.activeConv = cwActiveConv;
     host.getAvatarImageUrl = cwAvatarImageUrl;
     host.getCharacterColor = function (avatar) { return typeof cwCharacterColor === 'function' ? cwCharacterColor(avatar) : ''; };
+    host.getCharacterFilter = function (avatar) { return typeof cwCharacterFilter === 'function' ? cwCharacterFilter(avatar) : ''; };
     host.getConstants = function () {
       return {
         shapes: CW_SHAPES || ['dot-orb'],
@@ -4955,8 +4967,11 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       systemPrompt: agent ? agent.systemPrompt : '',
       avatar: {
         color: agent && agent.avatar && agent.avatar.color ? agent.avatar.color : '#ff6b57',
-        shape: agent ? cwAvatarShape(agent.avatar && agent.avatar.shape, agent.avatar && agent.avatar.color) : 'dot-orb'
+        shape: agent ? cwAvatarShape(agent.avatar && agent.avatar.shape, agent.avatar && agent.avatar.color) : 'dot-orb',
+        imageUrl: agent && agent.avatar && agent.avatar.imageUrl ? agent.avatar.imageUrl : ''
       },
+      pendingAvatarDataUrl: '',
+      removeAvatar: false,
       provider: agent ? (agent.provider || 'pikrouter') : ((S.models || []).some(function (p) { return p && p.id === 'pikrouter'; }) ? 'pikrouter' : (S.sel.model || '').split('::')[0]),
       model: agent ? (agent.model || '') : (S.sel.model || '').split('::').slice(1).join('::'),
       effort: agent ? (agent.effort || '') : '',
@@ -4985,7 +5000,12 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
             '<div class="cw-shapes" id="cwAmShapes" role="group" aria-label="Teammate character">' + CW_SHAPES.map(function (s) { return '<button type="button" data-shape="' + s + '" aria-pressed="' + (s === d.avatar.shape) + '"' + (s === d.avatar.shape ? ' class="cur"' : '') + '><span class="cw-shape-preview">' + cwAvaImg({ shape: s }) + '</span>' + CW_CHARACTER_NAMES[s] + '</button>'; }).join('') + '</div>' +
             '<div class="cw-avhint">Choose a plush teammate. Its activity follows the work in your chat.</div>' +
             '<div class="cw-character-color"><label for="cwAmColor">Character &amp; chat color</label><input type="color" id="cwAmColor" value="'+cwCharacterColor(d.avatar)+'" aria-label="Character and chat color"><div class="cw-colors" role="group" aria-label="Character colors">'+CW_CHARACTER_PALETTE.map(function(choice){return '<button type="button" data-character-color="'+choice[1]+'" style="background:'+choice[1]+'" aria-label="'+choice[0]+' character color" title="'+choice[0]+'" aria-pressed="'+(d.avatar.color===choice[1])+'"></button>';}).join('')+'</div></div>' +
-            '<button type="button" class="cw-preview-work" id="cwAmWork" aria-pressed="false">Preview working animation</button>' +
+            '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center">' +
+              '<input type="file" id="cwAmAvatarFile" accept="image/png,image/jpeg,image/webp" hidden>' +
+              '<button type="button" class="btn ghost" id="cwAmUploadPhoto">' + (d.avatar.imageUrl ? 'Change photo' : 'Upload custom photo') + '</button>' +
+              '<button type="button" class="btn ghost" id="cwAmRemovePhoto"' + (d.avatar.imageUrl ? '' : ' hidden') + '>Use plush</button>' +
+              '<button type="button" class="cw-preview-work" id="cwAmWork" aria-pressed="false">Preview working animation</button>' +
+            '</div>' +
           '</div>' +
         '</div>' +
         '</section><section class="cw-editor-section"><h2>Personality &amp; working style</h2>' +
@@ -5032,7 +5052,11 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     var customColorPicked = Boolean(isEdit && agent && agent.avatar && /^#[0-9a-f]{6}$/i.test(agent.avatar.color || '') && agent.avatar.color.toLowerCase() !== CW_DOT_COLORS[d.avatar.shape]);
     function refreshPreview() {
       var wrap = modal.querySelector('#cwAmAvaWrap');
-      if (wrap) wrap.innerHTML = cwAvaImg(d.avatar);
+      var previewAvatar = { shape: d.avatar.shape, color: d.avatar.color, imageUrl: d.removeAvatar ? '' : (d.pendingAvatarDataUrl || d.avatar.imageUrl || '') };
+      if (wrap) wrap.innerHTML = cwAvaImg(previewAvatar);
+      var upBtn = modal.querySelector('#cwAmUploadPhoto'), rmBtn = modal.querySelector('#cwAmRemovePhoto');
+      if (upBtn) upBtn.textContent = previewAvatar.imageUrl ? 'Change photo' : 'Upload custom photo';
+      if (rmBtn) rmBtn.hidden = !previewAvatar.imageUrl;
       modal.querySelectorAll('[data-shape]').forEach(function (x) {
         var cur = x.getAttribute('data-shape') === d.avatar.shape;
         x.classList.toggle('cur', cur);
@@ -5040,6 +5064,34 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       });
       modal.querySelector('#cwAmColor').value=cwCharacterColor(d.avatar);
       modal.querySelectorAll('[data-character-color]').forEach(function(button){button.setAttribute('aria-pressed',String(button.getAttribute('data-character-color')===d.avatar.color));});
+    }
+    var avatarFileInput = modal.querySelector('#cwAmAvatarFile');
+    var uploadPhotoBtn = modal.querySelector('#cwAmUploadPhoto');
+    var removePhotoBtn = modal.querySelector('#cwAmRemovePhoto');
+    if (uploadPhotoBtn && avatarFileInput) {
+      uploadPhotoBtn.onclick = function () { avatarFileInput.click(); };
+      avatarFileInput.onchange = function () {
+        var file = avatarFileInput.files && avatarFileInput.files[0];
+        avatarFileInput.value = '';
+        if (!file) return;
+        if (['image/png', 'image/jpeg', 'image/webp'].indexOf(file.type) < 0) { toast('Please choose a PNG, JPEG, or WebP image.', true); return; }
+        if (file.size > 4 * 1024 * 1024) { toast('Avatar image must be 4 MB or smaller.', true); return; }
+        var reader = new FileReader();
+        reader.onload = function () {
+          if (typeof reader.result !== 'string') return;
+          d.pendingAvatarDataUrl = reader.result;
+          d.removeAvatar = false;
+          refreshPreview();
+        };
+        reader.readAsDataURL(file);
+      };
+    }
+    if (removePhotoBtn) {
+      removePhotoBtn.onclick = function () {
+        d.pendingAvatarDataUrl = '';
+        d.removeAvatar = true;
+        refreshPreview();
+      };
     }
     modal.querySelector('#cwAmColor').oninput=function(){customColorPicked=true;d.avatar.color=cwCharacterColor({shape:d.avatar.shape,color:this.value});refreshPreview();};
     modal.querySelectorAll('[data-character-color]').forEach(function(button){button.onclick=function(){customColorPicked=true;d.avatar.color=button.getAttribute('data-character-color');refreshPreview();};});
@@ -5136,7 +5188,11 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
       var body = {
         id: isEdit ? agent.id : undefined,
         name: $('cwAmName').value,
-        avatar: d.avatar,
+        avatar: {
+          shape: d.avatar.shape,
+          color: d.avatar.color,
+          imageUrl: d.removeAvatar ? '' : (d.avatar.imageUrl || undefined)
+        },
         tagline: $('cwAmTag').value,
         description: $('cwAmDescription').value,
         systemPrompt: $('cwAmPrompt').value,
@@ -5152,6 +5208,24 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
         chiefOfStaff: $('cwAmChief').checked
       };
       api('/api/cowork/agents', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+        .then(function (res) {
+          var savedAgent = res.agent;
+          var afterAvatar = Promise.resolve(savedAgent);
+          if (d.pendingAvatarDataUrl && savedAgent && savedAgent.id) {
+            afterAvatar = api('/api/cowork/agents/' + encodeURIComponent(savedAgent.id) + '/avatar', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ dataUrl: d.pendingAvatarDataUrl })
+            }).then(function (up) { return (up && up.agent) || savedAgent; });
+          } else if (d.removeAvatar && isEdit && savedAgent && savedAgent.id) {
+            afterAvatar = api('/api/cowork/agents/' + encodeURIComponent(savedAgent.id) + '/avatar', { method: 'DELETE' })
+              .then(function (rm) { return (rm && rm.agent) || savedAgent; });
+          }
+          return afterAvatar.then(function (finalAgent) {
+            res.agent = finalAgent;
+            return res;
+          });
+        })
         .then(function (res) {
           modal.remove();
           var cw2 = cwEnsure();

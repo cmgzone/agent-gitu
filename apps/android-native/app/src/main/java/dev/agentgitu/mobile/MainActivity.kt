@@ -194,6 +194,12 @@ private fun AgentGituRoot(vm: GituAppViewModel) {
                     vm = vm,
                     onBack = { vm.closeConnections() },
                 )
+            } else if (state.showSchedulesScreen) {
+                SchedulesScreen(
+                    state = state,
+                    vm = vm,
+                    onBack = { vm.closeSchedules() },
+                )
             } else {
                 val showBottomBar = state.selectedConversationId == null &&
                     state.selectedInboxRoomId == null &&

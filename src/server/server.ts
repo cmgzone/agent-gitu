@@ -102,7 +102,14 @@ import { CodeIndex, isGeneratedIndexDirectory } from '../context/code-index.js';
 import { SubAgentRunner } from '../agent/subagent.js';
 import { AgentStore } from '../agents/registry.js';
 import type { BrowserBridge, BrowserState } from '../browser/browser.js';
-import { CronScheduler, CronStore, parseEvery, type CronJob } from '../cron/scheduler.js';
+import { CronScheduler, CronStore, cronOwner, parseEvery, type CronJob } from '../cron/scheduler.js';
+import {
+  computeNextCalendarRunIso,
+  defaultEveryForRecurrence,
+  isCalendarScheduleDue,
+  sanitizeCalendarFields,
+  type CalendarScheduleFields,
+} from '../cron/calendar-schedule.js';
 import { ProjectGuard, ProjectGuardError } from '../guard/project-guard.js';
 import { gitCommit, gitDiff, gitDiscard, gitInfo, gitInit, gitPush } from '../git/git.js';
 import { TaskLedger } from '../ledger/task-ledger.js';
@@ -5185,7 +5192,7 @@ export class GituServer {
       const accepted=this.dispatchAgentWake(job.conversationId,job.agentId,job.instruction,'schedule',{triggerId:'background-'+job.id+'-'+job.leaseId,timeoutMs:job.kind==='coding_review'?180000:undefined,onSettled:error=>{
         if(job.kind==='coding_review'){this.codingReviewContext.delete(job.conversationId);const review=job.completedAt?ledger.codingReview(job.sourceId,job.completedAt):undefined;if(!error&&review?.status==='queued')error=Error('The coding review ended without a verified result.');}
         ledger.settle(job.id,error?.message);
-        if(job.kind==='schedule'){const conversation=store.getConversation(job.conversationId);if(conversation?.schedule&&'schedule:'+conversation.id+':'+JSON.stringify(conversation.schedule)===job.sourceId)store.updateConversation(conversation.id,{schedule:{...conversation.schedule,lastRunAt:nowIso()}});}
+        if(job.kind==='schedule'){const conversation=store.getConversation(job.conversationId);if(conversation?.schedule&&'schedule:'+conversation.id+':'+JSON.stringify(conversation.schedule)===job.sourceId)store.updateConversation(conversation.id,{schedule:{...conversation.schedule,lastRunAt:nowIso(),...(conversation.schedule.recurrence==='once'?{enabled:false}:{})}});}
         if(!error){if(job.kind==='followup')store.takeFollowUp(job.sourceId);if(job.kind==='inbox')store.markInboxDelivered([job.sourceId]);}
         this.publishCowork(job.conversationId);
       }});
@@ -6684,17 +6691,38 @@ export class GituServer {
     for (const conv of store.listConversations()) {
       const schedule = conv.schedule;
       if (!schedule?.enabled || !schedule.goal) continue;
-      let interval: number;
-      try {
-        interval = parseEvery(schedule.every);
-      } catch {
-        continue;
+      const calendarDue = isCalendarScheduleDue(schedule, {
+        lastRunAt: schedule.lastRunAt,
+        createdAt: schedule.createdAt ?? conv.updatedAt,
+        nowMs: now,
+      });
+      if (calendarDue === false) continue;
+      if (calendarDue === null) {
+        let interval: number;
+        try {
+          interval = parseEvery(schedule.every);
+        } catch {
+          continue;
+        }
+        const last = schedule.lastRunAt ? Date.parse(schedule.lastRunAt) : 0;
+        if (now - last < interval) continue;
       }
-      const last = schedule.lastRunAt ? Date.parse(schedule.lastRunAt) : 0;
-      if (now - last < interval) continue;
-      const agent=store.getAgent(conv.chiefId??conv.memberIds[0]??'');if(!agent)continue;
-      const key='schedule:'+conv.id+':'+JSON.stringify(schedule);
-      this.proactivity().enqueue({kind:'schedule',sourceId:key,conversationId:conv.id,agentId:agent.id,instruction:`Scheduled task (every ${schedule.every}): ${schedule.goal}`},key);
+      const agent = store.getAgent(conv.chiefId ?? conv.memberIds[0] ?? '');
+      if (!agent) continue;
+      const key = 'schedule:' + conv.id + ':' + JSON.stringify(schedule);
+      const label = schedule.recurrence && schedule.recurrence !== 'interval'
+        ? `${schedule.recurrence}${schedule.atTime ? ` ${schedule.atTime}` : ''}`
+        : `every ${schedule.every}`;
+      this.proactivity().enqueue(
+        {
+          kind: 'schedule',
+          sourceId: key,
+          conversationId: conv.id,
+          agentId: agent.id,
+          instruction: `Scheduled task (${label}): ${schedule.goal}`,
+        },
+        key,
+      );
     }
   }
 
@@ -7405,7 +7433,14 @@ export class GituServer {
                   channelName: typeof discord['channelName'] === 'string' ? discord['channelName'] : undefined,
                 }
               : undefined,
-            schedule: schedule ? { every: String(schedule['every'] ?? ''), goal: String(schedule['goal'] ?? ''), enabled: schedule['enabled'] !== false, lastRunAt: typeof schedule['lastRunAt'] === 'string' ? schedule['lastRunAt'] : undefined } : undefined,
+            schedule: schedule ? {
+              every: defaultEveryForRecurrence(sanitizeCalendarFields(schedule), typeof schedule['every'] === 'string' ? schedule['every'] : undefined),
+              goal: String(schedule['goal'] ?? ''),
+              enabled: schedule['enabled'] !== false,
+              lastRunAt: typeof schedule['lastRunAt'] === 'string' ? schedule['lastRunAt'] : undefined,
+              createdAt: typeof schedule['createdAt'] === 'string' ? schedule['createdAt'] : existing?.schedule?.createdAt ?? nowIso(),
+              ...sanitizeCalendarFields(schedule),
+            } : undefined,
           });
           if (!conv) {
             this.sendJson(res, 404, { error: 'conversation not found' });
@@ -9019,7 +9054,7 @@ export class GituServer {
         res.end();
         return;
       }
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'DENY', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'" });
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'DENY', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'" });
       res.end(authPage(!this.appAuth.configured, AppAuth.local(req), this.appAuth.requiresEmail, this.appAuth.remoteRegistrationEnabled && this.appAuth.secure(req), this.appAuth.lanLogin(req), { pikrouterOAuth: true, google: this.googleSignIn.enabled && this.appAuth.requiresEmail && (AppAuth.local(req)||this.appAuth.secure(req)), link: url.searchParams.get('link') === 'google' && this.appAuth.authenticated(req) }));
       return;
     }
@@ -10430,8 +10465,46 @@ export class GituServer {
       if (method === 'POST') {
         const body = await this.readBody(req);
         try {
-          const job = store.add({ every: String(body['every'] ?? ''), goal: String(body['goal'] ?? '') });
+          const cal = sanitizeCalendarFields(body);
+          const job = store.add({
+            every: typeof body['every'] === 'string' ? body['every'] : undefined,
+            goal: String(body['goal'] ?? ''),
+            title: typeof body['title'] === 'string' ? body['title'] : undefined,
+            enabled: body['enabled'] !== false,
+            ...cal,
+          });
           this.sendJson(res, 200, { ok: true, job });
+        } catch (err) {
+          this.sendJson(res, 400, { error: (err as Error).message });
+        }
+        return;
+      }
+      if (method === 'PATCH' && cronMatch[1]) {
+        const body = await this.readBody(req);
+        const existing = store.jobs().find((j) => j.id === cronMatch[1]);
+        if (!existing) {
+          this.sendJson(res, 404, { error: 'schedule not found' });
+          return;
+        }
+        try {
+          const cal = sanitizeCalendarFields({ ...existing, ...body });
+          const nextEvery = typeof body['every'] === 'string' && body['every'].trim()
+            ? body['every'].trim()
+            : defaultEveryForRecurrence(cal, existing.every);
+          parseEvery(nextEvery);
+          const patch: Partial<CronJob> = {
+            ...(typeof body['title'] === 'string' ? { title: body['title'].trim().slice(0, 120) || undefined } : {}),
+            ...(typeof body['goal'] === 'string' && body['goal'].trim() ? { goal: body['goal'].trim() } : {}),
+            ...(typeof body['enabled'] === 'boolean' ? { enabled: body['enabled'] } : {}),
+            every: nextEvery,
+            recurrence: cal.recurrence,
+            atTime: cal.atTime,
+            daysOfWeek: cal.daysOfWeek,
+            runAt: cal.runAt,
+            timezone: cal.timezone,
+          };
+          const jobs = store.update(cronMatch[1], patch);
+          this.sendJson(res, 200, { ok: true, job: jobs.find((j) => j.id === cronMatch[1]), jobs });
         } catch (err) {
           this.sendJson(res, 400, { error: (err as Error).message });
         }
@@ -10440,6 +10513,429 @@ export class GituServer {
       if (method === 'DELETE' && cronMatch[1]) {
         this.sendJson(res, 200, { ok: true, jobs: store.remove(cronMatch[1]) });
         return;
+      }
+    }
+
+    if (path === '/api/schedules' || path.startsWith('/api/schedules/')) {
+      const coworkStore = this.cowork();
+      const cronRoot = this.projectRoot();
+      const cronStore = cronRoot ? CronStore.forProject(cronRoot) : undefined;
+      const tz = this.proactivity().status().settings?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+      const nowMs = Date.now();
+
+      const buildUnifiedSchedules = () => {
+        const agents = coworkStore.listAgents();
+        const agentMap = new Map(agents.map((a) => [a.id, a]));
+        const conversations = coworkStore.listConversations();
+        const convMap = new Map(conversations.map((c) => [c.id, c]));
+        const items: Array<Record<string, unknown>> = [];
+        const includeMaintenance = url.searchParams.get('includeMaintenance') === '1';
+
+        // 1. Project coding cron jobs
+        if (cronStore) {
+          for (const job of cronStore.jobs()) {
+            if (!includeMaintenance && cronOwner(job) === 'maintenance') continue;
+            const nextRunAt = computeNextCalendarRunIso(job, parseEvery, nowMs);
+            items.push({
+              id: `cron:${job.id}`,
+              source: 'cron',
+              sourceId: job.id,
+              title: job.title || (job.goal.length > 56 ? `${job.goal.slice(0, 56)}…` : job.goal) || 'Coding job',
+              goal: job.goal,
+              every: job.every,
+              recurrence: job.recurrence ?? (job.runAt ? 'once' : 'interval'),
+              atTime: job.atTime,
+              daysOfWeek: job.daysOfWeek,
+              runAt: job.runAt,
+              timezone: job.timezone || tz,
+              enabled: job.enabled !== false,
+              status: job.enabled === false ? 'paused' : (job.status ?? 'scheduled'),
+              lastRunAt: job.lastRunAt,
+              nextRunAt,
+              lastRunId: job.lastRunId,
+              failures: job.failures ?? 0,
+              error: job.error,
+              createdAt: job.createdAt,
+            });
+          }
+        }
+
+        // 2. Cowork recurring conversation schedules
+        for (const conv of conversations) {
+          const sc = conv.schedule;
+          if (!sc || !sc.goal) continue;
+          const primaryAgent = agentMap.get(conv.chiefId ?? conv.memberIds[0] ?? '');
+          const nextRunAt = computeNextCalendarRunIso(sc, parseEvery, nowMs);
+          items.push({
+            id: `cowork:${conv.id}`,
+            source: 'cowork',
+            sourceId: conv.id,
+            title: conv.title || (sc.goal.length > 56 ? `${sc.goal.slice(0, 56)}…` : sc.goal),
+            goal: sc.goal,
+            every: sc.every,
+            recurrence: sc.recurrence ?? (sc.runAt ? 'once' : 'interval'),
+            atTime: sc.atTime,
+            daysOfWeek: sc.daysOfWeek,
+            runAt: sc.runAt,
+            timezone: sc.timezone || tz,
+            enabled: sc.enabled !== false,
+            status: sc.enabled === false ? 'paused' : 'scheduled',
+            lastRunAt: sc.lastRunAt,
+            nextRunAt,
+            agentId: primaryAgent?.id,
+            agentName: primaryAgent?.name,
+            agentColor: primaryAgent?.avatar?.color,
+            agentShape: primaryAgent?.avatar?.shape,
+            agentAvatarUrl: primaryAgent?.avatar?.imageUrl,
+            conversationId: conv.id,
+            conversationTitle: conv.title,
+            createdAt: sc.createdAt ?? conv.createdAt,
+          });
+        }
+
+        // 3. One-shot dated teammate reminders (CoworkFollowUp)
+        for (const fu of coworkStore.listFollowUps()) {
+          const conv = convMap.get(fu.conversationId);
+          const ag = agentMap.get(fu.agentId);
+          const dueDate = new Date(fu.dueAt);
+          const hh = Number.isFinite(dueDate.getTime()) ? String(dueDate.getHours()).padStart(2, '0') : undefined;
+          const mm = Number.isFinite(dueDate.getTime()) ? String(dueDate.getMinutes()).padStart(2, '0') : undefined;
+          items.push({
+            id: `followup:${fu.id}`,
+            source: 'followup',
+            sourceId: fu.id,
+            title: fu.note.length > 56 ? `${fu.note.slice(0, 56)}…` : fu.note,
+            goal: fu.note,
+            every: 'once',
+            recurrence: 'once',
+            atTime: hh && mm ? `${hh}:${mm}` : undefined,
+            runAt: fu.dueAt,
+            timezone: tz,
+            enabled: true,
+            status: 'scheduled',
+            nextRunAt: fu.dueAt,
+            agentId: ag?.id ?? fu.agentId,
+            agentName: ag?.name,
+            agentColor: ag?.avatar?.color,
+            agentShape: ag?.avatar?.shape,
+            agentAvatarUrl: ag?.avatar?.imageUrl,
+            conversationId: fu.conversationId,
+            conversationTitle: conv?.title,
+            createdAt: fu.createdAt,
+          });
+        }
+
+        items.sort((a, b) => {
+          const aNext = typeof a['nextRunAt'] === 'string' ? Date.parse(a['nextRunAt']) : Number.POSITIVE_INFINITY;
+          const bNext = typeof b['nextRunAt'] === 'string' ? Date.parse(b['nextRunAt']) : Number.POSITIVE_INFINITY;
+          return aNext - bNext;
+        });
+
+        return {
+          timezone: tz,
+          now: new Date(nowMs).toISOString(),
+          hasProject: Boolean(cronRoot),
+          items,
+          agents: agents.map((a) => ({
+            id: a.id,
+            name: a.name,
+            color: a.avatar?.color,
+            shape: a.avatar?.shape,
+            avatarUrl: a.avatar?.imageUrl,
+            tagline: a.tagline,
+          })),
+          conversations: conversations.map((c) => ({
+            id: c.id,
+            kind: c.kind,
+            title: c.title,
+            memberIds: c.memberIds,
+            hasSchedule: Boolean(c.schedule?.goal),
+          })),
+        };
+      };
+
+      if (path === '/api/schedules' && method === 'GET') {
+        this.sendJson(res, 200, buildUnifiedSchedules());
+        return;
+      }
+
+      if (path === '/api/schedules' && method === 'POST') {
+        const body = await this.readBody(req, 32_768);
+        const source = String(body['source'] ?? 'cowork').toLowerCase();
+        const goal = String(body['goal'] ?? '').trim();
+        const title = typeof body['title'] === 'string' ? body['title'].trim() : '';
+        if (!goal) {
+          this.sendJson(res, 400, { error: 'A schedule goal or reminder note is required.' });
+          return;
+        }
+        try {
+          const cal = sanitizeCalendarFields(body);
+          if (source === 'cron') {
+            if (!cronStore) {
+              this.sendJson(res, 400, { error: 'Select or create a project first to add a coding schedule.' });
+              return;
+            }
+            const job = cronStore.add({
+              title: title || undefined,
+              goal,
+              every: typeof body['every'] === 'string' ? body['every'] : undefined,
+              enabled: body['enabled'] !== false,
+              ...cal,
+            });
+            this.sendJson(res, 201, { ok: true, id: `cron:${job.id}`, ...buildUnifiedSchedules() });
+            return;
+          }
+
+          // Resolve target conversation + agent for cowork / followup schedules
+          let convId = typeof body['conversationId'] === 'string' ? body['conversationId'].trim() : '';
+          let agentId = typeof body['agentId'] === 'string' ? body['agentId'].trim() : '';
+          let conv = convId ? coworkStore.getConversation(convId) : undefined;
+          if (!conv) {
+            const targetAgent =
+              (agentId ? coworkStore.getAgent(agentId) : undefined) ??
+              coworkStore.listAgents().find((a) => a.chiefOfStaff) ??
+              coworkStore.listAgents()[0];
+            if (!targetAgent) {
+              this.sendJson(res, 400, { error: 'Create at least one AI teammate first.' });
+              return;
+            }
+            agentId = targetAgent.id;
+            conv =
+              coworkStore.listConversations().find((c) => c.kind === 'dm' && c.memberIds.length === 1 && c.memberIds[0] === targetAgent.id) ??
+              coworkStore.saveConversation({ kind: 'dm', memberIds: [targetAgent.id], title: targetAgent.name });
+            convId = conv.id;
+          } else if (!agentId || !conv.memberIds.includes(agentId)) {
+            agentId = conv.chiefId ?? conv.memberIds[0] ?? '';
+          }
+
+          if (source === 'followup') {
+            const dueAt = cal.runAt || (typeof body['dueAt'] === 'string' ? body['dueAt'] : '');
+            if (!dueAt || !Number.isFinite(Date.parse(dueAt))) {
+              this.sendJson(res, 400, { error: 'Choose a valid calendar date and time for this reminder.' });
+              return;
+            }
+            const fu = coworkStore.addFollowUp({
+              conversationId: conv.id,
+              agentId,
+              note: goal,
+              dueAt: new Date(Date.parse(dueAt)).toISOString(),
+            });
+            this.publishCowork(conv.id);
+            this.sendJson(res, 201, { ok: true, id: `followup:${fu.id}`, ...buildUnifiedSchedules() });
+            return;
+          }
+
+          if (source === 'cowork') {
+            const effectiveEvery = defaultEveryForRecurrence(cal, typeof body['every'] === 'string' ? body['every'] : undefined);
+            parseEvery(effectiveEvery);
+            const updated = coworkStore.updateConversation(conv.id, {
+              ...(title && conv.kind === 'group' ? { title } : {}),
+              schedule: {
+                every: effectiveEvery,
+                goal,
+                enabled: body['enabled'] !== false,
+                createdAt: nowIso(),
+                ...cal,
+              },
+            });
+            if (!updated) {
+              this.sendJson(res, 404, { error: 'Conversation not found.' });
+              return;
+            }
+            this.publishCowork(conv.id);
+            this.sendJson(res, 201, { ok: true, id: `cowork:${conv.id}`, ...buildUnifiedSchedules() });
+            return;
+          }
+
+          this.sendJson(res, 400, { error: `Unknown schedule source "${source}".` });
+          return;
+        } catch (err) {
+          this.sendJson(res, 400, { error: (err as Error).message });
+          return;
+        }
+      }
+
+      const schedRunMatch = path.match(/^\/api\/schedules\/(cron|cowork|followup)\/([\w-]+)\/run$/);
+      if (schedRunMatch && method === 'POST') {
+        const [, source, sourceId] = schedRunMatch;
+        try {
+          if (source === 'cron') {
+            if (!cronStore || !cronRoot) {
+              this.sendJson(res, 400, { error: 'No project detected for coding cron jobs.' });
+              return;
+            }
+            const job = cronStore.jobs().find((j) => j.id === sourceId);
+            if (!job) { this.sendJson(res, 404, { error: 'Schedule not found.' }); return; }
+            cronStore.update(job.id, { lastRunAt: nowIso(), status: 'running', error: undefined });
+            void this.startCronRun(cronRoot, job)
+              .then((runId) => {
+                cronStore.update(job.id, {
+                  ...(runId ? { lastRunId: runId } : {}),
+                  status: 'succeeded',
+                  lastSuccessAt: nowIso(),
+                  failures: 0,
+                  nextRetryAt: undefined,
+                  error: undefined,
+                });
+              })
+              .catch((error: unknown) => {
+                cronStore.update(job.id, {
+                  status: 'failed',
+                  failures: (job.failures ?? 0) + 1,
+                  error: error instanceof Error ? error.message.slice(0, 300) : 'Manual run failed',
+                });
+              });
+            this.sendJson(res, 202, { ok: true, message: `Started "${job.title || job.goal}"`, ...buildUnifiedSchedules() });
+            return;
+          }
+          if (source === 'cowork') {
+            const conv = coworkStore.getConversation(sourceId!);
+            if (!conv?.schedule?.goal) { this.sendJson(res, 404, { error: 'Cowork schedule not found.' }); return; }
+            const agent = coworkStore.getAgent(conv.chiefId ?? conv.memberIds[0] ?? '');
+            if (!agent) { this.sendJson(res, 400, { error: 'No active teammate in this chat.' }); return; }
+            const instruction = `Scheduled task (triggered manually): ${conv.schedule.goal}`;
+            const accepted = this.dispatchAgentWake(conv.id, agent.id, instruction, 'schedule');
+            if (!accepted) {
+              this.proactivity().enqueue(
+                { kind: 'schedule', sourceId: `manual:${conv.id}:${Date.now()}`, conversationId: conv.id, agentId: agent.id, instruction },
+                `manual-schedule:${conv.id}:${Date.now()}`,
+              );
+            }
+            coworkStore.updateConversation(conv.id, { schedule: { ...conv.schedule, lastRunAt: nowIso() } });
+            this.publishCowork(conv.id);
+            this.sendJson(res, 202, { ok: true, message: `Triggered ${agent.name}`, ...buildUnifiedSchedules() });
+            return;
+          }
+          if (source === 'followup') {
+            const fu = coworkStore.listFollowUps().find((f) => f.id === sourceId);
+            if (!fu) { this.sendJson(res, 404, { error: 'Reminder not found.' }); return; }
+            const agent = coworkStore.getAgent(fu.agentId);
+            const conv = coworkStore.getConversation(fu.conversationId);
+            if (!agent || !conv) {
+              coworkStore.takeFollowUp(fu.id);
+              this.sendJson(res, 404, { error: 'Reminder conversation or teammate no longer exists.' });
+              return;
+            }
+            const instruction = `Follow-up reminder from @${agent.name}: ${fu.note}. Act within the existing permissions and report the result here.`;
+            const accepted = this.dispatchAgentWake(conv.id, agent.id, instruction, 'schedule');
+            if (accepted) {
+              coworkStore.takeFollowUp(fu.id);
+            } else {
+              this.proactivity().enqueue(
+                { kind: 'followup', sourceId: fu.id, conversationId: conv.id, agentId: agent.id, instruction },
+                `followup:${fu.id}`,
+              );
+            }
+            this.publishCowork(conv.id);
+            this.sendJson(res, 202, { ok: true, message: `Triggered reminder for ${agent.name}`, ...buildUnifiedSchedules() });
+            return;
+          }
+        } catch (err) {
+          this.sendJson(res, 400, { error: (err as Error).message });
+          return;
+        }
+      }
+
+      const schedItemMatch = path.match(/^\/api\/schedules\/(cron|cowork|followup)\/([\w-]+)$/);
+      if (schedItemMatch) {
+        const [, source, sourceId] = schedItemMatch;
+        if (method === 'PATCH') {
+          const body = await this.readBody(req, 32_768);
+          try {
+            if (source === 'cron') {
+              if (!cronStore) { this.sendJson(res, 400, { error: 'No project detected.' }); return; }
+              const existing = cronStore.jobs().find((j) => j.id === sourceId);
+              if (!existing) { this.sendJson(res, 404, { error: 'Schedule not found.' }); return; }
+              const cal = sanitizeCalendarFields({ ...existing, ...body });
+              const nextEvery = typeof body['every'] === 'string' && body['every'].trim()
+                ? body['every'].trim()
+                : defaultEveryForRecurrence(cal, existing.every);
+              parseEvery(nextEvery);
+              cronStore.update(existing.id, {
+                ...(typeof body['title'] === 'string' ? { title: body['title'].trim().slice(0, 120) || undefined } : {}),
+                ...(typeof body['goal'] === 'string' && body['goal'].trim() ? { goal: body['goal'].trim() } : {}),
+                ...(typeof body['enabled'] === 'boolean' ? { enabled: body['enabled'] } : {}),
+                every: nextEvery,
+                recurrence: cal.recurrence,
+                atTime: cal.atTime,
+                daysOfWeek: cal.daysOfWeek,
+                runAt: cal.runAt,
+                timezone: cal.timezone,
+              });
+              this.sendJson(res, 200, { ok: true, ...buildUnifiedSchedules() });
+              return;
+            }
+            if (source === 'cowork') {
+              const conv = coworkStore.getConversation(sourceId!);
+              if (!conv?.schedule) { this.sendJson(res, 404, { error: 'Cowork schedule not found.' }); return; }
+              const mergedRaw = { ...conv.schedule, ...body };
+              const cal = sanitizeCalendarFields(mergedRaw);
+              const nextEvery = typeof body['every'] === 'string' && body['every'].trim()
+                ? body['every'].trim()
+                : defaultEveryForRecurrence(cal, conv.schedule.every);
+              parseEvery(nextEvery);
+              coworkStore.updateConversation(conv.id, {
+                schedule: {
+                  ...conv.schedule,
+                  every: nextEvery,
+                  goal: typeof body['goal'] === 'string' && body['goal'].trim() ? body['goal'].trim() : conv.schedule.goal,
+                  enabled: typeof body['enabled'] === 'boolean' ? body['enabled'] : conv.schedule.enabled,
+                  ...cal,
+                },
+              });
+              this.publishCowork(conv.id);
+              this.sendJson(res, 200, { ok: true, ...buildUnifiedSchedules() });
+              return;
+            }
+            if (source === 'followup') {
+              const existing = coworkStore.listFollowUps().find((f) => f.id === sourceId);
+              if (!existing) { this.sendJson(res, 404, { error: 'Reminder not found.' }); return; }
+              const nextNote = typeof body['goal'] === 'string' && body['goal'].trim()
+                ? body['goal'].trim()
+                : typeof body['note'] === 'string' && body['note'].trim()
+                  ? body['note'].trim()
+                  : existing.note;
+              const cal = sanitizeCalendarFields(body);
+              const nextDue = cal.runAt || (typeof body['dueAt'] === 'string' && Number.isFinite(Date.parse(body['dueAt'])) ? new Date(Date.parse(body['dueAt'])).toISOString() : existing.dueAt);
+              coworkStore.takeFollowUp(existing.id);
+              coworkStore.addFollowUp({
+                conversationId: existing.conversationId,
+                agentId: existing.agentId,
+                note: nextNote,
+                dueAt: nextDue,
+              });
+              this.publishCowork(existing.conversationId);
+              this.sendJson(res, 200, { ok: true, ...buildUnifiedSchedules() });
+              return;
+            }
+          } catch (err) {
+            this.sendJson(res, 400, { error: (err as Error).message });
+            return;
+          }
+        }
+        if (method === 'DELETE') {
+          if (source === 'cron') {
+            if (!cronStore) { this.sendJson(res, 400, { error: 'No project detected.' }); return; }
+            cronStore.remove(sourceId!);
+            this.sendJson(res, 200, { ok: true, ...buildUnifiedSchedules() });
+            return;
+          }
+          if (source === 'cowork') {
+            const conv = coworkStore.getConversation(sourceId!);
+            if (!conv) { this.sendJson(res, 404, { error: 'Conversation not found.' }); return; }
+            coworkStore.updateConversation(conv.id, { schedule: { every: '', goal: '', enabled: false } });
+            this.publishCowork(conv.id);
+            this.sendJson(res, 200, { ok: true, ...buildUnifiedSchedules() });
+            return;
+          }
+          if (source === 'followup') {
+            const removed = coworkStore.takeFollowUp(sourceId!);
+            if (!removed) { this.sendJson(res, 404, { error: 'Reminder not found.' }); return; }
+            this.publishCowork(removed.conversationId);
+            this.sendJson(res, 200, { ok: true, ...buildUnifiedSchedules() });
+            return;
+          }
+        }
       }
     }
 

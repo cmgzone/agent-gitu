@@ -34,11 +34,13 @@ import {
   X,
 } from '../components/AppIcons';
 import {LocalLinkSection} from './LocalLinkSection';
+import {ScheduleCalendarSection} from './ScheduleCalendarSection';
 
 const NATIVE_SECTIONS = new Set([
   'overview',
   'general',
   'local-link',
+  'cron',
   'permissions',
   'cowork',
   'workspace',
@@ -942,6 +944,21 @@ export function SettingsConsoleView({
               ) : null}
 
               {activeSection === 'local-link' ? <LocalLinkSection /> : null}
+
+              {activeSection === 'cron' ? (
+                <ScheduleCalendarSection
+                  onJumpToConversation={convId => {
+                    onClose();
+                    host?.openCowork?.();
+                    const w = window as unknown as {
+                      cwOpenConv?: (id: string) => void;
+                    };
+                    if (typeof w.cwOpenConv === 'function') {
+                      w.cwOpenConv(convId);
+                    }
+                  }}
+                />
+              ) : null}
 
               {activeSection === 'developer' ? (
                 <Grid columns={isMobile ? 1 : 2} gap={4}>

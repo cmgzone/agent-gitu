@@ -40,7 +40,6 @@ fun SettingsScreen(
     val s = LocalStitchPalette.current
     var showChiefDialog by remember { mutableStateOf(false) }
     var showLocalLinkDialog by remember { mutableStateOf(false) }
-    var showSchedulesDialog by remember { mutableStateOf(false) }
     var showSpendDialog by remember { mutableStateOf(false) }
     var showModelPicker by remember { mutableStateOf(false) }
 
@@ -174,10 +173,11 @@ fun SettingsScreen(
                         modifier = Modifier.weight(1f),
                     )
                     GovernanceTile(
-                        icon = Icons.Default.Schedule,
+                        icon = Icons.Default.CalendarMonth,
                         title = "Schedules",
-                        subtitle = "${state.cronJobs.size} jobs",
-                        onClick = { showSchedulesDialog = true },
+                        subtitle = if (state.schedules.isNotEmpty()) "${state.schedules.count { it.enabled }} active · ${state.schedules.size} total" else "Calendar & routines",
+                        highlightSubtitle = state.schedules.any { it.enabled },
+                        onClick = { vm.openSchedules() },
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -363,37 +363,6 @@ fun SettingsScreen(
                 }
             },
             confirmButton = { TextButton(onClick = { showLocalLinkDialog = false }) { Text("Close", color = s.primary) } },
-        )
-    }
-
-    if (showSchedulesDialog) {
-        AlertDialog(
-            onDismissRequest = { showSchedulesDialog = false },
-            containerColor = s.surfaceContainerLowest,
-            title = { Text("Schedules (Cron Jobs)", color = s.onSurface) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (state.cronJobs.isEmpty()) {
-                        Text("No recurring schedules configured.", color = s.onSurfaceVariant)
-                    } else {
-                        state.cronJobs.forEach { job ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text(job.name.ifBlank { job.id }, color = s.onSurface, style = MaterialTheme.typography.bodyMedium)
-                                StitchBadge(
-                                    text = "${job.interval} • ${if (job.enabled) "ON" else "OFF"}",
-                                    tone = if (job.enabled) BadgeTone.SUCCESS else BadgeTone.NEUTRAL,
-                                    mono = true,
-                                )
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = { TextButton(onClick = { showSchedulesDialog = false }) { Text("Close", color = s.primary) } },
         )
     }
 

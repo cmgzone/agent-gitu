@@ -7,6 +7,11 @@ import { roleAppSuggestions, type AppSuggestion } from './app-recommendations.js
 import { sanitizeAgentProfile, type AgentProfileSettings } from './profile-config.js';
 import { requiresMessageReview } from '../connections/provider.js';
 import { normalizeConnectionAuth, type ConnectionAuth } from '../connections/connections.js';
+import {
+  defaultEveryForRecurrence,
+  sanitizeCalendarFields,
+  type CalendarScheduleFields,
+} from '../cron/calendar-schedule.js';
 
 /**
  * Cowork mode: a small team of named agent profiles the user chats with
@@ -140,11 +145,12 @@ export interface CoworkDiscordConfig {
   channelName?: string;
 }
 
-export interface CoworkSchedule {
+export interface CoworkSchedule extends CalendarScheduleFields {
   every: string;
   goal: string;
   enabled: boolean;
   lastRunAt?: string;
+  createdAt?: string;
 }
 
 /** A folder the user or a teammate tagged for this conversation. Tagged
@@ -2267,15 +2273,19 @@ function sanitizeDiscord(value: unknown): CoworkDiscordConfig {
 }
 
 function sanitizeSchedule(value: unknown): CoworkSchedule | undefined {
-  const raw = (value ?? {}) as Record<string, unknown>;
+  if (!value || typeof value !== 'object') return undefined;
+  const raw = value as Record<string, unknown>;
   const goal = String(raw['goal'] ?? '').trim();
-  const every = String(raw['every'] ?? '').trim();
-  if (!goal || !every) return undefined;
+  const calendarFields = sanitizeCalendarFields(raw);
+  const every = defaultEveryForRecurrence(calendarFields, typeof raw['every'] === 'string' ? raw['every'] : undefined);
+  if (!goal || (!every && !calendarFields.recurrence)) return undefined;
   return {
-    every: every,
-    goal: goal,
+    every,
+    goal,
     enabled: raw['enabled'] !== false,
     lastRunAt: typeof raw['lastRunAt'] === 'string' ? raw['lastRunAt'] : undefined,
+    createdAt: typeof raw['createdAt'] === 'string' ? raw['createdAt'] : new Date().toISOString(),
+    ...calendarFields,
   };
 }
 

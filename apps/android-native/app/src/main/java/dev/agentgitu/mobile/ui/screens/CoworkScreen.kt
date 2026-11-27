@@ -322,6 +322,11 @@ private fun CoworkHubContent(
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 StitchCircleIconButton(
+                    icon = Icons.Default.CalendarMonth,
+                    contentDescription = "Schedules",
+                    onClick = { vm.openSchedules() },
+                )
+                StitchCircleIconButton(
                     icon = Icons.Default.Extension,
                     contentDescription = "Connections",
                     onClick = { vm.openConnections() },

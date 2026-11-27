@@ -122,6 +122,14 @@ data class AppUiState(
     val pendingOAuthUrl: String? = null,
     val appAuthLinksByRequest: Map<String, String> = emptyMap(),
 
+    // Native Calendar Schedules Page
+    val showSchedulesScreen: Boolean = false,
+    val schedules: List<ScheduleItem> = emptyList(),
+    val schedulesTimezone: String = "",
+    val schedulesHasProject: Boolean = false,
+    val schedulesLoading: Boolean = false,
+    val busyScheduleIds: Set<String> = emptySet(),
+
     // Inbox
     val inboxState: InboxStateResponse? = null,
     val selectedInboxRoomId: String? = null,
@@ -2169,6 +2177,7 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
             val perms = runCatching { client.codingPermissions() }.getOrNull()
             val chief = runCatching { client.chiefSettings() }.getOrNull()
             val cron = runCatching { client.cronJobs() }.getOrElse { emptyList() }
+            val sched = runCatching { client.schedules() }.getOrNull()
             val link = runCatching { client.localLinkStatus() }.getOrNull()
             val push = if (deviceId.isNotBlank()) runCatching { client.pushStatus(deviceId) }.getOrNull() else null
             _uiState.update {
@@ -2177,11 +2186,167 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
                     codingPermissions = perms ?: it.codingPermissions,
                     chiefSettings = chief ?: it.chiefSettings,
                     cronJobs = cron,
+                    schedules = sched?.items ?: it.schedules,
+                    schedulesTimezone = sched?.timezone ?: it.schedulesTimezone,
+                    schedulesHasProject = sched?.hasProject ?: it.schedulesHasProject,
                     localLinkStatus = link ?: it.localLinkStatus,
                     pushStatus = push ?: it.pushStatus,
                 )
             }
         }
+    }
+
+    // --- Native Calendar Schedules Page ---
+
+    fun openSchedules() {
+        _uiState.update { it.copy(showSchedulesScreen = true) }
+        refreshSchedules()
+    }
+
+    fun closeSchedules() {
+        _uiState.update { it.copy(showSchedulesScreen = false) }
+    }
+
+    fun refreshSchedules() {
+        val client = api ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(schedulesLoading = true) }
+            runCatching { client.schedules() }
+                .onSuccess { res ->
+                    _uiState.update {
+                        it.copy(
+                            schedules = res.items,
+                            schedulesTimezone = res.timezone,
+                            schedulesHasProject = res.hasProject,
+                            schedulesLoading = false,
+                        )
+                    }
+                }
+                .onFailure { err ->
+                    _uiState.update { it.copy(schedulesLoading = false) }
+                    handleApiError(err)
+                }
+        }
+    }
+
+    fun createSchedule(
+        source: String,
+        goal: String,
+        title: String? = null,
+        agentId: String? = null,
+        conversationId: String? = null,
+        recurrence: String = "weekdays",
+        every: String? = null,
+        atTime: String? = null,
+        daysOfWeek: List<Int>? = null,
+        runAt: String? = null,
+    ) {
+        val client = api ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(schedulesLoading = true) }
+            runCatching {
+                client.createSchedule(
+                    source = source,
+                    goal = goal,
+                    title = title,
+                    agentId = agentId,
+                    conversationId = conversationId,
+                    recurrence = recurrence,
+                    every = every,
+                    atTime = atTime,
+                    daysOfWeek = daysOfWeek,
+                    runAt = runAt,
+                    timezone = _uiState.value.schedulesTimezone.ifBlank { null },
+                )
+            }.onSuccess { res ->
+                _uiState.update {
+                    it.copy(
+                        schedules = res.items,
+                        schedulesTimezone = res.timezone.ifBlank { it.schedulesTimezone },
+                        schedulesHasProject = res.hasProject,
+                        schedulesLoading = false,
+                        bannerMessage = "Schedule saved to calendar.",
+                    )
+                }
+            }.onFailure { err ->
+                _uiState.update { it.copy(schedulesLoading = false) }
+                handleApiError(err)
+            }
+        }
+    }
+
+    fun toggleSchedule(item: ScheduleItem, enabled: Boolean) {
+        val client = api ?: return
+        if (item.source == "followup") return
+        viewModelScope.launch {
+            _uiState.update { it.copy(busyScheduleIds = it.busyScheduleIds + item.id) }
+            runCatching { client.updateSchedule(item.source, item.sourceId, enabled = enabled) }
+                .onSuccess { res ->
+                    _uiState.update {
+                        it.copy(
+                            schedules = res.items,
+                            busyScheduleIds = it.busyScheduleIds - item.id,
+                            bannerMessage = if (enabled) "Resumed ${item.title}" else "Paused ${item.title}",
+                        )
+                    }
+                }
+                .onFailure { err ->
+                    _uiState.update { it.copy(busyScheduleIds = it.busyScheduleIds - item.id) }
+                    handleApiError(err)
+                }
+        }
+    }
+
+    fun runScheduleNow(item: ScheduleItem) {
+        val client = api ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(busyScheduleIds = it.busyScheduleIds + item.id) }
+            runCatching { client.runScheduleNow(item.source, item.sourceId) }
+                .onSuccess { res ->
+                    _uiState.update {
+                        it.copy(
+                            schedules = res.items,
+                            busyScheduleIds = it.busyScheduleIds - item.id,
+                            bannerMessage = res.message ?: "Triggered ${item.title}",
+                        )
+                    }
+                }
+                .onFailure { err ->
+                    _uiState.update { it.copy(busyScheduleIds = it.busyScheduleIds - item.id) }
+                    handleApiError(err)
+                }
+        }
+    }
+
+    fun deleteSchedule(item: ScheduleItem) {
+        val client = api ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(busyScheduleIds = it.busyScheduleIds + item.id) }
+            runCatching { client.deleteSchedule(item.source, item.sourceId) }
+                .onSuccess { res ->
+                    _uiState.update {
+                        it.copy(
+                            schedules = res.items,
+                            busyScheduleIds = it.busyScheduleIds - item.id,
+                            bannerMessage = "Removed ${item.title}",
+                        )
+                    }
+                }
+                .onFailure { err ->
+                    _uiState.update { it.copy(busyScheduleIds = it.busyScheduleIds - item.id) }
+                    handleApiError(err)
+                }
+        }
+    }
+
+    fun openConversationFromSchedules(conversationId: String) {
+        _uiState.update {
+            it.copy(
+                showSchedulesScreen = false,
+                activeTab = MainTab.COWORK,
+            )
+        }
+        openConversation(conversationId)
     }
 
     fun updateAutonomy(persistent: Boolean, maxCostUsd: Double?) {

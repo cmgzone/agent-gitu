@@ -1,8 +1,15 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import {
+  defaultEveryForRecurrence,
+  isCalendarScheduleDue,
+  sanitizeCalendarFields,
+  type CalendarScheduleFields,
+} from './calendar-schedule.js';
 
-export interface CronJob {
+export interface CronJob extends CalendarScheduleFields {
   id: string;
+  title?: string;
   every: string;
   goal: string;
   enabled: boolean;
@@ -67,16 +74,29 @@ export class CronStore {
     writeFileSync(this.file, JSON.stringify({ jobs }, null, 2));
   }
 
-  add(input: { every: string; goal: string; owner?: CronJob['owner']; id?: string }): CronJob {
-    parseEvery(input.every);
+  add(input: {
+    every?: string;
+    goal: string;
+    title?: string;
+    owner?: CronJob['owner'];
+    id?: string;
+    enabled?: boolean;
+  } & CalendarScheduleFields): CronJob {
+    const calendarFields = sanitizeCalendarFields(input as unknown as Record<string, unknown>);
+    const effectiveEvery = defaultEveryForRecurrence(calendarFields, input.every);
+    parseEvery(effectiveEvery);
+    const nowIso = new Date().toISOString();
+    const isCalendar = Boolean(calendarFields.recurrence && calendarFields.recurrence !== 'interval');
     const job: CronJob = {
       id: input.id ?? `cron-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4)}`,
+      ...(input.title?.trim() ? { title: input.title.trim().slice(0, 120) } : {}),
       owner: input.owner ?? 'coding',
-      every: input.every.trim(),
+      every: effectiveEvery,
       goal: input.goal.trim(),
-      enabled: true,
-      lastRunAt: new Date().toISOString(),
-      createdAt: new Date().toISOString(),
+      enabled: input.enabled !== false,
+      ...(isCalendar ? {} : { lastRunAt: nowIso }),
+      createdAt: nowIso,
+      ...calendarFields,
     };
     const jobs = this.jobs();
     if (jobs.some((existing) => existing.id === job.id)) throw Error('Schedule already exists.');
@@ -127,15 +147,28 @@ export class CronScheduler {
       const now = Date.now();
       for (const job of this.store.jobs()) {
         if (cronOwner(job) !== this.owner || !job.enabled || this.running.has(job.id)) continue;
-        let interval: number;
-        try {
-          interval = parseEvery(job.every);
-        } catch {
-          continue;
-        }
         const last = job.lastRunAt ? new Date(job.lastRunAt).getTime() : 0;
         if (job.status === 'running' && now - last < 120_000) continue;
-        if (job.nextRetryAt ? now < Date.parse(job.nextRetryAt) : now - last < interval) continue;
+
+        if (job.nextRetryAt) {
+          if (now < Date.parse(job.nextRetryAt)) continue;
+        } else {
+          const calendarDue = isCalendarScheduleDue(job, {
+            lastRunAt: job.lastRunAt,
+            createdAt: job.createdAt,
+            nowMs: now,
+          });
+          if (calendarDue === false) continue;
+          if (calendarDue === null) {
+            let interval: number;
+            try {
+              interval = parseEvery(job.every);
+            } catch {
+              continue;
+            }
+            if (now - last < interval) continue;
+          }
+        }
         this.running.add(job.id);
         try {
           this.store.update(job.id, { lastRunAt: new Date(now).toISOString(), status: 'running', error: undefined });
@@ -151,6 +184,7 @@ export class CronScheduler {
           .then((runId) => {
             this.store.update(job.id, {
               ...(runId ? { lastRunId: runId } : {}),
+              ...(job.recurrence === 'once' ? { enabled: false } : {}),
               status: 'succeeded',
               lastSuccessAt: new Date().toISOString(),
               failures: 0,

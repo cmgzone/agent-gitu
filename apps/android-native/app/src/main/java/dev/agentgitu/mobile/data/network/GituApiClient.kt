@@ -1222,6 +1222,85 @@ class GituApiClient(
     suspend fun cronJobs(): List<CronJob> =
         runCatching { request<CronListResponse>("/api/cron").jobs }.getOrElse { emptyList() }
 
+    suspend fun schedules(): SchedulesResponse =
+        request("/api/schedules")
+
+    suspend fun createSchedule(
+        source: String,
+        goal: String,
+        title: String? = null,
+        agentId: String? = null,
+        conversationId: String? = null,
+        recurrence: String = "weekdays",
+        every: String? = null,
+        atTime: String? = null,
+        daysOfWeek: List<Int>? = null,
+        runAt: String? = null,
+        timezone: String? = null,
+    ): SchedulesResponse = request(
+        "/api/schedules",
+        method = "POST",
+        body = buildJsonObject {
+            put("source", source)
+            put("goal", goal.trim())
+            if (!title.isNullOrBlank()) put("title", title.trim())
+            if (!agentId.isNullOrBlank()) put("agentId", agentId)
+            if (!conversationId.isNullOrBlank()) put("conversationId", conversationId)
+            put("recurrence", recurrence)
+            if (!every.isNullOrBlank()) put("every", every.trim())
+            if (!atTime.isNullOrBlank()) put("atTime", atTime.trim())
+            if (!daysOfWeek.isNullOrEmpty()) {
+                putJsonArray("daysOfWeek") { daysOfWeek.forEach { add(it) } }
+            }
+            if (!runAt.isNullOrBlank()) {
+                put("runAt", runAt)
+                put("dueAt", runAt)
+            }
+            if (!timezone.isNullOrBlank()) put("timezone", timezone)
+        },
+    )
+
+    suspend fun updateSchedule(
+        source: String,
+        sourceId: String,
+        enabled: Boolean? = null,
+        goal: String? = null,
+        recurrence: String? = null,
+        every: String? = null,
+        atTime: String? = null,
+        daysOfWeek: List<Int>? = null,
+        runAt: String? = null,
+    ): SchedulesResponse = request(
+        "/api/schedules/${encodeQuery(source)}/${encodeQuery(sourceId)}",
+        method = "PATCH",
+        body = buildJsonObject {
+            if (enabled != null) put("enabled", enabled)
+            if (!goal.isNullOrBlank()) put("goal", goal.trim())
+            if (!recurrence.isNullOrBlank()) put("recurrence", recurrence)
+            if (!every.isNullOrBlank()) put("every", every.trim())
+            if (!atTime.isNullOrBlank()) put("atTime", atTime.trim())
+            if (daysOfWeek != null) {
+                putJsonArray("daysOfWeek") { daysOfWeek.forEach { add(it) } }
+            }
+            if (!runAt.isNullOrBlank()) {
+                put("runAt", runAt)
+                put("dueAt", runAt)
+            }
+        },
+    )
+
+    suspend fun runScheduleNow(source: String, sourceId: String): SchedulesResponse =
+        request(
+            "/api/schedules/${encodeQuery(source)}/${encodeQuery(sourceId)}/run",
+            method = "POST",
+        )
+
+    suspend fun deleteSchedule(source: String, sourceId: String): SchedulesResponse =
+        request(
+            "/api/schedules/${encodeQuery(source)}/${encodeQuery(sourceId)}",
+            method = "DELETE",
+        )
+
     suspend fun localLinkStatus(): LocalLinkStatusResponse =
         request("/api/local-link/status")
 

@@ -41,6 +41,7 @@ export const FONT_FILES: Record<string, string> = {
 export const BRAND_FILES: Record<string, string> = {
   'agent-gitu-mark.svg': 'image/svg+xml',
   'agent-gitu-logo.svg': 'image/svg+xml',
+  'auth-hero.jpg': 'image/jpeg',
 };
 
 const MIME_BY_EXTENSION: Record<string, string> = {

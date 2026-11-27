@@ -995,10 +995,20 @@ data class ChiefSettingsResponse(
 @Serializable
 data class CronJob(
     val id: String = "",
+    val title: String = "",
     val name: String = "",
+    val goal: String = "",
     val prompt: String = "",
+    val every: String = "",
     val interval: String = "",
+    val recurrence: String? = null,
+    val atTime: String? = null,
+    val daysOfWeek: List<Int> = emptyList(),
+    val runAt: String? = null,
     val enabled: Boolean = true,
+    val status: String? = null,
+    val failures: Int = 0,
+    val error: String? = null,
     val nextRunAt: String? = null,
     val lastRunAt: String? = null,
 )
@@ -1006,6 +1016,66 @@ data class CronJob(
 @Serializable
 data class CronListResponse(
     val jobs: List<CronJob> = emptyList(),
+)
+
+@Serializable
+data class ScheduleItem(
+    val id: String = "",
+    val source: String = "cowork", // "cron" | "cowork" | "followup"
+    val sourceId: String = "",
+    val title: String = "",
+    val goal: String = "",
+    val every: String = "",
+    val recurrence: String = "interval", // "interval" | "daily" | "weekdays" | "weekly" | "once"
+    val atTime: String? = null,
+    val daysOfWeek: List<Int> = emptyList(),
+    val runAt: String? = null,
+    val timezone: String? = null,
+    val enabled: Boolean = true,
+    val status: String = "scheduled",
+    val lastRunAt: String? = null,
+    val nextRunAt: String? = null,
+    val lastRunId: String? = null,
+    val failures: Int = 0,
+    val error: String? = null,
+    val agentId: String? = null,
+    val agentName: String? = null,
+    val agentColor: String? = null,
+    val agentShape: String? = null,
+    val agentAvatarUrl: String? = null,
+    val conversationId: String? = null,
+    val conversationTitle: String? = null,
+)
+
+@Serializable
+data class ScheduleAgentSummary(
+    val id: String = "",
+    val name: String = "",
+    val color: String? = null,
+    val shape: String? = null,
+    val avatarUrl: String? = null,
+    val tagline: String? = null,
+)
+
+@Serializable
+data class ScheduleConvSummary(
+    val id: String = "",
+    val kind: String = "dm",
+    val title: String = "",
+    val memberIds: List<String> = emptyList(),
+    val hasSchedule: Boolean = false,
+)
+
+@Serializable
+data class SchedulesResponse(
+    val ok: Boolean = true,
+    val message: String? = null,
+    val timezone: String = "",
+    val now: String = "",
+    val hasProject: Boolean = false,
+    val items: List<ScheduleItem> = emptyList(),
+    val agents: List<ScheduleAgentSummary> = emptyList(),
+    val conversations: List<ScheduleConvSummary> = emptyList(),
 )
 
 @Serializable

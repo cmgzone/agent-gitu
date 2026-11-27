@@ -2,6 +2,7 @@ package dev.agentgitu.mobile
 
 import androidx.compose.ui.graphics.Color
 import dev.agentgitu.mobile.data.model.ConnectedServiceItem
+import dev.agentgitu.mobile.data.model.ScheduleItem
 import dev.agentgitu.mobile.data.model.TeamRequest
 import dev.agentgitu.mobile.data.model.Teammate
 import dev.agentgitu.mobile.ui.components.cardActionPresentation
@@ -13,7 +14,9 @@ import dev.agentgitu.mobile.ui.components.resolveAppLogoUrl
 import dev.agentgitu.mobile.ui.components.resolveCharacterColorHex
 import dev.agentgitu.mobile.ui.components.resolveOfficialCharacter
 import dev.agentgitu.mobile.ui.screens.chiefOfStaffPresenceTeammates
+import dev.agentgitu.mobile.ui.screens.scheduleMatchesDate
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -153,5 +156,21 @@ class CharacterAndCardsTest {
                 listOf(Teammate(id = "a1", name = "Atlas", chiefOfStaff = false)),
             ).isEmpty(),
         )
+    }
+
+    @Test
+    fun scheduleMatchesDate_projectsCalendarRulesAccurately() {
+        val weekdays = ScheduleItem(id = "s1", source = "cowork", recurrence = "weekdays", atTime = "08:30")
+        assertTrue(scheduleMatchesDate(weekdays, "2026-11-27")) // Friday
+        assertFalse(scheduleMatchesDate(weekdays, "2026-11-28")) // Saturday
+
+        val weeklyMonFri = ScheduleItem(id = "s2", source = "cron", recurrence = "weekly", daysOfWeek = listOf(1, 5))
+        assertTrue(scheduleMatchesDate(weeklyMonFri, "2026-11-27")) // Friday
+        assertTrue(scheduleMatchesDate(weeklyMonFri, "2026-11-30")) // Monday
+        assertFalse(scheduleMatchesDate(weeklyMonFri, "2026-11-26")) // Thursday
+
+        val once = ScheduleItem(id = "s3", source = "followup", recurrence = "once", runAt = "2026-11-29T12:00:00Z")
+        assertTrue(scheduleMatchesDate(once, "2026-11-29"))
+        assertFalse(scheduleMatchesDate(once, "2026-11-28"))
     }
 }

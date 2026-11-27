@@ -32,4 +32,40 @@ class PushDeepLinkTest {
         assertNull(PushDeepLink.parsePayload(mapOf("target" to "run", "targetId" to "")))
         assertNull(PushDeepLink.parsePayload(mapOf("target" to "unknown", "targetId" to "123")))
     }
+
+    @Test
+    fun parsesLiveActivityWorkingAndReplyPayloads() {
+        val working = PushDeepLink.parseLiveActivity(
+            mapOf(
+                "liveActivity" to "1",
+                "kind" to "working",
+                "title" to "Forge",
+                "body" to "Running unit tests…",
+                "agentName" to "Forge",
+                "phase" to "Testing",
+                "progress" to "75",
+                "target" to "run",
+                "targetId" to "run_42",
+            ),
+        )
+        assertNotNull(working)
+        assertEquals("working", working!!.kind)
+        assertEquals(true, working.isWorking)
+        assertEquals(75, working.progress)
+        assertEquals("run_42", working.target?.targetId)
+
+        val reply = PushDeepLink.parseLiveActivity(
+            mapOf(
+                "kind" to "reply",
+                "target" to "cowork",
+                "targetId" to "conv_7",
+            ),
+            fallbackTitle = "Orb",
+            fallbackBody = "Here is your summary.",
+        )
+        assertNotNull(reply)
+        assertEquals(false, reply!!.isWorking)
+        assertEquals("Orb", reply.title)
+        assertEquals("Here is your summary.", reply.body)
+    }
 }

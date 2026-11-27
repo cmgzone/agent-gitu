@@ -1,7 +1,11 @@
 package dev.agentgitu.mobile.ui.screens
 
 import android.Manifest
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -20,13 +24,31 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import dev.agentgitu.mobile.data.local.ThemePreference
+import dev.agentgitu.mobile.push.GituLiveActivityNotifier
 import dev.agentgitu.mobile.ui.components.*
 import dev.agentgitu.mobile.ui.theme.LocalStitchPalette
 import dev.agentgitu.mobile.ui.viewmodel.AppUiState
 import dev.agentgitu.mobile.ui.viewmodel.GituAppViewModel
+
+private fun openAppNotificationSettings(context: Context) {
+    val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+            putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+        }
+    } else {
+        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+            data = Uri.fromParts("package", context.packageName, null)
+        }
+    }.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    runCatching { context.startActivity(intent) }
+}
 
 /**
  * Exact Stitch Settings & Server Pairing screen (settings_server_pairing/code.html)
@@ -38,15 +60,72 @@ fun SettingsScreen(
     vm: GituAppViewModel,
 ) {
     val s = LocalStitchPalette.current
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     var showChiefDialog by remember { mutableStateOf(false) }
     var showLocalLinkDialog by remember { mutableStateOf(false) }
     var showSpendDialog by remember { mutableStateOf(false) }
     var showModelPicker by remember { mutableStateOf(false) }
+    var hasNotifPerm by remember { mutableStateOf(GituLiveActivityNotifier.hasNotificationPermission(context)) }
+    var pendingPermAction by remember { mutableStateOf<String?>(null) } // "push" | "live"
+    var showSystemSettingsHint by remember { mutableStateOf(false) }
+
+    // Refresh OS notification permission state when returning from Android Settings
+    DisposableEffect(lifecycleOwner, context) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                val nowGranted = GituLiveActivityNotifier.hasNotificationPermission(context)
+                hasNotifPerm = nowGranted
+                if (nowGranted) {
+                    showSystemSettingsHint = false
+                    when (pendingPermAction) {
+                        "push" -> {
+                            pendingPermAction = null
+                            vm.enablePushNotifications()
+                        }
+                        "live" -> {
+                            pendingPermAction = null
+                            vm.setLiveActivityEnabled(true)
+                        }
+                    }
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
     ) { granted ->
-        if (granted) vm.enablePushNotifications()
+        val effective = granted && GituLiveActivityNotifier.hasNotificationPermission(context)
+        hasNotifPerm = effective
+        val action = pendingPermAction
+        if (effective) {
+            pendingPermAction = null
+            showSystemSettingsHint = false
+            if (action == "live") vm.setLiveActivityEnabled(true) else vm.enablePushNotifications()
+        } else {
+            showSystemSettingsHint = true
+            vm.reportNotificationPermissionDenied()
+        }
+    }
+
+    fun requestNotifPermissionThen(action: String, onAlreadyGranted: () -> Unit) {
+        val nowGranted = GituLiveActivityNotifier.hasNotificationPermission(context)
+        hasNotifPerm = nowGranted
+        if (nowGranted) {
+            showSystemSettingsHint = false
+            onAlreadyGranted()
+            return
+        }
+        pendingPermAction = action
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            showSystemSettingsHint = true
+            openAppNotificationSettings(context)
+        }
     }
 
     val peersOnline = state.localLinkStatus?.hub?.peers?.count { it.online } ?: 0
@@ -258,19 +337,30 @@ fun SettingsScreen(
                 PreferenceRow(
                     title = "Push alerts (FCM)",
                     subtitle = when {
-                        !state.pushStatus.available -> "Configure FCM on server first"
+                        !hasNotifPerm -> "Android notification permission is off — tap to allow"
+                        !state.pushStatusError.isNullOrBlank() -> state.pushStatusError!!
+                        !state.pushStatus.available -> "Server FCM not configured yet — tap to re-check"
                         state.pushStatus.enabled -> "Gates, completions & Cowork replies"
                         else -> "Tap to enable background alerts"
+                    },
+                    onClick = {
+                        if (!state.pushBusy) {
+                            if (state.pushStatus.enabled) {
+                                vm.disablePushNotifications()
+                            } else {
+                                requestNotifPermissionThen("push") {
+                                    vm.enablePushNotifications()
+                                }
+                            }
+                        }
                     },
                     trailing = {
                         Switch(
                             checked = state.pushStatus.enabled,
-                            enabled = !state.pushBusy && (state.pushStatus.available || state.pushStatus.enabled),
+                            enabled = !state.pushBusy,
                             onCheckedChange = { wantEnable ->
                                 if (wantEnable) {
-                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                                    } else {
+                                    requestNotifPermissionThen("push") {
                                         vm.enablePushNotifications()
                                     }
                                 } else {
@@ -280,14 +370,115 @@ fun SettingsScreen(
                         )
                     },
                 )
-                if (state.pushStatus.enabled) {
+                if (showSystemSettingsHint || !hasNotifPerm) {
                     HorizontalDivider(color = s.outlineVariant)
-                    Box(modifier = Modifier.padding(12.dp)) {
-                        StitchSecondaryButton(
-                            text = "Send test notification",
-                            onClick = { vm.sendTestPush() },
-                            modifier = Modifier.fillMaxWidth(),
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.NotificationsOff,
+                            contentDescription = null,
+                            tint = s.warning,
+                            modifier = Modifier.size(18.dp),
                         )
+                        Text(
+                            text = "Notifications are currently turned off in Android system settings.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = s.onSurfaceVariant,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(onClick = { openAppNotificationSettings(context) }) {
+                            Text("Allow", color = s.primary)
+                        }
+                    }
+                }
+                HorizontalDivider(color = s.outlineVariant)
+
+                // Row 6: Lock-Screen Live Activity (Google Play Policy Compliant Ongoing Notifications)
+                PreferenceRow(
+                    title = "Lock screen Live Activity",
+                    subtitle = when {
+                        !hasNotifPerm -> "Allow Android notifications to show live status on lock screen"
+                        state.liveActivityEnabled -> "Shows live working steps & replies while locked"
+                        else -> "See agent progress & replies when phone is locked"
+                    },
+                    onClick = {
+                        if (state.liveActivityEnabled) {
+                            vm.setLiveActivityEnabled(false)
+                        } else {
+                            requestNotifPermissionThen("live") {
+                                vm.setLiveActivityEnabled(true)
+                            }
+                        }
+                    },
+                    trailing = {
+                        Switch(
+                            checked = state.liveActivityEnabled,
+                            onCheckedChange = { wantEnable ->
+                                if (wantEnable) {
+                                    requestNotifPermissionThen("live") {
+                                        vm.setLiveActivityEnabled(true)
+                                    }
+                                } else {
+                                    vm.setLiveActivityEnabled(false)
+                                }
+                            },
+                        )
+                    },
+                )
+                if (state.liveActivityEnabled) {
+                    HorizontalDivider(color = s.outlineVariant)
+                    PreferenceRow(
+                        title = "Show reply text on lock screen",
+                        subtitle = if (state.liveActivityShowPreview) {
+                            "Message previews visible on lock screen"
+                        } else {
+                            "Privacy mode · status only until unlocked"
+                        },
+                        trailing = {
+                            Switch(
+                                checked = state.liveActivityShowPreview,
+                                onCheckedChange = { vm.setLiveActivityShowPreview(it) },
+                            )
+                        },
+                    )
+                    Text(
+                        text = "Uses standard Android ongoing notifications (Google Play compliant — no lock-screen overlays or background polling).",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = s.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 14.dp, end = 14.dp, bottom = 10.dp),
+                    )
+                }
+                if (state.pushStatus.enabled || state.liveActivityEnabled) {
+                    HorizontalDivider(color = s.outlineVariant)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        if (state.pushStatus.enabled) {
+                            StitchSecondaryButton(
+                                text = "Test FCM push",
+                                onClick = { vm.sendTestPush() },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        if (state.liveActivityEnabled) {
+                            StitchSecondaryButton(
+                                text = "Test Live Activity",
+                                onClick = {
+                                    requestNotifPermissionThen("live") {
+                                        vm.sendTestLiveActivity()
+                                    }
+                                },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
                     }
                 }
             }

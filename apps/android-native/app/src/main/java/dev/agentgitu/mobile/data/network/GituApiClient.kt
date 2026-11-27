@@ -4,12 +4,14 @@ import android.webkit.CookieManager
 import dev.agentgitu.mobile.data.model.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
+import java.io.InputStream
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
@@ -28,6 +30,12 @@ class GituApiClient(
     val baseUrl: String = ServerUrlValidator.normalizeServerUrl(rawBaseUrl)
 
     private val cookies = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val uploadHttpClient: OkHttpClient by lazy {
+        httpClient.newBuilder()
+            .writeTimeout(10, TimeUnit.MINUTES)
+            .readTimeout(10, TimeUnit.MINUTES)
+            .build()
+    }
     @Volatile
     private var pikpamToken: String = ""
 
@@ -41,6 +49,9 @@ class GituApiClient(
     val currentSessionCookie: String?
         get() = cookies["gitu_session"]?.let { "gitu_session=$it" }
 
+    val currentAccessKey: String
+        get() = accessKey
+
     val json = Json {
         ignoreUnknownKeys = true
         isLenient = true
@@ -50,6 +61,7 @@ class GituApiClient(
 
     companion object {
         private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
+        private val OCTET_STREAM = "application/octet-stream".toMediaType()
 
         fun defaultHttpClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
@@ -91,6 +103,29 @@ class GituApiClient(
         } catch (_: Throwable) {
             // Safe no-op in JVM unit tests.
         }
+    }
+
+    /** Restores credentials saved from a previous successful connection. */
+    fun restoreSession(cookieHeader: String?, accessKey: String?, pikpamToken: String?) {
+        if (!accessKey.isNullOrBlank()) this.accessKey = accessKey.trim()
+        if (!pikpamToken.isNullOrBlank()) this.pikpamToken = pikpamToken.trim()
+        cookieHeader?.split(';')?.forEach { part ->
+            val pair = part.trim()
+            val separator = pair.indexOf('=')
+            if (separator > 0) {
+                cookies[pair.substring(0, separator).trim()] = pair.substring(separator + 1).trim()
+            }
+        }
+    }
+
+    /** Confirms a restored cookie/access key still opens the server. */
+    suspend fun verifyRestoredSession(timeoutSeconds: Long = 8): MobileStatus {
+        val raw = executeRawJson("/api/auth/status", "GET", null, readTimeoutSeconds = timeoutSeconds)
+        val auth = json.decodeFromString<AuthStatus>(raw)
+        if (auth.configured && !auth.authenticated) {
+            throw GituApiException("Your session expired. Sign in again.", statusCode = 401)
+        }
+        return MobileStatus(app = "Agent Gitu", mobileProtocol = 1)
     }
 
     suspend fun health(): HealthStatus = requestRaw("/healthz", method = "GET")
@@ -526,16 +561,131 @@ class GituApiClient(
                     JsonArray(
                         files.map { f ->
                             buildJsonObject {
-                                put("name", f.name)
-                                put("type", f.mime)
-                                put("dataUrl", f.dataUrl)
+                                if (!f.uploadId.isNullOrBlank()) {
+                                    put("artifactId", f.uploadId)
+                                } else {
+                                    put("name", f.name)
+                                    put("type", f.mime)
+                                    put("dataUrl", f.dataUrl)
+                                }
                             }
                         },
                     ),
                 )
             }
         },
+        overrideClient = if (files.isNotEmpty()) uploadHttpClient else null,
     )
+
+    /**
+     * Streams a chat attachment through the server's resumable upload endpoint.
+     * The returned id is attached to the message as `files:[{artifactId}]`, so
+     * large photos and videos never travel through base64 JSON.
+     */
+    suspend fun uploadCoworkAttachment(
+        conversationId: String,
+        name: String,
+        mime: String,
+        sizeBytes: Long,
+        openStream: () -> InputStream,
+        onProgress: (Float) -> Unit = {},
+        onUploadCreated: (String) -> Unit = {},
+        isCancelled: () -> Boolean = { false },
+    ): String {
+        require(sizeBytes > 0) { "The selected file is empty." }
+        val scope = "cowork:$conversationId"
+        val created = request<CreateUploadResponse>(
+            path = "/api/files/uploads",
+            method = "POST",
+            body = buildJsonObject {
+                put("scope", scope)
+                put("name", name)
+                put("mime", mime)
+                put("size", sizeBytes)
+            },
+        )
+        val uploadId = created.file.id
+        if (uploadId.isBlank()) throw GituApiException("The server did not create an upload.")
+        onUploadCreated(uploadId)
+        val chunkBytes = created.chunkBytes.coerceIn(256L * 1024L, 8L * 1024L * 1024L).toInt()
+        var offset = 0L
+        try {
+            withContext(Dispatchers.IO) {
+                openStream().use { input ->
+                    val buffer = ByteArray(chunkBytes)
+                    while (offset < sizeBytes) {
+                        if (isCancelled()) throw java.util.concurrent.CancellationException("Upload cancelled.")
+                        val remaining = (sizeBytes - offset).coerceAtMost(chunkBytes.toLong()).toInt()
+                        var filled = 0
+                        while (filled < remaining) {
+                            val read = input.read(buffer, filled, remaining - filled)
+                            if (read < 0) break
+                            filled += read
+                        }
+                        if (filled <= 0) throw GituApiException("The selected file ended before its reported size.")
+                        appendUploadChunk(uploadId, scope, offset, buffer, filled)
+                        offset += filled
+                        onProgress(offset.toFloat() / sizeBytes.toFloat())
+                    }
+                }
+            }
+            val completed = request<UploadFileResponse>(
+                path = "/api/files/uploads/${encodeQuery(uploadId)}/complete?scope=${encodeQuery(scope)}",
+                method = "POST",
+                body = buildJsonObject {},
+                overrideClient = uploadHttpClient,
+            )
+            if (completed.file.state != "ready") {
+                throw GituApiException("The server did not finish the upload.")
+            }
+            onProgress(1f)
+            return uploadId
+        } catch (error: Throwable) {
+            runCatching { cancelUpload(uploadId, conversationId) }
+            throw error
+        }
+    }
+
+    suspend fun cancelUpload(uploadId: String, conversationId: String?) {
+        val scope = conversationId?.let { "cowork:$it" } ?: return
+        runCatching {
+            request<JsonElement>(
+                path = "/api/files/uploads/${encodeQuery(uploadId)}?scope=${encodeQuery(scope)}",
+                method = "DELETE",
+            )
+        }
+    }
+
+    private suspend fun appendUploadChunk(
+        uploadId: String,
+        scope: String,
+        offset: Long,
+        bytes: ByteArray,
+        length: Int,
+    ) = withContext(Dispatchers.IO) {
+        val builder = Request.Builder()
+            .url("$baseUrl/api/files/uploads/${encodeQuery(uploadId)}?scope=${encodeQuery(scope)}")
+            .patch(bytes.toRequestBody(OCTET_STREAM, 0, length))
+            .header("Origin", baseUrl)
+            .header("Upload-Offset", offset.toString())
+        buildAuthHeaders().forEach { (key, value) -> builder.header(key, value) }
+        val response = try {
+            uploadHttpClient.newCall(builder.build()).execute()
+        } catch (error: IOException) {
+            throw GituApiException("Could not upload the file: ${error.message ?: "network error"}")
+        }
+        response.use { res ->
+            val rawText = res.body?.string().orEmpty()
+            if (!res.isSuccessful) {
+                val err = runCatching { json.decodeFromString<ErrorPayload>(rawText) }.getOrNull()
+                throw GituApiException(
+                    err?.error ?: "Upload chunk failed (${res.code}).",
+                    statusCode = res.code,
+                    code = err?.code,
+                )
+            }
+        }
+    }
 
     suspend fun editTeamMessage(
         conversationId: String,
@@ -1307,13 +1457,35 @@ class GituApiClient(
     suspend fun pushStatus(deviceId: String): PushStatus =
         request("/api/mobile/push?deviceId=${encodeQuery(deviceId)}")
 
-    suspend fun registerPush(deviceId: String, token: String): PushStatus =
+    suspend fun registerPush(
+        deviceId: String,
+        token: String,
+        liveActivity: Boolean? = null,
+        showLockScreenPreview: Boolean? = null,
+    ): PushStatus =
         request(
             "/api/mobile/push",
             method = "POST",
             body = buildJsonObject {
                 put("deviceId", deviceId)
                 put("token", token)
+                if (liveActivity != null) put("liveActivity", liveActivity)
+                if (showLockScreenPreview != null) put("showLockScreenPreview", showLockScreenPreview)
+            },
+        )
+
+    suspend fun updatePushPreferences(
+        deviceId: String,
+        liveActivity: Boolean,
+        showLockScreenPreview: Boolean,
+    ): PushStatus =
+        request(
+            "/api/mobile/push",
+            method = "PATCH",
+            body = buildJsonObject {
+                put("deviceId", deviceId)
+                put("liveActivity", liveActivity)
+                put("showLockScreenPreview", showLockScreenPreview)
             },
         )
 
@@ -1416,17 +1588,19 @@ class GituApiClient(
         path: String,
         method: String = "GET",
         body: JsonElement? = null,
+        overrideClient: OkHttpClient? = null,
     ): T {
         require(path.startsWith("/api/")) { "Invalid Gitu API route." }
-        return requestRaw(path, method, body)
+        return requestRaw(path, method, body, overrideClient)
     }
 
     private suspend inline fun <reified T> requestRaw(
         path: String,
         method: String = "GET",
         body: JsonElement? = null,
+        overrideClient: OkHttpClient? = null,
     ): T {
-        val rawText = executeRawJson(path, method, body)
+        val rawText = executeRawJson(path, method, body, overrideClient = overrideClient)
         return try {
             json.decodeFromString<T>(rawText)
         } catch (err: Exception) {
@@ -1439,6 +1613,7 @@ class GituApiClient(
         method: String,
         body: JsonElement?,
         readTimeoutSeconds: Long? = null,
+        overrideClient: OkHttpClient? = null,
     ): String = withContext(Dispatchers.IO) {
         val builder = Request.Builder()
             .url("$baseUrl$path")
@@ -1463,12 +1638,12 @@ class GituApiClient(
             else -> builder.method(method, requestBody)
         }
 
-        val callClient = if (readTimeoutSeconds != null) {
-            httpClient.newBuilder()
+        val callClient = when {
+            overrideClient != null -> overrideClient
+            readTimeoutSeconds != null -> httpClient.newBuilder()
                 .readTimeout(readTimeoutSeconds, TimeUnit.SECONDS)
                 .build()
-        } else {
-            httpClient
+            else -> httpClient
         }
 
         val response = try {
@@ -1518,3 +1693,24 @@ class GituApiClient(
     private fun basename(path: String): String =
         path.replace('\\', '/').trimEnd('/').substringAfterLast('/').ifBlank { path }
 }
+
+@Serializable
+private data class UploadFileDto(
+    val id: String = "",
+    val name: String = "",
+    val mime: String = "",
+    val size: Long = 0,
+    val offset: Long = 0,
+    val state: String = "",
+)
+
+@Serializable
+private data class CreateUploadResponse(
+    val file: UploadFileDto = UploadFileDto(),
+    val chunkBytes: Long = 5L * 1024L * 1024L,
+)
+
+@Serializable
+private data class UploadFileResponse(
+    val file: UploadFileDto = UploadFileDto(),
+)

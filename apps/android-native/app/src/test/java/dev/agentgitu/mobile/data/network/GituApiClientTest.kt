@@ -1,6 +1,8 @@
 package dev.agentgitu.mobile.data.network
 
+import dev.agentgitu.mobile.data.model.PendingAttachment
 import dev.agentgitu.mobile.data.model.RunEvent
+import dev.agentgitu.mobile.data.model.TeamConversation
 import dev.agentgitu.mobile.ui.viewmodel.GituAppViewModel
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.buildJsonObject
@@ -8,10 +10,12 @@ import kotlinx.serialization.json.put
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import java.io.ByteArrayInputStream
 
 class GituApiClientTest {
 
@@ -272,6 +276,7 @@ class GituApiClientTest {
         assertEquals("$baseUrl/api/cowork/agents/ag_1/computer/view", client.agentComputerViewUrl("ag_1"))
         assertEquals("$baseUrl/api/cowork/agents/ag_1/computer/view?preview=1", client.agentComputerViewUrl("ag_1", preview = true))
         assertEquals("$baseUrl/api/server-browser/ag_1/view", client.serverBrowserViewUrl("ag_1"))
+        assertEquals("$baseUrl/api/server-browser/workspace/view", client.serverBrowserViewUrl("workspace"))
 
         val sendReq = server.takeRequest()
         assertEquals("POST", sendReq.method)
@@ -309,5 +314,136 @@ class GituApiClientTest {
         val launchReq = server.takeRequest()
         assertEquals("POST", launchReq.method)
         assertTrue(launchReq.body.readUtf8().contains(""""app":"browser""""))
+    }
+
+    @Test
+    fun uploadCoworkAttachmentStreamsChunksAndCompletes() = runTest {
+        val bytes = "hello upload".toByteArray()
+        server.enqueue(
+            MockResponse().setResponseCode(201).setBody(
+                """{"file":{"id":"file-123","name":"photo.jpg","mime":"image/jpeg","size":12,"offset":0,"state":"uploading"},"chunkBytes":4}""",
+            ),
+        )
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"file":{"id":"file-123","state":"uploading","offset":12}}""",
+            ),
+        )
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"file":{"id":"file-123","state":"ready"}}""",
+            ),
+        )
+
+        val client = GituApiClient(server.url("").toString().trimEnd('/'))
+        val progress = mutableListOf<Float>()
+        val uploadId = client.uploadCoworkAttachment(
+            conversationId = "conv_1",
+            name = "photo.jpg",
+            mime = "image/jpeg",
+            sizeBytes = bytes.size.toLong(),
+            openStream = { ByteArrayInputStream(bytes) },
+            onProgress = { progress.add(it) },
+        )
+
+        assertEquals("file-123", uploadId)
+        assertEquals(1f, progress.last(), 0.0001f)
+
+        val createReq = server.takeRequest()
+        assertEquals("POST", createReq.method)
+        assertEquals("/api/files/uploads", createReq.path)
+        val createBody = createReq.body.readUtf8()
+        assertTrue(createBody.contains(""""scope":"cowork:conv_1""""))
+        assertTrue(createBody.contains(""""name":"photo.jpg""""))
+        assertTrue(createBody.contains(""""size":12"""))
+
+        val chunkReq = server.takeRequest()
+        assertEquals("PATCH", chunkReq.method)
+        assertEquals("/api/files/uploads/file-123?scope=cowork%3Aconv_1", chunkReq.path)
+        assertEquals("0", chunkReq.getHeader("Upload-Offset"))
+        assertArrayEquals(bytes, chunkReq.body.readByteArray())
+
+        val completeReq = server.takeRequest()
+        assertEquals("POST", completeReq.method)
+        assertEquals("/api/files/uploads/file-123/complete?scope=cowork%3Aconv_1", completeReq.path)
+    }
+
+    @Test
+    fun sendTeamMessageUsesArtifactIdForUploadedAttachments() = runTest {
+        server.enqueue(MockResponse().setResponseCode(202).setBody("""{"ok":true,"queued":false}"""))
+        val client = GituApiClient(server.url("").toString().trimEnd('/'))
+        client.sendTeamMessage(
+            conversationId = "conv_1",
+            messageId = "msg_upload",
+            text = "Photo attached",
+            files = listOf(
+                PendingAttachment(
+                    name = "photo.jpg",
+                    mime = "image/jpeg",
+                    dataUrl = "",
+                    sizeBytes = 12,
+                    localId = "att-1",
+                    uploadId = "file-123",
+                    progress = 1f,
+                ),
+            ),
+        )
+
+        val body = server.takeRequest().body.readUtf8()
+        assertTrue(body.contains(""""artifactId":"file-123""""))
+        assertTrue(!body.contains("dataUrl"))
+    }
+
+    @Test
+    fun dedupesLegacyDuplicateDirectConversations() {
+        val older = TeamConversation(
+            id = "cc-old",
+            kind = "dm",
+            title = "P.A",
+            memberIds = listOf("ca-pa"),
+            updatedAt = "2026-11-19T08:45:57.610Z",
+        )
+        val newer = TeamConversation(
+            id = "cc-new",
+            kind = "dm",
+            title = "P.A",
+            memberIds = listOf("ca-pa"),
+            updatedAt = "2026-11-27T21:02:49.508Z",
+        )
+        val group = TeamConversation(
+            id = "cc-group",
+            kind = "group",
+            title = "Pikpam Team",
+            memberIds = listOf("ca-pa", "ca-atlas"),
+            updatedAt = "2026-11-20T00:00:00.000Z",
+        )
+        val otherDm = TeamConversation(
+            id = "cc-forge",
+            kind = "dm",
+            title = "Forge",
+            memberIds = listOf("ca-forge"),
+            updatedAt = "2026-11-20T00:00:00.000Z",
+        )
+
+        val deduped = GituAppViewModel.dedupeDirectConversations(listOf(older, newer, group, otherDm))
+        assertEquals(listOf("cc-new", "cc-group", "cc-forge"), deduped.map { it.id })
+    }
+
+    @Test
+    fun restoresPersistedSessionCookie() = runTest {
+        server.enqueue(
+            MockResponse().setBody(
+                """{"required":true,"configured":true,"requiresEmail":true,"authenticated":true}""",
+            ),
+        )
+        val client = GituApiClient(server.url("").toString().trimEnd('/'))
+        client.restoreSession("gitu_session=restored-cookie", null, null)
+
+        val status = client.verifyRestoredSession()
+        assertEquals("Agent Gitu", status.app)
+
+        val request = server.takeRequest()
+        assertEquals("/api/auth/status", request.path)
+        assertEquals("gitu_session=restored-cookie", request.getHeader("Cookie"))
     }
 }

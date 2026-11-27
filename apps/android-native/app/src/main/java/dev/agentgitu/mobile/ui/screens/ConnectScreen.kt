@@ -171,6 +171,7 @@ fun ConnectScreen(
     var showPassword by remember { mutableStateOf(false) }
     var usePikpamOnServer by remember { mutableStateOf(true) }
     var showQrDialog by remember { mutableStateOf(false) }
+    var showQrScanner by remember { mutableStateOf(false) }
     var freeAgentName by remember { mutableStateOf("") }
 
     // Gentle auto-advance on the welcome story slides until the user interacts
@@ -642,12 +643,22 @@ fun ConnectScreen(
                     } else {
                         // Pair My PC (Desktop QR + Local LAN / Remote HTTPS)
                         StitchPrimaryButton(
-                            text = "Paste / apply desktop QR link",
+                            text = "Scan desktop QR code",
                             icon = Icons.Default.QrCodeScanner,
                             roundedLg = true,
-                            onClick = { showQrDialog = true },
+                            onClick = { showQrScanner = true },
                             modifier = Modifier.fillMaxWidth(),
                         )
+                        TextButton(
+                            onClick = { showQrDialog = true },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                text = "Paste a pairing link instead",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = s.onSurfaceVariant,
+                            )
+                        }
 
                         HorizontalDivider(color = s.outlineVariant)
 
@@ -768,12 +779,26 @@ fun ConnectScreen(
         }
     }
 
+    if (showQrScanner) {
+        QrScannerDialog(
+            onDismiss = { showQrScanner = false },
+            onScanned = { rawLink ->
+                showQrScanner = false
+                onPasteConnectLink(rawLink)
+            },
+            onEnterManually = {
+                showQrScanner = false
+                showQrDialog = true
+            },
+        )
+    }
+
     if (showQrDialog) {
         var rawLink by remember { mutableStateOf("") }
         AlertDialog(
             onDismissRequest = { showQrDialog = false },
             containerColor = s.surfaceContainerLowest,
-            title = { Text("Pair via Desktop QR Link", color = s.onSurface) },
+            title = { Text("Paste pairing link", color = s.onSurface) },
             text = {
                 StitchInputField(
                     value = rawLink,
@@ -789,7 +814,7 @@ fun ConnectScreen(
                         onPasteConnectLink(rawLink)
                         showQrDialog = false
                     },
-                ) { Text("Apply", color = s.primary) }
+                ) { Text("Use link", color = s.primary) }
             },
             dismissButton = {
                 TextButton(onClick = { showQrDialog = false }) { Text("Cancel", color = s.onSurfaceVariant) }

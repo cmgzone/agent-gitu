@@ -550,6 +550,10 @@ data class PendingAttachment(
     val mime: String,
     val dataUrl: String,
     val sizeBytes: Long,
+    val localId: String = "",
+    val uploadId: String? = null,
+    val progress: Float = 1f,
+    val error: String? = null,
 )
 
 @Serializable
@@ -1111,6 +1115,8 @@ data class PushStatus(
     val available: Boolean = false,
     val enabled: Boolean = false,
     val workspaceId: String = "",
+    val liveActivity: Boolean = false,
+    val showLockScreenPreview: Boolean = true,
 )
 
 // --- Native LiveKit Voice Calling ---

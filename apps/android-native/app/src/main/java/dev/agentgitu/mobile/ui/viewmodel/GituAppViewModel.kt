@@ -3,11 +3,14 @@ package dev.agentgitu.mobile.ui.viewmodel
 import android.Manifest
 import android.app.Application
 import android.content.pm.PackageManager
+import android.net.Uri
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.firebase.messaging.FirebaseMessaging
 import dev.agentgitu.mobile.data.local.SavedServerConfig
+import dev.agentgitu.mobile.data.local.SecureSession
+import dev.agentgitu.mobile.data.local.SecureSessionStore
 import dev.agentgitu.mobile.data.local.SessionStore
 import dev.agentgitu.mobile.data.local.ThemePreference
 import dev.agentgitu.mobile.data.model.*
@@ -17,11 +20,14 @@ import dev.agentgitu.mobile.data.network.GituApiException
 import dev.agentgitu.mobile.data.network.PikpamClient
 import dev.agentgitu.mobile.data.network.PikpamCloudInstance
 import dev.agentgitu.mobile.data.network.ServerUrlValidator
+import dev.agentgitu.mobile.push.GituLiveActivityNotifier
 import dev.agentgitu.mobile.push.GituMessagingService
+import dev.agentgitu.mobile.push.LiveActivityUpdate
 import dev.agentgitu.mobile.push.PushNavigationTarget
 import dev.agentgitu.mobile.voice.LiveKitVoiceManager
 import dev.agentgitu.mobile.voice.VoiceCallTarget
 import dev.agentgitu.mobile.voice.VoiceCallUiState
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,8 +36,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
+import java.io.File
+import java.io.FileInputStream
+import java.io.InputStream
 import java.util.UUID
 
 enum class MainTab {
@@ -149,7 +159,10 @@ data class AppUiState(
     val cronJobs: List<CronJob> = emptyList(),
     val localLinkStatus: LocalLinkStatusResponse? = null,
     val pushStatus: PushStatus = PushStatus(),
+    val pushStatusError: String? = null,
     val pushBusy: Boolean = false,
+    val liveActivityEnabled: Boolean = false,
+    val liveActivityShowPreview: Boolean = true,
 
     // Live Web Surface overlay (Desktop noVNC, Voice Call, Browser, Artifact Preview)
     val liveSurface: LiveSurfaceRequest? = null,
@@ -158,6 +171,7 @@ data class AppUiState(
 class GituAppViewModel(application: Application) : AndroidViewModel(application) {
 
     private val store = SessionStore(application.applicationContext)
+    private val secureStore = SecureSessionStore(application.applicationContext)
     private val pikpam = PikpamClient()
     private var pikpamToken: String = ""
     private var api: GituApiClient? = null
@@ -166,6 +180,7 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
     private var inboxPollJob: Job? = null
     private var computerPollJob: Job? = null
     private var pendingPushTarget: PushNavigationTarget? = null
+    private val attachmentUploads = mutableMapOf<String, Job>()
 
     private val _uiState = MutableStateFlow(AppUiState())
     val uiState: StateFlow<AppUiState> = _uiState.asStateFlow()
@@ -205,6 +220,30 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
             val saved: SavedServerConfig = store.loadConfig()
             val cachedRun = store.loadCachedRun()
             val cachedTeam = store.loadCachedTeam()
+            val secure = secureStore.load()
+            var restoredStatus: MobileStatus? = null
+            var sessionExpired = false
+            if (secure != null &&
+                secure.serverUrl == saved.serverUrl &&
+                (!secure.cookie.isNullOrBlank() || !secure.accessKey.isNullOrBlank())
+            ) {
+                val client = GituApiClient(saved.serverUrl, secure.accessKey.orEmpty())
+                client.restoreSession(secure.cookie, secure.accessKey, secure.pikpamToken)
+                if (!secure.pikpamToken.isNullOrBlank()) pikpamToken = secure.pikpamToken
+                val attempt = withTimeoutOrNull(10_000) {
+                    runCatching { client.verifyRestoredSession(8) }
+                }
+                restoredStatus = attempt?.getOrNull()
+                if (restoredStatus != null) {
+                    api = client
+                } else if ((attempt?.exceptionOrNull() as? GituApiException)?.statusCode == 401) {
+                    secureStore.clear()
+                    sessionExpired = true
+                }
+            } else if (secure != null) {
+                secureStore.clear()
+            }
+            val restored = restoredStatus != null
             _uiState.update {
                 it.copy(
                     initialized = true,
@@ -213,19 +252,43 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
                     savedEmail = saved.lastEmail,
                     themePreference = saved.theme,
                     deviceId = saved.deviceId,
+                    liveActivityEnabled = saved.liveActivityEnabled,
+                    liveActivityShowPreview = saved.liveActivityShowPreview,
                     activeRun = cachedRun?.run,
                     activeRunEvents = cachedRun?.events.orEmpty(),
                     activeTeamView = cachedTeam?.view,
+                    connected = restored,
+                    connectedAgentName = "",
+                    offlineMode = false,
+                    serverVersion = restoredStatus?.version.orEmpty(),
+                    bannerMessage = when {
+                        restored -> "Reconnected to Agent Gitu"
+                        sessionExpired -> "Your session expired. Sign in again."
+                        secure != null -> "Could not restore your session. Check the server and try again."
+                        else -> it.bannerMessage
+                    },
+                    errorMessage = null,
                 )
+            }
+            if (restored) {
+                refreshAll()
+                consumePendingPushTarget()
             }
         }
         viewModelScope.launch {
             GituMessagingService.tokenUpdates.collect { newToken ->
                 val client = api ?: return@collect
-                val deviceId = _uiState.value.deviceId
-                if (_uiState.value.pushStatus.enabled && deviceId.isNotBlank()) {
-                    runCatching { client.registerPush(deviceId, newToken) }
-                        .onSuccess { status -> _uiState.update { it.copy(pushStatus = status) } }
+                val st = _uiState.value
+                val deviceId = st.deviceId
+                if (st.pushStatus.enabled && deviceId.isNotBlank()) {
+                    runCatching {
+                        client.registerPush(
+                            deviceId = deviceId,
+                            token = newToken,
+                            liveActivity = st.liveActivityEnabled,
+                            showLockScreenPreview = st.liveActivityShowPreview,
+                        )
+                    }.onSuccess { status -> _uiState.update { it.copy(pushStatus = status, pushStatusError = null) } }
                 }
             }
         }
@@ -466,6 +529,7 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
                 val status = client.connectWithPikpamToken(pikpamToken, access.registrationToken)
                 api = client
                 store.saveConnection(normalized, ConnectionMode.REMOTE, _uiState.value.pikpamEmail)
+                persistSession(client, normalized, ConnectionMode.REMOTE)
                 _uiState.update {
                     it.copy(
                         connected = true,
@@ -493,6 +557,18 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    private fun persistSession(client: GituApiClient, serverUrl: String, mode: ConnectionMode) {
+        secureStore.save(
+            SecureSession(
+                serverUrl = serverUrl,
+                mode = mode.name,
+                cookie = client.currentSessionCookie,
+                accessKey = client.currentAccessKey.takeIf { it.isNotBlank() },
+                pikpamToken = client.currentPikpamToken.ifBlank { pikpamToken }.takeIf { it.isNotBlank() },
+            ),
+        )
+    }
+
     fun connect(
         rawUrl: String,
         mode: ConnectionMode,
@@ -517,6 +593,7 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
                 }
                 api = client
                 store.saveConnection(normalized, mode, email.trim())
+                persistSession(client, normalized, mode)
                 _uiState.update {
                     it.copy(
                         connected = true,
@@ -544,8 +621,10 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun disconnect() {
+        secureStore.clear()
         voiceManager.endCall()
         stopAllPolling()
+        GituLiveActivityNotifier.dismiss(getApplication())
         val client = api
         api = null
         viewModelScope.launch {
@@ -557,6 +636,8 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
                     selectedConversationId = null,
                     selectedInboxRoomId = null,
                     liveSurface = null,
+                    pushStatus = PushStatus(),
+                    pushStatusError = null,
                     bannerMessage = "Signed out. Server tasks keep running in the background.",
                     errorMessage = null,
                 )
@@ -695,6 +776,7 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
                             )
                         }
                         store.cacheRunSnapshot(session, merged)
+                        syncLiveActivityFromRun(session, merged)
                     }
                     val intervalMs = if (_uiState.value.activeRun?.isRunning == true) 1_500L else 5_000L
                     delay(intervalMs)
@@ -999,7 +1081,13 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
             try {
                 val agents = client.listTeammates()
                 val convs = client.listConversations()
-                _uiState.update { it.copy(teammates = agents, conversations = convs, offlineMode = false) }
+                _uiState.update {
+                    it.copy(
+                        teammates = agents,
+                        conversations = dedupeDirectConversations(convs),
+                        offlineMode = false,
+                    )
+                }
             } catch (err: Exception) {
                 handleApiError(err)
             }
@@ -1111,6 +1199,7 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
                     val view = client.teamChat(conversationId, _uiState.value.selectedThreadId)
                     _uiState.update { it.copy(activeTeamView = view, offlineMode = false) }
                     store.cacheTeamSnapshot(conversationId, _uiState.value.selectedThreadId, view)
+                    syncLiveActivityFromTeamView(conversationId, _uiState.value.selectedThreadId, view)
                     val targetCompAgent = _uiState.value.inlineComputerAgentId
                         ?: view.requests.firstOrNull { it.desktopHandoff && (it.status == "open" || it.status == "pending") }?.agentId
                         ?: primaryAgentId
@@ -1174,6 +1263,19 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
         val attachments = _uiState.value.pendingAttachments
         val refs = _uiState.value.referencedMessageIds
         if (text.isBlank() && attachments.isEmpty()) return
+        val notReady = attachments.firstOrNull { it.uploadId.isNullOrBlank() || it.progress < 1f || it.error != null }
+        if (notReady != null) {
+            _uiState.update {
+                it.copy(
+                    errorMessage = if (!notReady.error.isNullOrBlank()) {
+                        "Remove the failed attachment before sending."
+                    } else {
+                        "Wait for attachments to finish uploading."
+                    },
+                )
+            }
+            return
+        }
         val cleanText = text.trim().ifBlank { "Attached ${attachments.joinToString(", ") { it.name }}" }
         _uiState.update { it.copy(pendingAttachments = emptyList(), referencedMessageIds = emptyList()) }
         viewModelScope.launch {
@@ -1258,13 +1360,105 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
         _uiState.update { it.copy(referencedMessageIds = emptyList()) }
     }
 
-    fun addPendingAttachment(attachment: PendingAttachment) {
-        _uiState.update { it.copy(pendingAttachments = (it.pendingAttachments + attachment).take(6)) }
+    fun addPendingAttachmentFromUri(uri: Uri, name: String, mime: String, sizeBytes: Long) {
+        val resolver = getApplication<Application>().contentResolver
+        enqueueAttachmentUpload(name, mime, sizeBytes) {
+            resolver.openInputStream(uri) ?: throw IllegalStateException("Could not open the selected file.")
+        }
+    }
+
+    fun addPendingAttachmentFromFile(file: File, name: String, mime: String, sizeBytes: Long) {
+        enqueueAttachmentUpload(
+            name = name,
+            mime = mime,
+            sizeBytes = sizeBytes,
+            cleanup = { runCatching { file.delete() } },
+        ) { FileInputStream(file) }
+    }
+
+    fun reportAttachmentError(message: String) {
+        _uiState.update { it.copy(errorMessage = message) }
+    }
+
+    private fun enqueueAttachmentUpload(
+        name: String,
+        mime: String,
+        sizeBytes: Long,
+        cleanup: () -> Unit = {},
+        openStream: () -> InputStream,
+    ) {
+        val client = api ?: return
+        val convId = _uiState.value.selectedConversationId ?: return
+        if (sizeBytes <= 0) {
+            reportAttachmentError("The selected file is empty.")
+            return
+        }
+        if (_uiState.value.pendingAttachments.size >= 6) {
+            reportAttachmentError("You can attach up to 6 files per message.")
+            return
+        }
+        val localId = "att-${UUID.randomUUID().toString().replace("-", "").take(12)}"
+        _uiState.update {
+            it.copy(
+                pendingAttachments = it.pendingAttachments + PendingAttachment(
+                    name = name,
+                    mime = mime,
+                    dataUrl = "",
+                    sizeBytes = sizeBytes,
+                    localId = localId,
+                    progress = 0f,
+                ),
+                errorMessage = null,
+            )
+        }
+        val job = viewModelScope.launch {
+            try {
+                val uploadId = client.uploadCoworkAttachment(
+                    conversationId = convId,
+                    name = name,
+                    mime = mime,
+                    sizeBytes = sizeBytes,
+                    openStream = openStream,
+                    onProgress = { value -> updatePendingAttachment(localId) { it.copy(progress = value) } },
+                    onUploadCreated = { id -> updatePendingAttachment(localId) { it.copy(uploadId = id) } },
+                )
+                updatePendingAttachment(localId) { it.copy(uploadId = uploadId, progress = 1f, error = null) }
+            } catch (_: CancellationException) {
+                // Removed by the user.
+            } catch (error: Throwable) {
+                updatePendingAttachment(localId) {
+                    it.copy(progress = 0f, error = error.message ?: "Attachment upload failed.")
+                }
+                reportAttachmentError(error.message ?: "Attachment upload failed.")
+            } finally {
+                attachmentUploads.remove(localId)
+                runCatching { cleanup() }
+            }
+        }
+        attachmentUploads[localId] = job
+    }
+
+    private fun updatePendingAttachment(localId: String, transform: (PendingAttachment) -> PendingAttachment) {
+        _uiState.update { state ->
+            state.copy(
+                pendingAttachments = state.pendingAttachments.map { attachment ->
+                    if (attachment.localId == localId) transform(attachment) else attachment
+                },
+            )
+        }
     }
 
     fun removePendingAttachment(index: Int) {
-        _uiState.update { st ->
-            st.copy(pendingAttachments = st.pendingAttachments.filterIndexed { i, _ -> i != index })
+        val current = _uiState.value
+        val attachment = current.pendingAttachments.getOrNull(index) ?: return
+        attachmentUploads.remove(attachment.localId)?.cancel()
+        _uiState.update { state ->
+            state.copy(pendingAttachments = state.pendingAttachments.filterIndexed { i, _ -> i != index })
+        }
+        val uploadId = attachment.uploadId
+        val convId = current.selectedConversationId
+        if (!uploadId.isNullOrBlank() && convId != null) {
+            viewModelScope.launch { api?.cancelUpload(uploadId, convId) }
         }
     }
 
@@ -2179,7 +2373,15 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
             val cron = runCatching { client.cronJobs() }.getOrElse { emptyList() }
             val sched = runCatching { client.schedules() }.getOrNull()
             val link = runCatching { client.localLinkStatus() }.getOrNull()
-            val push = if (deviceId.isNotBlank()) runCatching { client.pushStatus(deviceId) }.getOrNull() else null
+            var push: PushStatus? = null
+            var pushErr: String? = null
+            if (deviceId.isNotBlank()) {
+                val res = runCatching { client.pushStatus(deviceId) }
+                push = res.getOrNull()
+                if (res.isFailure) {
+                    pushErr = res.exceptionOrNull()?.message?.take(120) ?: "Could not check FCM status on server."
+                }
+            }
             _uiState.update {
                 it.copy(
                     homeInfo = home ?: it.homeInfo,
@@ -2191,6 +2393,7 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
                     schedulesHasProject = sched?.hasProject ?: it.schedulesHasProject,
                     localLinkStatus = link ?: it.localLinkStatus,
                     pushStatus = push ?: it.pushStatus,
+                    pushStatusError = if (push != null) null else pushErr,
                 )
             }
         }
@@ -2390,45 +2593,111 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun reportNotificationPermissionDenied() {
+        _uiState.update {
+            it.copy(
+                pushBusy = false,
+                errorMessage = "Notifications are blocked in Android settings. Tap Allow to enable notifications for Agent Gitu.",
+            )
+        }
+    }
+
     fun enablePushNotifications() {
         val client = api ?: return
         val deviceId = _uiState.value.deviceId
-        if (deviceId.isBlank()) return
-        _uiState.update { it.copy(pushBusy = true, errorMessage = null) }
-        try {
-            FirebaseMessaging.getInstance().token
-                .addOnSuccessListener { token ->
-                    viewModelScope.launch {
-                        runCatching { client.registerPush(deviceId, token) }
-                            .onSuccess { status ->
-                                _uiState.update {
-                                    it.copy(
-                                        pushStatus = status,
-                                        pushBusy = false,
-                                        bannerMessage = "Android push notifications enabled.",
-                                    )
+        if (deviceId.isBlank()) {
+            _uiState.update { it.copy(errorMessage = "Device ID not initialized yet. Try again in a moment.") }
+            return
+        }
+        _uiState.update { it.copy(pushBusy = true, errorMessage = null, pushStatusError = null) }
+        viewModelScope.launch {
+            // Re-check live server push availability first so stale state never blocks turning FCM on.
+            val freshStatus = runCatching { client.pushStatus(deviceId) }
+            val serverStatus = freshStatus.getOrNull()
+            if (serverStatus == null) {
+                val errMsg = freshStatus.exceptionOrNull()?.message ?: "Could not reach /api/mobile/push on the server."
+                _uiState.update {
+                    it.copy(
+                        pushBusy = false,
+                        pushStatusError = errMsg,
+                        errorMessage = errMsg,
+                    )
+                }
+                return@launch
+            }
+            _uiState.update { it.copy(pushStatus = serverStatus, pushStatusError = null) }
+            if (!serverStatus.available) {
+                val host = _uiState.value.serverUrl
+                _uiState.update {
+                    it.copy(
+                        pushBusy = false,
+                        errorMessage = "FCM is not configured on $host yet. Set AGENT_GITU_FCM_PROJECT_ID and service-account credentials on that server, then retry.",
+                    )
+                }
+                return@launch
+            }
+
+            try {
+                FirebaseMessaging.getInstance().token
+                    .addOnSuccessListener { token ->
+                        if (token.isNullOrBlank()) {
+                            _uiState.update {
+                                it.copy(
+                                    pushBusy = false,
+                                    errorMessage = "Google Play Services returned an empty FCM token. Check network and retry.",
+                                )
+                            }
+                            return@addOnSuccessListener
+                        }
+                        viewModelScope.launch {
+                            val st = _uiState.value
+                            runCatching {
+                                client.registerPush(
+                                    deviceId = deviceId,
+                                    token = token,
+                                    liveActivity = st.liveActivityEnabled,
+                                    showLockScreenPreview = st.liveActivityShowPreview,
+                                )
+                            }
+                                .onSuccess { status ->
+                                    _uiState.update {
+                                        it.copy(
+                                            pushStatus = status,
+                                            pushStatusError = null,
+                                            pushBusy = false,
+                                            bannerMessage = "Android push notifications enabled.",
+                                        )
+                                    }
                                 }
-                            }
-                            .onFailure { err ->
-                                _uiState.update { it.copy(pushBusy = false) }
-                                handleApiError(err)
-                            }
+                                .onFailure { err ->
+                                    _uiState.update { it.copy(pushBusy = false, pushStatusError = err.message) }
+                                    handleApiError(err)
+                                }
+                        }
                     }
-                }
-                .addOnFailureListener { err ->
-                    _uiState.update {
-                        it.copy(
-                            pushBusy = false,
-                            errorMessage = "Could not obtain FCM token. Confirm google-services.json and Play Services: ${err.message}",
-                        )
+                    .addOnFailureListener { err ->
+                        _uiState.update {
+                            it.copy(
+                                pushBusy = false,
+                                errorMessage = "Could not obtain FCM token. Confirm google-services.json and Play Services: ${err.message}",
+                            )
+                        }
                     }
+                    .addOnCanceledListener {
+                        _uiState.update {
+                            it.copy(
+                                pushBusy = false,
+                                errorMessage = "FCM token request was canceled. Try again.",
+                            )
+                        }
+                    }
+            } catch (err: Throwable) {
+                _uiState.update {
+                    it.copy(
+                        pushBusy = false,
+                        errorMessage = "Firebase is not initialized in this APK build (${err.message}).",
+                    )
                 }
-        } catch (err: Throwable) {
-            _uiState.update {
-                it.copy(
-                    pushBusy = false,
-                    errorMessage = "Firebase is not initialized in this APK build (${err.message}).",
-                )
             }
         }
     }
@@ -2444,6 +2713,7 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
                     _uiState.update {
                         it.copy(
                             pushStatus = status,
+                            pushStatusError = null,
                             pushBusy = false,
                             bannerMessage = "Android push notifications disabled.",
                         )
@@ -2454,6 +2724,187 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
                     handleApiError(err)
                 }
         }
+    }
+
+    fun setLiveActivityEnabled(enabled: Boolean) {
+        val showPreview = _uiState.value.liveActivityShowPreview
+        _uiState.update {
+            it.copy(
+                liveActivityEnabled = enabled,
+                bannerMessage = if (enabled) {
+                    "Lock screen Live Activity enabled. You'll see agent progress and replies while locked."
+                } else {
+                    "Lock screen Live Activity turned off."
+                },
+            )
+        }
+        viewModelScope.launch {
+            store.saveLiveActivityPrefs(enabled, showPreview)
+            if (!enabled) {
+                GituLiveActivityNotifier.dismiss(getApplication())
+            } else {
+                // Immediately surface current active agent state if anything is running right now
+                _uiState.value.activeRun?.takeIf { it.isRunning }?.let { run ->
+                    syncLiveActivityFromRun(run, _uiState.value.activeRunEvents)
+                } ?: _uiState.value.activeTeamView?.takeIf { it.busy }?.let { view ->
+                    _uiState.value.selectedConversationId?.let { cid ->
+                        syncLiveActivityFromTeamView(cid, _uiState.value.selectedThreadId, view)
+                    }
+                }
+            }
+            syncLiveActivityPrefsToServer(enabled, showPreview)
+        }
+    }
+
+    fun setLiveActivityShowPreview(showPreview: Boolean) {
+        val enabled = _uiState.value.liveActivityEnabled
+        _uiState.update { it.copy(liveActivityShowPreview = showPreview) }
+        viewModelScope.launch {
+            store.saveLiveActivityPrefs(enabled, showPreview)
+            syncLiveActivityPrefsToServer(enabled, showPreview)
+        }
+    }
+
+    fun sendTestLiveActivity() {
+        val ctx = getApplication<Application>()
+        GituLiveActivityNotifier.showOrUpdate(
+            context = ctx,
+            update = LiveActivityUpdate(
+                kind = "working",
+                title = "Agent Gitu · Live Activity",
+                body = "Lock your phone to preview live agent working progress & replies right on the lock screen.",
+                agentName = "Orb",
+                phase = "Working",
+                progress = 68,
+                isWorking = true,
+                target = PushNavigationTarget(target = "home", targetId = ""),
+            ),
+            forceShowPreview = _uiState.value.liveActivityShowPreview,
+        )
+        _uiState.update { it.copy(bannerMessage = "Live Activity preview posted — lock your phone to view it.") }
+    }
+
+    private suspend fun syncLiveActivityPrefsToServer(enabled: Boolean, showPreview: Boolean) {
+        val client = api ?: return
+        val deviceId = _uiState.value.deviceId
+        if (deviceId.isBlank() || !_uiState.value.pushStatus.enabled) return
+        runCatching { client.updatePushPreferences(deviceId, enabled, showPreview) }
+            .onSuccess { status -> _uiState.update { it.copy(pushStatus = status) } }
+    }
+
+    private fun syncLiveActivityFromRun(session: Run, events: List<RunEvent>) {
+        if (!_uiState.value.liveActivityEnabled) return
+        val title = session.project?.takeIf { it.isNotBlank() }?.let { "Coding · $it" } ?: "Coding Agent"
+        val target = PushNavigationTarget(target = "run", targetId = session.runId)
+        val update = when {
+            session.needsInput -> LiveActivityUpdate(
+                kind = "attention",
+                title = "$title needs input",
+                body = session.pendingApprovals.firstOrNull()?.summary?.ifBlank { "Approval needed to continue." }
+                    ?: session.pendingQuestions?.questions?.firstOrNull()?.question
+                    ?: "Review or approve the pending coding step.",
+                agentName = "Coding Agent",
+                phase = "Needs input",
+                isWorking = false,
+                target = target,
+            )
+            session.isRunning -> {
+                val lastText = events.lastOrNull { ev ->
+                    val t = ev.text.trim()
+                    t.isNotBlank() && !t.startsWith("tdelta ") && !t.startsWith("rdelta ")
+                }?.text?.removePrefix("say ")?.trim().orEmpty()
+                LiveActivityUpdate(
+                    kind = "working",
+                    title = title,
+                    body = lastText.ifBlank { session.goal.ifBlank { "Working in workspace…" } }.take(160),
+                    agentName = "Coding Agent",
+                    phase = "Working",
+                    isWorking = true,
+                    target = target,
+                )
+            }
+            session.status == "completed" -> {
+                val lastSay = events.lastOrNull { it.text.startsWith("say ") }?.text?.removePrefix("say ")?.trim()
+                LiveActivityUpdate(
+                    kind = "completed",
+                    title = title,
+                    body = (lastSay?.ifBlank { null } ?: "Coding task completed.").take(180),
+                    agentName = "Coding Agent",
+                    phase = "Done",
+                    isWorking = false,
+                    target = target,
+                )
+            }
+            session.status in setOf("failed", "blocked", "stalled") -> LiveActivityUpdate(
+                kind = "failed",
+                title = title,
+                body = session.error?.ifBlank { null } ?: "Task needs your attention.",
+                agentName = "Coding Agent",
+                phase = session.status,
+                isWorking = false,
+                target = target,
+            )
+            else -> return
+        }
+        GituLiveActivityNotifier.showOrUpdate(getApplication(), update)
+    }
+
+    private fun syncLiveActivityFromTeamView(conversationId: String, threadId: String, view: TeamView) {
+        if (!_uiState.value.liveActivityEnabled) return
+        val target = PushNavigationTarget(
+            target = "cowork",
+            targetId = conversationId,
+            threadId = threadId.takeIf { it.isNotBlank() && it != "main" },
+        )
+        val openReq = view.requests.firstOrNull { it.status == "open" || it.status == "pending" }
+        val update = when {
+            openReq != null -> {
+                val reqAgentName = _uiState.value.teammates
+                    .firstOrNull { it.id == openReq.agentId }
+                    ?.name?.ifBlank { null }
+                    ?: "Teammate"
+                LiveActivityUpdate(
+                    kind = "attention",
+                    title = "$reqAgentName needs input",
+                    body = (openReq.detail.ifBlank { openReq.title }).ifBlank { "Waiting for your review." }.take(180),
+                    agentName = reqAgentName,
+                    phase = "Needs input",
+                    isWorking = false,
+                    target = target,
+                )
+            }
+            view.busy -> {
+                val prog = view.progresses.firstOrNull()
+                val workingTeammate = view.working?.let { wid ->
+                    _uiState.value.teammates.firstOrNull { it.id == wid }?.name
+                }
+                val name = prog?.agentName?.ifBlank { null } ?: workingTeammate?.ifBlank { null } ?: "Teammate"
+                val detail = prog?.detail?.ifBlank { null } ?: prog?.text?.ifBlank { null } ?: "$name is working…"
+                LiveActivityUpdate(
+                    kind = "working",
+                    title = name,
+                    body = detail.take(160),
+                    agentName = name,
+                    phase = prog?.tool?.ifBlank { null } ?: prog?.phase?.ifBlank { null } ?: "Working",
+                    isWorking = true,
+                    target = target,
+                )
+            }
+            else -> {
+                val lastAgentMsg = view.messages.lastOrNull { it.role == "agent" && it.text.isNotBlank() } ?: return
+                val name = lastAgentMsg.agentName?.ifBlank { null } ?: "Teammate"
+                LiveActivityUpdate(
+                    kind = "reply",
+                    title = name,
+                    body = lastAgentMsg.text.trim().take(200),
+                    agentName = name,
+                    phase = "Replied",
+                    isWorking = false,
+                    target = target,
+                )
+            }
+        }
+        GituLiveActivityNotifier.showOrUpdate(getApplication(), update)
     }
 
     fun sendTestPush() {
@@ -2481,7 +2932,7 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
                 _uiState.update { st ->
                     st.copy(
                         teammates = agents ?: st.teammates,
-                        conversations = convs ?: st.conversations,
+                        conversations = convs?.let { dedupeDirectConversations(it) } ?: st.conversations,
                         inboxState = inbox ?: st.inboxState,
                         runs = runs ?: st.runs,
                         offlineMode = false,
@@ -2868,7 +3319,7 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
                 liveSurface = LiveSurfaceRequest(
                     title = "Agent Browser",
                     subtitle = "Live Chromium session",
-                    url = "${client.baseUrl}/api/server-browser/view",
+                    url = client.serverBrowserViewUrl("workspace"),
                     isServerBrowser = true,
                 ),
             )
@@ -3068,6 +3519,28 @@ class GituAppViewModel(application: Application) : AndroidViewModel(application)
             for (ev in incoming) map[ev.i] = ev
             return map.values.sortedBy { it.i }.takeLast(2000)
         }
+
+        /**
+         * Legacy workspaces can hold more than one single-member DM for the same
+         * teammate. The phone should show one entry per teammate, keeping the
+         * most recently active conversation and leaving both histories on disk.
+         */
+        fun dedupeDirectConversations(conversations: List<TeamConversation>): List<TeamConversation> =
+            conversations.filter { conversation ->
+                if (conversation.kind != "dm" || conversation.memberIds.size != 1) {
+                    true
+                } else {
+                    conversations.none { other ->
+                        other.id != conversation.id &&
+                            other.kind == "dm" &&
+                            other.memberIds == conversation.memberIds &&
+                            (
+                                other.updatedAt > conversation.updatedAt ||
+                                    (other.updatedAt == conversation.updatedAt && other.id > conversation.id)
+                                )
+                    }
+                }
+            }
 
         fun extractReasoningText(events: List<RunEvent>): String {
             val sb = StringBuilder()

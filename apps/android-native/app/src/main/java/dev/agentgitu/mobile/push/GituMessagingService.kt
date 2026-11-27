@@ -12,6 +12,7 @@ import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import dev.agentgitu.mobile.MainActivity
 import dev.agentgitu.mobile.R
+import dev.agentgitu.mobile.data.local.SessionStore
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -30,9 +31,36 @@ class GituMessagingService : FirebaseMessagingService() {
 
     override fun onMessageReceived(message: RemoteMessage) {
         super.onMessageReceived(message)
-        val parsed = PushDeepLink.parsePayload(message.data)
-        val title = message.notification?.title ?: "Agent Gitu"
-        val body = message.notification?.body ?: "Agent Gitu has an update."
+        val data = message.data
+        val parsed = PushDeepLink.parsePayload(data)
+        val kind = data["kind"]?.trim()?.lowercase().orEmpty()
+        val isLiveActivityPayload = data["liveActivity"] == "1" || kind == "working"
+        val title = message.notification?.title
+            ?: data["title"]?.trim()?.ifBlank { null }
+            ?: "Agent Gitu"
+        val body = message.notification?.body
+            ?: data["body"]?.trim()?.ifBlank { null }
+            ?: "Agent Gitu has an update."
+
+        val liveEnabled = SessionStore.isLiveActivityEnabledSync(this)
+        val showPreview = SessionStore.isLiveActivityPreviewEnabledSync(this) && data["showPreview"] != "0"
+
+        // Update the compliant Android Lock-Screen Live Activity card whenever opted in.
+        if (liveEnabled) {
+            val liveUpdate = PushDeepLink.parseLiveActivity(data, fallbackTitle = title, fallbackBody = body)
+            if (liveUpdate != null) {
+                GituLiveActivityNotifier.showOrUpdate(
+                    context = this,
+                    update = liveUpdate,
+                    forceShowPreview = showPreview,
+                )
+            }
+        }
+
+        // Silent working progress ticks only update the ongoing Live Activity card — never buzz!
+        if (kind == "working") return
+        // If this was a live-activity-only payload and the user disabled Live Activity locally, skip.
+        if (isLiveActivityPayload && kind.isBlank() && message.notification == null) return
 
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -51,12 +79,19 @@ class GituMessagingService : FirebaseMessagingService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
+        val visibility = if (liveEnabled && showPreview) {
+            NotificationCompat.VISIBILITY_PUBLIC
+        } else {
+            NotificationCompat.VISIBILITY_PRIVATE
+        }
+
         val notification = NotificationCompat.Builder(this, PushDeepLink.CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_gitu)
             .setContentTitle(title)
             .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setVisibility(visibility)
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
             .build()

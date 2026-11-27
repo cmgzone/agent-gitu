@@ -946,6 +946,7 @@ private fun CoworkChatScreen(
     var editingMessage by remember { mutableStateOf<TeamMessage?>(null) }
     var deletingMessage by remember { mutableStateOf<TeamMessage?>(null) }
     var fullViewMessage by remember { mutableStateOf<TeamMessage?>(null) }
+    var showCamera by remember { mutableStateOf(false) }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments(),
@@ -955,26 +956,50 @@ private fun CoworkChatScreen(
                 val cr = context.contentResolver
                 val mime = cr.getType(uri) ?: "application/octet-stream"
                 var fileName = "attachment"
-                cr.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                var sizeBytes = -1L
+                cr.query(
+                    uri,
+                    arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
+                    null,
+                    null,
+                    null,
+                )?.use { cursor ->
                     if (cursor.moveToFirst()) {
-                        val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                        if (idx >= 0) fileName = cursor.getString(idx) ?: fileName
+                        val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (nameIndex >= 0) fileName = cursor.getString(nameIndex) ?: fileName
+                        val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+                        if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) sizeBytes = cursor.getLong(sizeIndex)
                     }
                 }
-                val bytes = cr.openInputStream(uri)?.use { it.readBytes() } ?: return@runCatching
-                if (bytes.size <= 6 * 1024 * 1024) {
-                    val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
-                    vm.addPendingAttachment(
-                        PendingAttachment(
-                            name = fileName,
-                            mime = mime,
-                            dataUrl = "data:$mime;base64,$b64",
-                            sizeBytes = bytes.size.toLong(),
-                        ),
-                    )
+                if (sizeBytes <= 0) {
+                    sizeBytes = runCatching {
+                        cr.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
+                    }.getOrDefault(-1L)
                 }
+                if (sizeBytes <= 0) {
+                    sizeBytes = runCatching {
+                        cr.openFileDescriptor(uri, "r")?.use { it.statSize } ?: -1L
+                    }.getOrDefault(-1L)
+                }
+                if (sizeBytes <= 0) {
+                    vm.reportAttachmentError("Could not determine the size of $fileName. Choose it from device storage and try again.")
+                } else {
+                    vm.addPendingAttachmentFromUri(uri, fileName, mime, sizeBytes)
+                }
+            }.onFailure { error ->
+                vm.reportAttachmentError(error.message ?: "Could not read the selected file.")
             }
         }
+    }
+
+    if (showCamera) {
+        CameraCaptureDialog(
+            onDismiss = { showCamera = false },
+            onCaptured = { file ->
+                showCamera = false
+                vm.addPendingAttachmentFromFile(file, file.name, "image/jpeg", file.length())
+            },
+        )
     }
 
     val members = conv?.memberIds.orEmpty().mapNotNull { id -> state.teammates.firstOrNull { it.id == id } }
@@ -1640,10 +1665,19 @@ private fun CoworkChatScreen(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     state.pendingAttachments.forEachIndexed { idx, att ->
+                        val uploading = att.error == null && att.progress < 1f
+                        val failed = att.error != null
                         Surface(
                             shape = CircleShape,
                             color = s.surfaceContainerLowest.copy(alpha = 0.95f),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, s.primary),
+                            border = androidx.compose.foundation.BorderStroke(
+                                1.dp,
+                                when {
+                                    failed -> s.error
+                                    uploading -> s.outline
+                                    else -> s.primary
+                                },
+                            ),
                             shadowElevation = 2.dp,
                             modifier = Modifier.clickable { vm.removePendingAttachment(idx) },
                         ) {
@@ -1659,7 +1693,7 @@ private fun CoworkChatScreen(
                                         else -> Icons.Default.AttachFile
                                     },
                                     contentDescription = null,
-                                    tint = s.primary,
+                                    tint = if (failed) s.error else s.primary,
                                     modifier = Modifier.size(13.dp),
                                 )
                                 Text(
@@ -1668,10 +1702,33 @@ private fun CoworkChatScreen(
                                     color = s.onSurface,
                                     maxLines = 1,
                                 )
+                                if (uploading) {
+                                    Text(
+                                        text = "${(att.progress * 100).toInt()}%",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                        color = s.onSurfaceVariant,
+                                    )
+                                } else if (failed) {
+                                    Icon(
+                                        imageVector = Icons.Default.ErrorOutline,
+                                        contentDescription = "Upload failed",
+                                        tint = s.error,
+                                        modifier = Modifier.size(12.dp),
+                                    )
+                                }
                                 Icon(Icons.Default.Close, contentDescription = "Remove", tint = s.onSurfaceVariant, modifier = Modifier.size(12.dp))
                             }
                         }
                     }
+                }
+                val failedAttachment = state.pendingAttachments.firstOrNull { it.error != null }
+                if (failedAttachment != null) {
+                    Text(
+                        text = failedAttachment.error ?: "Attachment upload failed.",
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp),
+                        color = s.error,
+                        modifier = Modifier.padding(horizontal = 4.dp),
+                    )
                 }
             }
 
@@ -1755,6 +1812,15 @@ private fun CoworkChatScreen(
                         onClick = { filePickerLauncher.launch(arrayOf("*/*")) },
                     )
                 }
+                Box(modifier = Modifier.shadow(6.dp, CircleShape)) {
+                    StitchCircleIconButton(
+                        icon = Icons.Default.PhotoCamera,
+                        contentDescription = "Take a photo",
+                        outlined = true,
+                        size = 38.dp,
+                        onClick = { showCamera = true },
+                    )
+                }
                 Surface(
                     shape = CircleShape,
                     color = s.surfaceContainerLowest.copy(alpha = 0.95f),
@@ -1785,7 +1851,9 @@ private fun CoworkChatScreen(
                     }
                 }
                 // Animated Send <-> Stop morphing button
-                val canSend = composer.isNotBlank() || state.pendingAttachments.isNotEmpty()
+                val attachmentsUploading = state.pendingAttachments.any { it.uploadId.isNullOrBlank() || it.progress < 1f }
+                val attachmentsFailed = state.pendingAttachments.any { it.error != null }
+                val canSend = (composer.isNotBlank() || state.pendingAttachments.isNotEmpty()) && !attachmentsUploading && !attachmentsFailed
                 val showStop = view?.busy == true && !canSend
                 Box(modifier = Modifier.shadow(6.dp, CircleShape)) {
                     AnimatedContent(
@@ -2158,6 +2226,74 @@ private fun StitchThreadPill(label: String, selected: Boolean, onClick: () -> Un
 }
 
 @Composable
+private fun MessageArtifactCards(
+    artifacts: List<TeamArtifact>,
+    artifactUrlFor: (String) -> String,
+    onPreviewArtifact: (TeamArtifact) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (artifacts.isEmpty()) return
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        artifacts.forEach { art ->
+            val directUrl = artifactUrlFor(art.id)
+            when {
+                art.isImage && directUrl.isNotBlank() -> {
+                    InlineMediaImageCard(url = directUrl, caption = art.name)
+                }
+                art.isVideo && directUrl.isNotBlank() -> {
+                    InlineMediaVideoCard(url = directUrl, title = art.name)
+                }
+                else -> {
+                    DocumentArtifactCard(art = art, onPreview = { onPreviewArtifact(art) })
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DocumentArtifactCard(
+    art: TeamArtifact,
+    onPreview: () -> Unit,
+) {
+    val s = LocalStitchPalette.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(s.surfaceContainerLow)
+            .border(1.dp, s.outlineVariant, RoundedCornerShape(12.dp))
+            .stitchPressBounce(pressedScale = 0.97f, onClick = onPreview)
+            .padding(horizontal = 9.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(28.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(s.primary),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(Icons.Default.Description, contentDescription = null, tint = s.onPrimary, modifier = Modifier.size(15.dp))
+        }
+        Text(
+            text = art.name,
+            style = MaterialTheme.typography.labelMedium,
+            color = s.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            text = "Preview",
+            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp),
+            color = s.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
 private fun StitchChatMessageRow(
     msg: TeamMessage,
     teammates: List<Teammate>,
@@ -2238,6 +2374,17 @@ private fun StitchChatMessageRow(
                         modifier = Modifier.align(Alignment.End),
                     )
                 }
+            }
+
+            if (attachedArtifacts.isNotEmpty()) {
+                MessageArtifactCards(
+                    artifacts = attachedArtifacts,
+                    artifactUrlFor = artifactUrlFor,
+                    onPreviewArtifact = onPreviewArtifact,
+                    modifier = Modifier
+                        .padding(top = 4.dp)
+                        .widthIn(max = 320.dp),
+                )
             }
 
             // ... actions row directly BELOW the user bubble (matching Web cwMessageActionsHtml)
@@ -2411,53 +2558,11 @@ private fun StitchChatMessageRow(
                     )
 
                     // Inline media (pictures/videos) & document preview cards ONLY for files attached to THIS specific message
-                    attachedArtifacts.forEach { art ->
-                        val directUrl = artifactUrlFor(art.id)
-                        when {
-                            art.isImage && directUrl.isNotBlank() -> {
-                                InlineMediaImageCard(url = directUrl, caption = art.name)
-                            }
-                            art.isVideo && directUrl.isNotBlank() -> {
-                                InlineMediaVideoCard(url = directUrl, title = art.name)
-                            }
-                            else -> {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .background(s.surfaceContainerLow)
-                                        .border(1.dp, s.outlineVariant, RoundedCornerShape(12.dp))
-                                        .stitchPressBounce(pressedScale = 0.97f) { onPreviewArtifact(art) }
-                                        .padding(horizontal = 9.dp, vertical = 7.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(28.dp)
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .background(s.primary),
-                                        contentAlignment = Alignment.Center,
-                                    ) {
-                                        Icon(Icons.Default.Description, contentDescription = null, tint = s.onPrimary, modifier = Modifier.size(15.dp))
-                                    }
-                                    Text(
-                                        text = art.name,
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = s.onSurface,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f),
-                                    )
-                                    Text(
-                                        text = "Preview",
-                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp),
-                                        color = s.onSurfaceVariant,
-                                    )
-                                }
-                            }
-                        }
-                    }
+                    MessageArtifactCards(
+                        artifacts = attachedArtifacts,
+                        artifactUrlFor = artifactUrlFor,
+                        onPreviewArtifact = onPreviewArtifact,
+                    )
                 }
 
                 // ... actions row directly BELOW the agent bubble (matching Web cwMessageActionsHtml)

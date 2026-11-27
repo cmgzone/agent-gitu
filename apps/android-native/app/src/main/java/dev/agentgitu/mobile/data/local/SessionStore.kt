@@ -1,6 +1,7 @@
 package dev.agentgitu.mobile.data.local
 
 import android.content.Context
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -29,6 +30,8 @@ data class SavedServerConfig(
     val lastEmail: String = "",
     val theme: ThemePreference = ThemePreference.DARK,
     val deviceId: String = "",
+    val liveActivityEnabled: Boolean = false,
+    val liveActivityShowPreview: Boolean = true,
 )
 
 class SessionStore(private val context: Context) {
@@ -38,13 +41,27 @@ class SessionStore(private val context: Context) {
     }
 
     companion object {
+        private const val SYNC_PREFS_NAME = "agent_gitu_live_activity_sync"
+        private const val SYNC_LIVE_ENABLED = "live_activity_enabled"
+        private const val SYNC_LIVE_PREVIEW = "live_activity_show_preview"
+
         private val KEY_SERVER_URL = stringPreferencesKey("server_url")
         private val KEY_MODE = stringPreferencesKey("connection_mode")
         private val KEY_EMAIL = stringPreferencesKey("last_email")
         private val KEY_THEME = stringPreferencesKey("theme_preference")
         private val KEY_DEVICE_ID = stringPreferencesKey("push_device_id")
+        private val KEY_LIVE_ACTIVITY = booleanPreferencesKey("live_activity_enabled")
+        private val KEY_LIVE_ACTIVITY_PREVIEW = booleanPreferencesKey("live_activity_show_preview")
         private val KEY_CACHED_RUN = stringPreferencesKey("cached_run_snapshot")
         private val KEY_CACHED_TEAM = stringPreferencesKey("cached_team_snapshot")
+
+        fun isLiveActivityEnabledSync(context: Context): Boolean =
+            context.getSharedPreferences(SYNC_PREFS_NAME, Context.MODE_PRIVATE)
+                .getBoolean(SYNC_LIVE_ENABLED, false)
+
+        fun isLiveActivityPreviewEnabledSync(context: Context): Boolean =
+            context.getSharedPreferences(SYNC_PREFS_NAME, Context.MODE_PRIVATE)
+                .getBoolean(SYNC_LIVE_PREVIEW, true)
     }
 
     suspend fun loadConfig(): SavedServerConfig {
@@ -58,13 +75,34 @@ class SessionStore(private val context: Context) {
             .getOrDefault(ConnectionMode.LOCAL)
         val theme = runCatching { ThemePreference.valueOf(prefs[KEY_THEME] ?: "DARK") }
             .getOrDefault(ThemePreference.DARK)
+        val liveEnabled = prefs[KEY_LIVE_ACTIVITY] ?: false
+        val livePreview = prefs[KEY_LIVE_ACTIVITY_PREVIEW] ?: true
+        syncLivePrefsToSharedPrefs(liveEnabled, livePreview)
         return SavedServerConfig(
             serverUrl = prefs[KEY_SERVER_URL] ?: "http://10.0.2.2:8321",
             mode = mode,
             lastEmail = prefs[KEY_EMAIL].orEmpty(),
             theme = theme,
             deviceId = deviceId,
+            liveActivityEnabled = liveEnabled,
+            liveActivityShowPreview = livePreview,
         )
+    }
+
+    suspend fun saveLiveActivityPrefs(enabled: Boolean, showPreview: Boolean) {
+        syncLivePrefsToSharedPrefs(enabled, showPreview)
+        context.gituDataStore.edit { prefs ->
+            prefs[KEY_LIVE_ACTIVITY] = enabled
+            prefs[KEY_LIVE_ACTIVITY_PREVIEW] = showPreview
+        }
+    }
+
+    private fun syncLivePrefsToSharedPrefs(enabled: Boolean, showPreview: Boolean) {
+        context.getSharedPreferences(SYNC_PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(SYNC_LIVE_ENABLED, enabled)
+            .putBoolean(SYNC_LIVE_PREVIEW, showPreview)
+            .apply()
     }
 
     suspend fun saveConnection(serverUrl: String, mode: ConnectionMode, email: String) {

@@ -147,7 +147,8 @@ import { SessionStore, type SessionUsage, type StoredSessionFile } from './sessi
 import { McpManager } from '../mcp/client.js';
 import { Reporter } from '../report/reporter.js';
 import { SkillStore } from '../skills/skills.js';
-import { PendingSkillStore } from '../skills/pending.js';
+import { PendingSkillStore, type PendingSkillChange } from '../skills/pending.js';
+import { reflectOnDemonstration, TeachingRecorder, type DemonstrationSkill, type TeachEvent, type TeachingEpisode } from '../cowork/teaching.js';
 import { CoworkRecall } from '../cowork/recall.js';
 import { ConnectionRegistry, normalizeConnectionOperation, sameConnectionOperation, normalizeConnectionOperationBody, type ConnectionOperationRisk, type ConnectionRequirement } from '../connections/connections.js';
 import { probeSshHost, SshConnectionRegistry } from '../connections/ssh-connections.js';
@@ -651,6 +652,10 @@ export class GituServer {
   private readonly coworkTools = new Map<string, ToolContext>();
   private readonly coworkToolTargets = new Map<string, string>();
   private readonly coworkComputers = new Map<string, CoworkComputer>();
+  /** Teacher Mode demonstrations, keyed by agent id. */
+  private readonly teachingRecorder = new TeachingRecorder();
+  /** Control state to restore when a demonstration ends. */
+  private readonly teachingPriorControl = new Map<string, 'shared' | 'user'>();
   private readonly cloudComputers = new Map<string, CloudComputerTransport>();
   private readonly coworkComputerTargets = new Map<string, string>();
   private readonly coworkBrowserLease = new CoworkBrowserLease();
@@ -1955,6 +1960,59 @@ export class GituServer {
   }
 
   private uploads(): UploadStore { return this.uploadStore ??= new UploadStore(nodePath.join(ensureGituHome().root, 'Files')); }
+
+  /** Surface a Teacher Mode message in the agent's own DM conversation. */
+  private publishCoworkNotice(agentId: string, text: string): void {
+    try {
+      const store = this.cowork();
+      const conversation = store.listConversations().find((conv) => conv.kind === 'dm' && conv.memberIds.includes(agentId));
+      if (!conversation) return;
+      const run = this.coworkRuns.get(conversation.id);
+      if (run) run.progress = { agentId, agentName: store.getAgent(agentId)?.name ?? 'Teammate', text };
+      this.publishCowork(conversation.id, true);
+    } catch {
+      // A missing conversation must not fail the learning pass.
+    }
+  }
+
+  /**
+   * Write the learned skill next to the demonstration's keyframes and stage it
+   * for approval. The staged directory keeps the SKILL.md layout so references
+   * survive installation.
+   */
+  private async stageDemonstratedSkill(
+    agent: CoworkAgent,
+    episode: TeachingEpisode,
+    dir: string,
+    proposal: DemonstrationSkill,
+  ): Promise<PendingSkillChange> {
+    const skills = SkillStore.forProject(ensureGituHome().workspace);
+    const pending = PendingSkillStore.forHome();
+    const id = `psk-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4)}`;
+    const stagedRoot = nodePath.join(ensureGituHome().root, 'Pending', 'skills');
+    const frames: { file: string; bytes: Buffer }[] = [];
+    for (const frame of episode.frames) {
+      try {
+        const file = `demo-${frame.file}`;
+        frames.push({ file, bytes: readFileSync(nodePath.join(dir, 'frames', frame.file)) });
+      } catch {
+        // Skip a frame that failed to persist; the skill is still useful.
+      }
+    }
+    const stagedPath = skills.stageSkillDir({
+      name: proposal.name,
+      description: proposal.description,
+      // Keyframes are stored beside the skill as review evidence for the human
+      // approving it. readReference only serves text, so the instructions must
+      // stand on their own rather than pointing at the images.
+      instructions: `${proposal.instructions}\n\n## Demonstrated on\n\n${episode.title} — recorded on the teammate's desktop on ${new Date(episode.startedAt).toLocaleString()}. Keyframe screenshots are saved in \`references/\` for review.`,
+      risk: 'medium',
+      stagedRoot,
+      id,
+      frames,
+    });
+    return pending.addStaged({ name: proposal.name, description: proposal.description, stagedPath, agentName: agent.name, source: 'Demonstrated on the desktop' });
+  }
 
   private publishCowork(conversationId: string, progressOnly = false): void {
     for (const send of this.coworkSubscribers.get(conversationId) ?? []) send(progressOnly);
@@ -7250,7 +7308,23 @@ export class GituServer {
           if (targetAgent.useHostComputer || computer.status().state !== 'running') { this.sendJson(res, 409, { error: 'Start this teammate’s private desktop before controlling it.' }); return true; }
           if (!body['input'] || typeof body['input'] !== 'object' || Array.isArray(body['input'])) { this.sendJson(res, 400, { error: 'Desktop input is required.' }); return true; }
           try {
-            const result = await computer.desktopInput(body['input'] as Record<string, unknown>);
+            const input = body['input'] as Record<string, unknown>;
+            const result = await computer.desktopInput(input);
+            if (result.ok && this.teachingRecorder.active(targetAgent.id)) {
+              // Text sent through the mobile keyboard is the only typed input
+              // that arrives here rather than as RFB key packets. Record the
+              // shape of it; the literal characters stay out unless the
+              // workspace has explicitly opted in.
+              if (input['action'] === 'type' && typeof input['text'] === 'string') {
+                const captureKeys = loadWorkspaceSettings().coworkLearning?.teaching?.captureKeys === true;
+                this.teachingRecorder.record(targetAgent.id, [{
+                  t: Date.now(),
+                  kind: 'type',
+                  chars: input['text'].length,
+                  ...(captureKeys ? { text: input['text'] } : {}),
+                }]);
+              }
+            }
             this.sendJson(res, result.ok ? 200 : 400, result.ok ? { ok: true } : { error: result.output });
           } catch (error) { this.sendJson(res, 503, { error: (error as Error).message }); }
           return true;
@@ -7278,6 +7352,102 @@ export class GituServer {
           } catch (error) { this.sendJson(res, 503, { error: (error as Error).message, computer: status() }); }
           return true;
         }
+        else if (body['action'] === 'teach-start') {
+          if (targetAgent.useHostComputer) { this.sendJson(res, 409, { error: 'Teacher Mode needs the private desktop; My computer has no recorded screen.' }); return true; }
+          if (computer.status().state !== 'running') { this.sendJson(res, 409, { error: 'Start this teammate’s desktop before recording a demonstration.' }); return true; }
+          try {
+            // The human drives; screenshots stay available under 'user' control,
+            // which is exactly the observer mode Teacher Mode needs.
+            this.teachingPriorControl.set(targetAgent.id, computer.status().control ?? 'shared');
+            computer.setControl('user', 'Teacher Mode — demonstrate the task, then click Done.');
+            const episode = this.teachingRecorder.start(targetAgent.id, String(body['title'] ?? ''));
+            this.sendJson(res, 200, { ok: true, episode: { id: episode.id, title: episode.title, startedAt: episode.startedAt }, computer: status() });
+          } catch (error) {
+            // A failed start must not leave the desktop in user control.
+            const prior = this.teachingPriorControl.get(targetAgent.id);
+            this.teachingPriorControl.delete(targetAgent.id);
+            computer.setControl(prior ?? 'shared');
+            this.sendJson(res, 409, { error: (error as Error).message });
+          }
+          return true;
+        }
+        else if (body['action'] === 'teach-input') {
+          const raw = Array.isArray(body['events']) ? body['events'] : [];
+          const events: TeachEvent[] = [];
+          for (const entry of raw.slice(0, 500)) {
+            if (!entry || typeof entry !== 'object') continue;
+            const record = entry as Record<string, unknown>;
+            const kind = String(record['kind'] ?? '');
+            if (!['click', 'move', 'drag', 'key', 'type', 'scroll'].includes(kind)) continue;
+            events.push({
+              t: Number(record['t']) || 0,
+              kind: kind as TeachEvent['kind'],
+              ...(typeof record['x'] === 'number' ? { x: record['x'] } : {}),
+              ...(typeof record['y'] === 'number' ? { y: record['y'] } : {}),
+              ...(typeof record['key'] === 'string' ? { key: record['key'].slice(0, 40) } : {}),
+              ...(typeof record['down'] === 'boolean' ? { down: record['down'] } : {}),
+              ...(typeof record['chars'] === 'number' ? { chars: record['chars'] } : {}),
+              ...(typeof record['delta'] === 'number' ? { delta: record['delta'] } : {}),
+            });
+          }
+          const outcome = this.teachingRecorder.record(targetAgent.id, events);
+          if (outcome.frameDue) {
+            const recordingAgentId = targetAgent.id;
+            // Capture lazily: one frame per burst, debounced by the recorder.
+            void computer.desktopScreenshot(undefined, 'jpeg').then((shot) => {
+              if (shot.ok) this.teachingRecorder.addFrame(recordingAgentId, shot.output, 'image/jpeg');
+            }).catch(() => {});
+          }
+          this.sendJson(res, 200, { ok: true, accepted: outcome.accepted });
+          return true;
+        }
+        else if (body['action'] === 'teach-cancel') {
+          this.teachingRecorder.cancel(targetAgent.id);
+          const prior = this.teachingPriorControl.get(targetAgent.id);
+          this.teachingPriorControl.delete(targetAgent.id);
+          computer.setControl(prior ?? 'shared');
+          this.sendJson(res, 200, { ok: true, computer: status() });
+          return true;
+        }
+        else if (body['action'] === 'teach-stop') {
+          // Check the episode first: a stray stop must not hand control back to
+          // an agent while the user is still driving the desktop themselves.
+          const finished = this.teachingRecorder.finish(targetAgent.id);
+          if (!finished) { this.sendJson(res, 409, { error: 'No demonstration is being recorded.' }); return true; }
+          const priorControl = this.teachingPriorControl.get(targetAgent.id);
+          this.teachingPriorControl.delete(targetAgent.id);
+          computer.setControl(priorControl ?? 'shared');
+          const { episode, dir } = finished;
+          const learnedAgent = targetAgent;
+          this.sendJson(res, 202, { ok: true, learning: true, episode: { id: episode.id, events: episode.events.length, frames: episode.frames.length }, computer: status() });
+          // Reflection spends a model call; the panel polls the pending list.
+          void (async () => {
+            try {
+              let existing: string[] = [];
+              try { existing = this.coworkTools.get(this.coworkRuntimeKey(learnedAgent.id))?.skills?.list().map((skill) => skill.name) ?? []; } catch { /* skills unavailable */ }
+              const proposal = await reflectOnDemonstration({
+                episode,
+                dir,
+                agentName: learnedAgent.name,
+                llm: this.coworkLlm(learnedAgent),
+                existingSkills: existing,
+                signal: AbortSignal.timeout(180_000),
+              });
+              if (!proposal) { this.publishCoworkNotice(learnedAgent.id, 'learn   the demonstration did not produce a usable skill'); return; }
+              const settings = loadWorkspaceSettings();
+              const captureKeys = settings.coworkLearning?.teaching?.captureKeys === true;
+              if (!captureKeys) {
+                // Never let typed content reach the model as literal text.
+                proposal.instructions = proposal.instructions.replace(/"[^"]{0,200}"/g, (match) => match.length > 60 ? '"…"' : match);
+              }
+              await this.stageDemonstratedSkill(learnedAgent, episode, dir, proposal);
+              this.publishCoworkNotice(learnedAgent.id, `learn   skill "${proposal.name}" staged for your approval`);
+            } catch (error) {
+              this.publishCoworkNotice(learnedAgent.id, `learn   could not learn from the demonstration: ${(error as Error).message.slice(0, 200)}`);
+            }
+          })();
+          return true;
+        }
         else if (body['action'] === 'stop') {
           for (const conversation of store.listConversations()) {
             if (!conversation.memberIds.includes(computerMatch[1]!)) continue;
@@ -7297,7 +7467,7 @@ export class GituServer {
           if (targetAgent.useHostComputer) { this.sendJson(res, 409, { error: 'Choose Use private desktop before starting this teammate’s desktop.' }); return true; }
           // Image installation can take minutes. Status is polled by the UI.
           void computer.start().catch(() => {});
-        } else { this.sendJson(res, 400, { error: 'action must be start, stop, sleep, take-control, return-control, desktop, input, use-private or screenshot' }); return true; }
+        } else { this.sendJson(res, 400, { error: 'action must be start, stop, sleep, take-control, return-control, desktop, input, use-private, screenshot, teach-start, teach-input, teach-stop or teach-cancel' }); return true; }
         this.sendJson(res, 202, { computer: status(), agent: targetAgent }); return true;
       }
     }
@@ -9920,23 +10090,33 @@ export class GituServer {
         return;
       }
       if (decision === 'rejected') {
+        if (entry.stagedPath) {
+          try { rmSync(entry.stagedPath, { recursive: true, force: true }); } catch { /* best effort */ }
+        }
         this.sendJson(res, 200, { ok: true, resolved: entry.id, status: 'rejected' });
         return;
       }
       try {
         const skills = SkillStore.forProject(ensureGituHome().workspace);
-        const applied = entry.kind === 'create'
-          ? skills.create({
-              name: entry.name,
-              description: entry.description ?? '',
-              instructions: entry.instructions ?? '',
-              createdBy: 'agent',
-              scope: 'project',
-            })
-          : skills.update(entry.name, {
-              ...(entry.description ? { description: entry.description } : {}),
-              ...(entry.instructions ? { instructions: entry.instructions } : {}),
-            });
+        // Teacher Mode stages a full SKILL.md directory (instructions plus
+        // keyframes); install that rather than flattening it to legacy JSON.
+        const applied = entry.stagedPath
+          ? skills.installStagedDir(entry.stagedPath, { scope: 'project' })
+          : entry.kind === 'create'
+            ? skills.create({
+                name: entry.name,
+                description: entry.description ?? '',
+                instructions: entry.instructions ?? '',
+                createdBy: 'agent',
+                scope: 'project',
+              })
+            : skills.update(entry.name, {
+                ...(entry.description ? { description: entry.description } : {}),
+                ...(entry.instructions ? { instructions: entry.instructions } : {}),
+              });
+        if (entry.stagedPath) {
+          try { rmSync(entry.stagedPath, { recursive: true, force: true }); } catch { /* best effort */ }
+        }
         this.sendJson(res, 200, { ok: true, resolved: entry.id, status: 'approved', skill: { name: applied.name } });
       } catch (err) {
         this.sendJson(res, 400, { error: (err as Error).message, resolved: entry.id, status: 'approved' });

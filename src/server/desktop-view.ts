@@ -34,6 +34,75 @@ const options=new URLSearchParams(location.search),diagnostic=options.has('diagn
 const preview=options.get('preview')==='1';
 const humanInputEndpoint=${inputEndpoint};
 ${DESKTOP_TOUCH_JS}
+// Teacher Mode: the parent panel enables recording with a postMessage, then the
+// view streams decoded input to the same endpoint the touch keyboard uses.
+const teachEndpoint=options.get('teachEndpoint')||humanInputEndpoint;
+// Recording starts only when the parent panel asks; opening the desktop must
+// never begin capturing input on its own.
+let teachOn=false, queue=[], flushTimer, badge, startedAt=0;
+const KEYNAMES={13:'Enter',27:'Escape',8:'Backspace',9:'Tab',16:'shift',17:'ctrl',18:'alt',91:'meta',46:'Delete',37:'Left',38:'Up',39:'Right',40:'Down',36:'Home',35:'End',33:'PageUp',34:'PageDown',32:'Space'};
+function decodeTeachPacket(packet){
+  if(!packet||packet.length<2)return undefined;
+  const at=Date.now()-startedAt;
+  if(packet[0]===4){
+    if(packet.length<8)return undefined;
+    const view=new DataView(packet.buffer,packet.byteOffset,packet.byteLength);
+    const keysym=view.getUint32(4), down=packet[1]===1;
+    let key=packet[1]===1?KEYNAMES[keysym]:undefined;
+    if(!key&&keysym>=32&&keysym<=126)key=String.fromCharCode(keysym);
+    if(!key)return undefined;
+    return {t:at,kind:'key',key:key,down:down};
+  }
+  if(packet[0]===5){
+    if(packet.length<6)return undefined;
+    const view=new DataView(packet.buffer,packet.byteOffset,packet.byteLength);
+    const mask=packet[1], x=view.getUint16(2), y=view.getUint16(4);
+    if(mask&0x08)return {t:at,kind:'scroll',x:x,y:y,delta:-1};
+    if(mask&0x10)return {t:at,kind:'scroll',x:x,y:y,delta:1};
+    if(mask)return {t:at,kind:'click',x:x,y:y};
+    // Pointer moves between clicks are noise: they add hundreds of events
+    // without describing anything the instructions can use.
+    return undefined;
+  }
+  return undefined;
+}
+function scheduleFlush(){if(flushTimer)return;flushTimer=setTimeout(flush,400);}
+function flush(keepalive){
+  clearTimeout(flushTimer);flushTimer=undefined;
+  if(!teachOn||!queue.length)return;
+  const batch=queue;queue=[];
+  try{fetch(teachEndpoint,{method:'POST',headers:{'content-type':'application/json'},keepalive:!!keepalive,body:JSON.stringify({action:'teach-input',events:batch})}).catch(()=>{});}catch{}
+}
+/**
+ * Flush and let the panel know when the events have actually been accepted, so
+ * stopping the episode cannot race the last buffered click.
+ */
+function flushNow(){
+  clearTimeout(flushTimer);flushTimer=undefined;
+  if(!queue.length)return Promise.resolve();
+  const batch=queue;queue=[];
+  return fetch(teachEndpoint,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'teach-input',events:batch})}).then(function(){}).catch(function(){});
+}
+function teachBadge(){
+  if(!teachOn)return;
+  if(!badge){
+    badge=document.createElement('div');
+    badge.style.cssText='position:fixed;left:12px;top:12px;z-index:20;display:flex;align-items:center;gap:8px;padding:7px 13px;border-radius:999px;background:#171624e8;color:#fff;font:12px system-ui;pointer-events:none;box-shadow:0 4px 14px #0006';
+    badge.innerHTML='<span style="width:8px;height:8px;border-radius:50%;background:#f43f5e"></span><span data-teach-label>Recording — Teacher Mode</span>';
+    document.body.appendChild(badge);
+  }
+}
+function teachOff(){teachOn=false;flush(true);badge?.remove();badge=undefined;}
+addEventListener('message',event=>{
+  if(event.origin!==location.origin||event.source!==parent||event.data?.type!=='gitu-desktop-control')return;
+  if(event.data.action==='teach-start'){teachOn=true;startedAt=startedAt||Date.now();teachBadge();return;}
+  if(event.data.action==='teach-flush'){
+    flushNow().then(function(){parent.postMessage({type:'gitu-teach-flushed'},location.origin);});
+    return;
+  }
+  if(event.data.action==='teach-stop'){teachOff();return;}
+});
+addEventListener('pagehide',()=>{flush(true);});
 // Leave update scheduling to noVNC. A timed stream of extra requests can
 // keep legacy servers processing input instead of drawing the next frame.
 const pipeline=diagnostic&&options.get('pipeline')==='1';
@@ -94,6 +163,23 @@ function connect(){
     socket.addEventListener('message',event=>{received++;bytes+=event.data.byteLength||0;lastRead=performance.now();});
     const send=socket.send.bind(socket);
     socket.send=data=>{const packet=ArrayBuffer.isView(data)?new Uint8Array(data.buffer,data.byteOffset,data.byteLength):new Uint8Array(data);if(packet[0]===4)keyPackets++;if(packet[0]===5){pointerPackets++;if(packet[1])buttonPackets++;}send(data);};
+  }
+  {
+    // Teacher Mode taps the same client-to-server packets noVNC sends. The tap
+    // is always installed (it is one boolean check per packet) because the
+    // parent panel can start recording long after this view connected. One path
+    // covers the private and cloud desktops alike: both reach this page.
+    const send=socket.send.bind(socket);
+    socket.send=data=>{
+      if(teachOn){
+        try{
+          const packet=ArrayBuffer.isView(data)?new Uint8Array(data.buffer,data.byteOffset,data.byteLength):new Uint8Array(data);
+          const event=decodeTeachPacket(packet);
+          if(event){queue.push(event);scheduleFlush();}
+        }catch{}
+      }
+      send(data);
+    };
   }
   rfb=new RFB(screen,socket,{shared:true});
   rfb.scaleViewport=true; rfb.resizeSession=false; rfb.viewOnly=preview;

@@ -349,7 +349,7 @@ function readPrefix(file: string, bytes: number): string {
   }
 }
 
-function serializeFrontmatter(manifest: SkillManifest): string {
+export function serializeFrontmatter(manifest: SkillManifest): string {
   const list = (values: string[] | undefined): string | undefined => values?.length ? `[${values.map((value) => JSON.stringify(value)).join(', ')}]` : undefined;
   const lines = [
     `name: ${manifest.name}`,
@@ -644,6 +644,58 @@ export class SkillStore {
     return { name: manifest.name, target };
   }
 
+
+  /**
+   * Teacher Mode stages a generated skill outside the store so a human can
+   * review it first. The staged directory keeps the agentskills.io layout
+   * (`SKILL.md` plus `references/`) because only that shape exposes
+   * `use_skill_reference` to the agent once installed.
+   */
+  stageSkillDir(input: { name: string; description: string; instructions: string; risk?: SkillRisk; stagedRoot: string; id: string; frames?: { file: string; bytes: Buffer }[] }): string {
+    const name = normalizeName(input.name);
+    if (!name) throw new Error('Skill name is required');
+    if (!input.instructions.trim()) throw new Error('Skill instructions are required');
+    const manifest = normalizeManifest({ name, description: input.description, version: '1', risk: input.risk, createdBy: 'agent', createdAt: new Date().toISOString() }, this.limits);
+    if (!manifest) throw new Error('Skill name and description are required');
+    const dir = path.join(input.stagedRoot, input.id);
+    mkdirSync(path.join(dir, 'references'), { recursive: true });
+    writeFileSync(path.join(dir, 'SKILL.md'), `${serializeFrontmatter(manifest)}\n${input.instructions.trim()}\n`);
+    for (const frame of input.frames ?? []) {
+      writeFileSync(path.join(dir, 'references', frame.file), frame.bytes);
+    }
+    return dir;
+  }
+
+  /**
+   * Install a reviewed staged directory into the store. Uses the SKILL.md
+   * layout rather than `create()` (which writes legacy JSON and therefore
+   * cannot carry references).
+   */
+  installStagedDir(stagedPath: string, opts: { scope?: 'global' | 'project' } = {}): Skill {
+    const mdPath = path.join(stagedPath, 'SKILL.md');
+    if (!existsSync(mdPath)) throw new Error('Staged skill has no SKILL.md.');
+    const raw = readFileSync(mdPath, 'utf8');
+    const frontmatter = frontmatterFromPrefix(raw);
+    if (!frontmatter) throw new Error('Staged SKILL.md frontmatter is invalid.');
+    const manifest = normalizeManifest(frontmatter.raw, this.limits);
+    if (!manifest) throw new Error('Staged SKILL.md is missing name or description.');
+    const body = raw.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').slice(frontmatter.bodyOffset).trim();
+    if (!body) throw new Error('Staged SKILL.md has no instructions body.');
+    const targetDir = opts.scope === 'global' ? (this.globalDir ?? SkillStore.globalSkillsDir()) : this.dir;
+    const dir = path.join(targetDir, manifest.name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, 'SKILL.md'), raw.replace(/^\uFEFF/, ''));
+    const sourceRoot = path.join(stagedPath, 'references');
+    if (existsSync(sourceRoot)) {
+      mkdirSync(path.join(dir, 'references'), { recursive: true });
+      for (const file of readdirSync(sourceRoot)) {
+        writeFileSync(path.join(dir, 'references', file), readFileSync(path.join(sourceRoot, file)));
+      }
+    }
+    const installed = this.get(manifest.name);
+    if (!installed) throw new Error('Staged skill could not be read back after install.');
+    return installed;
+  }
 
   readReference(name: string, requestedPath: string): { ok: true; content: string } | { ok: false; code: 'SKILL_REFERENCE_DENIED'; message: string } {
     const skill = this.get(name);

@@ -34,9 +34,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import android.content.Intent
-import android.net.Uri
-import androidx.compose.ui.platform.LocalContext
 import dev.agentgitu.mobile.ui.components.*
 import dev.agentgitu.mobile.ui.theme.LocalStitchPalette
 import dev.agentgitu.mobile.voice.VoiceCallUiState
@@ -464,19 +461,13 @@ private fun VoiceCallFullStage(
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 if (voiceState.phase == "error") {
-                    val context = LocalContext.current
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                         if (voiceState.insufficientCredits) {
-                            StitchPrimaryButton(
-                                text = "Top Up Pikpam Credits",
-                                icon = Icons.Default.AccountBalanceWallet,
-                                onClick = {
-                                    runCatching {
-                                        context.startActivity(
-                                            Intent(Intent.ACTION_VIEW, Uri.parse("https://pikpam.com/oauth/topup")),
-                                        )
-                                    }
-                                },
+                            Text(
+                                text = "Voice calling needs Pikpam credits. Credits are managed outside this app.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = s.onSurfaceVariant,
+                                textAlign = TextAlign.Center,
                                 modifier = Modifier.fillMaxWidth(),
                             )
                         }

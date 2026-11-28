@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { ensureGituHome } from '../workspace/home.js';
 
@@ -16,6 +16,14 @@ export interface PendingSkillChange {
   description?: string;
   instructions?: string;
   agentName?: string;
+  /**
+   * Teacher Mode stages a full SKILL.md directory (with `references/`
+   * screenshots) instead of inline instructions. Approval installs that
+   * directory; rejection deletes it.
+   */
+  stagedPath?: string;
+  /** Human-readable origin, e.g. "Demonstrated on the desktop". */
+  source?: string;
   at: string;
   status: 'pending' | 'approved' | 'rejected';
 }
@@ -61,6 +69,33 @@ export class PendingSkillStore {
       status: 'pending',
     };
     const remaining = this.load().changes.filter((c) => !(c.status === 'pending' && c.kind === change.kind && c.name === change.name));
+    remaining.push(change);
+    this.save(remaining);
+    return change;
+  }
+
+  /** Stage a reviewed-on-disk skill directory (Teacher Mode). */
+  addStaged(input: { name: string; description: string; stagedPath: string; agentName?: string; source?: string }): PendingSkillChange {
+    const change: PendingSkillChange = {
+      id: `psk-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4)}`,
+      kind: 'create',
+      name: input.name,
+      description: input.description,
+      stagedPath: input.stagedPath,
+      ...(input.agentName ? { agentName: input.agentName } : {}),
+      ...(input.source ? { source: input.source } : {}),
+      at: new Date().toISOString(),
+      status: 'pending',
+    };
+    // Latest intent wins for a skill of the same name; superseded staged
+    // directories are removed so they cannot be approved by a stale id.
+    const existing = this.load().changes;
+    for (const previous of existing) {
+      if (previous.status === 'pending' && previous.kind === 'create' && previous.name === change.name && previous.stagedPath) {
+        try { rmSync(previous.stagedPath, { recursive: true, force: true }); } catch { /* best effort */ }
+      }
+    }
+    const remaining = existing.filter((c) => !(c.status === 'pending' && c.kind === change.kind && c.name === change.name));
     remaining.push(change);
     this.save(remaining);
     return change;

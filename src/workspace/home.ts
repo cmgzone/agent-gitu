@@ -162,8 +162,11 @@ export interface WorkspaceSettings {
    *  'off' = no cowork learning. consolidate (default on) is a safe curation
    *  sweep; review/reviewEvery remain as raw overrides for the API.
    *  skillApproval stages every cowork skill write for user review instead of
-   *  applying it directly. */
-  coworkLearning?: { mode?: 'reactive' | 'proactive' | 'off'; consolidate?: boolean; review?: boolean; reviewEvery?: string; skillApproval?: boolean };
+   *  applying it directly.
+   *  teaching.captureKeys additionally records the literal characters typed
+   *  during a Teacher Mode demonstration. Off by default: a password typed into
+   *  the desktop would otherwise be written to disk and sent to the model. */
+  coworkLearning?: { mode?: 'reactive' | 'proactive' | 'off'; consolidate?: boolean; review?: boolean; reviewEvery?: string; skillApproval?: boolean; teaching?: { captureKeys?: boolean } };
   /** Maximum attachment/upload size in bytes, or null for Unlimited. */
   maxFileBytes?: number | null;
 }

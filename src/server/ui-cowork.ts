@@ -4255,7 +4255,7 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     modal.innerHTML = '<div class="box"><div class="bar"><b>' + esc(agent.name) + ' · Desktop</b><span style="flex:1"></span><button class="btn ghost" data-fullscreen>Fullscreen</button><button class="btn ghost" data-close>Close</button></div>' +
       '<div class="cw-desktop-handoff" data-handoff hidden><b>Your turn</b><span data-handoff-reason></span></div>' +
       '<div class="cw-desktop-screen"><iframe data-desktop hidden title="' + esc(agent.name) + ' interactive Linux desktop" allow="clipboard-read; clipboard-write"></iframe><p class="cw-desktop-placeholder" data-placeholder>Connecting to this teammate’s desktop…</p></div>' +
-      '<div class="cw-desktop-toolbar"><span class="cw-desktop-status" role="status" data-status>Checking computer…</span><span class="chip">Shared computer</span><button class="btn" data-browser title="Regular Google Chrome for manual sign-in">Browser</button><button class="btn" data-agent_browser title="Browser used by the agent’s automated tools">Agent browser</button><button class="btn" data-files>Files</button><button class="btn" data-terminal>Terminal</button><button class="btn" data-control>Take control</button><button class="btn" data-sleep title="Pause the desktop and preserve open windows">Sleep</button><button class="btn" data-lock title="Sign out of this workspace on this device">Sign out</button><button class="btn" data-start>Start desktop</button><button class="btn ghost" data-stop>Stop</button></div></div>';
+      '<div class="cw-desktop-toolbar"><span class="cw-desktop-status" role="status" data-status>Checking computer…</span><span class="chip">Shared computer</span><button class="btn" data-browser title="Regular Google Chrome for manual sign-in">Browser</button><button class="btn" data-agent_browser title="Browser used by the agent’s automated tools">Agent browser</button><button class="btn" data-files>Files</button><button class="btn" data-terminal>Terminal</button><button class="btn" data-control>Take control</button><button class="btn" data-teach title="Record a demonstration so this teammate can learn it as a skill">Teach me</button><button class="btn" data-sleep title="Pause the desktop and preserve open windows">Sleep</button><button class="btn" data-lock title="Sign out of this workspace on this device">Sign out</button><button class="btn" data-start>Start desktop</button><button class="btn ghost" data-stop>Stop</button></div></div>';
     var chatTheme=$('cwChat');
     if(chatTheme&&typeof getComputedStyle==='function'){var computed=getComputedStyle(chatTheme);['--accent','--selected','--cw-sidebar-tint'].forEach(function(property){modal.style.setProperty(property,computed.getPropertyValue(property));});}
     cwThemeElement(modal,agent);
@@ -4374,6 +4374,63 @@ export const COWORK_JS = PROACTIVITY_JS + String.raw`
     stop.onclick = function () { disconnect(); refresh('stop'); };
     ['browser', 'agent_browser', 'files', 'terminal'].forEach(function (app) { modal.querySelector('[data-' + app + ']').onclick = function () { launch(app); }; });
     modal.querySelector('[data-control]').onclick = function () { return changeControl(userControl ? 'return-control' : 'take-control'); };
+    // Teacher Mode: the user demonstrates on the live desktop while this panel
+    // records. Done hands the recording to the agent for reflection.
+    var teachButton = modal.querySelector('[data-teach]'), teaching = false, teachStarted = 0, teachTimer = null;
+    function teachLabel() {
+      if (!teaching) return 'Teach me';
+      var secs = Math.max(0, Math.round((Date.now() - teachStarted) / 1000));
+      return 'Done · ' + Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0');
+    }
+    function teachPost(action, extra) {
+      return api(endpoint, { method: 'POST', signal: controller.signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify(Object.assign({ action: action }, extra || {})) });
+    }
+    async function teachToggle() {
+      if (teaching) {
+        teaching = false; clearInterval(teachTimer); teachTimer = null; teachButton.disabled = true; teachButton.textContent = 'Learning…';
+        // Flush the buffered packets BEFORE ending the episode. The view holds
+        // events in a 400ms batch, so stopping first would drop the last click.
+        // Await its acknowledgement, with a timeout so a stuck view cannot
+        // block the Done button forever.
+        await new Promise(function (resolve) {
+          var done = false;
+          function finish() { if (!done) { done = true; window.removeEventListener('message', onFlush); resolve(); } }
+          function onFlush(event) { if (event.origin === window.location.origin && event.data && event.data.type === 'gitu-teach-flushed') finish(); }
+          window.addEventListener('message', onFlush);
+          screen.contentWindow?.postMessage({ type: 'gitu-desktop-control', action: 'teach-flush' }, window.location.origin);
+          setTimeout(finish, 1200);
+        });
+        screen.contentWindow?.postMessage({ type: 'gitu-desktop-control', action: 'teach-stop' }, window.location.origin);
+        try {
+          var done = await teachPost('teach-stop');
+          if (closed) return;
+          cwSetAgentComputer(agentId, done && done.computer); if (done && done.computer) update(done.computer);
+          toast('Learning from your demonstration…');
+          status.textContent = 'Learning from your demonstration…';
+        } catch (e) { if (!closed) status.textContent = e.message || 'Could not finish the demonstration'; }
+        finally { teachButton.disabled = false; teachButton.textContent = 'Teach me'; }
+        return;
+      }
+      teachButton.disabled = true;
+      try {
+        var started = await teachPost('teach-start', { title: 'Demonstrated ' + new Date().toLocaleString() });
+        if (closed) return;
+        teaching = true; teachStarted = Date.now();
+        cwSetAgentComputer(agentId, started && started.computer); if (started && started.computer) update(started.computer);
+        screen.contentWindow?.postMessage({ type: 'gitu-desktop-control', action: 'teach-start' }, window.location.origin);
+        teachButton.textContent = teachLabel();
+        teachTimer = setInterval(function () {
+          teachButton.textContent = teachLabel();
+          // A quarter-hour demonstration is almost certainly forgotten.
+          if (Date.now() - teachStarted > 15 * 60 * 1000) { clearInterval(teachTimer); teachTimer = null; void teachToggle(); }
+        }, 1000);
+        status.textContent = 'Recording — demonstrate the task, then click Done';
+        focusDesktop();
+      } catch (e) {
+        if (!closed) status.textContent = e.message || 'Could not start recording';
+      } finally { if (!teaching) teachButton.disabled = false; }
+    }
+    teachButton.onclick = function () { return teachToggle(); };
     modal.querySelector('[data-sleep]').onclick = function () { disconnect(); refresh('sleep'); };
     modal.querySelector('[data-lock]').onclick = async function () {
       try { if (!host) await api(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'take-control' }) }); }

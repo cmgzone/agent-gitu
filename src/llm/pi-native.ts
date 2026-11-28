@@ -34,6 +34,7 @@ import {
   type PiSdk,
   type PiThinkingLevel,
 } from './pi/sdk.js';
+import { peekCachedLiveModels, pickLiveDefaultModel, PROVIDERS } from './providers.js';
 
 function record(value: unknown): NativeRecord {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as NativeRecord) : {};
@@ -570,7 +571,14 @@ export class PiNativeRuntime implements NativeTaskRuntime {
             /* ignore */
           }
           session = undefined;
-          this.options.target.modelId = 'DeepSeek-V4.1-Flash';
+          // Fall back to a model the router actually publishes, not a fixed id.
+          const pikSpec = PROVIDERS['pikrouter'];
+          const liveIds = pikSpec ? peekCachedLiveModels(pikSpec) : undefined;
+          const fallback = pikSpec && liveIds?.length
+            ? pickLiveDefaultModel(pikSpec, liveIds.map((id) => ({ id })))
+            : '';
+          if (!fallback || fallback === this.options.target.modelId) throw err;
+          this.options.target.modelId = fallback;
           return await executeOnce();
         }
         throw err;

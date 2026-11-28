@@ -357,7 +357,10 @@ async function main(): Promise<void> {
         console.log(`${spec.id.padEnd(9)} ${status.padEnd(28)} ${spec.label}`);
         console.log(`          base: ${spec.baseUrl}`);
         console.log(`          keys: ${spec.keyEnvVars.join(' | ')}`);
-        console.log(`          models: ${spec.models.length} known (default: ${spec.defaultModel}) — run \`gitu models --provider ${spec.id}\``);
+        const modelSummary = spec.authoritativeLiveModels
+          ? 'live catalog only (discovered from the provider)'
+          : `${spec.models.length} known${spec.defaultModel ? ` (default: ${spec.defaultModel})` : ''}`;
+        console.log(`          models: ${modelSummary} — run \`gitu models --provider ${spec.id}\``);
       }
       const generic = env['HERMES_API_KEY'] ?? env['OPENAI_API_KEY'];
       console.log(`${'custom'.padEnd(9)} ${generic ? 'ready (HERMES_API_KEY/OPENAI_API_KEY)' : 'no key'}`);

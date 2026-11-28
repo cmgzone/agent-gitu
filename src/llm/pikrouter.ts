@@ -1,7 +1,7 @@
 import { OpenAiCompatClient, type LlmClient } from './llm.js';
 import { mergedEnv, setStoredKey } from './keys.js';
 import { PiNativeRuntime, type PiModelTarget } from './pi-native.js';
-import { modelMetadataFor, peekModelCatalog } from './providers.js';
+import { modelMetadataFor, peekCachedLiveModels, pickLiveDefaultModel, peekModelCatalog, PROVIDERS } from './providers.js';
 import { selectedRuntime } from './runtime-mode.js';
 import { ensureGituHome } from '../workspace/home.js';
 
@@ -12,7 +12,12 @@ export const DEFAULT_PIKROUTER_TOPUP_URL = 'https://pikpam.com/oauth/topup';
 export const DEFAULT_PIKROUTER_CREDITS_URL = 'https://pikpam.com/api/user/credits';
 export const DEFAULT_PIKROUTER_OAUTH_CLIENT_ID = 'client_gitu_agent';
 export const DEFAULT_PIKROUTER_BASE_URL = 'https://pikpam.com/api';
-export const DEFAULT_PIKROUTER_MODEL = 'DeepSeek-V4.1-Flash';
+/**
+ * @deprecated PikRouter publishes its own catalog; resolve a model with
+ * `pickLiveDefaultModel(PROVIDERS.pikrouter, liveIds)` instead of naming an id.
+ * Kept only so an explicit caller can still pass a model of its own.
+ */
+export const DEFAULT_PIKROUTER_MODEL = '';
 export const PIKROUTER_CREDITS_PER_USD = 100;
 
 export interface PikRouterCreditsInfo {
@@ -377,6 +382,21 @@ export async function registerPikRouter(opts: PikRouterRegisterOptions): Promise
 }
 
 /**
+ * The model to use when the caller did not name one. PikRouter's own catalog is
+ * authoritative, so prefer whatever discovery already cached; fall back to the
+ * provider spec's default (also live-derived) rather than a fixed id, which
+ * would go stale as soon as the router retires it.
+ */
+function resolvePikRouterModel(baseUrl: string): string {
+  const spec = PROVIDERS['pikrouter'];
+  if (!spec) return '';
+  const liveIds = peekCachedLiveModels({ ...spec, baseUrl });
+  if (liveIds?.length) return pickLiveDefaultModel(spec, liveIds.map((id) => ({ id })));
+  const defaultFromSpec = pickLiveDefaultModel(spec, []);
+  return defaultFromSpec || spec.defaultModel.trim() || 'gpt-4o-mini';
+}
+
+/**
  * Creates an OpenAI-compatible client targeted at PikRouter with the user's token.
  */
 export function createPikRouterClient(opts: PikRouterClientOptions = {}): OpenAiCompatClient & LlmClient {
@@ -396,7 +416,7 @@ export function createPikRouterClient(opts: PikRouterClientOptions = {}): OpenAi
   }
 
   const baseUrl = opts.baseUrl ?? DEFAULT_PIKROUTER_BASE_URL;
-  const model = opts.model ?? DEFAULT_PIKROUTER_MODEL;
+  const model = opts.model ?? resolvePikRouterModel(baseUrl);
 
   const client = new OpenAiCompatClient({
     apiKey: token,
@@ -448,7 +468,7 @@ export async function* streamPikRouterCompletion(
   }
 
   const baseUrl = (opts.baseUrl ?? DEFAULT_PIKROUTER_BASE_URL).replace(/\/$/, '');
-  const model = opts.model ?? DEFAULT_PIKROUTER_MODEL;
+  const model = opts.model ?? resolvePikRouterModel(baseUrl);
 
   const res = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',

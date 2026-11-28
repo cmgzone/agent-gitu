@@ -23,7 +23,7 @@ import {
   usdToPikRouterCredits,
   formatPikRouterCredits,
 } from '../src/llm/pikrouter.js';
-import { PROVIDERS, providerSpec, resolveLlm } from '../src/llm/providers.js';
+import { clearLiveModelsCache, PROVIDERS, pickLiveDefaultModel, providerSpec, resolveLlm } from '../src/llm/providers.js';
 import { effortStyleFor, PLATFORM_SAFETY_MAX_TOKENS } from '../src/llm/llm.js';
 import { piProviderConfig } from '../src/llm/pi-native.js';
 import { authPage } from '../src/server/ui-auth.js';
@@ -51,7 +51,12 @@ describe('PikRouter integration', () => {
     expect(DEFAULT_PIKROUTER_REGISTER_URL).toBe('https://pikpam.com/api/auth/register');
     expect(DEFAULT_PIKROUTER_CREDITS_URL).toBe('https://pikpam.com/api/user/credits');
     expect(effortStyleFor('https://pikpam.com/api')).toBe('deepseek');
-    expect(spec!.defaultModel).toBe('DeepSeek-V4.1-Flash');
+    // PikRouter owns its catalog: no offline seed ids may be invented here,
+    // because a retired id would be offered to the user and then rejected by
+    // the router with 400/503 on every turn.
+    expect(spec!.models).toEqual([]);
+    expect(spec!.defaultModel).toBe('');
+    expect(spec!.authoritativeLiveModels).toBe(true);
     expect(spec!.keyEnvVars).toContain('PIKROUTER_API_KEY');
     expect(spec!.publicModels).toBe(true);
     expect(spec!.capabilities?.streamingTools).toBe(true);
@@ -112,13 +117,22 @@ describe('PikRouter integration', () => {
   });
 
   it('resolves pikrouter provider using resolveLlm when key is in env', () => {
+    // Nothing is cached and PikRouter ships no seed ids, so resolution must
+    // refuse with an actionable message instead of sending an invented model.
+    expect(() =>
+      resolveLlm({ provider: 'pikrouter', env: { PIKROUTER_API_KEY: 'test-token' } as NodeJS.ProcessEnv }),
+    ).toThrow(/no model is known yet/);
+
+    // Once a model is known (live catalog, or an explicit selection), it resolves.
+    clearLiveModelsCache();
     const resolved = resolveLlm({
       provider: 'pikrouter',
+      model: 'deepseek/deepseek-v4-flash',
       env: { PIKROUTER_API_KEY: 'test-token' } as NodeJS.ProcessEnv,
     });
     expect(resolved.providerId).toBe('pikrouter');
     expect(resolved.baseUrl).toBe('https://pikpam.com/api');
-    expect(resolved.model).toBe('DeepSeek-V4.1-Flash');
+    expect(resolved.model).toBe('deepseek/deepseek-v4-flash');
   });
 
   it('streams completion deltas via streamPikRouterCompletion', async () => {
@@ -221,6 +235,7 @@ describe('PikRouter integration', () => {
 
     const resolved = resolveLlm({
       provider: 'pikprovider',
+      model: 'deepseek/deepseek-v4-flash',
       env: { PIKROUTER_API_KEY: 'test-token', HERMES_RUNTIME: 'pi' } as NodeJS.ProcessEnv,
     });
     expect(resolved.providerId).toBe('pikrouter');
@@ -252,6 +267,7 @@ describe('PikRouter integration', () => {
   it('makes pikrouter the first main/default provider in PROVIDERS and resolveLlm', () => {
     expect(Object.keys(PROVIDERS)[0]).toBe('pikrouter');
     const resolved = resolveLlm({
+      model: 'deepseek/deepseek-v4-flash',
       env: {
         PIKROUTER_API_KEY: 'pik-token',
         OPENAI_API_KEY: 'openai-token',
@@ -260,13 +276,19 @@ describe('PikRouter integration', () => {
     expect(resolved.providerId).toBe('pikrouter');
   });
 
-  it('supports DeepSeek-V4.1-Flash and deepseek/deepseek-v4-flash in pikrouter model catalog and labels', () => {
-    const spec = PROVIDERS['pikrouter'];
-    expect(spec?.defaultModel).toBe('DeepSeek-V4.1-Flash');
-    expect(spec?.models).toContain('DeepSeek-V4.1-Flash');
-    expect(spec?.models).toContain('deepseek/deepseek-v4-flash');
-    expect(spec?.modelLabels?.['DeepSeek-V4.1-Flash']).toBe('DeepSeek V4.1 Flash');
-    expect(spec?.modelLabels?.['deepseek/deepseek-v4-flash']).toBe('DeepSeek V4.1 Flash');
+  it('derives a pikrouter default from live models instead of a hardcoded id', () => {
+    const spec = PROVIDERS['pikrouter']!;
+    const live = [
+      { id: 'openrouter/free' },
+      { id: 'particle-ai/particle-1:free' },
+      { id: 'deepseek/deepseek-v4-flash' },
+    ];
+    // A paid, published model is preferred over a free one.
+    expect(pickLiveDefaultModel(spec, live)).toBe('deepseek/deepseek-v4-flash');
+    // With only free models published, one of them is still a valid answer.
+    expect(pickLiveDefaultModel(spec, live.slice(0, 2))).toBe('openrouter/free');
+    // An empty catalog yields nothing rather than a fabricated id.
+    expect(pickLiveDefaultModel(spec, [])).toBe('');
   });
 
   it('registers a new PikRouter account via registerPikRouter', async () => {

@@ -227,7 +227,13 @@
       titleCase(baseId)
     ];
     if (/deepseek/i.test(id) || /deepseek/i.test(p.id)) {
-      parts.push('deepseek', 'v4', 'v4.1', 'flash');
+      // Search aliases only — derived from the id the provider published, so a
+      // renamed or retired model never leaves a stale keyword behind.
+      parts.push('deepseek', 'deepseek ai');
+      var versionMatch = /v(\d+(?:[.-]\d+)?)/i.exec(baseId);
+      if (versionMatch) parts.push('v' + versionMatch[1], 'v' + versionMatch[1].replace(/[.-]/g, '.'));
+      if (/flash/i.test(baseId)) parts.push('flash');
+      if (/pro/i.test(baseId)) parts.push('pro');
     }
     if (p.id === 'pikrouter' || /pikrouter|pikpam/i.test(p.id)) {
       parts.push('pikrouter', 'piki', 'pikpam', 'router');

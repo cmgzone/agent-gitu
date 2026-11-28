@@ -129,7 +129,13 @@ export async function resolveModelCatalog(deps: ResolveModelCatalogOptions = {})
         ...(mi.ownedBy ? { ownedBy: mi.ownedBy } : {}),
         brand: modelBrandFor(catalog, spec.id, mi, spec.custom),
         // Explicit live modality (including false) wins over catalog and heuristic.
-        vision: mi.vision ?? resolveSupportedImages(catalog, spec.id, mi.id),
+        // PikRouter is the exception: its text models reject image inputs even
+        // when a third-party catalog lists the family as vision-capable, so only
+        // an explicitly vision-named model may advertise the capability. This
+        // mirrors resolveImageSupport(), which the runtime obeys.
+        vision: spec.id === 'pikrouter'
+          ? /\bvl\b|vision/i.test(mi.id)
+          : (mi.vision ?? resolveSupportedImages(catalog, spec.id, mi.id)),
         free: isFreeModel(mi.id),
         metadata,
       };

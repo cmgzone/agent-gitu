@@ -137,7 +137,7 @@ import { readOnboarding, saveOnboarding, saveOnboardingTheme } from './onboardin
 import { evaluateChiefAuthority, type ChiefAuthorityPolicy, type ChiefResolverContext } from '../cowork/chief-resolver.js';
 import type { ToolContext } from '../tools/tools.js';
 import { chatgptSubscriptionInfo, chatgptLoginPending, chatgptLogout, startChatgptLogin, type ChatgptLoginStart, type ChatgptSubscriptionInfo } from '../llm/pi-chatgpt.js';
-import { PROVIDERS, ProviderError, allProviderSpecs, fetchModelCatalog, freeModelFallback, isFreeModel, modelCapabilityTier, modelMetadataFor, peekModelCatalog, providerKey, resolveImageSupport, resolveLlm, usageCostUsd } from '../llm/providers.js';
+import { PROVIDERS, ProviderError, allProviderSpecs, fetchModelCatalog, freeModelFallback, isFreeModel, modelCapabilityTier, modelMetadataFor, peekCachedLiveModels, peekModelCatalog, pickLiveDefaultModel, providerKey, resolveImageSupport, resolveLlm, usageCostUsd } from '../llm/providers.js';
 import { resolveModelCatalog } from '../llm/resolved-model-catalog.js';
 import { resolveEmbedder } from '../llm/providers.js';
 import { removeStoredKey, setStoredKey, storedKeyVars } from '../llm/keys.js';
@@ -4852,17 +4852,38 @@ export class GituServer {
       this.refreshPikCreditsBackground();
     }
     if (isPik && model && isFreeModel(model) && this.hasPikRouterCredits()) {
-      const paidDefault = PROVIDERS['pikrouter']?.defaultModel ?? 'DeepSeek-V4.1-Flash';
-      model = paidDefault;
-      if (!agent.model && selected.model && isFreeModel(selected.model)) {
-        try {
-          saveRuntimeSelection({ provider: provider ?? 'pikrouter', model: paidDefault });
-        } catch {
-          /* best effort */
+      // Upgrade a free model to a paid one when credits exist — but only to a
+      // model the provider actually publishes. The old fixed fallback named an
+      // id PikRouter does not serve, which turned every turn into a 400.
+      const paidDefault = this.paidModelForPikRouter();
+      if (paidDefault && paidDefault !== model) {
+        model = paidDefault;
+        if (!agent.model && selected.model && isFreeModel(selected.model)) {
+          try {
+            saveRuntimeSelection({ provider: provider ?? 'pikrouter', model: paidDefault });
+          } catch {
+            /* best effort */
+          }
         }
       }
     }
     return { provider, model };
+  }
+
+  /**
+   * A paid, currently-published PikRouter model. Uses the catalog the model
+   * picker already fetched; returns undefined when discovery has not run, so
+   * the caller keeps the free model rather than switching to a dead id.
+   */
+  private paidModelForPikRouter(): string | undefined {
+    const spec = PROVIDERS['pikrouter'];
+    if (!spec) return undefined;
+    const liveIds = peekCachedLiveModels(spec);
+    // Cold discovery: keep the free model rather than switching to an id we
+    // cannot verify the router still serves.
+    if (!liveIds?.length) return undefined;
+    const nonFree = liveIds.find((id) => !isFreeModel(id));
+    return nonFree ?? (pickLiveDefaultModel(spec, liveIds.map((id) => ({ id }))) || undefined);
   }
 
   private coworkLlm(agent: CoworkAgent): LlmClient {

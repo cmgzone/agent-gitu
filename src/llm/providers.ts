@@ -99,27 +99,11 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     baseUrl: 'https://pikpam.com/api',
     modelsUrl: 'https://pikpam.com/api/models',
     keyEnvVars: ['HERMES_PIKROUTER_API_KEY', 'PIKROUTER_API_KEY', 'PIKROUTER_TOKEN'],
-    defaultModel: 'DeepSeek-V4.1-Flash',
-    models: [
-      'DeepSeek-V4.1-Flash',
-      'deepseek/deepseek-v4-flash',
-      'deepseek-flash',
-      'deepseek-v4-flash',
-      'gpt-4o-mini',
-      'gpt-4o',
-      'gemini-1.5-flash',
-      'gemini-1.5-pro',
-      'gemini-2.0-flash',
-      'claude-3-5-sonnet',
-      'deepseek-chat',
-      'deepseek-reasoner',
-    ],
-    modelLabels: {
-      'DeepSeek-V4.1-Flash': 'DeepSeek V4.1 Flash',
-      'deepseek/deepseek-v4-flash': 'DeepSeek V4.1 Flash',
-      'deepseek-flash': 'DeepSeek V4.1 Flash',
-      'deepseek-v4-flash': 'DeepSeek V4.1 Flash',
-    },
+    // PikRouter owns its model list; the live /models response is authoritative.
+    // Keep no offline seeds: inventing ids here only offers models the router
+    // cannot serve (503/400) when discovery is cold.
+    defaultModel: '',
+    models: [],
     effortLevels: ['low', 'medium', 'high', 'max'],
     effortLabels: { medium: 'medium (= high)' },
     maxEffort: 'distinct',
@@ -790,7 +774,7 @@ export function pickLiveDefaultModel(
     if (fuzzy) return fuzzy.id;
   }
   const nonFree = liveModels.find((m) => !isFreeModel(m.id));
-  return nonFree?.id ?? liveModels[0]?.id ?? configured;
+  return nonFree?.id ?? liveModels[0]?.id ?? '';
 }
 
 export async function fetchLiveModels(opts: {
@@ -862,6 +846,20 @@ export function peekCachedLiveDefaultModel(
   const hit = liveModelsCache.get(liveModelsCacheKey(spec));
   if (!hit || hit.models.length === 0 || Date.now() >= hit.expiresAt) return undefined;
   return pickLiveDefaultModel(spec, hit.models);
+}
+
+/**
+ * The cached live model ids for a provider, when a previous discovery warmed
+ * them. Lets callers validate a saved selection against what the provider
+ * actually publishes without triggering a network call on the hot path.
+ */
+export function peekCachedLiveModels(
+  spec: Pick<ProviderSpec, 'baseUrl' | 'modelsUrl' | 'authoritativeLiveModels'>,
+): string[] | undefined {
+  if (!spec.authoritativeLiveModels) return undefined;
+  const hit = liveModelsCache.get(liveModelsCacheKey(spec));
+  if (!hit || hit.models.length === 0 || Date.now() >= hit.expiresAt) return undefined;
+  return hit.models.map((model) => model.id);
 }
 
 /**
@@ -1037,17 +1035,48 @@ function build(
 ): ResolvedLlm {
   const baseUrl = opts.baseUrl ?? env['HERMES_BASE_URL'] ?? spec?.baseUrl ?? 'https://api.openai.com/v1';
   const requestedModel = opts.model?.trim() || undefined;
-  const cachedLiveDefault =
-    !requestedModel && !env['HERMES_MODEL'] && spec?.authoritativeLiveModels && spec.models
-      ? peekCachedLiveDefaultModel({
+  // A provider that publishes the only valid ids cannot resolve cold. Warm the
+  // cache first so the first chat turn names a real model instead of failing or
+  // sending an invented id the router answers with 400/503.
+  if (spec?.authoritativeLiveModels && !requestedModel && !env['HERMES_MODEL'] && !spec.defaultModel.trim()) {
+    void cachedLiveModels({
+      baseUrl: spec.baseUrl,
+      ...(spec.modelsUrl ? { modelsUrl: spec.modelsUrl } : {}),
+      apiKey,
+      timeoutMs: 6000,
+    }).catch(() => undefined);
+  }
+  const authoritativeSpec =
+    spec?.authoritativeLiveModels && spec.models
+      ? {
           baseUrl: spec.baseUrl,
           modelsUrl: spec.modelsUrl,
           defaultModel: spec.defaultModel,
           models: spec.models,
           authoritativeLiveModels: spec.authoritativeLiveModels,
-        })
+        }
       : undefined;
-  const model = requestedModel ?? env['HERMES_MODEL'] ?? cachedLiveDefault ?? spec?.defaultModel ?? 'gpt-4.1-mini';
+  const cachedLiveDefault = !requestedModel && !env['HERMES_MODEL'] && authoritativeSpec
+    ? peekCachedLiveDefaultModel(authoritativeSpec)
+    : undefined;
+  const explicit = requestedModel ?? env['HERMES_MODEL'];
+  // A provider that owns its model list may retire an id between runs. When the
+  // live list is warm, never send a model it no longer publishes — that is how a
+  // stale saved selection turned into an upstream 400/503 on every turn.
+  const liveIds = authoritativeSpec ? peekCachedLiveModels(authoritativeSpec) : undefined;
+  const validatedExplicit =
+    explicit && liveIds && liveIds.length > 0 && !liveIds.includes(explicit)
+      ? peekCachedLiveDefaultModel(authoritativeSpec!) ?? explicit
+      : explicit;
+  const model = validatedExplicit ?? cachedLiveDefault ?? spec?.defaultModel ?? 'gpt-4.1-mini';
+  if (!model && spec?.authoritativeLiveModels) {
+    // This provider publishes the only valid ids and discovery has not run yet.
+    // Refusing beats sending an invented id that the router answers with 400.
+    throw new ProviderError(
+      `${providerId} publishes its model catalog from ${spec.modelsUrl ?? spec.baseUrl}; no model is known yet. ` +
+        `Open the model picker once (or pass an explicit model) so the live catalog can load.`,
+    );
+  }
   // Output-budget policy input: the model's known ceiling from the live
   // catalog (warmed by the model picker / settings flows). Cold cache →
   // undefined → requests carry no output-limit field (conservative, never

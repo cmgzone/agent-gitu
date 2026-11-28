@@ -182,12 +182,16 @@
     });
   }
   function titleCase(m) { return m.replace(/(^|[-.])([a-z])/g, function (a, sep, ch) { return sep + ch.toUpperCase(); }); }
-  // Display-only model-name polish: family casing that titleCase cannot know.
+  // Display-only model-name polish: the provider's own `name` field always wins.
+  // This only refines ids that arrive without one, and must never rename an id
+  // into a DIFFERENT model id (that is how the picker showed a name the router
+  // did not serve).
   function prettyModelName(mid) {
     var raw = String(mid || '');
-    if (/^(?:deepseek\/)?deepseek-(?:v4-)?flash$/i.test(raw) || /^deepseek-v4\.1-flash$/i.test(raw)) return 'DeepSeek-V4.1-Flash';
-    if (/^(?:deepseek\/)?deepseek-(?:v4-)?flash-vision/i.test(raw)) return 'DeepSeek-V4.1-Flash-Vision';
-    if (/^(?:deepseek\/)?deepseek-(?:v4-)?pro$/i.test(raw)) return 'DeepSeek-V4-Pro';
+    if (/^(?:deepseek\/)?deepseek-(?:v4-)?flash$/i.test(raw)) return 'DeepSeek V4 Flash';
+    if (/^(?:deepseek\/)?deepseek-(?:v4-)?flash-vision/i.test(raw)) return 'DeepSeek V4 Flash Vision';
+    if (/^(?:deepseek\/)?deepseek-(?:v4-)?pro$/i.test(raw)) return 'DeepSeek V4 Pro';
+    if (raw === 'openrouter/free') return 'OpenRouter Free';
     return titleCase(raw.replace(/^deepseek\//i, 'DeepSeek: ')).replace(/Deepseek/gi, 'DeepSeek');
   }
   function hhmm(iso) { var d = new Date(iso); return isNaN(d) ? '' : d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false }); }
